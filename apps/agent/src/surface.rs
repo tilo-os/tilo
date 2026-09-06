@@ -122,7 +122,7 @@ pub fn opens(address: &ActionAddress) -> Option<&str> {
 /// Nothing here is a screen position: a block id and a directory path are
 /// addresses, and both keep meaning the same thing on a machine with no
 /// display at all.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct View {
     /// The block the agent's caret is on, for an app whose subject is a
     /// document. Structural inserts anchor here.
@@ -132,6 +132,16 @@ pub struct View {
     /// The blocks a block-level operation would target — the agent's
     /// selection, or just the focus block.
     pub target_blocks: Vec<String>,
+    /// Exact character ranges selected in the document. Keeping these in the
+    /// semantic view lets the agent discover the same inline-format actions
+    /// as an on-screen selection instead of silently losing that surface.
+    pub format_spans: Vec<word_processor::actions::Span>,
+    /// The ordered semantic selection used by operations which replace text.
+    /// Keeping it separate from formatting spans preserves a single stable
+    /// resource address for a selection that crosses block boundaries.
+    pub selection: Option<word_processor::actions::SelectionTarget>,
+    /// Page region containing the caret/selection.
+    pub region: word_processor::actions::RegionKind,
     /// The resource a request named, when it named one. An address, like
     /// everything else here: the gesture that produces it is somebody
     /// pointing at an object and saying something about *that*, so the app
@@ -140,6 +150,21 @@ pub struct View {
     /// The directory the agent is browsing, for an app whose subject is the
     /// filesystem.
     pub directory: Option<PathBuf>,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            focus_block: None,
+            focus_offset: 0,
+            target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: word_processor::actions::RegionKind::Body,
+            subject: None,
+            directory: None,
+        }
+    }
 }
 
 /// One app whose contract the agent speaks.
@@ -273,6 +298,9 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
             caret_block: anchor,
             caret_offset: view.focus_offset,
             target_blocks: targets,
+            format_spans: view.format_spans.clone(),
+            selection: view.selection.clone(),
+            region: view.region,
         },
         doc,
     )

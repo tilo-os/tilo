@@ -28,9 +28,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Availability,
-    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ParamType, PermissionRequirement,
-    Resource, ResourceProvider, RetryPolicy, RiskLevel,
+    Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
+    Availability, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
+    PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::AuthDoc;
@@ -38,6 +38,50 @@ use crate::model::{Account, AccountId, Algorithm, parse_otpauth_uri};
 
 /// Registry `type_id` for every Authenticator action.
 pub const TOTP_ACTION_TYPE: &str = "totp.action";
+/// Operation payload type for Authenticator presentation and local effects.
+/// These operations never enter the collaborative action decoder.
+pub const TOTP_OPERATION_TYPE: &str = "totp.operation";
+
+/// Stable resource id for one authenticator account. It contains only the
+/// account UUID; neither the long-lived secret nor the rotating code is ever
+/// placed in an address or label.
+pub fn account_resource_id(id: AccountId) -> String {
+    format!("totp.account:{id}")
+}
+
+/// Canonical View action used by search, the palette and agents to reveal an
+/// account in the Authenticator window.
+pub fn open_account_address(id: AccountId) -> ActionAddress {
+    ActionAddress::new(account_resource_id(id), "open")
+}
+
+/// Local operations exported by account resources. Payloads carry only stable
+/// account ids; code generation happens after the broker has resolved the
+/// fresh resource and admitted the operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TotpOperation {
+    OpenAccount { id: String },
+    CopyCode { id: String },
+}
+
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TotpOperation>, String> {
+    if type_id != TOTP_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| format!("invalid Authenticator operation: {error}"))
+}
+
+fn account_operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: &TotpOperation,
+) -> ActionSpec {
+    ActionSpec::operation(id, label, kind, TOTP_OPERATION_TYPE, operation)
+        .expect("Authenticator account ids are JSON serializable")
+}
 
 /// Every collaborative operation the vault exports on its account store.
 ///
@@ -272,9 +316,23 @@ fn vault_contract() -> ActionContract {
 }
 
 /// One-line palette label for an account resource.
+pub(crate) fn safe_identity_field<'a>(value: &'a str, secret: &str) -> &'a str {
+    let value = value.trim();
+    let secret = secret.trim();
+    if !secret.is_empty()
+        && value
+            .to_ascii_uppercase()
+            .contains(&secret.to_ascii_uppercase())
+    {
+        ""
+    } else {
+        value
+    }
+}
+
 fn account_label(a: &Account) -> String {
-    let issuer = a.issuer.trim();
-    let label = a.label.trim();
+    let issuer = safe_identity_field(&a.issuer, &a.secret);
+    let label = safe_identity_field(&a.label, &a.secret);
     match (issuer.is_empty(), label.is_empty()) {
         (false, false) => format!("{issuer} — {label}"),
         (false, true) => issuer.to_string(),
@@ -287,9 +345,8 @@ fn account_label(a: &Account) -> String {
 /// nested under it, one resource per account — every document-mutating
 /// operation exported as an action. Read straight from the document so the tree
 /// is a level-triggered value, recomputed each frame.
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let accounts = AuthDoc::list_accounts(doc); // sorted by order
-
+/// Build only the vault root for the initial palette snapshot.
+pub fn provide_contextual_resources(accounts: &[Account]) -> Vec<Resource> {
     let mut root = Resource::new("totp.vault", "totp.vault", "Accounts");
 
     // Vault-level: add an account by pasting an `otpauth://` setup link. One
@@ -336,118 +393,150 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         }),
     );
 
-    // One resource per account, exporting rename / relabel / recolour / reorder /
-    // delete — the same actions the on-screen affordances dispatch.
-    let account_count = accounts.len();
-    for (index, acc) in accounts.iter().enumerate() {
-        let id = acc.id;
-        let cur_color = acc.color;
-        let mut child = Resource::new(
-            format!("totp.account:{id}"),
-            "totp.account",
-            account_label(acc),
-        );
+    vec![root]
+}
 
-        child = child.with_action(
-            ActionSpec::typed(
-                "rename",
-                "Rename",
-                "e.g. GitHub",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required(
-                    "issuer",
-                    ParamType::Text,
-                    "Account issuer",
-                )],
-                move |args| {
-                    encode(&set_issuer_action(
-                        id,
-                        args.text("issuer").unwrap_or_default().trim(),
-                    ))
-                },
-            )
-            .with_contract(vault_contract()),
-        );
-        child = child.with_action(
-            ActionSpec::typed(
-                "relabel",
-                "Relabel account",
-                "e.g. you@example.com",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required(
-                    "label",
-                    ParamType::Text,
-                    "Account label",
-                )],
-                move |args| {
-                    encode(&set_label_action(
-                        id,
-                        args.text("label").unwrap_or_default().trim(),
-                    ))
-                },
-            )
-            .with_contract(vault_contract()),
-        );
-        child = child.with_action(
-            ActionSpec::typed(
-                "set-color",
-                "Set colour",
-                "0",
-                ExecutionLocus::ClientLocal,
-                vec![
-                    ActionParam::required("colour", ParamType::Integer, "Colour index")
-                        .with_schema(serde_json::json!({ "minimum": 0, "maximum": 6 })),
-                ],
-                move |args| {
-                    encode(&set_color_action(
-                        id,
-                        args.integer("colour")
-                            .and_then(|value| u8::try_from(value).ok())
-                            .unwrap_or(cur_color),
-                    ))
-                },
-            )
-            .with_contract(vault_contract()),
-        );
-        child = child.with_action(
-            encode_spec("move-up", "Move up", &move_up_action(id)).with_contract(ActionContract {
-                availability: if index > 0 {
+/// Materialise one account after search names its stable resource id.
+pub fn provide_account_resource(acc: &Account, index: usize, account_count: usize) -> Resource {
+    let id = acc.id;
+    let cur_color = acc.color;
+    let mut child = Resource::new(account_resource_id(id), "totp.account", account_label(acc));
+
+    child = child.with_action(
+        account_operation(
+            "open",
+            "Open account",
+            OperationKind::View,
+            &TotpOperation::OpenAccount { id: id.to_string() },
+        )
+        .with_contract(ActionContract::view()),
+    );
+    child = child.with_action(
+        account_operation(
+            "copy-code",
+            "Copy current code",
+            OperationKind::Effect,
+            &TotpOperation::CopyCode { id: id.to_string() },
+        )
+        .with_contract(ActionContract {
+            permission: PermissionRequirement::Read,
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::AtMostOnce,
+            tags: vec!["security".into(), "clipboard".into()],
+            ..ActionContract::default()
+        }),
+    );
+
+    child = child.with_action(
+        ActionSpec::typed(
+            "rename",
+            "Rename",
+            "e.g. GitHub",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "issuer",
+                ParamType::Text,
+                "Account issuer",
+            )],
+            move |args| {
+                encode(&set_issuer_action(
+                    id,
+                    args.text("issuer").unwrap_or_default().trim(),
+                ))
+            },
+        )
+        .with_contract(vault_contract()),
+    );
+    child = child.with_action(
+        ActionSpec::typed(
+            "relabel",
+            "Relabel account",
+            "e.g. you@example.com",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required(
+                "label",
+                ParamType::Text,
+                "Account label",
+            )],
+            move |args| {
+                encode(&set_label_action(
+                    id,
+                    args.text("label").unwrap_or_default().trim(),
+                ))
+            },
+        )
+        .with_contract(vault_contract()),
+    );
+    child = child.with_action(
+        ActionSpec::typed(
+            "set-color",
+            "Set colour",
+            "0",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("colour", ParamType::Integer, "Colour index")
+                    .with_schema(serde_json::json!({ "minimum": 0, "maximum": 6 })),
+            ],
+            move |args| {
+                encode(&set_color_action(
+                    id,
+                    args.integer("colour")
+                        .and_then(|value| u8::try_from(value).ok())
+                        .unwrap_or(cur_color),
+                ))
+            },
+        )
+        .with_contract(vault_contract()),
+    );
+    child = child.with_action(
+        encode_spec("move-up", "Move up", &move_up_action(id)).with_contract(ActionContract {
+            availability: if index > 0 {
+                Availability::Available
+            } else {
+                Availability::Unavailable {
+                    code: "already_first".into(),
+                    reason: "This account is already first".into(),
+                }
+            },
+            ..vault_contract()
+        }),
+    );
+    child = child.with_action(
+        encode_spec("move-down", "Move down", &move_down_action(id)).with_contract(
+            ActionContract {
+                availability: if index + 1 < account_count {
                     Availability::Available
                 } else {
                     Availability::Unavailable {
-                        code: "already_first".into(),
-                        reason: "This account is already first".into(),
+                        code: "already_last".into(),
+                        reason: "This account is already last".into(),
                     }
                 },
                 ..vault_contract()
-            }),
-        );
-        child = child.with_action(
-            encode_spec("move-down", "Move down", &move_down_action(id)).with_contract(
-                ActionContract {
-                    availability: if index + 1 < account_count {
-                        Availability::Available
-                    } else {
-                        Availability::Unavailable {
-                            code: "already_last".into(),
-                            reason: "This account is already last".into(),
-                        }
-                    },
-                    ..vault_contract()
-                },
-            ),
-        );
-        child = child.with_action(
-            encode_spec("delete", "Delete account", &delete_account_action(id)).with_contract(
-                ActionContract {
-                    risk: RiskLevel::Destructive,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    ..vault_contract()
-                },
-            ),
-        );
+            },
+        ),
+    );
+    child = child.with_action(
+        encode_spec("delete", "Delete account", &delete_account_action(id)).with_contract(
+            ActionContract {
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                ..vault_contract()
+            },
+        ),
+    );
+    child
+}
 
-        root = root.with_child(child);
+pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
+    let accounts = AuthDoc::list_accounts(doc);
+    let mut root = provide_contextual_resources(&accounts)
+        .pop()
+        .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
+    let account_count = accounts.len();
+    for (index, acc) in accounts.iter().enumerate() {
+        root = root.with_child(provide_account_resource(acc, index, account_count));
     }
 
     vec![root]
@@ -523,6 +612,88 @@ mod tests {
         doc
     }
 
+    #[test]
+    fn resource_contracts_keep_navigation_effects_secrets_and_deletion_distinct() {
+        let doc = seeded_doc();
+        let resources = provide_resources(&doc);
+        let vault = &resources[0];
+        let account = &vault.children[0];
+
+        let open = account
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .unwrap();
+        assert_eq!(open.kind, OperationKind::View);
+        assert_eq!(open.contract, ActionContract::view());
+
+        let copy = account
+            .actions
+            .iter()
+            .find(|action| action.id == "copy-code")
+            .unwrap();
+        assert_eq!(copy.kind, OperationKind::Effect);
+        assert_eq!(copy.contract.permission, PermissionRequirement::Read);
+        assert_eq!(copy.contract.risk, RiskLevel::Privileged);
+        assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(copy.contract.retry, RetryPolicy::AtMostOnce);
+        let encoded_copy = immediate_encode(copy);
+        let operation: TotpOperation = serde_json::from_slice(&encoded_copy.payload).unwrap();
+        assert!(matches!(operation, TotpOperation::CopyCode { .. }));
+        for secret in seed_accounts()
+            .iter()
+            .map(|account| account.secret.as_str())
+        {
+            assert!(
+                !encoded_copy
+                    .payload
+                    .windows(secret.len())
+                    .any(|bytes| bytes == secret.as_bytes()),
+                "copy authority carries an id, never secret material"
+            );
+        }
+
+        let add = vault
+            .actions
+            .iter()
+            .find(|action| action.id == "add-account")
+            .unwrap();
+        assert_eq!(add.kind, OperationKind::Document);
+        assert_eq!(add.params()[0].ty, ParamType::Secret);
+        assert_eq!(add.contract.permission, PermissionRequirement::Write);
+        assert_eq!(add.contract.risk, RiskLevel::Privileged);
+        assert_eq!(add.contract.confirmation, ConfirmationPolicy::Confirm);
+
+        let delete = account
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .unwrap();
+        assert_eq!(delete.kind, OperationKind::Document);
+        assert_eq!(delete.contract.permission, PermissionRequirement::Write);
+        assert_eq!(delete.contract.risk, RiskLevel::Destructive);
+        assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert!(delete.contract.reversible);
+    }
+
+    #[test]
+    fn account_resource_labels_redact_secret_shaped_identity_fields() {
+        let mut account = seed_accounts().remove(0);
+        let secret = account.secret.clone();
+        account.issuer = format!("Security key {secret}");
+        account.label = secret.clone();
+        let mut doc = AutoCommit::new();
+        AuthDoc::sync_vault(&mut doc, &[account]);
+        let resource = &provide_resources(&doc)[0].children[0];
+        assert!(!resource.label.contains(&secret));
+        assert!(
+            resource
+                .actions
+                .iter()
+                .all(|action| !action.label.contains(&secret))
+        );
+    }
+
     /// Ctrl+K on the Authenticator yields the vault resource with one child per
     /// account, each exporting the full account action set. Drives the real
     /// `Widget::resources` hook through the demo app's live document.
@@ -547,11 +718,15 @@ mod tests {
             .unwrap();
         assert_eq!(add.params()[0].ty, ParamType::Secret);
         assert!(
-            !vault.children.is_empty(),
-            "each account is a nested resource"
+            vault.children.is_empty(),
+            "the contextual root stays bounded"
         );
-
-        let acct = &vault.children[0];
+        let account = AuthDoc::list_accounts(&state.doc)
+            .into_iter()
+            .next()
+            .expect("demo account");
+        let acct = Widget::resource(&app, &state.doc, &account_resource_id(account.id))
+            .expect("account lazily resolves");
         assert_eq!(acct.kind, "totp.account");
         let ids: Vec<&str> = acct.actions.iter().map(|a| a.id.as_str()).collect();
         for want in [
@@ -578,7 +753,9 @@ mod tests {
 
         // The one palette surfaces the tree's actions as rows.
         let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
+        let mut palette_resources = resources.clone();
+        palette_resources.push(acct.clone());
+        palette.load_open_resources(&palette_resources);
         palette.open();
         let labels = palette.result_labels();
         assert!(

@@ -29,6 +29,22 @@ pub(crate) enum NumberField {
 }
 
 impl NumberField {
+    fn semantic_target(&self) -> String {
+        match self {
+            Self::FontScale => "books.number.text-size".into(),
+            Self::LineSpacing => "books.number.line-spacing".into(),
+            Self::FontMult(id) => format!("books.number.font-scale:{id}"),
+        }
+    }
+
+    fn accessible_name(&self) -> String {
+        match self {
+            Self::FontScale => "Text size".into(),
+            Self::LineSpacing => "Line spacing".into(),
+            Self::FontMult(id) => format!("Size adjustment for {id}"),
+        }
+    }
+
     fn input(&self, value: f64) -> NumberInput {
         match self {
             Self::FontScale => NumberInput::new(value)
@@ -74,6 +90,38 @@ pub(crate) struct NumberControls {
 }
 
 impl NumberControls {
+    pub(crate) fn accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        self.controls
+            .iter()
+            .filter(|control| control.active)
+            .filter_map(|control| {
+                let mut node = control.input.accessibility()?;
+                node.name = Some(control.field.accessible_name());
+                Some(
+                    node.with_bounds(control.input.get_rect())
+                        .with_action_target(control.field.semantic_target()),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> Option<(NumberField, Option<f64>)> {
+        let control = self
+            .controls
+            .iter_mut()
+            .find(|control| control.active && control.field.semantic_target() == target)?;
+        if !control.input.perform_action(action, state, root) {
+            return None;
+        }
+        Some((control.field.clone(), control.input.take_changed()))
+    }
+
     pub(crate) fn begin_frame(&mut self) {
         for control in &mut self.controls {
             control.active = false;
@@ -176,6 +224,13 @@ pub(crate) enum NoteAction {
     Delete(Uuid),
 }
 
+pub(crate) enum NoteSemanticOutcome {
+    Changed(String),
+    Save,
+    Delete(Uuid),
+    Focused,
+}
+
 /// On-page note editor backed by the toolkit's multiline `TextInput`.
 ///
 /// The component owns text state, selection/clipboard/IME behavior, geometry,
@@ -221,6 +276,71 @@ impl Default for NoteComposer {
 }
 
 impl NoteComposer {
+    pub(crate) fn accessibility_nodes(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let Some(id) = self.id else {
+            return Vec::new();
+        };
+        let mut input = self
+            .input
+            .accessibility()
+            .unwrap_or_else(|| AccessNode::new(Role::MultilineTextInput));
+        input.name = Some("Note text".into());
+        input = input
+            .with_bounds(self.input.get_rect())
+            .with_action_target(format!("books.note.input:{id}"));
+        let button = |name: &str, target: String, bounds: Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_bounds(bounds)
+                .with_state(AccessState::new().focusable(true))
+                .with_action_target(target)
+        };
+        vec![
+            AccessNode::new(Role::Dialog)
+                .with_name("Edit note")
+                .with_state(AccessState::new().modal(true))
+                .with_children(vec![
+                    input,
+                    button(
+                        "Delete note",
+                        format!("books.note.delete:{id}"),
+                        self.delete,
+                    ),
+                    button("Save note", format!("books.note.save:{id}"), self.save),
+                ]),
+        ]
+    }
+
+    pub(crate) fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> Option<NoteSemanticOutcome> {
+        let id = self.id?;
+        if target == format!("books.note.input:{id}") {
+            if self.input.perform_action(action, state, root) {
+                if let Some(text) = self.input.take_dirty() {
+                    return Some(NoteSemanticOutcome::Changed(text));
+                }
+                return Some(NoteSemanticOutcome::Focused);
+            }
+            return None;
+        }
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return None;
+        }
+        if target == format!("books.note.save:{id}") {
+            Some(NoteSemanticOutcome::Save)
+        } else if target == format!("books.note.delete:{id}") {
+            Some(NoteSemanticOutcome::Delete(id))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn open(&mut self, id: Uuid, text: &str) {
         self.id = Some(id);
         self.input.set_text(text);

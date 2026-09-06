@@ -73,8 +73,8 @@ pub struct Playlist {
     pub name: String,
     pub description: String,
     pub track_ids: Vec<TrackId>,
-    /// Optional cover image the user set via the file portal, as a `file://`
-    /// URL (or any http(s) URL). Empty ⇒ the procedural placeholder tile.
+    /// Optional portable playlist cover: an HTTPS URL or a bounded embedded PNG
+    /// data URL normalized from the file portal. Empty ⇒ procedural placeholder.
     #[serde(default)]
     pub cover: String,
 }

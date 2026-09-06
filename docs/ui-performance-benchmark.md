@@ -6,6 +6,12 @@ improve without breaking pixel equivalence and framework tests. Presentation
 cadence still has to be checked on the named physical display because an
 offscreen VM cannot measure its compositor.
 
+See [Performance controls](performance-flags.md) for every qOS rendering and
+benchmark flag, defaults, value parsing, dependencies, and diagnostic caveats.
+The [2026-09-06 current-main comparison](benchmarks/2026-09-06-current-main/RESULTS.md)
+supersedes the older matrices below for that recorded source/binary snapshot;
+it is not a measurement of the subsequent latest-main integration.
+
 ## Acceptance commands
 
 Build once so every run measures the same binary:
@@ -86,7 +92,8 @@ QUICK_UI_DASH_FRAME_BUDGET_US=30000 \
 target/release/examples/ui-perf dashboard_perf_bench
 ```
 
-The separate shell redraw target is mean at most 8,000 microseconds. Its
+The current executable shell redraw gate is mean at most 25,000 microseconds
+and p99 at most 50,000 microseconds. Its
 production render/readback harness is:
 
 ```sh
@@ -95,10 +102,12 @@ target/release/examples/redraw_bench
 ```
 
 It drives 1,000 clicks through `FrameBuilder` at native 3840x2160, including
-input, layout, scene paint, DRM-bridge GPU completion, full texture readback,
-and XRGB conversion. The destination is a reused CPU allocation, not a real
-KMS dumb-buffer mapping; physical page flip and display scanout are not timed.
-It enforces both the 8,000 us mean and 30,000 us p99 gates. The older
+input, layout, scene paint, DRM-bridge GPU completion, damage-aware texture
+readback (with full-frame fallback), and XRGB conversion. The destination is a
+reused CPU allocation, not a real KMS dumb-buffer mapping; physical page flip
+and display scanout are not timed.
+These current gates do not establish constant 60 fps; older 8,000 us mean and
+30,000 us p99 targets are not the executable's present thresholds. The older
 `shell/examples/draw_bench.rs` measures CPU scene painting only and cannot
 establish this target. The UI harness also accepts
 `QUICK_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a

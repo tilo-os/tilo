@@ -121,6 +121,17 @@ impl ShellDriver {
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
         self.fb.host_mut()
     }
+
+    /// Show the same reduced first-login ceremony used when qOS is installed
+    /// as an additional session on an existing Linux desktop. The path is
+    /// deliberately read-only/nonexistent: this visual scenario never mints
+    /// an identity, and cannot touch the developer's real first-login state.
+    pub fn show_host_desktop_onboarding(&mut self) {
+        self.fb
+            .enable_host_desktop_onboarding(std::path::PathBuf::from(
+                "/var/empty/qos-shots-identity",
+            ));
+    }
     /// The palette's current query — what a scenario typed, read back
     /// through the same accessor the overlay uses.
     #[cfg(test)]
@@ -944,6 +955,33 @@ impl ShellDriver {
     fn scene_ws_settings_members(&mut self) {
         self.seed_workspace_permissions();
         self.with_chrome(|st| {
+            let owner_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+            let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+            let owner_public =
+                collab_types::Ed25519PublicKey::from_bytes(owner_key.verifying_key().to_bytes());
+            let recipient_public = collab_types::Ed25519PublicKey::from_bytes(
+                recipient_key.verifying_key().to_bytes(),
+            );
+            let owner = hex::encode(owner_public.as_bytes());
+            st.local_user_id = owner.clone();
+            if let Some(workspace) = st.tree_mut().active_workspace_mut() {
+                workspace.set_owner(owner);
+                workspace.grant_capability(shell::shell::state::CapOverride::membership(
+                    shell::shell::state::Subject::person(hex::encode(recipient_public.as_bytes())),
+                    workspace.room.to_string(),
+                    shell::shell::state::Verb::Admin,
+                ));
+                workspace.pending_ownership_transfer =
+                    collab_types::OwnershipTransferProposalV1::new(
+                        workspace.room.to_string(),
+                        [23; 32],
+                        owner_public,
+                        recipient_public,
+                        u64::MAX,
+                        &owner_key,
+                    )
+                    .ok();
+            }
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Members;
         });

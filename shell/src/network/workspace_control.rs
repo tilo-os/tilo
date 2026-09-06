@@ -195,11 +195,6 @@ impl WorkspaceControlSession {
     /// Turn an app input event into the existing shell wire message. This is
     /// the sole gate: before target consent and after every close edge it
     /// returns an honest error and produces no message.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the target has not granted a live surface or the
-    /// input event cannot be encoded.
     pub fn input_message(&self, event: &InputEvent) -> Result<NeighbourMsg, &'static str> {
         let Some(surface) = self.active_surface() else {
             return Err("target has not granted control for a live surface");

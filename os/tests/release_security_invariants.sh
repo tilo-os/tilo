@@ -16,11 +16,16 @@ grep -Fq 'group: qos-os-image-series' "$workflow" \
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
 
-if grep -Fq "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" "$workflow" \
+publication_guards="$(grep -Fc "if: steps.release-mode.outputs.publish == 'true'" "$workflow")"
+if grep -Fq 'REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}' "$workflow" \
+   && grep -Fq '$GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main' "$workflow" \
+   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$workflow" \
+   && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]; then" "$workflow" \
+   && [ "$publication_guards" -ge 6 ] \
    && ! grep -Eq "if:.*github.event_name == 'workflow_dispatch'[[:space:]]*}}" "$workflow"; then
-  ok 'manual publication is restricted to main'
+  ok 'manual publication is explicit and restricted to main'
 else
-  bad 'a manual feature-branch dispatch can reach a publication step'
+  bad 'a build-only or feature-branch dispatch can reach a publication step'
 fi
 
 grep -Fq 'Independently rebuild the release candidate' "$workflow" \
@@ -56,8 +61,21 @@ else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
 
+if grep -Fq "key='\${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
+   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
+   && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]" "$workflow" \
+   && grep -Fq 'publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$workflow" \
+   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
+   && grep -Fxq 'ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
+  ok 'fresh images carry a release-validated pinned marketplace owner key'
+else
+  bad 'marketplace trust anchor is missing, placeholder, or not a release build input'
+fi
+
 grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh" \
   && grep -Fq 'latest does not point at signed gen$current' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq -- '--type slsaprovenance1' "$repo/os/dev/next-generation.sh" \
+  && grep -Fq -- '--predicate provenance.json --type slsaprovenance1' "$workflow" \
   && ok 'generation allocation authenticates provenance and the latest channel' \
   || bad 'generation allocation still trusts registry tags alone'
 
@@ -72,11 +90,16 @@ trap 'rm -rf "$tmp"' EXIT
 hex="$(printf 'a%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" QOS_APP_COLLECTION_SHA256="$hex" \
+   QOS_DESKTOP_PAYLOAD_SHA256="$hex" \
+   GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.subject[0].digest.sha256 | length == 64' "$tmp/provenance.json" >/dev/null; then
-  ok 'SLSA provenance binds generation, source inputs and image digest'
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.runDetails.byproducts[0].uri == "urn:qos:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
+  ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi

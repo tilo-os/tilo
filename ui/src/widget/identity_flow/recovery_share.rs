@@ -4,24 +4,14 @@
 //! user must explicitly tick "I've written it down" before the
 //! continue button activates.
 //!
-//! ## Single-device caveat
-//!
-//! The qOS spec only allows `export_recovery_share` once the identity
-//! has entered threshold mode (a 2-of-N DKG has run). Calling it on a
-//! single-device identity returns an error per the engine's API.
-//!
-//! For first-run, the identity is in 1-of-1 bootstrap mode — there is
-//! no real recovery share yet. We show a deterministic placeholder
-//! mnemonic derived from the identity's public key so the user goes
-//! through the "write it down" muscle-memory; the caption tells them
-//! the real share is generated once they pair a second device, at
-//! which point this screen is re-presented with the real mnemonic.
+//! The screen never invents recovery words. In single-device bootstrap mode
+//! no independent recovery artifact exists, so the ceremony presents an
+//! honest unavailable state until a 2-of-N DKG has produced a real share.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use automerge::{AutoCommit, ObjId};
-use sha2::{Digest, Sha512};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -35,47 +25,6 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
-
-/// Deterministic placeholder mnemonic generator.
-///
-/// Input: 32 bytes of public-key entropy. Output: a 24-word BIP39
-/// English mnemonic. The output is deterministic — same pubkey
-/// produces the same words — so the recovery-verify step can
-/// regenerate the expected words without storing them. **The
-/// placeholder is NOT a valid recovery share** (single-device mode
-/// has no shareable secret); see the module-level note.
-///
-/// # Panics
-///
-/// Does not panic in practice: SHA-512 output is always 64 bytes, so the
-/// leading 32-byte chunk taken below always exists (an all-zero fallback
-/// only guards a change to the hash algorithm), and BIP39 accepts any
-/// 16/20/24/28/32-byte entropy, so the fixed 32-byte entropy built here
-/// always succeeds. The `expect` exists only because `bip39` has no
-/// infallible constructor for a fixed-length array.
-pub fn deterministic_placeholder_mnemonic(public_key_bytes: &[u8; 32]) -> String {
-    // Stretch the pubkey into 32 bytes of entropy via SHA-512 (we
-    // discard the upper half). `bip39::Mnemonic::from_entropy` only
-    // accepts 16/20/24/28/32-byte slices.
-    let mut hasher = Sha512::new();
-    hasher.update(b"qos-recovery-placeholder-v1");
-    hasher.update(public_key_bytes);
-    let digest = hasher.finalize();
-    // `first_chunk` proves the 32-byte prefix exists instead of slicing
-    // and hoping; the fallback is unreachable for SHA-512's fixed
-    // 64-byte output, but a placeholder generator never has a reason to
-    // panic over it.
-    let entropy: [u8; 32] = digest.first_chunk::<32>().copied().unwrap_or([0u8; 32]);
-    #[allow(
-        clippy::expect_used,
-        reason = "bip39 has no infallible constructor for a fixed 32-byte \
-                  entropy array, but 32 bytes is always a valid BIP39 \
-                  entropy length, so this can't actually fail"
-    )]
-    let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
-        .expect("32-byte entropy is always accepted by BIP39");
-    mnemonic.to_string()
-}
 
 /// Screen 2: recovery-share storage.
 pub struct RecoveryShareScreen {
@@ -124,12 +73,11 @@ impl RecoveryShareScreen {
         &self.mnemonic
     }
 
-    /// Seed the displayed mnemonic from the identity record. For
-    /// single-device records this generates a deterministic
-    /// placeholder per [`deterministic_placeholder_mnemonic`].
-    pub fn seed_from_record(&mut self, record: &IdentityRecord) {
-        let pk = record.threshold_identity.group_public_key;
-        self.mnemonic = deterministic_placeholder_mnemonic(&pk);
+    /// Public metadata can never prove that a usable recovery secret exists.
+    /// Clear the screen until the live threshold ceremony supplies genuine
+    /// words via [`Self::set_mnemonic`].
+    pub fn seed_from_record(&mut self, _record: &IdentityRecord) {
+        self.mnemonic.clear();
         self.acknowledged = false;
     }
 
@@ -281,6 +229,7 @@ impl RecoveryShareScreen {
     /// Title + subtitle. Split out of `draw` to keep it under clippy's
     /// line budget.
     fn draw_header(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
@@ -290,7 +239,11 @@ impl RecoveryShareScreen {
     ) {
         text_renderer.draw_text(
             scene,
-            "Your recovery words",
+            if self.mnemonic.is_empty() {
+                "Recovery is not ready yet"
+            } else {
+                "Your recovery words"
+            },
             22.0,
             theme.tokens.colors.text_primary,
             translated(transform, card.x0 + pad, card.y0 + pad),
@@ -298,7 +251,11 @@ impl RecoveryShareScreen {
         );
         text_renderer.draw_text(
             scene,
-            "Write these 24 words down. They restore your identity if you lose every device.",
+            if self.mnemonic.is_empty() {
+                "Pair another trusted device first. qOS will show real recovery words only after the secure setup completes."
+            } else {
+                "Write these 24 words down. They restore your identity if you lose every device."
+            },
             13.0,
             theme.tokens.colors.text_dim,
             translated(transform, card.x0 + pad, card.y0 + pad + 32.0),
@@ -590,7 +547,7 @@ impl Widget for RecoveryShareScreen {
     ) {
         let pad = 32.0;
         let card = self.draw_backdrop_and_card(scene, transform, theme);
-        Self::draw_header(scene, transform, text_renderer, theme, card, pad);
+        self.draw_header(scene, transform, text_renderer, theme, card, pad);
         self.draw_copy_button(scene, transform, text_renderer, theme);
         self.draw_word_grid(scene, transform, text_renderer, theme, card, pad);
         self.draw_acknowledge_row(scene, transform, text_renderer, theme, card, pad);
@@ -637,19 +594,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placeholder_mnemonic_is_deterministic() {
-        let pk = [0x11u8; 32];
-        assert_eq!(
-            deterministic_placeholder_mnemonic(&pk),
-            deterministic_placeholder_mnemonic(&pk)
-        );
-    }
-
-    #[test]
-    fn placeholder_mnemonic_has_24_words() {
-        let pk = [0u8; 32];
-        let m = deterministic_placeholder_mnemonic(&pk);
-        assert_eq!(m.split_whitespace().count(), 24);
+    fn metadata_never_generates_fake_recovery_words() {
+        let mut rng = rand_core::OsRng;
+        let id = threshold_identity::ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let record = IdentityRecord::from_threshold_identity(
+            &id,
+            "Ada",
+            [1, 2, 3],
+            std::time::SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+        let mut screen = RecoveryShareScreen::new();
+        screen.seed_from_record(&record);
+        assert!(screen.mnemonic().is_empty());
+        assert!(!screen.is_continue_enabled());
     }
 
     #[test]

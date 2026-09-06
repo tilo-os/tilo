@@ -31,9 +31,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[cfg(test)]
+use collab_types::DocumentMutation;
 use collab_types::{
-    Actor, ArtifactId, ArtifactKind, CapDecision, DocumentMutation, RedactedMarker, ResourceRef,
-    SignedOp, ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
+    Actor, ArtifactId, ArtifactKind, CapDecision, RedactedMarker, ResourceRef, SignedOp,
+    ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
@@ -58,6 +60,14 @@ use crate::shell::state::{
 const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
+
+fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
+    if requested == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
+        current_connection
+    } else {
+        requested
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,7 +110,8 @@ impl AdmittedJoinIdentity {
         BrokerActor {
             id: self
                 .agent_id
-                .clone()
+                .as_ref()
+                .map(|agent| format!("agent:{agent}"))
                 .unwrap_or_else(|| self.principal_id.clone()),
             is_agent: self.agent_id.is_some(),
         }
@@ -407,6 +418,9 @@ struct PendingInvocation {
     retryable_on_disconnect: bool,
     execution: qos_actions::ExecutionMode,
     result: qos_actions::ResultSpec,
+    operation_kind: qos_actions::OperationKind,
+    cluster_id: String,
+    context: qos_actions::ActionContext,
     /// Admission/progress heartbeat. A silent application must not leave a
     /// broker-owned job in `Accepted` forever.
     last_activity: std::time::Instant,
@@ -530,32 +544,32 @@ impl CapnpBrokerState {
         idle_timeout: std::time::Duration,
         cancellation_grace: std::time::Duration,
     ) {
-        let expired =
-            {
-                let Ok(mut pending) = self.pending_invocations.lock() else {
-                    return;
-                };
-                pending
-                    .extract_if(|_, invocation| {
-                        let cancellation_expired = invocation
-                            .cancellation_requested_at
-                            .is_some_and(|requested| {
-                                now.saturating_duration_since(requested) >= cancellation_grace
-                            });
-                        let idle_expired =
-                            now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
-                        cancellation_expired || idle_expired
-                    })
-                    .map(|(id, invocation)| {
-                        let cancellation_expired = invocation
-                            .cancellation_requested_at
-                            .is_some_and(|requested| {
-                                now.saturating_duration_since(requested) >= cancellation_grace
-                            });
-                        (id, cancellation_expired, invocation)
-                    })
-                    .collect::<Vec<_>>()
+        let expired = {
+            let Ok(mut pending) = self.pending_invocations.lock() else {
+                return;
             };
+            let ids = pending
+                .iter()
+                .filter_map(|(id, invocation)| {
+                    let cancellation_expired =
+                        invocation
+                            .cancellation_requested_at
+                            .is_some_and(|requested| {
+                                now.saturating_duration_since(requested) >= cancellation_grace
+                            });
+                    let idle_expired =
+                        now.saturating_duration_since(invocation.last_activity) >= idle_timeout;
+                    (cancellation_expired || idle_expired).then_some((*id, cancellation_expired))
+                })
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|(id, cancellation_expired)| {
+                    pending
+                        .remove(&id)
+                        .map(|invocation| (id, cancellation_expired, invocation))
+                })
+                .collect::<Vec<_>>()
+        };
         for (id, cancellation_expired, pending) in expired {
             let (code, message) = if cancellation_expired {
                 (
@@ -581,6 +595,7 @@ impl CapnpBrokerState {
                     retryable: pending.retryable_on_disconnect,
                 },
             };
+            self.record_effect_receipt(&pending, &update);
             self.record_completion(id, pending.actor.clone(), update);
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -599,6 +614,38 @@ impl CapnpBrokerState {
                 completed.remove(&oldest);
             }
         }
+    }
+
+    fn record_effect_receipt(
+        &self,
+        pending: &PendingInvocation,
+        update: &qos_actions::InvocationUpdate,
+    ) {
+        if pending.operation_kind != qos_actions::OperationKind::Effect {
+            return;
+        }
+        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(update) else {
+            return;
+        };
+        let Some(membership) = &self.membership else {
+            return;
+        };
+        let mut tree = membership.write();
+        let Some(workspace_id) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == pending.cluster_id)
+            .map(|workspace| workspace.id)
+        else {
+            return;
+        };
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            update.invocation(),
+            &pending.actor,
+            pending.context.clone(),
+            status,
+        );
     }
 
     /// So tests can register channel state before pushing signed
@@ -694,10 +741,6 @@ impl CapnpBrokerState {
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue projection performs one ordered authorization and serialization pass"
-    )]
     fn action_catalogue_json_for(
         &self,
         cluster_id: &str,
@@ -716,7 +759,7 @@ impl CapnpBrokerState {
             .clone();
         drop(tree);
         let caller = if actor.is_agent {
-            workspace.actor_for_agent(&actor.id)
+            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
         } else {
             workspace.actor_for_person(&actor.id)
         };
@@ -994,11 +1037,6 @@ impl CapnpBrokerState {
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "invocation admission validates one complete broker protocol transaction"
-    )]
     fn start_invocation_confirmed_for(
         &self,
         peer_id: u64,
@@ -1043,7 +1081,7 @@ impl CapnpBrokerState {
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let caller = if actor.is_agent {
-            workspace.actor_for_agent(&actor.id)
+            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
         } else {
             workspace.actor_for_person(&actor.id)
         };
@@ -1096,6 +1134,16 @@ impl CapnpBrokerState {
         }
         let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
+        let mut receipt_context = qos_actions::ActionContext::for_resource(
+            &offered.1.action_label,
+            &offered.1.resource,
+            &offered.1.resource_kind,
+            &offered.1.resource_label,
+        )
+        .with_app(&offered.0.app_id, &offered.0.app_id);
+        if let Some(ambient) = &context {
+            receipt_context = receipt_context.enriched_by(ambient);
+        }
         self.pending_invocations
             .lock()
             .map_err(|_| "the invocation registry is unavailable".to_string())?
@@ -1126,6 +1174,9 @@ impl CapnpBrokerState {
                     ),
                     execution: offered.1.contract.execution.clone(),
                     result: offered.1.contract.result.clone(),
+                    operation_kind: offered.1.operation_kind,
+                    cluster_id: offered.0.route.cluster_id.clone(),
+                    context: receipt_context,
                     last_activity: std::time::Instant::now(),
                     cancellation_requested_at: None,
                 },
@@ -1247,11 +1298,6 @@ impl CapnpBrokerState {
 
     /// Mint and deliver one live-only task run. No durable/offline queue is
     /// kept: losing the subscribed agent means Launch remains unavailable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the workspace, task, route, subscription, or task
-    /// registry is unavailable, or if delivery fails.
     pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
         let membership = self
             .membership
@@ -1264,15 +1310,13 @@ impl CapnpBrokerState {
                 .iter()
                 .find(|workspace| workspace.room.to_string() == cluster_id)
                 .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-            let workspace_id = workspace.id;
             let task = workspace
                 .tasks
                 .iter()
                 .find(|task| task.id == task_id)
                 .cloned()
                 .ok_or_else(|| "the task no longer exists".to_string())?;
-            drop(tree);
-            (workspace_id, task)
+            (workspace.id, task)
         };
         let agent_id = task
             .assigned_agent
@@ -1343,7 +1387,6 @@ impl CapnpBrokerState {
             &actor,
             format!("Broker dispatched live run {run_id}"),
         );
-        drop(tree);
         Ok(run_id)
     }
 
@@ -1391,13 +1434,11 @@ impl CapnpBrokerState {
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
             .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-        let cancelled = workspace
+        Ok(workspace
             .tasks
             .iter()
             .find(|task| task.id == run.task_id)
-            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled);
-        drop(tree);
-        Ok(cancelled)
+            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled))
     }
 
     fn record_task_run_update(
@@ -1449,7 +1490,6 @@ impl CapnpBrokerState {
                 return Err("the task run is already terminal".into());
             }
             current.terminal = true;
-            drop(runs);
         }
         let membership = self
             .membership
@@ -1467,14 +1507,9 @@ impl CapnpBrokerState {
             let _ = tree.set_workspace_task_status(workspace_id, &run.task_id, status, &actor);
         }
         let _ = tree.append_workspace_task_audit(workspace_id, &run.task_id, &actor, summary);
-        drop(tree);
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "task lease, target address, and action inputs are independent authorization fields"
-    )]
     fn start_task_action(
         &self,
         peer_id: u64,
@@ -1561,6 +1596,7 @@ impl CapnpBrokerState {
                             retryable: invocation.retryable_on_disconnect,
                         },
                     };
+                    self.record_effect_receipt(&invocation, &update);
                     self.record_completion(id, invocation.actor.clone(), update);
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
@@ -1620,7 +1656,7 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
         envelope: &SignedOp,
-    ) -> Result<DocumentMutation, capnp::Error> {
+    ) -> Result<collab_types::RoutedDocumentPayload, capnp::Error> {
         let expected_artifact =
             document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
         let expected_attestation =
@@ -1628,17 +1664,33 @@ impl CapnpBrokerState {
         if route.app_id.is_empty()
             || envelope.artifact != expected_artifact
             || envelope.attestation_id != expected_attestation
-            || envelope.encryption.is_some()
         {
             return Err(capnp::Error::failed(
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let mutation = DocumentMutation::decode(&envelope.payload).map_err(|error| {
+        let mutation = collab_types::validate_document_payload_route(
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+            envelope,
+        )
+        .map_err(|error| {
             capnp::Error::failed(format!(
-                "certified document operation has an invalid typed payload: {error}"
+                "certified document operation has an invalid routed payload: {error}"
             ))
         })?;
+        let channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let broker_channels = self.broker_channels.lock().map_err(|_| {
+            capnp::Error::failed("collaboration governance state is unavailable".into())
+        })?;
+        if !broker_channels.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
+            return Err(capnp::Error::failed(
+                "plaintext document operation rejected after MLS migration".into(),
+            ));
+        }
+        drop(broker_channels);
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -1715,6 +1767,7 @@ impl CapnpBrokerState {
             CollabEvent::Document {
                 envelope,
                 from_user_id,
+                ..
             } => Self::fanout_signed_incremental(channels, except, envelope, from_user_id),
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 Self::fanout_cursor_moved(channels, except, user_id, *x, *y);
@@ -2072,6 +2125,119 @@ impl CapnpChannelHandle {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn record_local_effect(
+        self: Rc<Self>,
+        params: channel_handle::RecordLocalEffectParams,
+        _results: channel_handle::RecordLocalEffectResults,
+    ) -> Promise<(), capnp::Error> {
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let resource = match request
+            .get_resource()
+            .map_err(|error| error.to_string())
+            .and_then(|value| value.to_str().map_err(|error| error.to_string()))
+        {
+            Ok(value) => value.to_string(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let action = match request
+            .get_action()
+            .map_err(|error| error.to_string())
+            .and_then(|value| value.to_str().map_err(|error| error.to_string()))
+        {
+            Ok(value) => value.to_string(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let update = match request
+            .get_update_json()
+            .map_err(|error| capnp::Error::failed(error.to_string()))
+            .and_then(|value| {
+                value
+                    .to_str()
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            })
+            .and_then(|json| {
+                serde_json::from_str::<qos_actions::InvocationUpdate>(json)
+                    .map_err(|error| capnp::Error::failed(error.to_string()))
+            }) {
+            Ok(update) => update,
+            Err(error) => return Promise::err(error),
+        };
+        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(&update) else {
+            return Promise::err(capnp::Error::failed(
+                "only a terminal effect may enter workspace activity".into(),
+            ));
+        };
+        let Some((surface, offered)) = self
+            .state
+            .surfaces
+            .lock()
+            .ok()
+            .and_then(|surfaces| surfaces.get(&self.peer_id).cloned())
+            .and_then(|surface| {
+                let offered = surface
+                    .actions
+                    .iter()
+                    .find(|candidate| candidate.resource == resource && candidate.action == action)
+                    .cloned()?;
+                Some((surface, offered))
+            })
+        else {
+            return Promise::err(capnp::Error::failed(
+                "the application no longer publishes that action".into(),
+            ));
+        };
+        if offered.operation_kind != qos_actions::OperationKind::Effect {
+            return Promise::err(capnp::Error::failed(
+                "only Effects produce durable invocation receipts".into(),
+            ));
+        }
+        let mut context = qos_actions::ActionContext::for_resource(
+            offered.action_label,
+            offered.resource,
+            offered.resource_kind,
+            offered.resource_label,
+        )
+        .with_app(&surface.app_id, &surface.app_id);
+        let actor = current.broker_actor().id;
+        let Some(membership) = &self.state.membership else {
+            return Promise::err(capnp::Error::failed(
+                "the action broker has no workspace authority".into(),
+            ));
+        };
+        let mut tree = membership.write();
+        let Some(workspace_id) = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
+            .map(|workspace| workspace.id)
+        else {
+            return Promise::err(capnp::Error::failed(
+                "the application workspace is no longer hosted".into(),
+            ));
+        };
+        // Local invocations have no task ambient context; retain this as an
+        // ordinary semantic action record.
+        context.purpose = None;
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            update.invocation(),
+            &actor,
+            context,
+            status,
+        );
+        Promise::ok(())
+    }
+
     fn open_workspace_control(
         self: Rc<Self>,
         params: channel_handle::OpenWorkspaceControlParams,
@@ -2088,10 +2254,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "workspace control requires a workspace-scoped channel".into(),
             ));
         };
-        let target_bytes = match params
-            .get()
-            .and_then(channel_handle::open_workspace_control_params::Reader::get_target_device)
-        {
+        let target_bytes = match params.get().and_then(|params| params.get_target_device()) {
             Ok(bytes) if bytes.len() == 32 => {
                 let mut target = [0_u8; 32];
                 target.copy_from_slice(bytes);
@@ -2207,6 +2370,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             channel_id: self.channel_id.clone(),
             peer_id: self.peer_id,
             verified_identity: self.verified_identity.clone(),
+            interaction_sequences: Mutex::new(HashMap::new()),
         };
         let client: presence_handle::Client = capnp_rpc::new_client(handle);
         results.get().set_handle(client);
@@ -2705,6 +2869,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
             };
             drop(registry);
+            state.record_effect_receipt(&pending, &update);
             state.record_completion(id, pending.actor.clone(), update);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -2861,6 +3026,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .remove(&id)
                     .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
                 drop(registry);
+                state.record_effect_receipt(&pending, &update);
                 state.record_completion(id, pending.actor.clone(), update);
                 if let Ok(mut requests) = state.cancellation_requests.lock() {
                     requests.remove(&id);
@@ -2981,7 +3147,8 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
         };
-        let peer_id = request.get_peer_id();
+        let requested_peer_id = request.get_peer_id();
+        let peer_id = invocation_target_peer(requested_peer_id, self.peer_id);
         let resource = match request.get_resource().and_then(|s| {
             s.to_str()
                 .map_err(|error| capnp::Error::failed(error.to_string()))
@@ -3482,10 +3649,9 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
         _params: workspace_control_handle::ReadParams,
         mut results: workspace_control_handle::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let this = self;
+        let this = self.clone();
         Promise::from_future(async move {
-            let initial = this.initial.lock().await.take();
-            if let Some(event) = initial {
+            if let Some(event) = this.initial.lock().await.take() {
                 let bytes = postcard::to_allocvec(&event)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?;
                 results.get().set_event(&bytes);
@@ -3507,7 +3673,6 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                 {
                     let mut session = this.session.lock().await;
                     let event = workspace_control_event(session.deny(error.to_string()));
-                    drop(session);
                     let bytes = postcard::to_allocvec(&event)
                         .map_err(|error| capnp::Error::failed(error.to_string()))?;
                     results.get().set_event(&bytes);
@@ -3566,10 +3731,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
         {
             return Promise::err(error);
         }
-        let bytes = match params
-            .get()
-            .and_then(workspace_control_handle::send_input_params::Reader::get_event)
-        {
+        let bytes = match params.get().and_then(|params| params.get_event()) {
             Ok(bytes) => bytes,
             Err(error) => return Promise::err(error),
         };
@@ -3577,7 +3739,7 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
             Ok(input) => input,
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
-        let this = self;
+        let this = self.clone();
         Promise::from_future(async move {
             let session = this.session.lock().await;
             let input = match input {
@@ -3608,12 +3770,9 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                     crate::network::InputEvent::KeyboardFocus { surface, focused }
                 }
             };
-            let result = this
-                .network
+            this.network
                 .publish_workspace_control_input(&session, &input)
-                .map_err(capnp::Error::failed);
-            drop(session);
-            result
+                .map_err(capnp::Error::failed)
         })
     }
 
@@ -3660,7 +3819,9 @@ fn handle_signed_op_send(
     };
     match validation {
         Ok(()) => {
+            let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
+                mls_vault = ch.mls_vault.clone();
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -3668,6 +3829,13 @@ fn handle_signed_op_send(
                 {
                     let _ = ch_state.apply_compaction(&cp);
                 }
+            }
+            if envelope.op_class == collab_types::OpClass::Compaction
+                && let Some(metadata) = envelope.encryption
+                && let Some(vault) = mls_vault
+                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
+            {
+                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
             }
             if envelope.op_class == collab_types::OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
@@ -3678,6 +3846,7 @@ fn handle_signed_op_send(
             let event = CollabEvent::Document {
                 envelope: Box::new(envelope),
                 from_user_id,
+                decrypted_payload: None,
             };
             if let Some(t) = state.fanout.upgrade() {
                 t.fanout_to_route(&event, peer_id, route);
@@ -3787,6 +3956,9 @@ struct CapnpPresenceHandle {
     channel_id: String,
     peer_id: u64,
     verified_identity: AdmittedJoinIdentity,
+    /// Broker-owned monotonic sequence per invocation. Publishers describe
+    /// phases and targets but cannot reorder or resurrect their visual state.
+    interaction_sequences: Mutex<HashMap<qos_actions::InvocationId, u64>>,
 }
 
 impl CapnpPresenceHandle {
@@ -3955,6 +4127,54 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 capnp::Error::failed("publishTyping: end overflows usize on this platform".into())
             })?;
             self.publish_keyed(&key_bytes, PresencePayload::Typing { start, end });
+            Ok(())
+        })
+    }
+
+    fn publish_interaction(
+        self: Rc<Self>,
+        params: presence_handle::PublishInteractionParams,
+        _results: presence_handle::PublishInteractionResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            let json = r.get_interaction_json()?.to_str().map_err(|error| {
+                capnp::Error::failed(format!("invalid interaction utf8: {error}"))
+            })?;
+            if json.len() > 64 * 1024 {
+                return Err(capnp::Error::failed(
+                    "interaction payload exceeds 64 KiB".into(),
+                ));
+            }
+            let mut update: qos_actions::SemanticInteraction = serde_json::from_str(json)
+                .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
+            let actor = self.verified_identity.broker_actor();
+            let normalized_actor = qos_actions::InteractionActor {
+                id: CapnpBrokerState::participant_id(&self.verified_identity),
+                kind: if actor.is_agent {
+                    qos_actions::InteractionActorKind::Agent
+                } else {
+                    qos_actions::InteractionActorKind::Person
+                },
+            };
+            let sequence = {
+                let mut sequences = self.interaction_sequences.lock().map_err(|_| {
+                    capnp::Error::failed("interaction sequence registry unavailable".into())
+                })?;
+                let current = sequences.entry(update.invocation).or_insert(0);
+                let next = current.saturating_add(1);
+                *current = next;
+                next
+            };
+            update = update.normalized_by_broker(normalized_actor, sequence);
+            update
+                .validate()
+                .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
+            self.publish_keyed(&key_bytes, PresencePayload::Interaction(Box::new(update)));
             Ok(())
         })
     }
@@ -4189,6 +4409,12 @@ impl presence_stream::Server for PresenceStreamServer {
                 PresencePayload::Following { target } => {
                     payload.set_following(target.as_deref().unwrap_or(""));
                 }
+                PresencePayload::Interaction(update) => {
+                    let json = serde_json::to_string(&update).map_err(|error| {
+                        capnp::Error::failed(format!("encode semantic interaction: {error}"))
+                    })?;
+                    payload.set_interaction_json(&json);
+                }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
             }
@@ -4299,10 +4525,6 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 /// (e.g. a stale socket file blocks it, permissions are wrong, or the
 /// parent directory does not exist) or if spawning the accept thread
 /// fails.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the broker thread receives each independently-owned service boundary explicitly"
-)]
 pub fn spawn(
     socket_path: PathBuf,
     fanout: &Arc<FanoutState>,
@@ -4310,7 +4532,7 @@ pub fn spawn(
     publisher: Arc<PeerPublisher>,
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    workspace_control_network: Option<&Arc<crate::shell::network::ShellNetwork>>,
+    workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
@@ -4322,7 +4544,7 @@ pub fn spawn(
         membership,
         trusted_devices,
     );
-    if let Some(network) = workspace_control_network {
+    if let Some(network) = workspace_control_network.as_ref() {
         state.attach_workspace_control_network(network);
     }
     fanout.attach_capnp(Arc::clone(&state));
@@ -4497,7 +4719,7 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
                 libc::MSG_PEEK | libc::MSG_DONTWAIT,
             )
         };
-        if read >= libc::ssize_t::try_from(marker.len()).unwrap_or(libc::ssize_t::MAX) {
+        if read >= marker.len() as libc::ssize_t {
             return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC);
         }
         if read == 0 {
@@ -4613,10 +4835,6 @@ async fn authenticate_launcher_handoff(
     ))
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc is Rc-based and this future runs only on the broker thread's LocalSet"
-)]
 async fn drive_connection(
     stream: tokio::net::UnixStream,
     state: Arc<CapnpBrokerState>,
@@ -4892,7 +5110,7 @@ mod tests {
             crate::shell::state::WorkspaceId(44),
             "Agent room",
         );
-        workspace.owner = Some(principal);
+        workspace.owner = Some(principal.clone());
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let agent_membership = workspace.grant_capability(CapOverride::membership(
             Subject::agent("scribe"),
@@ -4906,7 +5124,7 @@ mod tests {
             .expect("the owner is admitted before delegation");
         admit_agent_delegation(&tree, &route, &mut admitted, "scribe")
             .expect("the owner may operate an admitted agent");
-        assert_eq!(admitted.broker_actor().id, "scribe");
+        assert_eq!(admitted.broker_actor().id, "agent:scribe");
         assert!(admitted.broker_actor().is_agent);
         assert_eq!(admitted.role, CapRole::Commenter);
         assert!(
@@ -5023,6 +5241,13 @@ mod tests {
         admitted: &AdmittedJoinIdentity,
         op: &SignedOp,
     ) {
+        let artifact = op.artifact;
+        let accepted_before = broker_channels
+            .lock()
+            .expect("broker channels")
+            .state_for(artifact)
+            .scrollback_for(artifact, u64::MAX, 10)
+            .0;
         handle_signed_op_send(state, 1, route, admitted, op.clone());
         let mut forged = op.clone();
         forged.seq = 2;
@@ -5031,7 +5256,6 @@ mod tests {
             .expect("typed incremental");
         handle_signed_op_send(state, 1, route, admitted, forged);
 
-        let artifact = op.artifact;
         let audit = state
             .broker_channels
             .lock()
@@ -5056,8 +5280,8 @@ mod tests {
                 .state_for(artifact)
                 .scrollback_for(artifact, u64::MAX, 10)
                 .0,
-            vec![op.clone()],
-            "only the valid operation enters scrollback",
+            accepted_before,
+            "replay and forgery must not change the accepted scrollback",
         );
     }
 
@@ -5160,6 +5384,48 @@ mod tests {
         );
         assert_published_snapshot(&sink, &route);
 
+        let expected_channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let mut encrypted = SignedOp::new_unsigned_with_encryption(
+            b"opaque MLS application frame".to_vec(),
+            artifact,
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            2,
+            collab_types::EncryptionMetadata {
+                epoch: 7,
+                channel: expected_channel,
+            },
+        );
+        sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
+        assert!(matches!(
+            state
+                .authorize_certified_document(&route, &admitted, &encrypted)
+                .expect("broker authorizes signed clear metadata without decrypting"),
+            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
+                if channel == expected_channel
+        ));
+        handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
+        let delivered = received.try_recv().expect("opaque MLS fanout");
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("opaque envelope"),
+            encrypted,
+            "broker must relay ciphertext byte-for-byte"
+        );
+
+        let mut wrong_channel = encrypted.clone();
+        wrong_channel.encryption.as_mut().expect("metadata").channel =
+            collab_types::ChannelId::new();
+        sign_op(&mut wrong_channel, &device).expect("re-sign adversarial envelope");
+        assert!(
+            state
+                .authorize_certified_document(&route, &admitted, &wrong_channel)
+                .is_err(),
+            "validly signed ciphertext for another MLS channel must not be routed"
+        );
+
         assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);
 
         downgrade_member_to_viewer(&membership, &principal, &route.cluster_id);
@@ -5220,6 +5486,7 @@ mod tests {
             &CollabEvent::Document {
                 envelope: Box::new(envelope),
                 from_user_id: "peer@42".into(),
+                decrypted_payload: None,
             },
             1,
             &target,
@@ -5242,10 +5509,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the test covers the complete live invocation authorization lifecycle"
-    )]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(31),
@@ -5409,13 +5672,11 @@ mod tests {
             pending
                 .get_mut(&refresh.id)
                 .expect("refresh remains pending")
-                .cancellation_requested_at = now.checked_sub(std::time::Duration::from_secs(2));
+                .cancellation_requested_at = Some(now - std::time::Duration::from_secs(2));
             pending
                 .get_mut(&erased.id)
                 .expect("erase remains pending")
-                .last_activity = now
-                .checked_sub(std::time::Duration::from_secs(2))
-                .unwrap_or(now);
+                .last_activity = now - std::time::Duration::from_secs(2);
         }
         state.expire_stale_invocations_at(
             now,
@@ -5533,5 +5794,125 @@ mod tests {
                 .contains("new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
+    }
+
+    #[test]
+    fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(32),
+            "Agent effect room",
+        );
+        workspace.set_owner("owner");
+        let cluster_id = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let state = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(Arc::clone(&membership)),
+            None,
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let invocation = qos_actions::InvocationId::new();
+        let pending = PendingInvocation {
+            peer_id: 7,
+            tx,
+            update: qos_actions::InvocationUpdate::Accepted { invocation },
+            last_sequence: 0,
+            actor: "agent:Scribe".into(),
+            cancellable: false,
+            retryable_on_disconnect: false,
+            execution: qos_actions::ExecutionMode::Immediate,
+            result: qos_actions::ResultSpec::None,
+            operation_kind: qos_actions::OperationKind::Effect,
+            cluster_id,
+            context: qos_actions::ActionContext::for_resource(
+                "Publish",
+                "document:brief",
+                "document",
+                "Release brief",
+            )
+            .with_app("org.qos.Writer", "Writer")
+            .with_group("task:release", "Release", "task"),
+            last_activity: std::time::Instant::now(),
+            cancellation_requested_at: None,
+        };
+        let update = qos_actions::InvocationUpdate::Failed {
+            invocation,
+            error: qos_actions::ActionFailure {
+                code: "publish_denied".into(),
+                message: "authorization=secret-value".into(),
+                details: Some(serde_json::json!({"body": "private draft"})),
+                retryable: false,
+            },
+        };
+
+        state.record_effect_receipt(&pending, &update);
+        state.record_effect_receipt(&pending, &update);
+
+        let succeeded_invocation = qos_actions::InvocationId::new();
+        let mut succeeded_pending = pending;
+        succeeded_pending.update = qos_actions::InvocationUpdate::Accepted {
+            invocation: succeeded_invocation,
+        };
+        state.record_effect_receipt(
+            &succeeded_pending,
+            &qos_actions::InvocationUpdate::Succeeded {
+                invocation: succeeded_invocation,
+                output: qos_actions::ActionOutput {
+                    value: Some(serde_json::json!({"token": "output-secret"})),
+                    resources: vec!["files.entry:/private/export".into()],
+                },
+            },
+        );
+        let mut private_view = succeeded_pending;
+        private_view.operation_kind = qos_actions::OperationKind::View;
+        let view_invocation = qos_actions::InvocationId::new();
+        state.record_effect_receipt(
+            &private_view,
+            &qos_actions::InvocationUpdate::Succeeded {
+                invocation: view_invocation,
+                output: qos_actions::ActionOutput::default(),
+            },
+        );
+
+        let tree = membership.read();
+        let receipts = &tree.workspaces[0].effect_receipts;
+        assert_eq!(
+            receipts.len(),
+            2,
+            "invocation identity deduplicates retry delivery"
+        );
+        assert_eq!(receipts[0].actor, "agent:Scribe");
+        assert_eq!(
+            receipts[0]
+                .context
+                .group
+                .as_ref()
+                .map(|group| group.id.as_str()),
+            Some("task:release")
+        );
+        let durable = serde_json::to_string(receipts).expect("serialize receipts");
+        assert!(!durable.contains("secret-value"));
+        assert!(!durable.contains("private draft"));
+        assert!(!durable.contains("output-secret"));
+        assert!(!durable.contains("private/export"));
+        assert!(durable.contains("publish_denied"));
+        assert!(receipts.iter().any(|receipt| {
+            receipt.invocation == succeeded_invocation
+                && receipt.status == qos_actions::EffectReceiptStatus::Succeeded
+        }));
+    }
+
+    #[test]
+    fn current_connection_invocation_sentinel_cannot_target_another_app() {
+        assert_eq!(
+            invocation_target_peer(ui::collaboration::CURRENT_CONNECTION_PEER_ID, 41),
+            41
+        );
+        assert_eq!(invocation_target_peer(7, 41), 7);
     }
 }

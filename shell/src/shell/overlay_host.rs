@@ -557,6 +557,20 @@ enum ShortcutGuideFocus {
     Done,
 }
 
+/// Shell-owned overlays that contribute synthetic children to the host's
+/// accessibility node, in the exact order in which those children are
+/// published. Geometry and focus routing must use this same order: deriving
+/// their indices independently lets one visible modal shift another overlay's
+/// semantic path onto the wrong target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccessibleOverlay {
+    MemberSheet,
+    WorkspaceSettings,
+    RoomActivity,
+    QuickSettings,
+    ShortcutHelp,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -1485,6 +1499,34 @@ impl ShellOverlayHost {
             above_quick_settings,
             quick_settings_bounds,
         }
+    }
+
+    fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
+        let mut order = Vec::with_capacity(5);
+        if self.workspace_settings_overlay.member_sheet_is_open() {
+            order.push(AccessibleOverlay::MemberSheet);
+        }
+        let flags = self.overlay_flags();
+        if flags.ws_settings {
+            order.push(AccessibleOverlay::WorkspaceSettings);
+        }
+        if flags.room_activity {
+            order.push(AccessibleOverlay::RoomActivity);
+        }
+        if flags.quick_settings
+            && self.chrome.as_ref().is_some_and(|chrome| {
+                matches!(
+                    chrome.borrow().quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Root
+                )
+            })
+        {
+            order.push(AccessibleOverlay::QuickSettings);
+        }
+        if flags.shortcut_help {
+            order.push(AccessibleOverlay::ShortcutHelp);
+        }
+        order
     }
 
     /// Attach the session's live application action directory after the
@@ -8765,6 +8807,11 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            WorkspaceSettingsOutcome::ManageOwnership => {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.palette.set_query("ownership");
+                self.last_search_query = "\0workspace-ownership\0".to_string();
+            }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
                 if is_owner {
                     self.workspace_settings_overlay.open_revoke_sheet(cap_id);
@@ -10188,106 +10235,126 @@ impl Widget for ShellOverlayHost {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
-        if self.workspace_settings_overlay.member_sheet_is_open() {
-            root.children.push(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Workspace permission decision")
-                    .with_description(
-                        "Choose a clearly labelled permission option with Up or Down, press Enter to confirm, or Escape to cancel. Destructive changes require a separate explicit confirmation and offer workspace activity for review.",
-                    )
-                    .with_state(AccessState::new().modal(true)),
-            );
-        }
-        if self.overlay_flags().room_activity {
-            root.children
-                .push(self.room_activity.accessibility_snapshot());
-        }
-        if let Some(chrome) = self.chrome.as_ref() {
-            let state = chrome.borrow();
-            if state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Root
-                )
-            {
-                root.children
-                    .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
+        for overlay in self.accessible_overlay_order() {
+            match overlay {
+                AccessibleOverlay::MemberSheet => root.children.push(
+                    AccessNode::new(Role::Dialog)
+                        .with_name("Workspace permission decision")
+                        .with_description(
+                            "Choose a clearly labelled permission option with Up or Down, press Enter to confirm, or Escape to cancel. Destructive changes require a separate explicit confirmation and offer workspace activity for review.",
+                        )
+                        .with_state(AccessState::new().modal(true)),
+                ),
+                AccessibleOverlay::WorkspaceSettings => {
+                    let mut settings = AccessNode::new(Role::Dialog)
+                        .with_name("Workspace settings")
+                        .with_description(
+                            "Workspace identity, people, permissions, apps, files, and signed ownership governance.",
+                        )
+                        .with_state(AccessState::new().modal(true));
+                    if self.workspace_settings_overlay.ownership_action_rect().area() > 0.0 {
+                        settings.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_name("Manage workspace ownership")
+                                .with_description(
+                                    "Open the same signed ownership actions available to search and automation. Recipient acceptance immediately completes a pending transfer.",
+                                ),
+                        );
+                    }
+                    root.children.push(settings);
+                }
+                AccessibleOverlay::RoomActivity => root
+                    .children
+                    .push(self.room_activity.accessibility_snapshot()),
+                AccessibleOverlay::QuickSettings => {
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        root.children.push(
+                            self.qs_root
+                                .accessibility_snapshot(&chrome.borrow().quick_settings),
+                        );
+                    }
+                }
+                AccessibleOverlay::ShortcutHelp => {
+                    use settings_store::hardware::ShortcutAction;
+                    let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                    let chord = |action| {
+                        shortcuts
+                            .bindings
+                            .get(&action)
+                            .map(settings_store::hardware::KeyChord::display)
+                            .unwrap_or_else(|| "unassigned".to_string())
+                    };
+                    root.children.push(
+                        AccessNode::new(Role::Dialog)
+                            .with_name("Desktop keyboard and mouse guide")
+                            .with_description(format!(
+                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
+                                chord(ShortcutAction::FocusPreviousWindow),
+                                chord(ShortcutAction::FocusNextWindow),
+                                chord(ShortcutAction::PreviousTab),
+                                chord(ShortcutAction::NextTab),
+                                chord(ShortcutAction::PreviousStrip),
+                                chord(ShortcutAction::NextStrip),
+                                chord(ShortcutAction::ResizeNarrower),
+                                chord(ShortcutAction::ResizeWider),
+                            ))
+                            .with_state(AccessState::new().modal(true)),
+                    );
+                }
             }
-        }
-        if self.overlay_flags().shortcut_help {
-            use settings_store::hardware::ShortcutAction;
-            let shortcuts = settings_store::hardware::ShortcutConfig::load();
-            let chord = |action| {
-                shortcuts.bindings.get(&action).map_or_else(
-                    || "unassigned".to_string(),
-                    settings_store::hardware::KeyChord::display,
-                )
-            };
-            root.children.push(
-                AccessNode::new(Role::Dialog)
-                    .with_name("Desktop keyboard and mouse guide")
-                    .with_description(format!(
-                        "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
-                        chord(ShortcutAction::FocusPreviousWindow),
-                        chord(ShortcutAction::FocusNextWindow),
-                        chord(ShortcutAction::PreviousTab),
-                        chord(ShortcutAction::NextTab),
-                        chord(ShortcutAction::PreviousStrip),
-                        chord(ShortcutAction::NextStrip),
-                        chord(ShortcutAction::ResizeNarrower),
-                        chord(ShortcutAction::ResizeWider),
-                    ))
-                    .with_state(AccessState::new().modal(true)),
-            );
         }
         Some(root)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let room_activity_open = self.overlay_flags().room_activity;
-        if room_activity_open && path.first() == Some(&0) {
-            return self.room_activity.accessibility_rect_for_path(path);
+        let (&overlay_index, child_path) = path.split_first()?;
+        match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::RoomActivity => {
+                let mut local_path = Vec::with_capacity(path.len());
+                local_path.push(0);
+                local_path.extend_from_slice(child_path);
+                self.room_activity.accessibility_rect_for_path(&local_path)
+            }
+            AccessibleOverlay::QuickSettings => {
+                self.qs_root.accessibility_rect_for_path(child_path)
+            }
+            AccessibleOverlay::WorkspaceSettings => match child_path {
+                [] => Some(self.workspace_settings_overlay.rect()),
+                [0] => Some(self.workspace_settings_overlay.ownership_action_rect()),
+                _ => None,
+            },
+            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
         }
-        let quick_settings_index = usize::from(room_activity_open);
-        if path.first() != Some(&quick_settings_index) {
-            return None;
-        }
-        let child_path = path.get(1..)?;
-        let chrome = self.chrome.as_ref()?;
-        let state = chrome.borrow();
-        (state.overlays.quick_settings
-            && matches!(
-                state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
-            ))
-        .then(|| self.qs_root.accessibility_rect_for_path(child_path))
-        .flatten()
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        let room_activity_open = self.overlay_flags().room_activity;
-        if room_activity_open && path.first() == Some(&0) {
-            return self.room_activity.focus_accessibility_path(path);
-        }
-        let quick_settings_index = usize::from(room_activity_open);
-        if path.first() != Some(&quick_settings_index) {
-            return false;
-        }
-        let Some(child_path) = path.get(1..) else {
+        let Some((&overlay_index, child_path)) = path.split_first() else {
             return false;
         };
-        let Some(chrome) = self.chrome.as_ref() else {
+        let Some(overlay) = self.accessible_overlay_order().get(overlay_index).copied() else {
             return false;
         };
-        let state = chrome.borrow();
-        state.overlays.quick_settings
-            && matches!(
-                state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
-            )
-            && self
-                .qs_root
-                .focus_accessibility_path(child_path, &state.quick_settings)
+        match overlay {
+            AccessibleOverlay::RoomActivity => {
+                let mut local_path = Vec::with_capacity(path.len());
+                local_path.push(0);
+                local_path.extend_from_slice(child_path);
+                self.room_activity.focus_accessibility_path(&local_path)
+            }
+            AccessibleOverlay::QuickSettings => self.chrome.as_ref().is_some_and(|chrome| {
+                self.qs_root
+                    .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
+            }),
+            AccessibleOverlay::WorkspaceSettings => {
+                matches!(child_path, [0])
+                    && self
+                        .workspace_settings_overlay
+                        .ownership_action_rect()
+                        .area()
+                        > 0.0
+            }
+            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => false,
+        }
     }
 
     /// Expose content + palette + sidebar as direct children so trait
@@ -15655,8 +15722,18 @@ mod palette_dispatch_tests {
         });
         let names = draw_and_collect_peer_sync_buttons(&mut h);
         assert!(
+            names.contains(&"review") && names.contains(&"new-recipient"),
+            "the recipient face must offer review and a way to change who, got {names:?}"
+        );
+        h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        });
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(
             names.contains(&"create"),
-            "the face that asks who must offer a way to answer, got {names:?}"
+            "the reviewed invite face must offer its Create gesture, got {names:?}"
         );
         h.set_peer_sync_snapshot_for_tests(PeerSyncSnapshot {
             invite_token: Some(SAMPLE_TOKEN.to_string()),
@@ -17189,6 +17266,101 @@ mod tests {
         }
     }
 
+    #[test]
+    fn accessibility_overlay_paths_share_the_published_coexistence_order() {
+        let mut h = build_harness();
+        h.host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome.overlays.room_activity = true;
+            chrome.overlays.quick_settings = true;
+            chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+        }
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .iter()
+                .filter_map(|node| node.name.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                "Workspace permission decision",
+                "Workspace activity",
+                "Quick Settings"
+            ],
+            "the published child order is the address space used by geometry and focus"
+        );
+
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0]),
+            None,
+            "the prose-only member sheet owns child zero"
+        );
+        assert!(
+            h.host.synthetic_accessibility_rect(&[1]).is_some(),
+            "Room Activity moves to child one when the member sheet is visible"
+        );
+        assert!(
+            h.host.synthetic_accessibility_rect(&[2, 0]).is_some(),
+            "Quick Settings moves to child two when both earlier overlays are visible"
+        );
+    }
+
+    #[test]
+    fn accessibility_focus_routes_through_shifted_overlay_indices() {
+        let mut h = build_harness();
+        h.host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            let local_user = chrome.active_local_user();
+            if let Some(workspace) = chrome.tree_mut().active_workspace_mut() {
+                workspace.set_owner(local_user);
+            }
+            chrome.overlays.ws_settings = true;
+            chrome.ws_settings_tab = crate::shell::workspace_settings::WsTab::Members;
+            chrome.overlays.room_activity = true;
+            chrome.overlays.quick_settings = true;
+            chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+        }
+        h.host.force_ws_settings_settled();
+        h.host.force_room_activity_settled();
+        h.host.force_quick_settings_settled();
+        paint(&mut h);
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        assert_eq!(
+            semantics
+                .children
+                .get(1)
+                .and_then(|settings| settings.children.first())
+                .and_then(|ownership| ownership.name.as_deref()),
+            Some("Manage workspace ownership"),
+            "the visible ownership control is named in the accessibility tree"
+        );
+
+        assert!(
+            h.host.focus_synthetic_accessibility(&[1, 0]),
+            "Workspace Settings exposes its ownership action at the shifted path"
+        );
+        assert!(
+            h.host.focus_synthetic_accessibility(&[2, 0]),
+            "Room Activity's first control remains focusable at its shifted path"
+        );
+        assert!(
+            h.host.focus_synthetic_accessibility(&[3, 0]),
+            "Quick Settings' first control remains focusable after every earlier overlay"
+        );
+        assert!(
+            !h.host.focus_synthetic_accessibility(&[0, 0]),
+            "the member-sheet path must not leak through to a different overlay"
+        );
+    }
+
     /// Super+S calls the wheel to wherever the pointer is, so the
     /// workspace list is reachable from the right-hand end of a strip
     /// without scrolling all the way back to its left edge.
@@ -18441,9 +18613,13 @@ mod maximize_harvest_tests {
         };
         let ws = Workspace {
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -18625,9 +18801,13 @@ mod resync_strips_tests {
         };
         let ws = Workspace {
             owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
+            effect_receipts: Vec::new(),
             id: ws_id,
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
@@ -19155,7 +19335,7 @@ mod roster_rows {
     }
 
     #[test]
-    fn a_connected_agent_is_tagged_and_followable_like_a_collaborator() {
+    fn a_connected_headless_agent_is_tagged_without_a_fake_follow_target() {
         let mut tree = tree_with_room();
         {
             let ws = tree.active_workspace_mut().expect("fixture has a room");
@@ -19176,8 +19356,11 @@ mod roster_rows {
             "an agent listed without its tag is the OS reporting a person",
         );
         assert_eq!(rows[0].initial, 'S');
-        assert!(rows[0].followable);
-        assert_eq!(rows[0].activity.as_deref(), Some("Working now"));
+        assert!(
+            !rows[0].followable,
+            "a connected headless agent has no viewport to follow"
+        );
+        assert_eq!(rows[0].activity.as_deref(), Some("Connected"));
     }
 
     #[test]

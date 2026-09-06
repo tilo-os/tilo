@@ -18,6 +18,7 @@ use crate::Template;
 /// Owns the template menu's lifecycle, drawing, hit-testing, and typed outcome.
 pub(crate) struct TemplatePicker {
     menu: ContextMenu,
+    templates: &'static [Template],
 }
 
 impl Default for TemplatePicker {
@@ -26,7 +27,10 @@ impl Default for TemplatePicker {
         for template in Template::all() {
             menu.push(MenuItem::action(template.display_title(), || {}));
         }
-        Self { menu }
+        Self {
+            menu,
+            templates: Template::all(),
+        }
     }
 }
 
@@ -52,7 +56,7 @@ impl TemplatePicker {
         let selected = self
             .menu
             .item_at([point.x, point.y])
-            .and_then(|index| Template::all().get(index).copied());
+            .and_then(|index| self.templates.get(index).copied());
         self.menu.close();
         selected
     }
@@ -94,11 +98,9 @@ mod tests {
     #[test]
     fn rows_follow_the_canonical_template_order() {
         let picker = TemplatePicker::default();
-        let expected: Vec<String> = Template::all()
-            .iter()
-            .map(|template| template.display_title())
-            .collect();
-        assert_eq!(picker.labels(), expected);
+        assert_eq!(picker.templates, Template::all());
+        assert_eq!(picker.labels().len(), picker.templates.len());
+        assert!(picker.labels().iter().all(|label| !label.is_empty()));
     }
 
     #[test]

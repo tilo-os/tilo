@@ -203,22 +203,22 @@ fn xlsx_keeps_theme_backed_styles_and_declares_minimal_styles() {
         "xl/theme/theme1.xml".into(),
         br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Brand"><a:themeElements/></a:theme>"#.to_vec(),
     ));
-    let archive_entries: Vec<(&str, Vec<u8>)> = entries
+    let refs: Vec<(&str, Vec<u8>)> = entries
         .iter()
         .map(|(n, b)| (n.as_str(), b.clone()))
         .collect();
-    let wb = imp(&XlsxCodec, &zip_of(&archive_entries));
+    let wb = imp(&XlsxCodec, &zip_of(&refs));
     let out = XlsxCodec.export(&wb).unwrap();
     let mut exported = ZipArchive::new(Cursor::new(out)).unwrap();
     assert!(exported.by_name("xl/styles.xml").is_ok());
     assert!(exported.by_name("xl/theme/theme1.xml").is_ok());
-    let mut rels = String::new();
+    let mut relationships_xml = String::new();
     exported
         .by_name("xl/_rels/workbook.xml.rels")
         .unwrap()
-        .read_to_string(&mut rels)
+        .read_to_string(&mut relationships_xml)
         .unwrap();
-    assert!(rels.contains("relationships/theme"));
+    assert!(relationships_xml.contains("relationships/theme"));
     let mut types = String::new();
     exported
         .by_name("[Content_Types].xml")

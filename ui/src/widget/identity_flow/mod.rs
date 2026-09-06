@@ -11,6 +11,7 @@
 //! drive it directly without ever building a `TaffyTree`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -78,12 +79,12 @@ pub struct IdentitySecretReference {
 /// Wire view of a `ThresholdIdentity`. `ThresholdIdentity` withholds
 /// `Serialize` because the secret share carries invariants a derive
 /// can't enforce; this extracts just enough to reconstruct an
-/// equivalent identity. `secret_bytes` is the raw 32-byte Ed25519
-/// seed — treat this struct as secret material.
+/// equivalent identity. `secret_bytes` is either the raw bootstrap seed or a
+/// complete opaque FROST device package — treat this struct as secret material.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SerializableIdentity {
-    /// Always `true` here: only a single-device identity has a whole
-    /// secret to persist.
+    /// Distinguishes a dalek bootstrap seed from an opaque FROST device-share
+    /// envelope. Both are device-local secret material.
     pub single_device: bool,
     pub group_public_key: [u8; 32],
     /// `t` in t-of-n (`1` in single-device mode).
@@ -91,33 +92,29 @@ pub struct SerializableIdentity {
     /// `n` in t-of-n (`1` in single-device mode).
     pub total_shares: u16,
     pub share_index: u16,
-    /// The 32-byte Ed25519 seed `SigningKey::from_bytes` expands from;
-    /// anything else here signs for the wrong key.
+    /// A 32-byte Ed25519 seed in bootstrap mode, or the bounded versioned
+    /// opaque blob returned by `ThresholdIdentity::export_device_secret`.
     #[serde(default, with = "serde_bytes_codec")]
     pub secret_bytes: Vec<u8>,
 }
 
 impl SerializableIdentity {
-    /// Only valid in single-device mode: a threshold identity's secret
-    /// share is not a signing key. Threshold identities return
-    /// [`IdentityFlowError::ThresholdSerialiseUnimplemented`] and stay
-    /// live in-process instead.
-    ///
     /// # Errors
     ///
-    /// Returns [`IdentityFlowError::ThresholdSerialiseUnimplemented`] if
-    /// `id` has no single-device secret seed to extract.
+    /// Returns an engine error if a threshold device share cannot be exported.
     pub fn from_identity(id: &ThresholdIdentity) -> Result<Self, IdentityFlowError> {
-        let seed = id
-            .single_device_seed()
-            .ok_or(IdentityFlowError::ThresholdSerialiseUnimplemented)?;
+        let (single_device, secret_bytes) = if let Some(seed) = id.single_device_seed() {
+            (true, seed.to_vec())
+        } else {
+            (false, id.export_device_secret()?.to_vec())
+        };
         Ok(Self {
-            single_device: true,
+            single_device,
             group_public_key: *id.group_public_key().as_bytes(),
             threshold: id.threshold,
             total_shares: id.total_shares,
             share_index: id.this_share_index,
-            secret_bytes: seed.to_vec(),
+            secret_bytes,
         })
     }
 }
@@ -125,8 +122,8 @@ impl SerializableIdentity {
 impl IdentityRecord {
     /// # Errors
     ///
-    /// Returns [`IdentityFlowError::ThresholdSerialiseUnimplemented`] if
-    /// `identity` is not single-device.
+    /// Exports only an opaque, invariant-checked device-share envelope in
+    /// threshold mode; callers must immediately move it into a secret provider.
     pub fn from_threshold_identity(
         identity: &ThresholdIdentity,
         display_name: impl Into<String>,
@@ -175,21 +172,27 @@ impl IdentityRecord {
         Ed25519PublicKey::from_bytes(self.threshold_identity.group_public_key)
     }
 
-    /// Checks the derived public key against the record's stored one —
-    /// a mismatch is refused rather than silently loaded. Threshold-mode
-    /// records can't be revived (a single share isn't a signing key).
+    /// Checks the key material against every stored public invariant; a
+    /// mismatch is refused rather than silently loaded.
     ///
     /// # Errors
     ///
-    /// Returns [`IdentityFlowError::ThresholdSerialiseUnimplemented`] for
-    /// a threshold-mode record, [`IdentityFlowError::DecodeFailed`] if
+    /// Returns [`IdentityFlowError::DecodeFailed`] if
     /// the stored secret isn't 32 bytes, or
     /// [`IdentityFlowError::PublicKeyMismatch`] if the derived public key
     /// doesn't match the recorded one.
     pub fn into_threshold_identity(self) -> Result<ThresholdIdentity, IdentityFlowError> {
         let ti = self.threshold_identity;
         if !ti.single_device {
-            return Err(IdentityFlowError::ThresholdSerialiseUnimplemented);
+            let identity =
+                ThresholdIdentity::from_device_secret(&ti.secret_bytes, ti.total_shares)?;
+            if identity.group_public_key().as_bytes() != &ti.group_public_key
+                || identity.threshold != ti.threshold
+                || identity.this_share_index != ti.share_index
+            {
+                return Err(IdentityFlowError::PublicKeyMismatch);
+            }
+            return Ok(identity);
         }
         let seed: [u8; 32] = ti.secret_bytes.as_slice().try_into().map_err(|_| {
             IdentityFlowError::DecodeFailed(format!(
@@ -260,6 +263,13 @@ pub struct PairingPayload {
     pub initiator_pk: String,
     /// Postcard-encoded `EnrolmentRound1`, hex for ASCII-safe JSON.
     pub initiator_dkg_round1: String,
+    /// Independently reachable shell broker. Empty means pairing is honestly
+    /// unavailable outside an injected test transport.
+    #[serde(default)]
+    pub broker_endpoint: String,
+    /// DER certificate pinned exactly for this short-lived ceremony.
+    #[serde(default)]
+    pub broker_certificate: String,
 }
 
 impl PairingPayload {
@@ -279,7 +289,51 @@ impl PairingPayload {
             channel: hex::encode(nonce),
             initiator_pk: hex::encode(initiator_pk.as_bytes()),
             initiator_dkg_round1: hex::encode(round1_bytes),
+            broker_endpoint: String::new(),
+            broker_certificate: String::new(),
         })
+    }
+
+    /// Bind a validated reachable socket address and bounded exact DER pin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid endpoint or empty/oversized certificate.
+    pub fn set_broker(
+        &mut self,
+        endpoint: impl Into<String>,
+        certificate_der: &[u8],
+    ) -> Result<(), IdentityFlowError> {
+        let endpoint = endpoint.into();
+        endpoint.parse::<std::net::SocketAddr>().map_err(|error| {
+            IdentityFlowError::DecodeFailed(format!("pairing broker endpoint: {error}"))
+        })?;
+        if certificate_der.is_empty() || certificate_der.len() > 64 * 1024 {
+            return Err(IdentityFlowError::DecodeFailed(
+                "pairing broker certificate is empty or too large".into(),
+            ));
+        }
+        self.broker_endpoint = endpoint;
+        self.broker_certificate = hex::encode(certificate_der);
+        Ok(())
+    }
+
+    /// Build a client that requires the exact broker certificate carried by
+    /// this payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint or certificate encoding is invalid,
+    /// absent, or oversized.
+    pub fn remote_broker(&self) -> Result<PairingHandshake, IdentityFlowError> {
+        let certificate = hex::decode(&self.broker_certificate)
+            .map_err(|e| IdentityFlowError::DecodeFailed(format!("broker certificate: {e}")))?;
+        if self.broker_endpoint.is_empty() || certificate.is_empty() {
+            return Err(IdentityFlowError::DecodeFailed(
+                "pairing broker unavailable".into(),
+            ));
+        }
+        PairingHandshake::remote(self.broker_endpoint.clone(), certificate)
     }
 
     /// # Errors
@@ -295,6 +349,11 @@ impl PairingPayload {
     /// JSON for this type, or if the decoded payload's type tag isn't
     /// `"qos-pairing"`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, IdentityFlowError> {
+        if bytes.len() > 256 * 1024 {
+            return Err(IdentityFlowError::DecodeFailed(
+                "pairing payload exceeds 256 KiB".into(),
+            ));
+        }
         let p: Self = serde_json::from_slice(bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(e.to_string()))?;
         if p.ty != "qos-pairing" {
@@ -302,6 +361,17 @@ impl PairingPayload {
                 "unexpected type tag: {}",
                 p.ty
             )));
+        }
+        p.nonce()?;
+        p.initiator_public_key()?;
+        p.initiator_round1()?;
+        if p.broker_endpoint.is_empty() != p.broker_certificate.is_empty() {
+            return Err(IdentityFlowError::DecodeFailed(
+                "pairing broker endpoint and certificate must appear together".into(),
+            ));
+        }
+        if !p.broker_endpoint.is_empty() {
+            let _ = p.remote_broker()?;
         }
         Ok(p)
     }
@@ -393,7 +463,7 @@ type HmacSha512 = Hmac<Sha512>;
     reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
 )]
 pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
-    let mut mac = HmacSha512::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac = <HmacSha512 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
     let bytes = mac.finalize().into_bytes();
     let mut out = [0u8; 64];
@@ -413,26 +483,128 @@ pub fn compute_pairing_mac(key: &[u8; 32], payload: &[u8]) -> [u8; 64] {
     reason = "HMAC accepts any key length; new_from_slice cannot fail for SHA-512"
 )]
 pub fn verify_pairing_mac(key: &[u8; 32], payload: &[u8], tag: &[u8; 64]) -> bool {
-    let mut mac = HmacSha512::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac = <HmacSha512 as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(payload);
     mac.verify_slice(tag).is_ok()
 }
 
-/// In-memory stand-in for the broker-mediated pairing channel, so
-/// tests and the example bin exercise the full ceremony without
-/// standing up Iroh. Production replaces this with the real broker
-/// shim in `shell/src/shell/identity_provisioning.rs`.
-#[derive(Default, Clone)]
-pub struct PairingHandshake {
-    inner: Arc<Mutex<HashMap<String, PairingChannelState>>>,
+/// Authenticate a DKG round against the complete pairing transcript.
+///
+/// # Errors
+///
+/// Returns an error if the payload nonce is invalid or the transcript cannot
+/// be encoded.
+pub fn pairing_transcript_mac(
+    payload: &PairingPayload,
+    direction: &str,
+    pairer_round1: &EnrolmentRound1,
+    round2: &EnrolmentRound2,
+) -> Result<[u8; 64], IdentityFlowError> {
+    #[derive(Serialize)]
+    struct Transcript<'a> {
+        domain: &'static str,
+        direction: &'a str,
+        channel: &'a str,
+        initiator_pk: &'a str,
+        initiator_round1: &'a str,
+        broker_endpoint: &'a str,
+        broker_certificate: &'a str,
+        pairer_round1: &'a EnrolmentRound1,
+        round2: &'a EnrolmentRound2,
+    }
+    let bytes = postcard::to_allocvec(&Transcript {
+        domain: "qos-pairing-transcript-v1",
+        direction,
+        channel: &payload.channel,
+        initiator_pk: &payload.initiator_pk,
+        initiator_round1: &payload.initiator_dkg_round1,
+        broker_endpoint: &payload.broker_endpoint,
+        broker_certificate: &payload.broker_certificate,
+        pairer_round1,
+        round2,
+    })
+    .map_err(|error| IdentityFlowError::EncodeFailed(error.to_string()))?;
+    Ok(compute_pairing_mac(
+        &derive_pairing_mac_key(&payload.nonce()?),
+        &bytes,
+    ))
 }
 
-#[derive(Default, Debug)]
+/// Bounded protocol mailbox used behind the shell's pairing-broker authority.
+/// Tests run it directly; production transport code must authenticate and
+/// expire the session before forwarding frames into this mailbox.
+#[derive(Clone)]
+pub struct PairingHandshake {
+    backend: PairingBackend,
+}
+
+#[derive(Clone)]
+enum PairingBackend {
+    Memory(Arc<Mutex<HashMap<String, PairingChannelState>>>),
+    /// A private broker spool. Each frame is published with `create_new` and
+    /// consumed by an atomic rename, so independent processes never observe
+    /// the same DKG packet twice. The shell owns this directory.
+    Durable(Arc<DurablePairingBackend>),
+    Remote {
+        endpoint: Arc<str>,
+        certificate: Arc<[u8]>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum PairingBrokerRequest {
+    PutPairerRound1([u8; 16], EnrolmentRound1),
+    PutPairerRound2([u8; 16], EnrolmentRound2, PairingMac),
+    TakePairerExchange([u8; 16]),
+    PutHostRound2([u8; 16], EnrolmentRound2, PairingMac),
+    TakeHostRound2([u8; 16]),
+    RedeemInvite(Vec<u8>),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum PairingBrokerResponse {
+    Ok,
+    PairerExchange(Option<(EnrolmentRound1, EnrolmentRound2, PairingMac)>),
+    HostRound2(Option<(EnrolmentRound2, PairingMac)>),
+    InviteSecret(Option<Vec<u8>>),
+    Denied,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PairingMac(#[serde(with = "serde_bytes_codec")] Vec<u8>);
+
+impl PairingMac {
+    pub fn from_bytes(value: [u8; 64]) -> Self {
+        Self(value.to_vec())
+    }
+    pub fn into_bytes(self) -> Option<[u8; 64]> {
+        self.0.as_slice().try_into().ok()
+    }
+}
+
+#[derive(Debug)]
+struct DurablePairingBackend {
+    root: PathBuf,
+    expires_unix: u64,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
 struct PairingChannelState {
+    /// Pairer's DKG round-1 broadcast. Host must consume this before round 2;
+    /// synthesizing an empty commitment creates no valid FROST ceremony.
+    pairer_round1: Option<EnrolmentRound1>,
     /// Host polls this.
-    reply: Option<(EnrolmentRound2, [u8; 64])>,
+    reply: Option<(EnrolmentRound2, PairingMac)>,
     /// Pairer polls this for the host's round-2 contribution.
-    host_round2: Option<(EnrolmentRound2, [u8; 64])>,
+    host_round2: Option<(EnrolmentRound2, PairingMac)>,
+}
+
+impl Default for PairingHandshake {
+    fn default() -> Self {
+        Self {
+            backend: PairingBackend::Memory(Arc::new(Mutex::new(HashMap::new()))),
+        }
+    }
 }
 
 impl PairingHandshake {
@@ -440,44 +612,561 @@ impl PairingHandshake {
         Self::default()
     }
 
+    pub fn is_accepting(&self) -> bool {
+        match &self.backend {
+            PairingBackend::Memory(_) => true,
+            PairingBackend::Durable(backend) => {
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(u64::MAX, |duration| duration.as_secs());
+                now < backend.expires_unix && !backend.root.join("cancelled").exists()
+            }
+            PairingBackend::Remote { .. } => false,
+        }
+    }
+
+    /// Create an exact-certificate-pinned remote broker client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid socket address or empty/oversized pin.
+    pub fn remote(
+        endpoint: impl Into<String>,
+        certificate: Vec<u8>,
+    ) -> Result<Self, IdentityFlowError> {
+        let endpoint = endpoint.into();
+        endpoint.parse::<std::net::SocketAddr>().map_err(|error| {
+            IdentityFlowError::DecodeFailed(format!("pairing broker endpoint: {error}"))
+        })?;
+        if certificate.is_empty() || certificate.len() > 64 * 1024 {
+            return Err(IdentityFlowError::DecodeFailed(
+                "pairing broker certificate is empty or too large".into(),
+            ));
+        }
+        Ok(Self {
+            backend: PairingBackend::Remote {
+                endpoint: Arc::from(endpoint),
+                certificate: Arc::from(certificate),
+            },
+        })
+    }
+
+    pub fn remote_call(
+        endpoint: &str,
+        certificate: &[u8],
+        request: &PairingBrokerRequest,
+    ) -> Option<PairingBrokerResponse> {
+        use std::io::{Read, Write};
+        let bytes = postcard::to_allocvec(request).ok()?;
+        if bytes.len() > 256 * 1024 {
+            return None;
+        }
+        let tcp =
+            std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, Duration::from_secs(2))
+                .ok()?;
+        tcp.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        tcp.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
+        if certificate.is_empty() || certificate.len() > 64 * 1024 {
+            return None;
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_safe_default_protocol_versions()
+            .ok()?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(ExactCertificateVerifier {
+                expected: Arc::from(certificate),
+                provider,
+            }))
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("qos-pairing.invalid").ok()?;
+        let connection = rustls::ClientConnection::new(Arc::new(config), name).ok()?;
+        let mut stream = rustls::StreamOwned::new(connection, tcp);
+        let frame_len = u32::try_from(bytes.len()).ok()?;
+        stream.write_all(&frame_len.to_be_bytes()).ok()?;
+        stream.write_all(&bytes).ok()?;
+        let mut len = [0; 4];
+        stream.read_exact(&mut len).ok()?;
+        let len = u32::from_be_bytes(len) as usize;
+        if len > 256 * 1024 {
+            return None;
+        }
+        let mut response = vec![0; len];
+        stream.read_exact(&mut response).ok()?;
+        postcard::from_bytes(&response).ok()
+    }
+
+    /// Open a restart-safe broker spool owned by the shell/runtime. `root`
+    /// must already be a private directory; this constructor creates it as
+    /// `0700` when absent and rejects symlinks or permissive directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the spool cannot be created securely or its durable
+    /// expiry metadata is invalid or cannot be persisted.
+    pub fn durable(
+        root: impl Into<PathBuf>,
+        expires_at: SystemTime,
+    ) -> Result<Self, IdentityFlowError> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = root.into();
+        std::fs::create_dir_all(&root)?;
+        let metadata = std::fs::symlink_metadata(&root)?;
+        if !metadata.file_type().is_dir() {
+            return Err(IdentityFlowError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "pairing broker spool must be a real directory",
+            )));
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        let requested_expiry = expires_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let expiry_path = root.join("expires-unix");
+        let expires_unix = match std::fs::read_to_string(&expiry_path) {
+            Ok(value) => value.trim().parse::<u64>().map_err(|_| {
+                IdentityFlowError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "pairing broker expiry is corrupt",
+                ))
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&expiry_path)?;
+                writeln!(file, "{requested_expiry}")?;
+                file.sync_all()?;
+                requested_expiry
+            }
+            Err(error) => return Err(IdentityFlowError::Io(error)),
+        };
+        Ok(Self {
+            backend: PairingBackend::Durable(Arc::new(DurablePairingBackend {
+                root,
+                expires_unix,
+            })),
+        })
+    }
+
+    fn durable_path(backend: &DurablePairingBackend, nonce: &[u8; 16]) -> PathBuf {
+        backend
+            .root
+            .join(format!("{}.postcard", hex::encode(nonce)))
+    }
+
+    fn durable_read(
+        backend: &DurablePairingBackend,
+        nonce: &[u8; 16],
+    ) -> Option<PairingChannelState> {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(u64::MAX, |duration| duration.as_secs());
+        if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
+            return None;
+        }
+        let bytes = std::fs::read(Self::durable_path(backend, nonce)).ok()?;
+        if bytes.len() > 256 * 1024 {
+            return None;
+        }
+        postcard::from_bytes(&bytes).ok()
+    }
+
+    fn durable_update(
+        backend: &DurablePairingBackend,
+        nonce: &[u8; 16],
+        update: impl FnOnce(&mut PairingChannelState),
+    ) -> bool {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(u64::MAX, |duration| duration.as_secs());
+        if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
+            return false;
+        }
+        // The lock file is acquired with create_new, which works across
+        // processes. Contention is bounded; callers already poll the broker.
+        let lock = backend.root.join(format!("{}.lock", hex::encode(nonce)));
+        let mut lock_file = None;
+        for _ in 0..64 {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&lock)
+            {
+                Ok(file) => {
+                    lock_file = Some(file);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    std::thread::yield_now();
+                }
+                Err(_) => return false,
+            }
+        }
+        let Some(_lock_file) = lock_file else {
+            return false;
+        };
+        let path = Self::durable_path(backend, nonce);
+        let mut state = Self::durable_read(backend, nonce).unwrap_or_default();
+        update(&mut state);
+        let Ok(bytes) = postcard::to_allocvec(&state) else {
+            let _ = std::fs::remove_file(&lock);
+            return false;
+        };
+        let tmp = backend.root.join(format!(
+            ".{}.{}.tmp",
+            hex::encode(nonce),
+            std::process::id()
+        ));
+        let written = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .and_then(|mut file| {
+                file.write_all(&bytes)?;
+                file.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&tmp, &path))
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .open(&backend.root)?
+                    .sync_all()
+            })
+            .is_ok();
+        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(&lock);
+        written
+    }
+
+    /// Permanently cancel this durable ceremony. Memory test channels simply
+    /// discard all pending frames.
+    pub fn cancel(&self) {
+        match &self.backend {
+            PairingBackend::Memory(inner) => inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear(),
+            PairingBackend::Durable(backend) => {
+                use std::os::unix::fs::OpenOptionsExt;
+                if let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(backend.root.join("cancelled"))
+                {
+                    let _ = file.sync_all();
+                    let _ = std::fs::OpenOptions::new()
+                        .read(true)
+                        .open(&backend.root)
+                        .and_then(|directory| directory.sync_all());
+                }
+            }
+            PairingBackend::Remote { .. } => {}
+        }
+    }
+
+    pub fn publish_pairer_round1(&self, nonce: &[u8; 16], round1: EnrolmentRound1) {
+        let key = hex::encode(nonce);
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                let mut guard = inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.entry(key).or_default().pairer_round1 = Some(round1);
+            }
+            PairingBackend::Durable(backend) => {
+                let _ = Self::durable_update(backend, nonce, |state| {
+                    if state.pairer_round1.is_none() {
+                        state.pairer_round1 = Some(round1);
+                    }
+                });
+            }
+            PairingBackend::Remote {
+                endpoint,
+                certificate,
+            } => {
+                let _ = Self::remote_call(
+                    endpoint,
+                    certificate,
+                    &PairingBrokerRequest::PutPairerRound1(*nonce, round1),
+                );
+            }
+        }
+    }
+
+    pub fn take_pairer_round1(&self, nonce: &[u8; 16]) -> Option<EnrolmentRound1> {
+        let key = hex::encode(nonce);
+        match &self.backend {
+            PairingBackend::Memory(inner) => inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_mut(&key)?
+                .pairer_round1
+                .take(),
+            PairingBackend::Durable(backend) => {
+                let mut out = None;
+                Self::durable_update(backend, nonce, |state| out = state.pairer_round1.take())
+                    .then_some(())?;
+                out
+            }
+            PairingBackend::Remote { .. } => None,
+        }
+    }
+
     pub fn publish_pairer_reply(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
         // Recover rather than panic on a poisoned lock: a panic here
         // would abort the whole process in a release build.
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.entry(key).or_default().reply = Some((reply, mac));
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(key)
+                    .or_default()
+                    .reply = Some((reply, PairingMac::from_bytes(mac)));
+            }
+            PairingBackend::Durable(backend) => {
+                let _ = Self::durable_update(backend, nonce, |state| {
+                    if state.reply.is_none() {
+                        state.reply = Some((reply, PairingMac::from_bytes(mac)));
+                    }
+                });
+            }
+            PairingBackend::Remote {
+                endpoint,
+                certificate,
+            } => {
+                let _ = Self::remote_call(
+                    endpoint,
+                    certificate,
+                    &PairingBrokerRequest::PutPairerRound2(
+                        *nonce,
+                        reply,
+                        PairingMac::from_bytes(mac),
+                    ),
+                );
+            }
+        }
     }
 
     pub fn take_pairer_reply(&self, nonce: &[u8; 16]) -> Option<(EnrolmentRound2, [u8; 64])> {
         let key = hex::encode(nonce);
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(&key)?
-            .reply
-            .take()
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                let (reply, mac) = inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(&key)?
+                    .reply
+                    .take()?;
+                Some((reply, mac.into_bytes()?))
+            }
+            PairingBackend::Durable(backend) => {
+                let mut out = None;
+                Self::durable_update(backend, nonce, |state| out = state.reply.take())
+                    .then_some(())?;
+                out.and_then(|(reply, mac)| Some((reply, mac.into_bytes()?)))
+            }
+            PairingBackend::Remote { .. } => None,
+        }
+    }
+
+    /// Atomically take the pairer's complete DKG exchange. Polling before
+    /// round 2 arrives leaves round 1 in place instead of losing it.
+    pub fn take_pairer_exchange(
+        &self,
+        nonce: &[u8; 16],
+    ) -> Option<(EnrolmentRound1, EnrolmentRound2, [u8; 64])> {
+        let key = hex::encode(nonce);
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                let (round1, round2, mac) = {
+                    let mut guard = inner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let state = guard.get_mut(&key)?;
+                    if state.pairer_round1.is_none() || state.reply.is_none() {
+                        return None;
+                    }
+                    let round1 = state.pairer_round1.take()?;
+                    let (round2, mac) = state.reply.take()?;
+                    drop(guard);
+                    (round1, round2, mac)
+                };
+                Some((round1, round2, mac.into_bytes()?))
+            }
+            PairingBackend::Durable(backend) => {
+                let mut out = None;
+                Self::durable_update(backend, nonce, |state| {
+                    if state.pairer_round1.is_some() && state.reply.is_some() {
+                        let round1 = state.pairer_round1.take();
+                        let reply = state.reply.take();
+                        if let (Some(round1), Some((round2, mac))) = (round1, reply) {
+                            out = Some((round1, round2, mac));
+                        }
+                    }
+                })
+                .then_some(())?;
+                out.and_then(|(round1, round2, mac)| Some((round1, round2, mac.into_bytes()?)))
+            }
+            PairingBackend::Remote {
+                endpoint,
+                certificate,
+            } => match Self::remote_call(
+                endpoint,
+                certificate,
+                &PairingBrokerRequest::TakePairerExchange(*nonce),
+            )? {
+                PairingBrokerResponse::PairerExchange(value) => value
+                    .and_then(|(round1, round2, mac)| Some((round1, round2, mac.into_bytes()?))),
+                _ => None,
+            },
+        }
     }
 
     pub fn publish_host_round2(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
         let key = hex::encode(nonce);
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.entry(key).or_default().host_round2 = Some((reply, mac));
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(key)
+                    .or_default()
+                    .host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+            }
+            PairingBackend::Durable(backend) => {
+                let _ = Self::durable_update(backend, nonce, |state| {
+                    if state.host_round2.is_none() {
+                        state.host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+                    }
+                });
+            }
+            PairingBackend::Remote {
+                endpoint,
+                certificate,
+            } => {
+                let _ = Self::remote_call(
+                    endpoint,
+                    certificate,
+                    &PairingBrokerRequest::PutHostRound2(
+                        *nonce,
+                        reply,
+                        PairingMac::from_bytes(mac),
+                    ),
+                );
+            }
+        }
     }
 
     pub fn take_host_round2(&self, nonce: &[u8; 16]) -> Option<(EnrolmentRound2, [u8; 64])> {
         let key = hex::encode(nonce);
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_mut(&key)?
-            .host_round2
-            .take()
+        match &self.backend {
+            PairingBackend::Memory(inner) => {
+                let (reply, mac) = inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(&key)?
+                    .host_round2
+                    .take()?;
+                Some((reply, mac.into_bytes()?))
+            }
+            PairingBackend::Durable(backend) => {
+                let mut out = None;
+                Self::durable_update(backend, nonce, |state| out = state.host_round2.take())
+                    .then_some(())?;
+                out.and_then(|(reply, mac)| Some((reply, mac.into_bytes()?)))
+            }
+            PairingBackend::Remote {
+                endpoint,
+                certificate,
+            } => {
+                match Self::remote_call(
+                    endpoint,
+                    certificate,
+                    &PairingBrokerRequest::TakeHostRound2(*nonce),
+                )? {
+                    PairingBrokerResponse::HostRound2(value) => {
+                        value.and_then(|(reply, mac)| Some((reply, mac.into_bytes()?)))
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
+/// The QR/invite carries the exact DER certificate, not a CA. Treating that
+/// certificate as a root would also trust a child certificate it signs; exact
+/// comparison keeps the pin's meaning narrow while the provider still checks
+/// the handshake signature against the pinned certificate's public key.
+#[derive(Debug)]
+struct ExactCertificateVerifier {
+    expected: Arc<[u8]>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for ExactCertificateVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if intermediates.is_empty() && end_entity.as_ref() == self.expected.as_ref() {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "pairing broker certificate does not match the signed pin".into(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -519,10 +1208,8 @@ impl InviteExpiry {
 
 /// Channel-invite envelope encoded into a `qos://invite/<base32>` URL.
 ///
-/// `delegation_secret` is a one-time Ed25519 secret shipped in
-/// cleartext — safe only because invites travel over channels already
-/// treated as confidential. A future version should encrypt it to the
-/// recipient's pubkey for less-trusted transports.
+/// Bearer invite containing only an opaque redemption capability and sealed
+/// delegation material. Raw Ed25519 secret bytes never appear in a URL.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct InviteEnvelope {
     pub channel: ChannelId,
@@ -534,11 +1221,14 @@ pub struct InviteEnvelope {
     /// `u64::MAX` means no practical expiry.
     pub expires_unix: u64,
     pub delegation_pubkey: Ed25519PublicKey,
-    /// Secret — must not be displayed (see struct doc).
+    /// Random one-use bearer capability. The redemption authority consumes
+    /// its digest before releasing the sealed delegation operation.
     #[serde(with = "serde_bytes_codec")]
-    pub delegation_secret: Vec<u8>,
-    /// Excludes `delegation_secret`; signing `delegation_pubkey` alone
-    /// is enough to bind the delegation.
+    pub redemption_capability: Vec<u8>,
+    #[serde(default)]
+    pub redemption_endpoint: String,
+    #[serde(default, with = "serde_bytes_codec")]
+    pub redemption_certificate: Vec<u8>,
     pub owner_signature: Signature,
 }
 
@@ -557,6 +1247,9 @@ impl InviteEnvelope {
             role: &'a Role,
             expires_unix: u64,
             delegation_pubkey: &'a Ed25519PublicKey,
+            redemption_capability: &'a [u8],
+            redemption_endpoint: &'a str,
+            redemption_certificate: &'a [u8],
         }
         let view = View {
             channel: &self.channel,
@@ -566,6 +1259,9 @@ impl InviteEnvelope {
             role: &self.role,
             expires_unix: self.expires_unix,
             delegation_pubkey: &self.delegation_pubkey,
+            redemption_capability: &self.redemption_capability,
+            redemption_endpoint: &self.redemption_endpoint,
+            redemption_certificate: &self.redemption_certificate,
         };
         postcard::to_allocvec(&view).map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))
     }
@@ -609,11 +1305,437 @@ impl InviteEnvelope {
         let suffix = url.strip_prefix(prefix).ok_or_else(|| {
             IdentityFlowError::DecodeFailed("missing qos://invite/ prefix".into())
         })?;
+        if suffix.len() > 16 * 1024 {
+            return Err(IdentityFlowError::DecodeFailed(
+                "invite capability exceeds 16 KiB".into(),
+            ));
+        }
         let bytes = base32::decode(base32::Alphabet::Rfc4648 { padding: false }, suffix)
             .ok_or_else(|| IdentityFlowError::DecodeFailed("base32 decode failed".into()))?;
-        postcard::from_bytes(&bytes)
-            .map_err(|e| IdentityFlowError::DecodeFailed(format!("postcard: {e}")))
+        let envelope: Self = postcard::from_bytes(&bytes)
+            .map_err(|e| IdentityFlowError::DecodeFailed(format!("postcard: {e}")))?;
+        if envelope.redemption_capability.len() != 32
+            || envelope.redemption_certificate.len() > 64 * 1024
+            || envelope.redemption_endpoint.is_empty() != envelope.redemption_certificate.is_empty()
+        {
+            return Err(IdentityFlowError::DecodeFailed(
+                "invite redemption locator is malformed".into(),
+            ));
+        }
+        if !envelope.redemption_endpoint.is_empty() {
+            envelope
+                .redemption_endpoint
+                .parse::<std::net::SocketAddr>()
+                .map_err(|error| {
+                    IdentityFlowError::DecodeFailed(format!("invite broker endpoint: {error}"))
+                })?;
+        }
+        #[cfg(not(test))]
+        if envelope.redemption_endpoint.is_empty() {
+            return Err(IdentityFlowError::DecodeFailed(
+                "invite redemption broker is missing".into(),
+            ));
+        }
+        Ok(envelope)
     }
+}
+
+pub struct InviteRedemptionAuthority {
+    root: PathBuf,
+}
+
+#[derive(Clone)]
+struct InviteBrokerLocator {
+    endpoint: String,
+    certificate: Vec<u8>,
+    authority_root: PathBuf,
+}
+
+static INVITE_BROKER_LOCATOR: std::sync::OnceLock<InviteBrokerLocator> = std::sync::OnceLock::new();
+
+/// Install the shell's long-lived redemption endpoint and private authority
+/// location before any invite UI is shown.
+///
+/// # Errors
+///
+/// Returns an error for invalid endpoint/certificate data, unsafe authority
+/// storage, or an attempt to replace an already configured trust boundary.
+pub fn configure_invite_broker(
+    endpoint: impl Into<String>,
+    certificate: Vec<u8>,
+    authority_root: impl Into<PathBuf>,
+) -> Result<(), IdentityFlowError> {
+    let endpoint = endpoint.into();
+    endpoint.parse::<std::net::SocketAddr>().map_err(|error| {
+        IdentityFlowError::DecodeFailed(format!("invite broker endpoint: {error}"))
+    })?;
+    if certificate.is_empty() || certificate.len() > 64 * 1024 {
+        return Err(IdentityFlowError::DecodeFailed(
+            "invite broker certificate is empty or too large".into(),
+        ));
+    }
+    let authority_root = authority_root.into();
+    InviteRedemptionAuthority::at(&authority_root)?;
+    INVITE_BROKER_LOCATOR
+        .set(InviteBrokerLocator {
+            endpoint,
+            certificate,
+            authority_root,
+        })
+        .map_err(|_| IdentityFlowError::DecodeFailed("invite broker is already configured".into()))
+}
+
+impl InviteRedemptionAuthority {
+    /// Open the authority explicitly configured by the trusted shell.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no production authority is configured or its
+    /// private directory cannot be opened safely.
+    pub fn open() -> Result<Self, IdentityFlowError> {
+        if let Some(locator) = INVITE_BROKER_LOCATOR.get() {
+            return Self::at(&locator.authority_root);
+        }
+        #[cfg(test)]
+        {
+            let base = std::env::var_os("QOS_IDENTITY_ROOT").map_or_else(
+                || std::env::temp_dir().join(format!("qos-ui-test-{}", std::process::id())),
+                PathBuf::from,
+            );
+            Self::at(base.join("invite-redemption-authority"))
+        }
+        #[cfg(not(test))]
+        Err(IdentityFlowError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "invite redemption authority is not configured by the shell",
+        )))
+    }
+
+    /// Open an isolated authority rooted at `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the root cannot be created as a private,
+    /// user-owned real directory.
+    pub fn at(root: impl Into<PathBuf>) -> Result<Self, IdentityFlowError> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = root.into();
+        std::fs::create_dir_all(&root)?;
+        let metadata = std::fs::symlink_metadata(&root)?;
+        if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(IdentityFlowError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "invite authority must be a user-owned real directory",
+            )));
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        Ok(Self { root })
+    }
+
+    fn path(&self, capability: &[u8; 32]) -> PathBuf {
+        self.root.join(hex::encode(Sha512::digest(capability)))
+    }
+
+    fn issue_lock(&self) -> Result<std::fs::File, IdentityFlowError> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(self.root.join("issue.lock"))?;
+        for _ in 0..250 {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+            }
+        }
+        Err(IdentityFlowError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "invite authority is busy",
+        )))
+    }
+
+    fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let path = self.root.join("authority-key");
+        let read_existing = || -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, IdentityFlowError> {
+            let file = match std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            let metadata = file.metadata()?;
+            if !metadata.file_type().is_file()
+                || metadata.uid() != unsafe { libc::geteuid() }
+                || metadata.permissions().mode() & 0o077 != 0
+                || metadata.len() != 32
+            {
+                return Err(IdentityFlowError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "invite authority key must be a private 32-byte user-owned regular file",
+                )));
+            }
+            let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(32));
+            file.take(33).read_to_end(&mut bytes)?;
+            Ok(Some(bytes))
+        };
+        let bytes = if let Some(bytes) = read_existing()? {
+            bytes
+        } else {
+            let mut key = zeroize::Zeroizing::new([0; 32]);
+            OsRng.fill_bytes(&mut *key);
+            let mut random = [0; 16];
+            OsRng.fill_bytes(&mut random);
+            let temporary = self
+                .root
+                .join(format!(".authority-key-{}.tmp", hex::encode(random)));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(&*key)?;
+            file.sync_all()?;
+            let published = std::fs::hard_link(&temporary, &path);
+            let _ = std::fs::remove_file(&temporary);
+            match published {
+                Ok(()) => {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .open(&self.root)?
+                        .sync_all()?;
+                    zeroize::Zeroizing::new(key.to_vec())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_existing()?
+                    .ok_or_else(|| {
+                        IdentityFlowError::Io(std::io::Error::other(
+                            "published invite authority key disappeared",
+                        ))
+                    })?,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            IdentityFlowError::DecodeFailed("invite authority key is corrupt".into())
+        })?;
+        Ok(zeroize::Zeroizing::new(key))
+    }
+
+    /// Encrypt and durably publish one bounded bearer-capability record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on unsafe/corrupt storage, encryption failure,
+    /// duplicate capability, or when the 256-record live quota is full.
+    pub fn issue(
+        &self,
+        capability: [u8; 32],
+        secret: [u8; 32],
+        expires_unix: u64,
+    ) -> Result<(), IdentityFlowError> {
+        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+        use std::io::{Read, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+        // Serialize cleanup, quota accounting, and create-new publication
+        // across processes. `File`'s OS lock is released automatically after
+        // a crash, unlike a sentinel lockfile.
+        let _issue_lock = self.issue_lock()?;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |value| value.as_secs());
+        for entry in std::fs::read_dir(&self.root)?
+            .filter_map(Result::ok)
+            .take(512)
+        {
+            let path = entry.path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.len() == 128)
+                && let Ok(mut file) = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                    .open(&path)
+                && let Ok(metadata) = file.metadata()
+                && metadata.file_type().is_file()
+                && metadata.len() == 80
+            {
+                let mut header = [0; 8];
+                if file.read_exact(&mut header).is_ok() && u64::from_be_bytes(header) <= now {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        let entries = std::fs::read_dir(&self.root)?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.len() == 128)
+            })
+            .take(257)
+            .count();
+        if entries >= 256 {
+            return Err(IdentityFlowError::Io(std::io::Error::new(
+                std::io::ErrorKind::QuotaExceeded,
+                "invite redemption authority is full",
+            )));
+        }
+        let secret = zeroize::Zeroizing::new(secret);
+        let key = self.master_key()?;
+        let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
+        let mut nonce = [0; 24];
+        OsRng.fill_bytes(&mut nonce);
+        let digest = Sha512::digest(capability);
+        let mut aad = Vec::with_capacity(72);
+        aad.extend_from_slice(&digest);
+        aad.extend_from_slice(&expires_unix.to_be_bytes());
+        let ciphertext = cipher
+            .encrypt(
+                (&nonce).into(),
+                Payload {
+                    msg: &*secret,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| {
+                IdentityFlowError::SigningFailed("invite authority encryption failed".into())
+            })?;
+        let record_capacity = 32usize.checked_add(ciphertext.len()).ok_or_else(|| {
+            IdentityFlowError::EncodeFailed("invite authority record is too large".into())
+        })?;
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(record_capacity));
+        bytes.extend_from_slice(&expires_unix.to_be_bytes());
+        bytes.extend_from_slice(&nonce);
+        bytes.extend_from_slice(&ciphertext);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(self.path(&capability))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .open(&self.root)?
+            .sync_all()?;
+        Ok(())
+    }
+
+    /// Atomically and durably consume a capability before releasing its secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unknown, replayed, expired, unsafe, corrupt, or
+    /// unauthentic records and for durable-storage failures.
+    pub fn redeem(
+        &self,
+        capability: &[u8],
+        now_unix: u64,
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, IdentityFlowError> {
+        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let capability: [u8; 32] = capability.try_into().map_err(|_| {
+            IdentityFlowError::DecodeFailed("redemption capability must be 32 bytes".into())
+        })?;
+        let path = self.path(&capability);
+        let claimed = self.root.join(format!(
+            ".claimed-{}-{}",
+            std::process::id(),
+            hex::encode(&capability[..8])
+        ));
+        std::fs::rename(&path, &claimed).map_err(|_| {
+            IdentityFlowError::DecodeFailed(
+                "invite is expired, revoked, unknown, or already redeemed".into(),
+            )
+        })?;
+        // Durably consume the capability before decrypting or returning the
+        // secret. After power loss, replay must remain impossible even if the
+        // process died between release and cleanup.
+        std::fs::OpenOptions::new()
+            .read(true)
+            .open(&self.root)?
+            .sync_all()?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&claimed)?;
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+            || metadata.len() != 80
+        {
+            let _ = std::fs::remove_file(&claimed);
+            return Err(IdentityFlowError::DecodeFailed(
+                "redemption record is unsafe or corrupt".into(),
+            ));
+        }
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(80));
+        file.take(81).read_to_end(&mut bytes)?;
+        let _ = std::fs::remove_file(&claimed);
+        if bytes.len() != 80 {
+            return Err(IdentityFlowError::DecodeFailed(
+                "redemption record is corrupt".into(),
+            ));
+        }
+        let expiry = u64::from_be_bytes(
+            bytes
+                .get(..8)
+                .ok_or_else(|| {
+                    IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                })?
+                .try_into()
+                .map_err(|_| {
+                    IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                })?,
+        );
+        if expiry <= now_unix {
+            return Err(IdentityFlowError::InviteExpired);
+        }
+        let key = self.master_key()?;
+        let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
+        let digest = Sha512::digest(capability);
+        let mut aad = Vec::with_capacity(72);
+        aad.extend_from_slice(&digest);
+        aad.extend_from_slice(&expiry.to_be_bytes());
+        let plaintext = cipher
+            .decrypt(
+                bytes
+                    .get(8..32)
+                    .ok_or_else(|| {
+                        IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                    })?
+                    .into(),
+                Payload {
+                    msg: bytes.get(32..).ok_or_else(|| {
+                        IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
+                    })?,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| {
+                IdentityFlowError::DecodeFailed("redemption record authentication failed".into())
+            })?;
+        Ok(zeroize::Zeroizing::new(plaintext))
+    }
+}
+
+#[cfg(test)]
+fn invite_redemption_authority() -> Result<InviteRedemptionAuthority, IdentityFlowError> {
+    InviteRedemptionAuthority::open()
 }
 
 /// Generates the one-time delegation keypair internally; signs the
@@ -633,25 +1755,129 @@ pub fn mint_invite(
     role: Role,
     expires_at: SystemTime,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
+    let channel_name = channel_name.into();
+    let inviter_label = inviter_label.into();
+    if let Some(locator) = INVITE_BROKER_LOCATOR.get() {
+        let authority = InviteRedemptionAuthority::at(&locator.authority_root)?;
+        return mint_invite_at(
+            channel,
+            channel_name,
+            owner_pubkey,
+            owner_signing_key,
+            inviter_label,
+            role,
+            expires_at,
+            locator.endpoint.clone(),
+            locator.certificate.clone(),
+            &authority,
+        );
+    }
+    #[cfg(test)]
+    {
+        let authority = invite_redemption_authority()?;
+        mint_invite_at(
+            channel,
+            channel_name,
+            owner_pubkey,
+            owner_signing_key,
+            inviter_label,
+            role,
+            expires_at,
+            String::new(),
+            Vec::new(),
+            &authority,
+        )
+    }
+    #[cfg(not(test))]
+    Err(IdentityFlowError::DecodeFailed(
+        "invite redemption broker unavailable".into(),
+    ))
+}
+
+/// Explicitly mint for a shell-owned broker. This is also the integration-test
+/// seam: tests can use an isolated authority without mutating the process-wide
+/// production locator.
+///
+/// # Errors
+///
+/// Returns an error for an invalid endpoint/certificate, unsafe authority
+/// storage, encryption/signing failure, or an exhausted authority quota.
+#[allow(clippy::too_many_arguments)]
+pub fn mint_invite_for_broker(
+    channel: ChannelId,
+    channel_name: impl Into<String>,
+    owner_pubkey: Ed25519PublicKey,
+    owner_signing_key: &DalekSigningKey,
+    inviter_label: impl Into<String>,
+    role: Role,
+    expires_at: SystemTime,
+    redemption_endpoint: impl Into<String>,
+    redemption_certificate: Vec<u8>,
+    authority_root: impl Into<PathBuf>,
+) -> Result<InviteEnvelope, IdentityFlowError> {
+    let redemption_endpoint = redemption_endpoint.into();
+    redemption_endpoint
+        .parse::<std::net::SocketAddr>()
+        .map_err(|error| {
+            IdentityFlowError::DecodeFailed(format!("invite broker endpoint: {error}"))
+        })?;
+    if redemption_certificate.is_empty() || redemption_certificate.len() > 64 * 1024 {
+        return Err(IdentityFlowError::DecodeFailed(
+            "invite broker certificate is empty or too large".into(),
+        ));
+    }
+    let authority = InviteRedemptionAuthority::at(authority_root)?;
+    mint_invite_at(
+        channel,
+        channel_name.into(),
+        owner_pubkey,
+        owner_signing_key,
+        inviter_label.into(),
+        role,
+        expires_at,
+        redemption_endpoint,
+        redemption_certificate,
+        &authority,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mint_invite_at(
+    channel: ChannelId,
+    channel_name: String,
+    owner_pubkey: Ed25519PublicKey,
+    owner_signing_key: &DalekSigningKey,
+    inviter_label: String,
+    role: Role,
+    expires_at: SystemTime,
+    redemption_endpoint: String,
+    redemption_certificate: Vec<u8>,
+    authority: &InviteRedemptionAuthority,
+) -> Result<InviteEnvelope, IdentityFlowError> {
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
+    let mut capability = [0u8; 32];
+    OsRng.fill_bytes(&mut capability);
+    let expires_unix = expires_at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(u64::MAX, |d| d.as_secs());
     let mut env = InviteEnvelope {
         channel,
-        channel_name: channel_name.into(),
+        channel_name,
         owner_pubkey,
-        inviter_label: inviter_label.into(),
+        inviter_label,
         role,
-        expires_unix: expires_at
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(u64::MAX, |d| d.as_secs()),
+        expires_unix,
         delegation_pubkey,
-        // Store raw bytes so the recipient can rebuild a DalekSigningKey.
-        delegation_secret: delegation_secret_full.to_bytes().to_vec(),
+        redemption_capability: capability.to_vec(),
+        redemption_endpoint,
+        redemption_certificate,
         owner_signature: Signature::from_bytes([0; 64]),
     };
     let bytes = env.signing_bytes()?;
     let sig = sign_event(&bytes, owner_signing_key)
         .map_err(|e| IdentityFlowError::SigningFailed(format!("{e:?}")))?;
     env.owner_signature = sig;
+    authority.issue(capability, delegation_secret_full.to_bytes(), expires_unix)?;
     Ok(env)
 }
 
@@ -675,13 +1901,34 @@ pub fn build_attestation_from_invite(
     if envelope.is_expired(now) {
         return Err(IdentityFlowError::InviteExpired);
     }
-    let secret: [u8; 32] = envelope
-        .delegation_secret
-        .as_slice()
-        .try_into()
-        .map_err(|_| {
-            IdentityFlowError::DecodeFailed("delegation secret must be 32 bytes".into())
-        })?;
+    #[cfg(test)]
+    let now_unix = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let secret_plain = if envelope.redemption_endpoint.is_empty() {
+        #[cfg(not(test))]
+        return Err(IdentityFlowError::DecodeFailed(
+            "invite redemption broker unavailable".into(),
+        ));
+        #[cfg(test)]
+        invite_redemption_authority()?.redeem(&envelope.redemption_capability, now_unix)?
+    } else {
+        let response = PairingHandshake::remote_call(
+            &envelope.redemption_endpoint,
+            &envelope.redemption_certificate,
+            &PairingBrokerRequest::RedeemInvite(envelope.redemption_capability.clone()),
+        )
+        .ok_or_else(|| IdentityFlowError::DecodeFailed("invite broker unavailable".into()))?;
+        let PairingBrokerResponse::InviteSecret(Some(secret)) = response else {
+            return Err(IdentityFlowError::DecodeFailed(
+                "invite is expired, revoked, unknown, or already redeemed".into(),
+            ));
+        };
+        zeroize::Zeroizing::new(secret)
+    };
+    let secret: [u8; 32] = secret_plain.as_slice().try_into().map_err(|_| {
+        IdentityFlowError::DecodeFailed("sealed delegation secret must be 32 bytes".into())
+    })?;
     let delegation_sk = DalekSigningKey::from_bytes(&secret);
     // `now` is a real wall-clock time, nowhere near the range limit
     // `SystemTime` can represent, so this can't realistically overflow;
@@ -1194,8 +2441,6 @@ pub enum IdentityFlowError {
     DecodeFailed(String),
     #[error("unknown disk schema version: {0}")]
     UnknownSchemaVersion(u32),
-    #[error("threshold-mode serialisation not implemented in v1 (see SerializableIdentity)")]
-    ThresholdSerialiseUnimplemented,
     #[error("identity record's secret does not derive its recorded public key")]
     PublicKeyMismatch,
     #[error("signing failed: {0}")]
@@ -1689,6 +2934,22 @@ mod tests {
             env.verify_signature().is_err(),
             "renamed envelope must fail"
         );
+
+        let mut endpoint_tampered = mint_invite(
+            ChannelId::new(),
+            "engineering",
+            pk,
+            &sk,
+            "Alice",
+            Role::Editor,
+            SystemTime::now() + Duration::from_secs(3600),
+        )
+        .unwrap();
+        endpoint_tampered.redemption_endpoint = "127.0.0.1:9".into();
+        assert!(endpoint_tampered.verify_signature().is_err());
+        endpoint_tampered.redemption_endpoint.clear();
+        endpoint_tampered.redemption_certificate.push(1);
+        assert!(endpoint_tampered.verify_signature().is_err());
     }
 
     #[test]
@@ -1745,6 +3006,137 @@ mod tests {
         } else {
             panic!("expected AttestationIssued, got {event:?}");
         }
+    }
+
+    #[test]
+    fn invite_capability_is_one_use() {
+        let (owner_signing_key, owner_verifying_key) = generate_keypair();
+        let env = mint_invite(
+            ChannelId::new(),
+            "engineering",
+            owner_verifying_key,
+            &owner_signing_key,
+            "Alice",
+            Role::Editor,
+            SystemTime::now() + Duration::from_secs(3600),
+        )
+        .unwrap();
+        let (_, first) = generate_keypair();
+        let (_, second) = generate_keypair();
+        build_attestation_from_invite(&env, first, SystemTime::now()).unwrap();
+        let error = build_attestation_from_invite(&env, second, SystemTime::now()).unwrap_err();
+        assert!(error.to_string().contains("already redeemed"));
+    }
+
+    #[test]
+    fn invite_authority_survives_restart_and_atomically_consumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let capability = [9; 32];
+        let secret = [7; 32];
+        InviteRedemptionAuthority::at(dir.path())
+            .unwrap()
+            .issue(capability, secret, u64::MAX)
+            .unwrap();
+        let restarted = InviteRedemptionAuthority::at(dir.path()).unwrap();
+        assert_eq!(restarted.redeem(&capability, 1).unwrap().as_slice(), secret);
+        assert!(restarted.redeem(&capability, 1).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invite_authority_secrets_are_private_authenticated_and_race_safe() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("authority");
+        let capability = [11; 32];
+        let authority = InviteRedemptionAuthority::at(&root).unwrap();
+        authority.issue(capability, [12; 32], u64::MAX).unwrap();
+        assert_eq!(
+            std::fs::metadata(root.join("authority-key"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(authority.path(&capability))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let root = root.clone();
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                let authority = InviteRedemptionAuthority::at(root).unwrap();
+                barrier.wait();
+                authority.redeem(&capability, 1).is_ok()
+            }));
+        }
+        barrier.wait();
+        let successes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|succeeded| *succeeded)
+            .count();
+        assert_eq!(successes, 1, "only one concurrent redeemer may win");
+
+        let tampered_capability = [21; 32];
+        authority
+            .issue(tampered_capability, [22; 32], u64::MAX)
+            .unwrap();
+        let record = authority.path(&tampered_capability);
+        let mut bytes = std::fs::read(&record).unwrap();
+        *bytes.last_mut().unwrap() ^= 1;
+        std::fs::write(&record, bytes).unwrap();
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(authority.redeem(&tampered_capability, 1).is_err());
+        assert!(
+            authority.redeem(&tampered_capability, 1).is_err(),
+            "a failed authentication must still consume the bearer capability"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invite_authority_refuses_a_symlink_root_or_key() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let linked = dir.path().join("linked");
+        symlink(&target, &linked).unwrap();
+        assert!(InviteRedemptionAuthority::at(&linked).is_err());
+
+        let authority = InviteRedemptionAuthority::at(dir.path().join("authority")).unwrap();
+        let external = dir.path().join("external-key");
+        std::fs::write(&external, [9; 32]).unwrap();
+        symlink(&external, authority.root.join("authority-key")).unwrap();
+        assert!(authority.issue([8; 32], [7; 32], u64::MAX).is_err());
+    }
+
+    #[test]
+    fn invite_authority_consumes_expired_secret_without_releasing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
+        authority.issue([3; 32], [4; 32], 10).unwrap();
+        assert!(matches!(
+            authority.redeem(&[3; 32], 10),
+            Err(IdentityFlowError::InviteExpired)
+        ));
+        assert!(authority.redeem(&[3; 32], 9).is_err());
+    }
+
+    #[test]
+    fn oversized_invite_is_rejected_before_decode() {
+        let url = format!("qos://invite/{}", "A".repeat(16 * 1024 + 1));
+        assert!(InviteEnvelope::from_url(&url).is_err());
     }
 
     #[test]
@@ -1934,6 +3326,30 @@ mod tests {
         assert_eq!(back.from_share_index, reply.from_share_index);
         assert_eq!(tag, mac);
         assert!(hs.take_pairer_reply(&nonce).is_none());
+    }
+
+    #[test]
+    fn durable_pairing_expiry_survives_restart_and_cannot_be_extended() {
+        let dir = tempfile::tempdir().unwrap();
+        let original_expiry = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
+        let first = PairingHandshake::durable(dir.path(), original_expiry).unwrap();
+        let nonce = [31; 16];
+        let reply = EnrolmentRound2 {
+            from_share_index: 2,
+            to_share_index: 1,
+            package_bytes: vec![1],
+        };
+        first.publish_pairer_reply(&nonce, reply.clone(), [2; 64]);
+        assert!(first.take_pairer_reply(&nonce).is_none());
+
+        let restarted =
+            PairingHandshake::durable(dir.path(), SystemTime::now() + Duration::from_secs(3600))
+                .unwrap();
+        restarted.publish_pairer_reply(&nonce, reply, [2; 64]);
+        assert!(
+            restarted.take_pairer_reply(&nonce).is_none(),
+            "reopening a ceremony must preserve, not extend, its original expiry"
+        );
     }
 
     /// Headline integration test: after the ceremony completes, the

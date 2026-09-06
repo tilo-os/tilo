@@ -178,9 +178,12 @@ layout-margins-readout = Ränder  L { $l }  O { $t }  R { $r }  U { $b }   ·   
 layout-spacing-readout = Abstand für { $name }  { $px } px   ·   Griff ziehen — jeder Block vom Typ "{ $name }" folgt
 
 ## Canvas
+a11y-document-editor = Dokumenteditor
+a11y-group-review = Vorschläge prüfen
 page-indicator = Seite { $n }
 canvas-image-missing = Bild
 canvas-embedded-content = ⟦ eingebetteter Inhalt ⟧
 canvas-empty-placeholder = Beginne zu schreiben…
 toolbar-history = Verlauf
 a11y-version-history = Versionsverlauf
+panel-close = Schließen

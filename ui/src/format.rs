@@ -174,8 +174,10 @@ pub fn relative(secs_ago: i64) -> String {
     }
 }
 
-/// Abbreviate a large count to one significant fractional digit: `1.2K`,
-/// `3.4M`, `1.1B`. Values below 1000 print in full.
+/// Abbreviate a large count to at most one fractional digit: `1.2K`, `3.4M`,
+/// `1.1B`. Exact tenths omit the redundant `.0` (`12K`, not `12.0K`) and a
+/// value that rounds into the next unit is promoted (`999_999` becomes `1M`,
+/// never `1000.0K`). Values below 1000 print in full.
 ///
 /// ```
 /// use ui::format::compact_count;
@@ -194,15 +196,18 @@ pub fn compact_count(n: u64) -> String {
         reason = "display value rounded to 1 decimal place; f64's precision loss is invisible at that rounding"
     )]
     let n_f64 = n as f64;
-    if n >= 1_000_000_000 {
-        format!("{:.1}B", n_f64 / 1_000_000_000.0)
-    } else if n >= 1_000_000 {
-        format!("{:.1}M", n_f64 / 1_000_000.0)
+    let (value, suffix) = if n >= 999_950_000 {
+        (n_f64 / 1_000_000_000.0, "B")
+    } else if n >= 999_950 {
+        (n_f64 / 1_000_000.0, "M")
     } else if n >= 1_000 {
-        format!("{:.1}K", n_f64 / 1_000.0)
+        (n_f64 / 1_000.0, "K")
     } else {
-        n.to_string()
-    }
+        return n.to_string();
+    };
+    let rounded = format!("{value:.1}");
+    let compact = rounded.strip_suffix(".0").unwrap_or(&rounded);
+    format!("{compact}{suffix}")
 }
 
 const MONTHS_ABBREV: [&str; 12] = [
@@ -357,12 +362,13 @@ mod tests {
         assert_eq!(compact_count(0), "0");
         assert_eq!(compact_count(1), "1");
         assert_eq!(compact_count(999), "999"); // just below the K boundary
-        assert_eq!(compact_count(1_000), "1.0K"); // exactly at it
+        assert_eq!(compact_count(1_000), "1K"); // exactly at it
         assert_eq!(compact_count(12_300), "12.3K");
-        assert_eq!(compact_count(999_999), "1000.0K");
-        assert_eq!(compact_count(1_000_000), "1.0M");
+        assert_eq!(compact_count(12_000), "12K");
+        assert_eq!(compact_count(999_999), "1M");
+        assert_eq!(compact_count(1_000_000), "1M");
         assert_eq!(compact_count(4_100_000), "4.1M");
-        assert_eq!(compact_count(1_000_000_000), "1.0B");
+        assert_eq!(compact_count(1_000_000_000), "1B");
         assert_eq!(compact_count(1_100_000_000), "1.1B");
     }
 

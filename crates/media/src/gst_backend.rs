@@ -41,6 +41,7 @@ use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 use crate::hw::{DecoderEntry, DecoderKind, HwPolicy, HwReport, rank_for};
 use crate::source::Source;
+use crate::{MediaChapter, MediaTrack};
 
 // ---------------------------------------------------------------------------
 // libgstallocators — the two entry points needed to read a dmabuf fd out of a
@@ -281,6 +282,7 @@ pub struct GstState {
 
     volume: f32,
     muted: bool,
+    rate: f32,
     policy: HwPolicy,
 
     /// Monotonic count of pictures stored since this pipeline was built.
@@ -290,6 +292,9 @@ pub struct GstState {
     frames_stored: u64,
     /// `frames_stored` at the moment the last seek was accepted.
     frames_at_seek: u64,
+    /// Flattened, trusted container TOC. The bus publishes it asynchronously
+    /// after discovery, so callers can poll this without blocking decode.
+    chapters: Vec<MediaChapter>,
 }
 
 impl GstState {
@@ -306,12 +311,13 @@ impl GstState {
         // lets a caller (and a test) actually choose it.
         apply_decoder_ranks(policy);
 
-        // `playbin3` drives `decodebin3`, which does per-stream decoder
-        // selection and gapless stream switching. Fall back to `playbin` on a
-        // build that predates it.
-        let playbin = gst::ElementFactory::make("playbin3")
+        // Prefer `playbin`: unlike `playbin3` in current GStreamer releases,
+        // it exposes the stable `n-audio` / `current-audio` and text-stream
+        // properties required for a user to inspect and switch embedded
+        // tracks. `playbin3` remains a decode fallback on stripped systems.
+        let playbin = gst::ElementFactory::make("playbin")
             .build()
-            .or_else(|_| gst::ElementFactory::make("playbin").build())
+            .or_else(|_| gst::ElementFactory::make("playbin3").build())
             .ok()?;
 
         let (video_sink, appsink) = build_video_sink(acceptance)?;
@@ -378,9 +384,11 @@ impl GstState {
             seek_target_ms: None,
             volume: 0.8,
             muted: false,
+            rate: 1.0,
             policy,
             frames_stored: 0,
             frames_at_seek: 0,
+            chapters: Vec::new(),
         })
     }
 
@@ -416,6 +424,7 @@ impl GstState {
         self.seek_target_ms = None;
         self.frames_stored = 0;
         self.frames_at_seek = 0;
+        self.chapters.clear();
         if let Ok(mut o) = self.observed.lock() {
             o.report = HwReport::default();
         }
@@ -483,6 +492,136 @@ impl GstState {
             // target would pin the reported position.
             self.seek_target_ms = None;
         }
+    }
+
+    /// Change speed without reconstructing the decode graph. `GStreamer` models
+    /// this as a seek at the current position; the FLUSH avoids presenting
+    /// queued samples at the old clock rate.
+    pub fn set_rate(&mut self, rate: f32) {
+        self.rate = rate.clamp(0.25, 4.0);
+        let position = gst::ClockTime::from_mseconds(self.position_ms());
+        let flags = gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE;
+        if let Err(error) = self.playbin.seek(
+            f64::from(self.rate),
+            flags,
+            gst::SeekType::Set,
+            position,
+            gst::SeekType::None,
+            gst::ClockTime::NONE,
+        ) {
+            tracing::warn!(%error, rate = self.rate, "media: playback-rate change refused");
+        } else {
+            self.seek_in_flight = true;
+            self.seek_target_ms = Some(position.mseconds());
+            self.frames_at_seek = self.frames_stored;
+        }
+    }
+
+    pub fn audio_tracks(&self) -> Vec<MediaTrack> {
+        self.tracks(
+            "n-audio",
+            "current-audio",
+            "get-audio-pad",
+            "get-audio-tags",
+            "Audio track",
+        )
+    }
+
+    pub fn subtitle_tracks(&self) -> Vec<MediaTrack> {
+        self.tracks(
+            "n-text",
+            "current-text",
+            "get-text-pad",
+            "get-text-tags",
+            "Subtitle track",
+        )
+    }
+
+    pub fn chapters(&self) -> Vec<MediaChapter> {
+        self.chapters.clone()
+    }
+
+    fn tracks(
+        &self,
+        count_property: &str,
+        current_property: &str,
+        pad_signal: &str,
+        tag_signal: &str,
+        prefix: &str,
+    ) -> Vec<MediaTrack> {
+        // `playbin3` and older `playbin` installations do not all expose the
+        // same stream-selection properties. A missing optional capability is
+        // an empty truthful enumeration, never a GLib property panic.
+        if self.playbin.find_property(count_property).is_none()
+            || self.playbin.find_property(current_property).is_none()
+        {
+            return Vec::new();
+        }
+        let count = self.playbin.property::<i32>(count_property).max(0);
+        let current = self.playbin.property::<i32>(current_property);
+        (0..count)
+            .filter_map(|index| {
+                let index = u32::try_from(index).ok()?;
+                // The stream-id is emitted by the demuxer and is the only
+                // safe identity to publish to agents. Do not invent an ID
+                // from a transient array position: it could target another
+                // stream after renegotiation.
+                let pad = self
+                    .playbin
+                    .emit_by_name::<Option<gst::Pad>>(pad_signal, &[&i32::try_from(index).ok()?])?;
+                let id = pad.stream_id()?.to_string();
+                Some(MediaTrack {
+                    id,
+                    label: self
+                        .track_label(tag_signal, index)
+                        .unwrap_or_else(|| format!("{prefix} {}", index.saturating_add(1))),
+                    index,
+                    selected: i32::try_from(index).ok() == Some(current),
+                })
+            })
+            .collect()
+    }
+
+    fn track_label(&self, tag_signal: &str, index: u32) -> Option<String> {
+        let index = i32::try_from(index).ok()?;
+        let tags = self
+            .playbin
+            .emit_by_name::<Option<gst::TagList>>(tag_signal, &[&index])?;
+        tags.index::<gst::tags::Title>(0)
+            .map(|value| value.get().to_string())
+            .or_else(|| {
+                tags.index::<gst::tags::LanguageName>(0)
+                    .map(|value| value.get().to_string())
+            })
+            .filter(|label| !label.trim().is_empty())
+    }
+
+    pub fn select_audio_track(&self, index: u32) -> bool {
+        self.select_track("n-audio", "current-audio", Some(index))
+    }
+
+    pub fn select_subtitle_track(&self, index: Option<u32>) -> bool {
+        self.select_track("n-text", "current-text", index)
+    }
+
+    fn select_track(
+        &self,
+        count_property: &str,
+        current_property: &str,
+        index: Option<u32>,
+    ) -> bool {
+        if self.playbin.find_property(count_property).is_none()
+            || self.playbin.find_property(current_property).is_none()
+        {
+            return false;
+        }
+        let count = self.playbin.property::<i32>(count_property).max(0);
+        let requested = index.and_then(|i| i32::try_from(i).ok()).unwrap_or(-1);
+        if requested >= count || requested < -1 {
+            return false;
+        }
+        self.playbin.set_property(current_property, requested);
+        true
     }
 
     pub fn is_playing(&self) -> bool {
@@ -741,6 +880,10 @@ impl GstState {
                     self.playing = false;
                     events.push(MediaEvent::Error(e.error().to_string()));
                 }
+                MessageView::Toc(toc) => {
+                    let (toc, _) = toc.toc();
+                    self.chapters = chapters_from_toc(&toc);
+                }
                 _ => {}
             }
         }
@@ -755,6 +898,43 @@ impl GstState {
 
         events
     }
+}
+
+/// Flatten a container TOC without inventing any labels. Nested editions and
+/// titles are traversed because containers commonly place chapter entries
+/// beneath an edition node; only actual `Chapter` entries become seek targets.
+fn chapters_from_toc(toc: &gst::Toc) -> Vec<MediaChapter> {
+    fn visit(entry: &gst::TocEntry, out: &mut Vec<MediaChapter>) {
+        if entry.entry_type() == gst::TocEntryType::Chapter
+            && let Some((start_ns, _)) = entry.start_stop_times()
+            && let Ok(start_ns) = u64::try_from(start_ns)
+        {
+            let label = entry
+                .tags()
+                .and_then(|tags| {
+                    tags.index::<gst::tags::Title>(0)
+                        .map(|value| value.get().to_string())
+                })
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| entry.uid().to_string());
+            out.push(MediaChapter {
+                id: entry.uid().to_string(),
+                label,
+                start_ms: start_ns / 1_000_000,
+            });
+        }
+        for child in entry.sub_entries() {
+            visit(&child, out);
+        }
+    }
+
+    let mut chapters = Vec::new();
+    for entry in toc.entries() {
+        visit(&entry, &mut chapters);
+    }
+    chapters.sort_by(|a, b| a.start_ms.cmp(&b.start_ms).then_with(|| a.id.cmp(&b.id)));
+    chapters.dedup_by(|a, b| a.id == b.id);
+    chapters
 }
 
 impl Drop for GstState {

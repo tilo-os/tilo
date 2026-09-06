@@ -27,7 +27,8 @@ use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -653,6 +654,106 @@ impl TerminalWidget {
     /// accessor — also what `AppWidget::app_title` returns.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Stable resource identity for this shared pane. `init_crdt` adopts the
+    /// same pane id on every replica, so this address survives a collaborator
+    /// joining or a retained-widget rebuild without conflating two terminals.
+    fn terminal_resource_id(&self) -> String {
+        format!("terminal:{}", self.pane_id)
+    }
+
+    fn terminal_transcript_target(&self) -> String {
+        format!("terminal.transcript:{}", self.pane_id)
+    }
+
+    /// Convert an accessible extended-grapheme offset in the current visible
+    /// transcript into a cell coordinate. The terminal grid measures columns,
+    /// while a11y measures graphemes, so emoji and combining marks must not be
+    /// treated as UTF-8 byte offsets.
+    fn visible_grapheme_position(&self, mut offset: usize) -> Option<GridPos> {
+        let start = self.viewport_start_y.min(self.grid.len());
+        let end = (start + self.current_visible_rows()).min(self.grid.len());
+        for row in start..end {
+            let text = self.grid.get(row)?.trim_end();
+            let graphemes = text.graphemes(true).collect::<Vec<_>>();
+            if offset <= graphemes.len() {
+                let col = graphemes
+                    .iter()
+                    .take(offset)
+                    .map(|grapheme| grapheme.width())
+                    .sum::<usize>()
+                    .min(self.width);
+                return Some(GridPos { row, col });
+            }
+            offset = offset.saturating_sub(graphemes.len());
+            if row + 1 < end {
+                offset = offset.checked_sub(1)?;
+            }
+        }
+        None
+    }
+
+    /// Inverse of [`Self::visible_grapheme_position`]. Only visible selection
+    /// endpoints are published because the accessibility value is the visible
+    /// transcript, not the entire scrollback buffer.
+    fn visible_grapheme_offset(&self, position: GridPos) -> Option<usize> {
+        let start = self.viewport_start_y.min(self.grid.len());
+        let end = (start + self.current_visible_rows()).min(self.grid.len());
+        if !(start..end).contains(&position.row) {
+            return None;
+        }
+        let mut offset = 0;
+        for row in start..end {
+            let text = self.grid.get(row)?.trim_end();
+            let graphemes = text.graphemes(true).collect::<Vec<_>>();
+            if row == position.row {
+                let mut col = 0;
+                for (index, grapheme) in graphemes.iter().enumerate() {
+                    if position.col <= col {
+                        return Some(offset + index);
+                    }
+                    col += grapheme.width();
+                }
+                return Some(offset + graphemes.len());
+            }
+            offset += graphemes.len() + usize::from(row + 1 < end);
+        }
+        None
+    }
+
+    fn visible_selection_offsets(&self) -> Option<(usize, usize)> {
+        let selection = self.selection?;
+        Some((
+            self.visible_grapheme_offset(selection.anchor)?,
+            self.visible_grapheme_offset(selection.cursor)?,
+        ))
+    }
+
+    /// Translate the terminal's grapheme-space selection back into the UTF-8
+    /// offsets carried by [`ui::a11y::AccessNode::with_text_selection`]. The
+    /// bridge then exports those boundaries as AccessKit grapheme positions.
+    fn visible_selection_bytes(&self, value: &str) -> Option<(usize, usize)> {
+        let (anchor, focus) = self.visible_selection_offsets()?;
+        let byte_at = |grapheme_offset| {
+            value
+                .grapheme_indices(true)
+                .nth(grapheme_offset)
+                .map_or(value.len(), |(byte, _)| byte)
+        };
+        Some((byte_at(anchor), byte_at(focus)))
+    }
+
+    fn set_visible_grapheme_selection(&mut self, anchor: usize, focus: usize) -> bool {
+        let Some(anchor) = self.visible_grapheme_position(anchor) else {
+            return false;
+        };
+        let Some(cursor) = self.visible_grapheme_position(focus) else {
+            return false;
+        };
+        self.selection = Some(Selection { anchor, cursor });
+        self.focused = true;
+        true
     }
     /// Enable/disable "select to copy": when on, finishing a selection also
     /// writes it to the system clipboard (in addition to the always-set
@@ -1284,15 +1385,6 @@ impl Widget for TerminalWidget {
         Some("terminal")
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![ui::widget::ControlBindingMetadata {
-            control_id: "terminal".into(),
-            kind: ui::widget::ControlBindingKind::Action(ui::qos_actions::ActionAddress::new(
-                "terminal", "send",
-            )),
-        }]
-    }
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["terminal.send", "terminal.control"]
     }
@@ -1302,7 +1394,11 @@ impl Widget for TerminalWidget {
         reason = "JSON serialization of an owned String is infallible"
     )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut terminal = Resource::new("terminal", "terminal.session", "Terminal session");
+        let mut terminal = Resource::new(
+            self.terminal_resource_id(),
+            "terminal.session",
+            self.title.clone(),
+        );
         terminal.actions.push(
             ActionSpec::prompted_operation(
                 "send",
@@ -1750,25 +1846,50 @@ impl Widget for TerminalWidget {
             .filter(|placement| placement.alternate_screen == self.alt_active)
             .count();
         let description = if graphics == 0 {
-            "Interactive terminal session; output is shared with collaborators".to_string()
+            "Read-only terminal transcript shared with collaborators; use the Send text action to write to the live process".to_string()
         } else {
             format!(
-                "Interactive terminal session; output is shared with collaborators; \
-                 {graphics} graphical placement(s) are visible when their image blobs are available"
+                "Read-only terminal transcript shared with collaborators; use the Send text action \
+                 to write to the live process; {graphics} graphical placement(s) are visible \
+                 when their image blobs are available"
             )
         };
-        Some(
-            AccessNode::new(Role::MultilineTextInput)
-                .with_name(self.title.clone())
-                .with_description(description)
-                .with_value(value)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    multiline: true,
-                    ..Default::default()
-                }),
-        )
+        let selection = self.visible_selection_bytes(&value);
+        let transcript = AccessNode::new(Role::Terminal)
+            .with_name(self.title.clone())
+            .with_description(description)
+            .with_value(value)
+            .with_bounds(self.rect)
+            .with_action_target(self.terminal_transcript_target())
+            .with_state(AccessState {
+                focusable: true,
+                focused: self.focused,
+                multiline: true,
+                read_only: true,
+                ..Default::default()
+            });
+        Some(match selection {
+            Some((anchor, focus)) => transcript.with_text_selection(anchor, focus),
+            None => transcript,
+        })
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        match action {
+            ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
+                self.focused = true;
+                true
+            }
+            ui::a11y::Action::SetSelection { anchor, focus } => {
+                self.set_visible_grapheme_selection(*anchor, *focus)
+            }
+            _ => false,
+        }
     }
 
     /// Scope this terminal's collaboration presence to a shared pane id (see
@@ -2039,9 +2160,10 @@ impl TerminalWidget {
             *handled = true;
             return;
         }
-        // Mouse reporting (ESC[?1000h family) is parsed into `modes`
-        // but click forwarding is intentionally a stub — the left
-        // button always drives text selection.
+        // Application mouse reporting was already handled by
+        // `handle_mouse_button_event` above. Reaching this helper therefore
+        // means reporting is off or Shift requested the conventional local
+        // selection override.
         match element_state {
             ElementState::Pressed if self.grid_rect.contains(self.last_cursor_pos) => {
                 let shift = modifiers.state().shift_key();
@@ -2420,9 +2542,9 @@ impl TerminalWidget {
             let rows = usize::try_from(placement.rows.clamp(1, 1024)).unwrap_or(1);
             let columns = usize::try_from(placement.columns.clamp(1, 1024)).unwrap_or(1);
             let placement_end = placement.row.saturating_add(rows);
-            let outside_columns = placement.col >= self.width;
-            let outside_visible_rows = placement_end <= start_y || placement.row >= viewport_end;
-            if outside_columns || outside_visible_rows {
+            let outside_horizontal = placement.col >= self.width;
+            let outside_vertical = placement_end <= start_y || placement.row >= viewport_end;
+            if outside_horizontal || outside_vertical {
                 continue;
             }
             let left = grid_rect.x0 + self.last_padding_x + placement.col as f64 * self.char_w;
@@ -4899,16 +5021,14 @@ impl TerminalBackend {
     }
 
     /// Open a PTY running an arbitrary command. `TERM` is forced to
-    /// `xterm-256color` (unless the caller already set it) so programs emit the
-    /// SGR / DEC sequences this emulator understands.
+    /// `xterm-256color` so programs emit the SGR / DEC sequences this emulator
+    /// understands, regardless of a launcher that happens to be non-terminal.
     ///
     /// # Errors
     ///
     /// Returns an error if the PTY cannot be created or the command cannot be spawned.
     pub fn with_command(mut cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
-        if cmd.get_env("TERM").is_none() {
-            cmd.env("TERM", "xterm-256color");
-        }
+        cmd.env("TERM", "xterm-256color");
         let shell_name = cmd
             .get_argv()
             .first()

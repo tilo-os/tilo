@@ -33,7 +33,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time, hue_to_rgb,
-    op_class_glyph, op_class_is_revertible,
+    op_class_glyph,
 };
 use crate::widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
@@ -1093,7 +1093,7 @@ impl ActivityTimeline {
     pub fn revert_chip_rect(&self, i: usize) -> Option<Rect> {
         let row = self.row_rect(i)?;
         let entry = self.row_entry(i)?;
-        if !op_class_is_revertible(entry.op_class) || entry.redaction.is_some() {
+        if !entry.is_revertible() {
             return None;
         }
         let depth = self.row_depth(i);
@@ -1445,11 +1445,8 @@ impl ActivityTimeline {
         }
 
         let total_count = g.len();
-        let restorable = (g.start..g.end).any(|i| {
-            self.entries
-                .get(i)
-                .is_some_and(|e| op_class_is_revertible(e.op_class) && e.redaction.is_none())
-        });
+        let restorable =
+            (g.start..g.end).any(|i| self.entries.get(i).is_some_and(HistoryEntry::is_revertible));
         let mut subtitle = g.subtitle(&self.entries);
         if visible_count < total_count {
             // Saying "12 changes" over three visible rows would be a lie the
@@ -1990,7 +1987,7 @@ impl ActivityTimeline {
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
         // redaction — we never offer "revert" across a redaction boundary.
-        if is_hovered && op_class_is_revertible(entry.op_class) && !is_redacted_row {
+        if is_hovered && entry.is_revertible() && !is_redacted_row {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - self.revert_chip_w() - 6.0,

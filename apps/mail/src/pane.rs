@@ -193,6 +193,10 @@ pub struct Pane {
     /// its engine, and the (message, `block_remote`) key currently loaded into it.
     /// Created lazily on the first HTML mail so text-only usage stays webview-free.
     html_engine: Option<SharedEngine>,
+    /// True only when the engine is a real isolated browser renderer. The
+    /// deterministic test engine is useful for plumbing tests but must never be
+    /// presented as message content.
+    html_engine_live: bool,
     html_view: Option<WebView>,
     html_key: Option<(MessageId, bool)>,
     /// The message the HTML view currently shows — distinct from `html_key`
@@ -229,6 +233,7 @@ impl Pane {
             mouse_down_row: None,
             reader_attachment_hits: Vec::new(),
             html_engine: None,
+            html_engine_live: false,
             html_view: None,
             html_key: None,
             html_shown_id: None,
@@ -1283,11 +1288,25 @@ impl Pane {
                 self.html_shown_id = Some(head_id);
             }
             self.load_html_body(head_id, &html);
-            let view = self.ensure_html_view();
-            view.set_viewport(rect, 1.0);
-            view.draw(scene, t, tr, theme, presence);
-            self.html_view_rect = Some(rect);
-            self.draw_remote_toggle(scene, t, tr, theme, rect);
+            if self.html_engine_live {
+                let view = self.ensure_html_view();
+                view.set_viewport(rect, 1.0);
+                view.draw(scene, t, tr, theme, presence);
+                self.html_view_rect = Some(rect);
+                self.draw_remote_toggle(scene, t, tr, theme, rect, true);
+            } else {
+                // WPE is optional and can also fail to initialise on a given
+                // GPU. The test engine paints a diagnostic colour, not HTML;
+                // render the already-decoded MIME text alternative instead.
+                let plain = self
+                    .shared
+                    .borrow()
+                    .mailbox
+                    .get(head_id)
+                    .map_or_else(String::new, |message| message.body.clone());
+                self.draw_native_html_fallback(scene, t, tr, theme, rect, &plain);
+                self.draw_remote_toggle(scene, t, tr, theme, rect, false);
+            }
         } else {
             // Plain-text mail this frame — drop any stale load so returning
             // to an HTML mail reloads fresh (and blocked again by default).
@@ -1352,38 +1371,28 @@ impl Pane {
         };
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
-        let mut y = rr.y0 + HEADER_H + 8.0;
-        let subj = elide(
+        let mut y = Self::draw_reader_thread_heading(
+            scene,
+            t,
             tr,
-            &head.thread_subject(),
-            20.0,
-            TextWeight::Bold,
-            f64::from(content_w),
+            theme,
+            content_x,
+            content_w,
+            head,
+            msgs.len(),
+            st.folder,
+            rr.y0 + HEADER_H + 8.0,
         );
-        tr.draw_text_weighted(
+        y = Self::draw_inspection_badge(
             scene,
-            &subj,
-            20.0,
-            c.text_primary,
-            t * Affine::translate((content_x, y)),
-            None,
-            TextWeight::Bold,
+            t,
+            tr,
+            theme,
+            content_x,
+            y,
+            head.read,
+            st.inspection == Some(head.id),
         );
-        y += 30.0;
-        tr.draw_text(
-            scene,
-            &format!(
-                "{} message{} · {}",
-                msgs.len(),
-                if msgs.len() == 1 { "" } else { "s" },
-                st.folder.title()
-            ),
-            12.0,
-            c.text_dim,
-            t * Affine::translate((content_x, y)),
-            None,
-        );
-        y += 26.0;
         fill_rect(
             scene,
             t,
@@ -1413,6 +1422,103 @@ impl Pane {
         self.reader_attachment_hits = chip_hits;
         drop(st);
         Some((head_id, head_html, webview_rect))
+    }
+
+    /// Draw the conversation title and its compact count/folder context,
+    /// returning the baseline after that header.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_reader_thread_heading(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content_x: f64,
+        content_w: f32,
+        head: &Message,
+        message_count: usize,
+        folder: Folder,
+        y: f64,
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let subject = elide(
+            tr,
+            &head.thread_subject(),
+            20.0,
+            TextWeight::Bold,
+            f64::from(content_w),
+        );
+        tr.draw_text_weighted(
+            scene,
+            &subject,
+            20.0,
+            c.text_primary,
+            t * Affine::translate((content_x, y)),
+            None,
+            TextWeight::Bold,
+        );
+        let meta_y = y + 30.0;
+        tr.draw_text(
+            scene,
+            &format!(
+                "{message_count} message{} · {}",
+                if message_count == 1 { "" } else { "s" },
+                folder.title()
+            ),
+            12.0,
+            c.text_dim,
+            t * Affine::translate((content_x, meta_y)),
+            None,
+        );
+        meta_y + 26.0
+    }
+
+    /// Draw the persistent visual counterpart of an explicit no-side-effect
+    /// inspection. Returns the next baseline unchanged when the reader is
+    /// showing a normal message open.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_inspection_badge(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content_x: f64,
+        y: f64,
+        already_read: bool,
+        inspecting: bool,
+    ) -> f64 {
+        if !inspecting {
+            return y;
+        }
+        let c = &theme.tokens.colors;
+        let label = if already_read {
+            "Preview · read state unchanged"
+        } else {
+            "Preview · remains unread"
+        };
+        let (label_w, _) = tr.measure(label, 11.0, None);
+        let pill = Rect::new(
+            content_x,
+            y - 5.0,
+            content_x + f64::from(label_w) + 34.0,
+            y + 17.0,
+        );
+        fill_round(scene, t, pill, 7.0, c.accent[5].with_alpha_factor(0.14));
+        Icon::Eye.draw(
+            scene,
+            t,
+            Rect::new(pill.x0 + 7.0, pill.y0 + 4.0, pill.x0 + 21.0, pill.y0 + 18.0),
+            c.accent[5],
+        );
+        tr.draw_text_weighted(
+            scene,
+            label,
+            11.0,
+            c.accent[5],
+            t * Affine::translate((pill.x0 + 25.0, pill.y0 + 4.0)),
+            None,
+            TextWeight::Medium,
+        );
+        y + 28.0
     }
 
     /// Draw each message card in the thread, starting at `y`: the head
@@ -1490,10 +1596,17 @@ impl Pane {
         tr: &mut TextRenderer,
         theme: &Theme,
         body: Rect,
+        interactive: bool,
     ) {
         let c = &theme.tokens.colors;
         let y = body.y1 + 8.0;
-        let (icon, label, col) = if self.html_load_remote {
+        let (icon, label, col) = if !interactive {
+            (
+                Icon::Shield,
+                "Safe text version · Rich HTML unavailable",
+                c.text_dim,
+            )
+        } else if self.html_load_remote {
             (Icon::Image, "Remote images loaded", c.text_dim)
         } else {
             (
@@ -1534,13 +1647,62 @@ impl Pane {
             t * Affine::translate((pill.x0 + 30.0, pill.y0 + 7.0)),
             None,
         );
-        self.html_toggle_rect = Some(pill);
+        self.html_toggle_rect = interactive.then_some(pill);
+    }
+
+    #[allow(
+        clippy::many_single_char_names,
+        clippy::unused_self,
+        reason = "drawing code follows the renderer's established transform and coordinate notation"
+    )]
+    fn draw_native_html_fallback(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        body: Rect,
+        plain: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        fill_round(scene, t, body, 6.0, c.surfaces.base);
+        stroke_round(scene, t, body, 6.0, 1.0, c.border_standard);
+        let x = body.x0 + 18.0;
+        let width = (body.width() - 36.0).max(80.0) as f32;
+        let mut y = body.y0 + 18.0;
+        for paragraph in plain.lines() {
+            if y >= body.y1 - 24.0 {
+                break;
+            }
+            if paragraph.trim().is_empty() {
+                y += 9.0;
+                continue;
+            }
+            let (_w, h) = tr.measure(paragraph, 13.5, Some(width));
+            tr.draw_text(
+                scene,
+                paragraph,
+                13.5,
+                c.text_primary,
+                t * Affine::translate((x, y)),
+                Some(width),
+            );
+            y += f64::from(h.max(19.0)) + 5.0;
+        }
     }
 
     /// Lazily create the reader's HTML-body `WebView` (and its engine) on first
     /// use. Text-only mail never touches this, so it stays webview-free.
     fn ensure_html_view(&mut self) -> &mut WebView {
-        let engine = self.html_engine.get_or_insert_with(new_html_engine).clone();
+        if self.html_engine.is_none() {
+            let (engine, live) = new_html_engine();
+            self.html_engine = Some(engine);
+            self.html_engine_live = live;
+        }
+        let engine = self
+            .html_engine
+            .clone()
+            .unwrap_or_else(|| new_html_engine().0);
         self.html_view
             .get_or_insert_with(|| WebView::new(engine).with_test_id("mail_html_body"))
     }
@@ -1567,6 +1729,7 @@ impl Pane {
     #[cfg(test)]
     pub(crate) fn set_html_engine(&mut self, engine: SharedEngine) {
         self.html_engine = Some(engine);
+        self.html_engine_live = true;
     }
 
     /// The (message, `block_remote`) currently loaded into the HTML view, if any.
@@ -2064,16 +2227,16 @@ impl Pane {
 /// falling back to the hermetic test engine if it can't start; otherwise it is
 /// the deterministic test engine — which still exercises the full
 /// sandbox/remote-block plumbing in the default build and `--shots`.
-fn new_html_engine() -> SharedEngine {
+fn new_html_engine() -> (SharedEngine, bool) {
     #[cfg(feature = "html-webview")]
     {
         match ui::webview::wpe::WpeEngine::new() {
-            Ok(e) => return e,
+            Ok(e) => return (e, true),
             Err(err) => tracing::warn!(%err, "mail: WPE engine unavailable; using test engine"),
         }
     }
     let e: SharedEngine = ui::webview::test_engine::TestEngine::new();
-    e
+    (e, false)
 }
 
 impl Pane {
@@ -2259,6 +2422,25 @@ impl Widget for Pane {
             }
             Role::Reader => self.draw_reader(scene, t, tr, theme, presence),
         }
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        if self.role != Role::Reader {
+            return None;
+        }
+        let point = self.shared.borrow().last_mouse;
+        self.hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(point))
+            .and_then(|(_, hit)| match hit {
+                Hit::Reply => Some("Reply (R)"),
+                Hit::Archive => Some("Archive (E)"),
+                Hit::Delete => Some("Delete (Delete)"),
+                Hit::Star => Some("Toggle star (S)"),
+                Hit::Unread => Some("Mark unread (U)"),
+                _ => None,
+            })
     }
 
     fn handle_event(

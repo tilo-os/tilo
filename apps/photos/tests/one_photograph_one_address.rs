@@ -122,8 +122,8 @@ impl Session {
         let published = PhotosResources.resources(&self.doc);
         assert_eq!(
             published.len(),
-            1,
-            "a session with one photograph open publishes one resource"
+            2,
+            "a session with one photograph open publishes its active resource and library"
         );
         published[0].id.0.clone()
     }

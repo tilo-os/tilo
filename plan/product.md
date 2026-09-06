@@ -76,21 +76,18 @@ Recommendation captured in chat; see the discussion for the two-track proposal
 (Servo as the endgame; a serious interim engine chosen by which goal is sacrificed
 short-term).
 
-## Functional status (2026-07-05 code audit)
+## Functional status
 
-Read from the code, not screenshots. Dominant pattern: real engine/read path,
-stubbed or absent write/action/connect path (a wiring job, not a rebuild).
+Do not keep a hand-maintained app-completeness table in this product brief.
+The former July 2026 table had become actively misleading: among other things,
+it still claimed Calendar could not delete events after local, collaborative,
+and CalDAV deletion had landed; called Music silent after live streaming and
+audio became default features; and described Mail and Remote as static shells
+after their engines and connection paths existed.
 
-- **real**: notes, sheets, file-explorer, calculator, contacts, pdf_viewer
-  (fallback-text only), typst_editor, browser (engine), feeds, ebook, totp,
-  weather, maps, monitor, api_tester, logs, git_client, containers, permissions
-  (authoring), store, camera (feature-gated).
-- **partial** (real engine, stubbed write/action/connect): word-processor,
-  terminal, slides (no save), video_editor (no decode/export), music (default
-  silent), calendar (no delete), chat (calls stubbed), disks, snippets, themes,
-  firewall, vpn, imager (fake write), hex_editor (no save), db_client (demo DB),
-  diffmerge (no save), code_editor, osk, settings.
-- **shell** (no real backend): mail (no IMAP/SMTP), remote, backups, tube default.
-
-**Focus-gap priority:** mail engine → slides .odp save → calendar delete →
-browser ad-block → pdf pdfium text → video decode/export → chat calls → tube live.
+Feature claims belong beside executable evidence in each app. The repository
+wide resource/action/search contract is enforced by
+`tools/check_app_resource_action_contract.py`; native accessibility is checked
+by each app's `--native-audit` path; visual and interaction behavior belongs in
+the app's focused render tests. Product goals above intentionally remain goals,
+not a second, inevitably stale implementation database.

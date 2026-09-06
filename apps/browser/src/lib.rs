@@ -36,6 +36,7 @@
     )
 )]
 
+pub mod actions;
 pub mod address_overlay;
 pub mod blocker;
 pub mod browser_widget;
@@ -44,6 +45,8 @@ pub mod browser_widget;
 pub mod compositor;
 pub mod extensions;
 pub mod history;
+pub mod library;
+pub mod search_provider;
 pub mod settings;
 
 pub use browser_widget::BrowserWidget;

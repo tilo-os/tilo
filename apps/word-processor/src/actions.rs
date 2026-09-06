@@ -12,12 +12,14 @@
 //! **Determinism contract**: [`Action::apply`] never reads the wall-clock or the
 //! RNG. New block ids are minted *inside* `apply` from a deterministic
 //! [`seeded_id_gen`](qdoc::model::seeded_id_gen); sets of blocks/spans are sorted
-//! before iterating, so a replay emits the identical op sequence. A malformed
-//! payload is a **no-op**, never an error, so a bad replay can't wedge a peer.
+//! before iterating, so a replay emits the identical op sequence. A decoded
+//! action with stale or hostile arguments is atomically refused before it can
+//! write, so callers can surface a useful error without leaving a partial edit.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut};
@@ -96,8 +98,9 @@ fn operation(
 
 /// Which page region a text/formatting op addresses. Mirrors [`qdoc::model::Region`]
 /// (which is not itself serializable) so the region travels in the payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegionKind {
+    #[default]
     Body,
     Header,
     Footer,
@@ -168,6 +171,17 @@ pub enum WordProcessorAction {
         del: usize,
         ins: String,
     },
+    /// Replace one selection in document order.  Unlike a sequence of splices
+    /// and deletes, this preserves the old editor's cross-paragraph merge as a
+    /// single deterministic, atomic action/undo boundary.
+    ReplaceSelection {
+        region: RegionKind,
+        start_block: String,
+        start: usize,
+        end_block: String,
+        end: usize,
+        ins: String,
+    },
     /// Apply or clear an inline mark over `spans`. `value` `None` removes the
     /// mark; `Some` replaces it (any prior value of the same mark over each span
     /// is removed first, so a re-colour/re-size overwrites rather than stacks).
@@ -184,6 +198,8 @@ pub enum WordProcessorAction {
     /// Set a paragraph's structural kind (`heading`/`paragraph`/`list-item`/…)
     /// on each of `blocks`, plus its `level` / `ordered` attrs when given.
     SetParagraphStyle {
+        #[serde(default)]
+        region: RegionKind,
         blocks: Vec<String>,
         kind: String,
         level: Option<i64>,
@@ -193,6 +209,8 @@ pub enum WordProcessorAction {
     /// a built-in style — the structural `kind`/`level`/`ordered` too, as one
     /// action/undo boundary (not a kind write racing a separate style write).
     ApplyNamedStyle {
+        #[serde(default)]
+        region: RegionKind,
         blocks: Vec<String>,
         style: String,
         kind: Option<String>,
@@ -207,6 +225,34 @@ pub enum WordProcessorAction {
         blocks: Vec<String>,
         key: String,
         value: AttrVal,
+    },
+    /// Set an image crop in ten-thousandths of its source rectangle.  Keeping
+    /// all four edges in one action is important: a crop must never briefly
+    /// become invalid while a collaborator/replay observes it.
+    SetImageCrop {
+        block: String,
+        left: i64,
+        top: i64,
+        right: i64,
+        bottom: i64,
+    },
+    /// Resize an image frame while preserving a single replay/undo boundary.
+    SetImageSize {
+        block: String,
+        width: i64,
+        height: i64,
+    },
+    /// Move an image between normal flow and a free page-positioned object.
+    /// Offsets are document pixels relative to the page content origin; `page`
+    /// is zero-based.  This is deliberately a single canonical operation so a
+    /// drag cannot publish a half-updated anchor/coordinate pair.
+    SetImagePlacement {
+        block: String,
+        anchor: String,
+        wrap: String,
+        x: i64,
+        y: i64,
+        page: i64,
     },
     /// Insert a `rows`×`cols` table after `after`. Cells are consecutive `cell`
     /// blocks sharing a freshly-minted `table` id, tagged with `row`/`col`.
@@ -240,6 +286,248 @@ pub enum WordProcessorAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
+    /// Accept one tracked change, or every change when `id` is absent.
+    AcceptChanges { id: Option<String> },
+    /// Reject one tracked change, or every change when `id` is absent.
+    RejectChanges { id: Option<String> },
+    /// Resolve a comment by removing both its anchor mark and record.
+    ResolveComment { id: String },
+}
+
+// Action payloads may arrive after the document has changed (or from an
+// untrusted automation).  Keep the limits deliberately generous for real
+// documents while making the action boundary a useful resource boundary too.
+const MAX_ACTION_TEXT_CHARS: usize = 1_000_000;
+const MAX_ACTION_BLOB_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TABLE_DIMENSION: usize = 100;
+const MAX_TABLE_CELLS: usize = 10_000;
+
+/// Validate an action against one materialized point-in-time view of `doc`.
+///
+/// This is intentionally separate from the write helpers: an invalid action
+/// must make **no mutation**, never a partly-applied collection of valid
+/// targets followed by a stale one. It also bounds hostile payloads before an
+/// action allocates a large table/blob or asks automerge to index impossible
+/// offsets.  The caller maps `false` to an explicit [`ActionError::Refused`],
+/// preserving a useful stale-target result without leaving a partial edit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive validation table keeps every action's atomic preconditions auditable at one boundary"
+)]
+fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Containers) -> bool {
+    let snap = qdoc::model::materialize(doc, c);
+    let blocks_for = |region: RegionKind| match region {
+        RegionKind::Body => &snap.blocks,
+        RegionKind::Header => &snap.header,
+        RegionKind::Footer => &snap.footer,
+    };
+    let block_len = |region: RegionKind, id: &str| {
+        blocks_for(region)
+            .iter()
+            .find(|block| block.id == id)
+            .map(|block| block.text.chars().count())
+    };
+    let unique_existing = |region: RegionKind, ids: &[String]| {
+        !ids.is_empty()
+            && ids.iter().all(|id| block_len(region, id).is_some())
+            && ids.iter().collect::<HashSet<_>>().len() == ids.len()
+    };
+    let safe_name = |name: &str| {
+        !name.is_empty()
+            && name.len() <= 128
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    };
+    let safe_text = |text: &str| text.chars().count() <= MAX_ACTION_TEXT_CHARS;
+    let valid_attr = |key: &str, value: &AttrVal| match key {
+        "align" => {
+            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
+        }
+        "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
+        "indent" | "first_line_indent" | "line_spacing" => {
+            matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
+        }
+        "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
+        "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
+        _ => false,
+    };
+
+    match action {
+        WordProcessorAction::SpliceText {
+            region,
+            block,
+            at,
+            del,
+            ins,
+        } => {
+            block_len(*region, block)
+                .is_some_and(|len| *at <= len && *del <= len.saturating_sub(*at))
+                && safe_text(ins)
+        }
+        WordProcessorAction::ReplaceSelection {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            ins,
+        } => {
+            let blocks = blocks_for(*region);
+            let start_index = blocks.iter().position(|block| block.id == *start_block);
+            let end_index = blocks.iter().position(|block| block.id == *end_block);
+            match (
+                start_index,
+                end_index,
+                block_len(*region, start_block),
+                block_len(*region, end_block),
+            ) {
+                (Some(start_index), Some(end_index), Some(start_len), Some(end_len)) => {
+                    (start_index < end_index || (start_index == end_index && start <= end))
+                        && *start <= start_len
+                        && *end <= end_len
+                        && safe_text(ins)
+                }
+                _ => false,
+            }
+        }
+        WordProcessorAction::SetMark {
+            region,
+            spans,
+            name,
+            value,
+            also_clear,
+        } => {
+            safe_name(name)
+                && also_clear.iter().all(|sibling| safe_name(sibling))
+                && spans.len() <= 10_000
+                && !spans.is_empty()
+                && spans.iter().all(|span| {
+                    block_len(*region, &span.block)
+                        .is_some_and(|len| span.start < span.end && span.end <= len)
+                })
+                && match value {
+                    Some(MarkVal::Str(text)) => safe_text(text),
+                    _ => true,
+                }
+        }
+        WordProcessorAction::SetParagraphStyle {
+            region,
+            blocks,
+            kind,
+            level,
+            ..
+        } => {
+            unique_existing(*region, blocks)
+                && safe_name(kind)
+                && level.is_none_or(|level| (0..=9).contains(&level))
+        }
+        WordProcessorAction::ApplyNamedStyle {
+            region,
+            blocks,
+            style,
+            kind,
+            level,
+            ..
+        } => {
+            unique_existing(*region, blocks)
+                && !style.is_empty()
+                && style.len() <= 128
+                && kind.as_deref().is_none_or(safe_name)
+                && level.is_none_or(|level| (0..=9).contains(&level))
+        }
+        WordProcessorAction::SetBlockAttr {
+            region,
+            blocks,
+            key,
+            value,
+        } => unique_existing(*region, blocks) && valid_attr(key, value),
+        WordProcessorAction::SetImageCrop {
+            block,
+            left,
+            top,
+            right,
+            bottom,
+        } => {
+            block_len(RegionKind::Body, block).is_some()
+                && snap.blocks.iter().any(|b| b.id == *block && b.kind == "image")
+                && [left, top, right, bottom]
+                    .iter()
+                    .all(|edge| (0_i64..=9_500).contains(*edge))
+                // Always retain at least five percent of the source in both
+                // dimensions. This prevents a hostile crop from creating an
+                // infinite scale factor in the renderer.
+                && (*left).saturating_add(*right) <= 9_500
+                && (*top).saturating_add(*bottom) <= 9_500
+        }
+        WordProcessorAction::SetImageSize {
+            block,
+            width,
+            height,
+        } => {
+            block_len(RegionKind::Body, block).is_some()
+                && snap
+                    .blocks
+                    .iter()
+                    .any(|b| b.id == *block && b.kind == "image")
+                && (16..=100_000).contains(width)
+                && (16..=100_000).contains(height)
+        }
+        WordProcessorAction::SetImagePlacement {
+            block,
+            anchor,
+            wrap,
+            x,
+            y,
+            page,
+        } => {
+            block_len(RegionKind::Body, block).is_some()
+                && snap
+                    .blocks
+                    .iter()
+                    .any(|b| b.id == *block && b.kind == "image")
+                && matches!(anchor.as_str(), "inline" | "paragraph" | "page")
+                && matches!(wrap.as_str(), "none" | "left" | "right" | "both")
+                && (-100_000..=100_000).contains(x)
+                && (-100_000..=100_000).contains(y)
+                && (0..=10_000).contains(page)
+        }
+        WordProcessorAction::InsertTable { after, rows, cols } => {
+            block_len(RegionKind::Body, after).is_some()
+                && *rows > 0
+                && *cols > 0
+                && *rows <= MAX_TABLE_DIMENSION
+                && *cols <= MAX_TABLE_DIMENSION
+                && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
+        }
+        WordProcessorAction::InsertImage {
+            block,
+            at,
+            bytes,
+            width,
+            height,
+        } => {
+            block_len(RegionKind::Body, block).is_some_and(|len| *at <= len)
+                && !bytes.is_empty()
+                && bytes.len() <= MAX_ACTION_BLOB_BYTES
+                && width.is_none_or(|value| (1..=100_000).contains(&value))
+                && height.is_none_or(|value| (1..=100_000).contains(&value))
+        }
+        WordProcessorAction::InsertPageBreak { block, at } => {
+            block_len(RegionKind::Body, block).is_some_and(|len| *at <= len)
+        }
+        WordProcessorAction::InsertParagraph { after, text } => {
+            block_len(RegionKind::Body, after).is_some() && safe_text(text)
+        }
+        WordProcessorAction::RemoveBlocks { blocks } => unique_existing(RegionKind::Body, blocks),
+        WordProcessorAction::ReplaceBody { markdown } => safe_text(markdown),
+        WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
+            .as_ref()
+            .is_none_or(|id| snap.changes.iter().any(|change| &change.id == id)),
+        WordProcessorAction::ResolveComment { id } => {
+            !id.is_empty() && snap.comments.iter().any(|comment| comment.id == *id)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +615,16 @@ fn set_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str, valu
     }
 }
 
+fn set_kind_region(dm: &mut DocMut, region: Region, block: &str, kind: &str) {
+    if region == Region::Body {
+        dm.set_kind(block, kind);
+    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region)
+        && let Some(block_obj) = region_block_obj(dm.doc, &container, block)
+    {
+        let _ = dm.doc.put(&block_obj, qdoc::schema::BLOCK_KIND, kind);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-variant `apply` bodies. Split out of `Action::apply` below (one match
 // arm each) so that single trait method stays short; kept as free functions
@@ -345,6 +643,83 @@ fn apply_splice_text(
     ins: &str,
 ) {
     dm.splice_text_in(region, block, at, num::isize_of_usize(del), ins);
+}
+
+fn remove_block_in_region(dm: &mut DocMut, region: Region, block: &str) {
+    if region == Region::Body {
+        dm.remove_block(block);
+    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region) {
+        let _ = dm.doc.delete(&container, block);
+    }
+}
+
+fn apply_replace_selection(
+    dm: &mut DocMut,
+    region: Region,
+    start_block: &str,
+    start: usize,
+    end_block: &str,
+    end: usize,
+    ins: &str,
+) {
+    if start_block == end_block {
+        dm.splice_text_in(
+            region,
+            start_block,
+            start,
+            num::isize_of_usize(end - start),
+            ins,
+        );
+        return;
+    }
+    // Validation has already established both block positions/offsets against
+    // one snapshot, so this body cannot partly merge one valid end-point and
+    // then discover a stale second end-point.
+    let blocks = match region {
+        Region::Body => qdoc::model::blocks_in_order(dm.doc, dm.c),
+        region => qdoc::model::materialize_region(dm.doc, dm.c, region)
+            .into_iter()
+            .map(|block| block.id)
+            .collect(),
+    };
+    let Some(start_index) = blocks.iter().position(|block| block == start_block) else {
+        return;
+    };
+    let Some(end_index) = blocks.iter().position(|block| block == end_block) else {
+        return;
+    };
+    let end_text = match region {
+        Region::Body => qdoc::model::block_text(dm.doc, dm.c, end_block),
+        region => qdoc::model::materialize_region(dm.doc, dm.c, region)
+            .into_iter()
+            .find(|block| block.id == end_block)
+            .map(|block| block.text),
+    }
+    .unwrap_or_default();
+    let tail: String = end_text.chars().skip(end).collect();
+    let start_len = match region {
+        Region::Body => qdoc::model::block_text(dm.doc, dm.c, start_block),
+        region => qdoc::model::materialize_region(dm.doc, dm.c, region)
+            .into_iter()
+            .find(|block| block.id == start_block)
+            .map(|block| block.text),
+    }
+    .map_or(0, |text| text.chars().count());
+    dm.splice_text_in(
+        region,
+        start_block,
+        start,
+        num::isize_of_usize(start_len.saturating_sub(start)),
+        ins,
+    );
+    if !tail.is_empty() {
+        dm.splice_text_in(region, start_block, start + ins.chars().count(), 0, &tail);
+    }
+    if let Some(to_remove) = blocks.get(start_index.saturating_add(1)..=end_index) {
+        for block in to_remove {
+            remove_block_in_region(dm, region, block);
+        }
+    }
 }
 
 fn apply_set_mark(
@@ -381,6 +756,7 @@ fn apply_set_mark(
 
 fn apply_set_paragraph_style(
     dm: &mut DocMut,
+    region: Region,
     blocks: &[String],
     kind: &str,
     level: Option<i64>,
@@ -389,18 +765,19 @@ fn apply_set_paragraph_style(
     let mut sorted = blocks.to_vec();
     sorted.sort();
     for block in &sorted {
-        dm.set_kind(block, kind);
+        set_kind_region(dm, region, block, kind);
         if let Some(l) = level {
-            dm.set_attr(block, "level", l);
+            set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
         }
         if let Some(o) = ordered {
-            dm.set_attr(block, "ordered", o);
+            set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
         }
     }
 }
 
 fn apply_named_style(
     dm: &mut DocMut,
+    region: Region,
     blocks: &[String],
     style: &str,
     kind: Option<&String>,
@@ -411,15 +788,15 @@ fn apply_named_style(
     sorted.sort();
     for block in &sorted {
         if let Some(k) = kind {
-            dm.set_kind(block, k);
+            set_kind_region(dm, region, block, k);
             if let Some(l) = level {
-                dm.set_attr(block, "level", l);
+                set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
             }
             if let Some(o) = ordered {
-                dm.set_attr(block, "ordered", o);
+                set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
             }
         }
-        dm.set_attr(block, "style", style);
+        set_attr_region(dm, region, block, "style", &AttrVal::Str(style.to_string()));
     }
 }
 
@@ -522,22 +899,85 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     let _ = qdoc::MarkdownCodec.import(markdown.as_bytes(), dm);
 }
 
+fn ordered_change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
+    let order = qdoc::model::blocks_in_order(doc, c);
+    let mut ids = qdoc::model::change_ids(doc, c);
+    ids.sort_by_key(|id| {
+        qdoc::model::change_range(doc, c, id).map_or_else(
+            || (usize::MAX, usize::MAX, id.clone()),
+            |(block, start, _)| {
+                (
+                    order
+                        .iter()
+                        .position(|candidate| candidate == &block)
+                        .unwrap_or(usize::MAX),
+                    start,
+                    id.clone(),
+                )
+            },
+        )
+    });
+    ids
+}
+
+fn apply_review_changes(dm: &mut DocMut, id: Option<&str>, accept: bool) {
+    let mut ids = id.map_or_else(
+        || ordered_change_ids(dm.doc, dm.c),
+        |one| vec![one.to_string()],
+    );
+    // Work from the end of the document so removing text cannot shift an
+    // earlier change's anchored range before it is processed.
+    ids.reverse();
+    for id in &ids {
+        if accept {
+            dm.accept_change(id);
+        } else {
+            dm.reject_change(id);
+        }
+    }
+}
+
+fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
+    let range = qdoc::model::comment_range(dm.doc, dm.c, id);
+    if let Some((block, start, end)) = range
+        && start < end
+    {
+        dm.remove_mark(&block, start, end, qdoc::schema::MARK_COMMENT);
+    }
+    if let Some(comments) = dm.c.comments.as_ref() {
+        let _ = dm.doc.delete(comments, id);
+    }
+}
+
 impl Action for WordProcessorAction {
     /// Apply this action's mutation to `doc`.
     ///
     /// # Errors
     ///
-    /// Never returns `Err`: an action against a document with no schema yet,
-    /// or a malformed payload, is a documented no-op (see the module docs'
-    /// determinism contract) rather than a failure — a bad replay can't wedge
-    /// a peer. The `Result` return is the [`Action`] trait's shape.
+    /// Returns [`ActionError::Refused`] for an unavailable Writer document or
+    /// stale/hostile decoded arguments before opening a mutable view.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match deliberately makes the complete action envelope surface reviewable in one place"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // Bind to the canonical schema under ROOT. An unbound document (no
-        // schema yet) is a no-op — nothing to mutate, and a bad replay can't
-        // wedge.
+        // Bind to the canonical schema under ROOT. Refuse an unbound document
+        // explicitly so callers never mistake an unavailable target for a
+        // successful edit.
         let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
-            return Ok(());
+            return Err(ActionError::Refused(
+                "Writer document is unavailable or has not been initialized".into(),
+            ));
         };
+        // Validate every target against this one, immutable document state
+        // before creating the mutable editing view.  In particular, do not let
+        // a stale multi-block format/delete partially affect still-existing
+        // blocks when one peer has already removed another target.
+        if !action_is_valid(self, doc, &c) {
+            return Err(ActionError::Refused(
+                "action targets are stale or its arguments are outside Writer's safe limits".into(),
+            ));
+        }
         // A generator seeded past every existing id, under the executor's pinned
         // actor — so any freshly-minted block id is `{action-actor}.{n}`,
         // byte-identical on origin and replay.
@@ -557,6 +997,23 @@ impl Action for WordProcessorAction {
                 ins,
             } => apply_splice_text(&mut dm, region.to_region(), block, *at, *del, ins),
 
+            WordProcessorAction::ReplaceSelection {
+                region,
+                start_block,
+                start,
+                end_block,
+                end,
+                ins,
+            } => apply_replace_selection(
+                &mut dm,
+                region.to_region(),
+                start_block,
+                *start,
+                end_block,
+                *end,
+                ins,
+            ),
+
             WordProcessorAction::SetMark {
                 region,
                 spans,
@@ -573,19 +1030,36 @@ impl Action for WordProcessorAction {
             ),
 
             WordProcessorAction::SetParagraphStyle {
+                region,
                 blocks,
                 kind,
                 level,
                 ordered,
-            } => apply_set_paragraph_style(&mut dm, blocks, kind, *level, *ordered),
+            } => apply_set_paragraph_style(
+                &mut dm,
+                region.to_region(),
+                blocks,
+                kind,
+                *level,
+                *ordered,
+            ),
 
             WordProcessorAction::ApplyNamedStyle {
+                region,
                 blocks,
                 style,
                 kind,
                 level,
                 ordered,
-            } => apply_named_style(&mut dm, blocks, style, kind.as_ref(), *level, *ordered),
+            } => apply_named_style(
+                &mut dm,
+                region.to_region(),
+                blocks,
+                style,
+                kind.as_ref(),
+                *level,
+                *ordered,
+            ),
 
             WordProcessorAction::SetBlockAttr {
                 region,
@@ -593,6 +1067,43 @@ impl Action for WordProcessorAction {
                 key,
                 value,
             } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
+
+            WordProcessorAction::SetImageCrop {
+                block,
+                left,
+                top,
+                right,
+                bottom,
+            } => {
+                dm.set_attr(block, "crop_left", *left);
+                dm.set_attr(block, "crop_top", *top);
+                dm.set_attr(block, "crop_right", *right);
+                dm.set_attr(block, "crop_bottom", *bottom);
+            }
+
+            WordProcessorAction::SetImageSize {
+                block,
+                width,
+                height,
+            } => {
+                dm.set_attr(block, "width", *width);
+                dm.set_attr(block, "height", *height);
+            }
+
+            WordProcessorAction::SetImagePlacement {
+                block,
+                anchor,
+                wrap,
+                x,
+                y,
+                page,
+            } => {
+                dm.set_attr(block, "anchor", anchor.as_str());
+                dm.set_attr(block, "wrap", wrap.as_str());
+                dm.set_attr(block, "offset_x", *x);
+                dm.set_attr(block, "offset_y", *y);
+                dm.set_attr(block, "page", *page);
+            }
 
             WordProcessorAction::InsertTable { after, rows, cols } => {
                 apply_insert_table(&mut dm, after, *rows, *cols);
@@ -621,6 +1132,18 @@ impl Action for WordProcessorAction {
             WordProcessorAction::ReplaceBody { markdown } => {
                 apply_replace_body(&mut dm, markdown);
             }
+
+            WordProcessorAction::AcceptChanges { id } => {
+                apply_review_changes(&mut dm, id.as_deref(), true);
+            }
+
+            WordProcessorAction::RejectChanges { id } => {
+                apply_review_changes(&mut dm, id.as_deref(), false);
+            }
+
+            WordProcessorAction::ResolveComment { id } => {
+                apply_resolve_comment(&mut dm, id);
+            }
         }
         Ok(())
     }
@@ -641,8 +1164,8 @@ pub fn register(registry: &mut ActionRegistry) {
 /// into a replayable envelope.
 pub fn encode(action: &WordProcessorAction) -> EncodedAction {
     // The action is a plain serde enum over owned data, so the JSON encode
-    // cannot fail. Were it ever to, an empty payload simply fails to decode
-    // at the far end — a no-op — instead of aborting the process.
+    // cannot fail. Were it ever to, an empty payload fails decoding at the far
+    // end as an explicit action error instead of aborting the process.
     EncodedAction::encode(WORD_PROCESSOR_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
         type_id: WORD_PROCESSOR_ACTION_TYPE.to_string(),
         payload: Vec::new(),
@@ -671,6 +1194,25 @@ pub fn set_mark_action(
     }
 }
 
+/// Apply one external or internal hyperlink target to the selected text.
+///
+/// The URL remains a normal valued `link` mark, so it uses the same safe
+/// export/import/collaboration path as imported HTML/ODT/DOCX links. A target
+/// beginning with `#` is a document-local bookmark/cross-reference.
+pub fn set_hyperlink_action(
+    region: RegionKind,
+    spans: Vec<Span>,
+    target: &str,
+) -> WordProcessorAction {
+    set_mark_action(
+        region,
+        spans,
+        "link",
+        Some(MarkVal::Str(target.trim().to_string())),
+        Vec::new(),
+    )
+}
+
 /// Set one block attribute on `blocks`.
 pub fn set_block_attr_action(
     region: RegionKind,
@@ -683,6 +1225,51 @@ pub fn set_block_attr_action(
         blocks,
         key: key.to_string(),
         value,
+    }
+}
+
+/// Crop an image by source-relative edge insets (0..=9500 per edge).
+pub fn set_image_crop_action(
+    block: &str,
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+) -> WordProcessorAction {
+    WordProcessorAction::SetImageCrop {
+        block: block.to_string(),
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+/// Resize an image frame in document pixels.
+pub fn set_image_size_action(block: &str, width: i64, height: i64) -> WordProcessorAction {
+    WordProcessorAction::SetImageSize {
+        block: block.to_string(),
+        width,
+        height,
+    }
+}
+
+/// Put an image in normal flow or at a canonical page-relative free position.
+pub fn set_image_placement_action(
+    block: &str,
+    anchor: &str,
+    wrap: &str,
+    x: i64,
+    y: i64,
+    page: i64,
+) -> WordProcessorAction {
+    WordProcessorAction::SetImagePlacement {
+        block: block.to_string(),
+        anchor: anchor.to_string(),
+        wrap: wrap.to_string(),
+        x,
+        y,
+        page,
     }
 }
 
@@ -699,6 +1286,7 @@ pub fn set_align_action(blocks: Vec<String>, align: &str) -> WordProcessorAction
 /// Apply a named paragraph style (and, for a built-in, its structural kind) to
 /// `blocks` in one action.
 pub fn apply_named_style_action(
+    region: RegionKind,
     blocks: Vec<String>,
     style: &str,
     kind: Option<&str>,
@@ -706,6 +1294,7 @@ pub fn apply_named_style_action(
     ordered: Option<bool>,
 ) -> WordProcessorAction {
     WordProcessorAction::ApplyNamedStyle {
+        region,
         blocks,
         style: style.to_string(),
         kind: kind.map(std::string::ToString::to_string),
@@ -716,12 +1305,14 @@ pub fn apply_named_style_action(
 
 /// Set the paragraph kind/level/ordered on `blocks`.
 pub fn set_paragraph_style_action(
+    region: RegionKind,
     blocks: Vec<String>,
     kind: &str,
     level: Option<i64>,
     ordered: Option<bool>,
 ) -> WordProcessorAction {
     WordProcessorAction::SetParagraphStyle {
+        region,
         blocks,
         kind: kind.to_string(),
         level,
@@ -800,6 +1391,25 @@ pub fn splice_text_action(
     }
 }
 
+/// Replace a selection that may span several blocks with one canonical action.
+pub fn replace_selection_action(
+    region: RegionKind,
+    start_block: &str,
+    start: usize,
+    end_block: &str,
+    end: usize,
+    text: &str,
+) -> WordProcessorAction {
+    WordProcessorAction::ReplaceSelection {
+        region,
+        start_block: start_block.to_string(),
+        start,
+        end_block: end_block.to_string(),
+        end,
+        ins: text.to_string(),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -816,6 +1426,25 @@ pub struct WpResourceCtx {
     /// The blocks a block-level action targets — the selection, or the caret
     /// block when there is no selection.
     pub target_blocks: Vec<String>,
+    /// Exact non-empty character spans selected at palette invocation time.
+    /// This keeps a prompted hyperlink action resource-addressed and replayable
+    /// instead of consulting mutable presentation state after the user enters
+    /// a target.
+    pub format_spans: Vec<Span>,
+    /// The selection in document order when it is non-empty.  This semantic
+    /// context, rather than a caller-provided block id, binds the palette's
+    /// Replace selection operation to exactly what the user has selected.
+    pub selection: Option<SelectionTarget>,
+    pub region: RegionKind,
+}
+
+/// One non-empty selection expressed as stable block ids and character offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectionTarget {
+    pub start_block: String,
+    pub start: usize,
+    pub end_block: String,
+    pub end: usize,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> ActionSpec {
@@ -969,6 +1598,62 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         "Insert table",
         &insert_table_action(&ctx.caret_block, 2, 2),
     ));
+    if !ctx.format_spans.is_empty() {
+        let spans = ctx.format_spans.clone();
+        let region = ctx.region;
+        root = root.with_action(ActionSpec::typed(
+            "set-hyperlink",
+            "Add or change hyperlink",
+            "Web URL (https://… or mailto:…) or #bookmark",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required_owned(
+                "target",
+                ParamType::Text,
+                "A safe external URL, mail address, or document-local #bookmark target",
+            )],
+            move |args: &ActionArgs| {
+                let target = args.text("target").unwrap_or_default().trim();
+                if target.is_empty() {
+                    return EncodedAction {
+                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"hyperlink target is required".to_vec(),
+                    };
+                }
+                encode(&set_hyperlink_action(region, spans.clone(), target))
+            },
+        ));
+    }
+    if let Some(selection) = &ctx.selection {
+        let selection = selection.clone();
+        let region = ctx.region;
+        root = root.with_action(ActionSpec::typed(
+            "replace-selection",
+            "Replace selection",
+            "Replacement text for the selected document range",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required_owned(
+                "text",
+                ParamType::Text,
+                "Text that replaces the current selection (empty deletes it)",
+            )],
+            move |args: &ActionArgs| {
+                let Some(text) = args.text("text") else {
+                    return EncodedAction {
+                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"replacement text is required".to_vec(),
+                    };
+                };
+                encode(&replace_selection_action(
+                    region,
+                    &selection.start_block,
+                    selection.start,
+                    &selection.end_block,
+                    selection.end,
+                    text,
+                ))
+            },
+        ));
+    }
     let image_anchor = ctx.caret_block.clone();
     let image_offset = ctx.caret_offset;
     root = root.with_action(
@@ -1027,9 +1712,148 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     };
     let snap = qdoc::model::materialize(doc, &c);
 
-    // Images → a resource each, with a delete action.
+    // Review is document state, not an overlay-only island: comments and
+    // tracked changes are navigable resources, and every resolution decision
+    // is the same typed, replayable action used by the margin cards.
+    if !snap.comments.is_empty() || !snap.changes.is_empty() {
+        let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
+        if !snap.changes.is_empty() {
+            review = review
+                .with_action(immediate_spec(
+                    "accept-all",
+                    "Accept all changes",
+                    &WordProcessorAction::AcceptChanges { id: None },
+                ))
+                .with_action(immediate_spec(
+                    "reject-all",
+                    "Reject all changes",
+                    &WordProcessorAction::RejectChanges { id: None },
+                ));
+        }
+        for comment in &snap.comments {
+            let text = comment
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let label = format!(
+                "Comment by {}: {}",
+                short(&comment.author, "Unknown author"),
+                short(&text, "Empty comment")
+            );
+            review = review.with_child(
+                Resource::new(
+                    format!("word-processor.comment:{}", comment.id),
+                    "word_processor.comment",
+                    label,
+                )
+                .with_action(immediate_spec(
+                    "resolve",
+                    "Resolve comment",
+                    &WordProcessorAction::ResolveComment {
+                        id: comment.id.clone(),
+                    },
+                )),
+            );
+        }
+        for change in &snap.changes {
+            let kind = match change.kind {
+                qdoc::snapshot::ChangeKind::Ins => "Insertion",
+                qdoc::snapshot::ChangeKind::Del => "Deletion",
+            };
+            review = review.with_child(
+                Resource::new(
+                    format!("word-processor.change:{}", change.id),
+                    "word_processor.change",
+                    format!("{kind} by {}", short(&change.author, "Unknown author")),
+                )
+                .with_action(immediate_spec(
+                    "accept",
+                    "Accept change",
+                    &WordProcessorAction::AcceptChanges {
+                        id: Some(change.id.clone()),
+                    },
+                ))
+                .with_action(immediate_spec(
+                    "reject",
+                    "Reject change",
+                    &WordProcessorAction::RejectChanges {
+                        id: Some(change.id.clone()),
+                    },
+                )),
+            );
+        }
+        root = root.with_child(review);
+    }
+
+    if !snap.notes.is_empty() {
+        let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
+        for note in &snap.notes {
+            let text = note
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            notes = notes.with_child(Resource::new(
+                format!("word-processor.note:{}", note.id),
+                "word_processor.note",
+                format!("{}: {}", note.kind, short(&text, "Empty note")),
+            ));
+        }
+        root = root.with_child(notes);
+    }
+
+    if !snap.bookmarks.is_empty() {
+        let mut bookmarks = Resource::new(
+            "word-processor.bookmarks",
+            "word_processor.bookmarks",
+            "Bookmarks",
+        );
+        for bookmark in &snap.bookmarks {
+            bookmarks = bookmarks.with_child(Resource::new(
+                format!("word-processor.bookmark:{}", bookmark.name),
+                "word_processor.bookmark",
+                bookmark.name.clone(),
+            ));
+        }
+        root = root.with_child(bookmarks);
+    }
+
+    if !snap.styles.is_empty() {
+        let mut styles = Resource::new(
+            "word-processor.styles",
+            "word_processor.styles",
+            "Paragraph styles",
+        );
+        for style in snap.styles.keys() {
+            styles = styles.with_child(Resource::new(
+                format!("word-processor.style:{style}"),
+                "word_processor.style",
+                style.clone(),
+            ));
+        }
+        root = root.with_child(styles);
+    }
+
+    // Images are first-class document resources.  Object layout is not a
+    // private canvas gesture: crop, flow/free placement, and delete all use
+    // the same replayable action envelope as the inspector controls.
     for b in snap.blocks.iter().filter(|b| b.kind == "image") {
-        let child = Resource::new(
+        let edge = |key: &str| match b.attrs.get(key) {
+            // Imported/legacy attributes are not action-validated, so clamp
+            // before the resource builder does arithmetic for its next crop.
+            Some(qdoc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
+            _ => 0,
+        };
+        let left = edge("crop_left");
+        let top = edge("crop_top");
+        let right = edge("crop_right");
+        let bottom = edge("crop_bottom");
+        let can_crop_further =
+            left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
+        let mut child = Resource::new(
             format!("word-processor.image:{}", b.id),
             "word_processor.image",
             "Image",
@@ -1039,6 +1863,36 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             "Delete image",
             &remove_blocks_action(vec![b.id.clone()]),
         ));
+        if can_crop_further {
+            child = child.with_action(immediate_spec(
+                "crop-inset",
+                "Crop image by 5%",
+                &set_image_crop_action(&b.id, left + 250, top + 250, right + 250, bottom + 250),
+            ));
+        }
+        if left != 0 || top != 0 || right != 0 || bottom != 0 {
+            child = child.with_action(immediate_spec(
+                "reset-crop",
+                "Reset crop",
+                &set_image_crop_action(&b.id, 0, 0, 0, 0),
+            ));
+        }
+        child = child
+            .with_action(immediate_spec(
+                "free-position",
+                "Place freely on page",
+                &set_image_placement_action(&b.id, "page", "none", 0, 0, 0),
+            ))
+            .with_action(immediate_spec(
+                "flow-left",
+                "Wrap text on right",
+                &set_image_placement_action(&b.id, "paragraph", "left", 0, 0, 0),
+            ))
+            .with_action(immediate_spec(
+                "flow-right",
+                "Wrap text on left",
+                &set_image_placement_action(&b.id, "paragraph", "right", 0, 0, 0),
+            ));
         root = root.with_child(child);
     }
 
@@ -1102,7 +1956,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
 
 impl ResourceProvider for crate::widget::WordProcessorWidget {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.wp_resource_ctx() {
+        match self.wp_resource_ctx(doc) {
             Some(ctx) => provide_resources(&ctx, doc),
             None => Vec::new(),
         }
@@ -1243,7 +2097,13 @@ mod tests {
         let bytes = a.save();
         let mut b = ui::State::load(&bytes).unwrap();
 
-        let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
+        let action = set_paragraph_style_action(
+            RegionKind::Body,
+            vec![block.clone()],
+            "heading",
+            Some(1),
+            None,
+        );
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
         qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
@@ -1379,8 +2239,15 @@ mod tests {
             "starts as a paragraph"
         );
 
-        let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
-        dispatch(&mut state.doc, &action);
+        let action = set_paragraph_style_action(
+            RegionKind::Body,
+            vec![block.clone()],
+            "heading",
+            Some(1),
+            None,
+        );
+        let result = action.apply(&mut state.doc);
+        assert!(result.is_ok());
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1411,6 +2278,9 @@ mod tests {
             caret_block: block.clone(),
             caret_offset: 0,
             target_blocks: vec![block.clone()],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &state.doc);
         let doc_res = &resources[0];
@@ -1445,12 +2315,83 @@ mod tests {
     }
 
     #[test]
+    fn selected_text_exposes_a_typed_hyperlink_action_that_replays() {
+        let (mut state, ids) = seeded("Read this\n");
+        let block = ids[0].clone();
+        let ctx = WpResourceCtx {
+            format_spans: vec![Span {
+                block: block.clone(),
+                start: 0,
+                end: 4,
+            }],
+            selection: Some(SelectionTarget {
+                start_block: block.clone(),
+                start: 0,
+                end_block: block.clone(),
+                end: 4,
+            }),
+            region: RegionKind::Body,
+            caret_block: block.clone(),
+            caret_offset: 4,
+            target_blocks: vec![block.clone()],
+        };
+        let root = provide_resources(&ctx, &state.doc).pop().unwrap();
+        let replace = root
+            .actions
+            .iter()
+            .find(|action| action.id == "replace-selection")
+            .expect("selected text exposes canonical replacement");
+        let replacement = replace
+            .build_args([(
+                "text".to_string(),
+                qos_actions::ArgValue::Text("guide".into()),
+            )])
+            .unwrap();
+        assert_eq!(
+            replacement,
+            encode(&replace_selection_action(
+                RegionKind::Body,
+                &block,
+                0,
+                &block,
+                4,
+                "guide",
+            )),
+            "palette binding is byte-identical to the canonical selection action"
+        );
+        let link = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-hyperlink")
+            .expect("selected text exposes link authoring");
+        assert_eq!(link.params().len(), 1);
+        assert_eq!(link.params()[0].name, "target");
+        let encoded = link
+            .build_args([(
+                "target".to_string(),
+                qos_actions::ArgValue::Text("https://example.com/guide".into()),
+            )])
+            .unwrap();
+        let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+        action.apply(&mut state.doc).unwrap();
+        assert!(body_blocks(&state.doc)[0].marks.iter().any(|mark| {
+            mark.name == "link"
+                && mark.start == 0
+                && mark.end == 4
+                && mark.value.as_str() == Some("https://example.com/guide")
+        }));
+    }
+
+    #[test]
     fn file_operations_are_typed_background_jobs() {
         let (state, ids) = seeded("Intro\n");
         let ctx = WpResourceCtx {
             caret_block: ids[0].clone(),
             caret_offset: 0,
             target_blocks: vec![ids[0].clone()],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &state.doc);
         for id in ["open", "save", "save-as"] {
@@ -1479,6 +2420,9 @@ mod tests {
             caret_block: block,
             caret_offset: 0,
             target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
         };
         let bytes = b"content supplied by a preceding action";
         let hash = qdoc::blobstore::put(bytes);
@@ -1533,6 +2477,9 @@ mod tests {
             caret_block: para.clone(),
             caret_offset: 0,
             target_blocks: vec![para],
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
         };
         let resources = provide_resources(&ctx, &state.doc);
         assert_eq!(resources.len(), 1, "one document root");
@@ -1567,5 +2514,193 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete table")),
             "{labels:?}"
         );
+        palette.set_query("Crop image");
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|label| label.contains("Crop image")),
+            "image crop is a searchable resource action"
+        );
+    }
+
+    #[test]
+    fn image_object_actions_are_atomic_replayable_and_refuse_stale_targets() {
+        let (mut a, ids) = seeded("Object\n");
+        let block = ids[0].clone();
+        dispatch(
+            &mut a.doc,
+            &insert_image_action(&block, 0, vec![1, 2, 3, 4], Some(40), Some(30)),
+        );
+        let image = body_blocks(&a.doc)
+            .into_iter()
+            .find(|view| view.kind == "image")
+            .expect("inserted image")
+            .id;
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).expect("fork document");
+        let actions = [
+            set_image_size_action(&image, 120, 90),
+            set_image_crop_action(&image, 500, 250, 500, 250),
+            set_image_placement_action(&image, "page", "none", 24, 36, 0),
+        ];
+        for action in &actions {
+            let envelope = qos_actions::apply_local(&mut a.doc, action, encode(action))
+                .expect("apply object action");
+            qos_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
+        }
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "object actions replay byte-identically"
+        );
+        let image_view = body_blocks(&a.doc)
+            .into_iter()
+            .find(|view| view.id == image)
+            .expect("image remains");
+        assert_eq!(
+            image_view.attrs.get("crop_left"),
+            Some(&qdoc::AttrVal::Int(500))
+        );
+        assert_eq!(
+            image_view.attrs.get("offset_x"),
+            Some(&qdoc::AttrVal::Int(24))
+        );
+
+        let before = a.save();
+        let stale = set_image_crop_action("already-removed", 0, 0, 0, 0);
+        assert!(matches!(
+            stale.apply(&mut a.doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert_eq!(a.save(), before, "refusal has no partial mutation");
+    }
+
+    #[test]
+    fn review_entities_are_resources_and_decisions_replay_identically() {
+        let (mut a, ids) = seeded("Review this sentence\n");
+        let block = ids[0].clone();
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let mut id_gen = qdoc::IdGen::new(a.doc.get_actor().to_hex_string());
+        let (comment, change) = {
+            let mut dm = qdoc::DocMut {
+                doc: &mut a.doc,
+                c: &c,
+                ids: &mut id_gen,
+            };
+            (
+                dm.add_comment(&block, 0, 6, "Maya", "Please clarify this."),
+                dm.track_insert(&block, 20, " now", "Jonas", "2026-09-05"),
+            )
+        };
+        a.doc.commit();
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+
+        let ctx = WpResourceCtx {
+            caret_block: block,
+            caret_offset: 0,
+            target_blocks: Vec::new(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: RegionKind::Body,
+        };
+        let resources = provide_resources(&ctx, &a.doc);
+        let review = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "word-processor.review")
+            .expect("review group is navigable");
+        let comment_resource_id = format!("word-processor.comment:{comment}");
+        let comment_resource = review
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == comment_resource_id.as_str())
+            .expect("comment is a resource");
+        assert!(
+            comment_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "resolve")
+        );
+        let change_resource_id = format!("word-processor.change:{change}");
+        let change_resource = review
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == change_resource_id.as_str())
+            .expect("tracked change is a resource");
+        let accept = immediate_encode(
+            change_resource
+                .actions
+                .iter()
+                .find(|action| action.id == "accept")
+                .unwrap(),
+        );
+        let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
+        let envelope = qos_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        assert_eq!(a.doc.get_heads(), b.doc.get_heads());
+        let snap = qdoc::model::materialize(
+            &a.doc,
+            &qdoc::model::open(&a.doc, &automerge::ROOT).unwrap(),
+        );
+        assert!(snap.changes.is_empty(), "accepted change left review state");
+        assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
+    }
+
+    #[test]
+    fn stale_multi_target_action_is_an_atomic_noop() {
+        let (mut state, ids) = seeded("first\nsecond\n");
+        let before = state.doc.save();
+        let action = set_block_attr_action(
+            RegionKind::Body,
+            vec![ids[0].clone(), "deleted-by-a-peer".to_string()],
+            "align",
+            AttrVal::Str("center".to_string()),
+        );
+        let result = action.apply(&mut state.doc);
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert_eq!(
+            state.doc.save(),
+            before,
+            "one stale target must not leave the valid target partly changed"
+        );
+    }
+
+    #[test]
+    fn hostile_table_dimensions_are_rejected_before_any_write() {
+        let (mut state, ids) = seeded("anchor\n");
+        let before = state.doc.save();
+        let result = insert_table_action(&ids[0], MAX_TABLE_DIMENSION + 1, 1).apply(&mut state.doc);
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert_eq!(state.doc.save(), before);
+    }
+
+    #[test]
+    fn unbound_document_is_refused_without_a_write() {
+        let mut doc = AutoCommit::new();
+        let before = doc.save();
+        let result = WordProcessorAction::ReplaceBody {
+            markdown: "# should not initialize an arbitrary document".to_string(),
+        }
+        .apply(&mut doc);
+        assert!(matches!(result, Err(ActionError::Refused(_))));
+        assert_eq!(doc.save(), before);
+    }
+
+    #[test]
+    fn cross_block_selection_replacement_is_one_replayable_action() {
+        let (mut a, ids) = seeded("alpha\n\nbeta\n\ngamma\n");
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+        let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
+        let encoded = encode(&action);
+        let envelope = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        assert_eq!(a.doc.get_heads(), b.doc.get_heads());
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "alXma");
     }
 }

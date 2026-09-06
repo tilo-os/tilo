@@ -925,6 +925,26 @@ pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     ordered_keys(doc, &c.blocks)
 }
 
+/// Materialize exactly the requested body blocks, in the supplied order.
+///
+/// This is deliberately unlike [`materialize`] and [`materialize_region`]: it
+/// does not enumerate the body container first. Callers that already maintain a
+/// canonical order index (for example a viewport renderer) can therefore fetch
+/// a bounded visible window without allocating views for an entire imported
+/// document. Missing ids are ignored; that makes a window assembled immediately
+/// before a concurrent deletion safe to consume without fabricating a block.
+pub fn materialize_blocks(doc: &AutoCommit, c: &Containers, ids: &[String]) -> Vec<BlockView> {
+    ids.iter()
+        .filter(|id| {
+            matches!(
+                doc.get(&c.blocks, id.as_str()),
+                Ok(Some((Value::Object(ObjType::Map), _)))
+            )
+        })
+        .map(|id| materialize_block(doc, &c.blocks, id))
+        .collect()
+}
+
 /// The byte length of every body block's fractional order key. The truncating [`crate::order::key_between`]
 /// keeps these bounded for a run of sequential appends; a naive append-a-byte scheme grows them O(n) per key.
 /// The perf test asserts the max stays small — a direct, mode-independent guard on the key-growth half of the fix.
@@ -3414,6 +3434,49 @@ mod region_tests {
             materialize_region(&doc, &c, Region::Header).is_empty(),
             "header cleared"
         );
+    }
+
+    #[test]
+    fn materialize_requested_blocks_preserves_input_order_and_block_fidelity() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (first, middle, last);
+        {
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            first = dm.insert_block(None, "paragraph");
+            dm.splice_text(&first, 0, 0, "first");
+            middle = dm.insert_block(Some(&first), "paragraph");
+            dm.splice_text(&middle, 0, 0, "middle");
+            last = dm.insert_block(Some(&middle), "heading");
+            dm.splice_text(&last, 0, 0, "last");
+            dm.set_attr(&last, "level", 2_i64);
+            dm.add_mark(&last, 0, 4, "strong", true);
+        }
+
+        let requested = vec![last.clone(), first.clone(), "deleted-remotely".into()];
+        let scans_before = ordered_keys_scan_count();
+        let views = materialize_blocks(&doc, &c, &requested);
+
+        assert_eq!(ordered_keys_scan_count(), scans_before, "no body scan");
+        assert_eq!(
+            views.iter().map(|b| &b.id).collect::<Vec<_>>(),
+            vec![&last, &first]
+        );
+        assert_eq!(views[0].kind, "heading");
+        assert_eq!(views[0].text, "last");
+        assert_eq!(views[0].attrs.get("level"), Some(&AttrVal::Int(2)));
+        assert!(
+            views[0]
+                .marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 0 && m.end == 4)
+        );
+        assert_eq!(views[1].text, "first");
     }
 }
 

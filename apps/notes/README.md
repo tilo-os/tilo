@@ -123,10 +123,11 @@ Inline marks inside any non-code block:
 | Inline code                  | `` `code` `` / `Ctrl-E`|
 | Heading 1 / 2 / 3            | `# ` / `## ` / `### ` at line start |
 
-## Known limitations (v0.1)
+## Current boundaries
 
-The shape of the app is right; these are sharp edges that will get
-filed down in follow-up phases.
+Keep this list evidence-based. Cross-block keyboard selection and
+drag-to-reorder/re-parent are implemented and covered by the shared editor and
+sidebar tests; they are deliberately not listed as missing features.
 
 - **Link text doesn't track renames.** A `[[Welcome]]` link points at
   the page id resolved at the time the block was parsed. If you
@@ -140,16 +141,16 @@ filed down in follow-up phases.
   popover and slash menu open at the bottom-left of the current line
   rather than directly under the caret. Reads as "close enough" for
   v0.1 but a polish target.
-- **Link click hit-test uses a hardcoded theme.** The byte→pixel
-  reverse lookup for click-on-link reads `Theme::dark()` to resolve
-  text padding. Harmless in practice (the editor draws in
-  plain-chrome mode where padding is zero) but a TODO when light
-  theme lands.
-- **No multi-cursor / multi-selection inside blocks.** One caret per
-  line; the editor selects by paragraph, not by a free-form range.
-- **No drag-and-drop reordering of pages or blocks.** Pages get
-  reordered by parent + creation order; blocks reorder by editing
-  the markdown.
+- **Link click hit-testing relies on the editor's zero-padding invariant.** The
+  byte→pixel reverse lookup currently supplies `Theme::dark()`, while the
+  plain-chrome editor deliberately uses zero horizontal padding in every
+  theme. Passing the active theme directly would remove that hidden coupling.
+- **No simultaneous independent carets.** A single user can make a free-form
+  selection across blocks, but the editor does not expose multiple local
+  carets/selections at once. Remote collaborator carets are still shown.
+- **Blocks do not have a dedicated drag handle.** Pages can be dragged to
+  reorder or re-parent them. Block order is changed through ordinary editing;
+  there is not yet a separate block-drag affordance.
 
 ## Architecture
 

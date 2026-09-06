@@ -12,7 +12,10 @@ grep -Fq -- '--splash /out/qos-splash.bmp' "$uki"
 grep -Fq 'make-boot-splash.py /out/qos-splash.bmp' "$uki"
 grep -Fq 'COPY os/dev/make-boot-splash.py' "$containerfile"
 grep -Fq 'plymouth-plugin-script' "$containerfile"
-grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth"' "$containerfile"
+if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback"' "$containerfile"; then
+  printf 'initramfs must explicitly include crypt, TPM, Plymouth, and qOS rollback unlock modules\n' >&2
+  exit 1
+fi
 grep -Fq 'plymouth-set-default-theme qos' "$containerfile"
 grep -Fq 'ModuleName=script' "$theme"
 grep -Fq 'Plymouth.SetDisplayPasswordFunction(display_password)' "$script"

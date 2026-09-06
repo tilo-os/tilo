@@ -56,7 +56,7 @@ impl ActionHost {
         self.ambient_context = context;
     }
 
-    /// Brackets the undo boundary on the *first* action of the event only
+    /// Brackets the undo boundary on the *first* successful action of the event only
     /// (`get_heads` flushes pending app writes, so the bracket covers only
     /// the action's own change), encodes + remembers it as
     /// [`last_dispatched`](Self::last_dispatched), then dispatches through
@@ -68,7 +68,32 @@ impl ActionHost {
     where
         A: Action + serde::Serialize,
     {
-        self.dispatch_maybe_context(doc, type_id, action, None);
+        if let Err(error) = self.try_dispatch(doc, type_id, action) {
+            tracing::warn!(error = %error, type_id = %type_id, "action dispatch failed");
+        }
+    }
+
+    /// Dispatch an action through the canonical local executor and return a
+    /// structured refusal or infrastructure error to the affordance.
+    ///
+    /// Unlike [`dispatch`](Self::dispatch), this does not swallow errors. It
+    /// only records an undo boundary and last-dispatched payload after the
+    /// action actually applies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an encoding, document, or application refusal error without
+    /// recording an undo boundary or last-dispatched payload.
+    pub fn try_dispatch<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        action: &A,
+    ) -> Result<(), qos_actions::ActionError>
+    where
+        A: Action + serde::Serialize,
+    {
+        self.try_dispatch_maybe_context(doc, type_id, action, None)
     }
 
     /// Dispatch with the activity context the app already has at the direct
@@ -84,32 +109,44 @@ impl ActionHost {
     ) where
         A: Action + serde::Serialize,
     {
-        self.dispatch_maybe_context(doc, type_id, action, Some(context));
+        if let Err(error) = self.try_dispatch_with_context(doc, type_id, action, context) {
+            tracing::warn!(error = %error, type_id = %type_id, "action dispatch failed");
+        }
     }
 
-    fn dispatch_maybe_context<A>(
+    /// Contextual [`try_dispatch`](Self::try_dispatch). Resource/history
+    /// provenance follows the same canonical executor path as every other
+    /// direct affordance.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same encoding, document, or application refusal errors as
+    /// [`try_dispatch`](Self::try_dispatch), without recording success state.
+    pub fn try_dispatch_with_context<A>(
+        &mut self,
+        doc: &mut AutoCommit,
+        type_id: &str,
+        action: &A,
+        context: ActionContext,
+    ) -> Result<(), qos_actions::ActionError>
+    where
+        A: Action + serde::Serialize,
+    {
+        self.try_dispatch_maybe_context(doc, type_id, action, Some(context))
+    }
+
+    fn try_dispatch_maybe_context<A>(
         &mut self,
         doc: &mut AutoCommit,
         type_id: &str,
         action: &A,
         context: Option<ActionContext>,
-    ) where
+    ) -> Result<(), qos_actions::ActionError>
+    where
         A: Action + serde::Serialize,
     {
-        if self.commit_before.is_none() {
-            self.commit_before = Some(doc.get_heads());
-        }
-        // Same "never panics the app" contract as the dispatch below: an
-        // encoding failure is logged and swallowed rather than taking the
-        // affordance down with it.
-        let encoded = match EncodedAction::encode(type_id, action) {
-            Ok(encoded) => encoded,
-            Err(e) => {
-                tracing::warn!(error = %e, type_id = %type_id, "action encoding failed");
-                return;
-            }
-        };
-        self.last_dispatched = Some(encoded.clone());
+        let encoded = EncodedAction::encode(type_id, action)?;
+        let before = doc.get_heads();
         let mut transport = qos_actions::LocalTransport::new();
         let actor = doc.get_actor().to_bytes().to_vec();
         let context = match (context, self.ambient_context.as_ref()) {
@@ -121,16 +158,21 @@ impl ActionHost {
             Some(context) => qos_actions::dispatch_by_with_context(
                 doc,
                 action,
-                encoded,
+                encoded.clone(),
                 &mut transport,
                 Some(&actor),
                 context,
             ),
-            None => qos_actions::dispatch_by(doc, action, encoded, &mut transport, Some(&actor)),
+            None => {
+                qos_actions::dispatch_by(doc, action, encoded.clone(), &mut transport, Some(&actor))
+            }
         };
-        if let Err(e) = result {
-            tracing::warn!(error = %e, type_id = %type_id, "action dispatch failed");
+        result?;
+        if self.commit_before.is_none() {
+            self.commit_before = Some(before);
         }
+        self.last_dispatched = Some(encoded);
+        Ok(())
     }
 
     /// Apply an action immediately through an [`OptimisticQueue`] and return
@@ -207,6 +249,19 @@ mod tests {
         }
         fn locus(&self) -> ExecutionLocus {
             ExecutionLocus::ClientLocal
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Refuse;
+
+    impl Action for Refuse {
+        fn apply(&self, _doc: &mut qos_actions::Doc) -> Result<(), qos_actions::ActionError> {
+            Err(qos_actions::ActionError::Refused("not allowed".into()))
+        }
+
+        fn locus(&self) -> qos_actions::ExecutionLocus {
+            qos_actions::ExecutionLocus::ClientLocal
         }
     }
 
@@ -309,6 +364,19 @@ mod tests {
             .last_dispatched()
             .expect("dispatch recorded the action");
         assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
+    }
+
+    #[test]
+    fn try_dispatch_refusal_leaves_no_undo_boundary_or_last_payload() {
+        let mut doc = AutoCommit::new();
+        let mut host = ActionHost::new();
+        assert!(matches!(
+            host.try_dispatch(&mut doc, "test.refuse", &Refuse),
+            Err(qos_actions::ActionError::Refused(_))
+        ));
+        assert!(host.take_committed().is_none());
+        assert!(host.last_dispatched().is_none());
+        assert!(doc.get_heads().is_empty());
     }
 
     #[test]

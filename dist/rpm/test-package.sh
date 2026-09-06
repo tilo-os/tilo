@@ -9,7 +9,12 @@ done
 dnf install -y "$@" file
 "$repo_root/dist/verify-payload.sh" /
 rpm -q qos-session >/dev/null
+rpm -q --requires qos-session | grep -Fxq bubblewrap
+rpm -q --requires qos-session | grep -Fxq xwayland-satellite
+rpm -q --requires qos-session | grep -Fxq xdg-desktop-portal
+rpm -q --requires qos-session | grep -Fxq xdg-dbus-proxy
 if (( expect_devel )); then
     "$repo_root/dist/verify-devel-payload.sh" /
     rpm -q qos-session-devel >/dev/null
 fi
+"$repo_root/dist/ci/test-installed-host-startup.sh"

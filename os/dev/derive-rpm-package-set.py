@@ -33,7 +33,16 @@ def logical_lines(text: str):
 
 
 def packages(path: pathlib.Path):
-    for line in logical_lines(path.read_text()):
+    text = path.read_text()
+    for marker in re.finditer(
+        r"^\s*#\s*qos-rpm-snapshot-package:\s*(\S+)\s*$", text, re.MULTILINE
+    ):
+        spec = marker.group(1)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+()=*-]*", spec):
+            raise SystemExit(f"{path}: invalid snapshot-only package {spec!r}")
+        yield spec
+
+    for line in logical_lines(text):
         for command in line.split("&&"):
             if not re.search(r"\b(?:dnf|microdnf)\s+install\b", command):
                 continue

@@ -91,6 +91,9 @@ pub struct Dropdown {
     id: String,
     /// Fluent message id spoken independently from the selected value.
     accessible_name: Option<String>,
+    /// Stable machine values parallel to the human-readable option labels.
+    /// The legacy constructor uses equal value/label pairs.
+    values: Vec<String>,
     options: Vec<String>,
     value_path: String,
     local_state: Option<crate::local_state::LocalBinding<String>>,
@@ -134,6 +137,7 @@ impl Dropdown {
         Self {
             id: String::new(),
             accessible_name: None,
+            values: options.clone(),
             options,
             value_path: value_path.to_string(),
             local_state: None,
@@ -250,6 +254,31 @@ impl Dropdown {
     pub fn is_open(&self) -> bool {
         self.open
     }
+
+    /// Replace the available options while preserving the current value when
+    /// possible. Useful for embedded hosts whose choices are model-derived.
+    pub fn set_options(&mut self, options: Vec<String>) {
+        self.values.clone_from(&options);
+        self.options = options;
+        self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
+    }
+
+    /// Set stable values with separate presentation labels. This keeps a
+    /// duplicate label selectable and searchable without exposing ids in UI.
+    pub fn set_value_options(&mut self, options: Vec<(String, String)>) {
+        let (values, labels): (Vec<_>, Vec<_>) = options.into_iter().unzip();
+        self.values = values;
+        self.options = labels;
+        self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
+    }
+
+    /// Open the shared searchable, scrollable menu and align its highlight to
+    /// the current selected value on the next sync.
+    pub fn open_menu(&mut self) {
+        self.open = true;
+        self.align_highlight_on_sync = true;
+    }
+
     pub fn selected(&self) -> &str {
         &self.selected
     }
@@ -307,6 +336,14 @@ impl Dropdown {
         self.filtered().len()
     }
 
+    /// Height occupied by the closed control and its open options overlay.
+    ///
+    /// External-layout hosts can use this to make a surrounding popover hug
+    /// the visible rows without duplicating the dropdown's sizing constants.
+    pub fn open_overlay_height(&self) -> f64 {
+        CONTROL_HEIGHT + LIST_GAP + Self::list_box_height(self.visible_count())
+    }
+
     /// Read the value at `value_path` (Text object or scalar string).
     fn read_value(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
         match state.get(root, path) {
@@ -323,8 +360,21 @@ impl Dropdown {
     fn selected_pos(&self, filtered: &[usize]) -> usize {
         filtered
             .iter()
-            .position(|&i| self.options.get(i).is_some_and(|o| *o == self.selected))
+            .position(|&i| {
+                self.values
+                    .get(i)
+                    .is_some_and(|value| *value == self.selected)
+            })
             .unwrap_or(0)
+    }
+
+    /// Presentation label for the selected stable value.
+    fn selected_label(&self) -> &str {
+        self.values
+            .iter()
+            .position(|value| *value == self.selected)
+            .and_then(|index| self.options.get(index))
+            .map_or(self.selected.as_str(), String::as_str)
     }
 
     /// Height of the open list box for `n` filtered rows (>=1 so the
@@ -389,7 +439,8 @@ impl Dropdown {
         self.ensure_visible(self.highlight, filtered.len());
     }
 
-    fn close(&mut self) {
+    /// Close the options overlay without changing its selected value.
+    pub fn close(&mut self) {
         self.open = false;
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
@@ -431,7 +482,7 @@ impl Dropdown {
     fn select_highlighted(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let filtered = self.filtered();
         if let Some(&opt_idx) = filtered.get(self.highlight)
-            && let Some(value) = self.options.get(opt_idx).cloned()
+            && let Some(value) = self.values.get(opt_idx).cloned()
         {
             self.commit_value(&value, state, root);
         }
@@ -683,7 +734,7 @@ impl Widget for Dropdown {
             let (label, color) = if self.selected.is_empty() {
                 (self.placeholder.as_str(), theme.text_dim)
             } else {
-                (self.selected.as_str(), theme.text_primary)
+                (self.selected_label(), theme.text_primary)
             };
             if !label.is_empty() {
                 scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
@@ -777,7 +828,10 @@ impl Widget for Dropdown {
                     continue;
                 };
                 let row = Rect::new(list.x0, row_top, list.x1, row_bottom);
-                let is_selected = *opt == self.selected;
+                let is_selected = self
+                    .values
+                    .get(opt_idx)
+                    .is_some_and(|value| *value == self.selected);
                 if vi == self.highlight {
                     scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &row);
                 } else if is_selected {
@@ -957,7 +1011,7 @@ impl Widget for Dropdown {
         let name = if let Some(name) = &self.accessible_name {
             Some(crate::i18n!(name))
         } else if !self.selected.is_empty() {
-            Some(self.selected.clone())
+            Some(self.selected_label().to_string())
         } else if !self.placeholder.is_empty() {
             Some(self.placeholder.clone())
         } else {
@@ -966,7 +1020,7 @@ impl Widget for Dropdown {
         let value = if self.open && !self.filter.is_empty() {
             Some(self.filter.clone())
         } else {
-            (!self.selected.is_empty()).then(|| self.selected.clone())
+            (!self.selected.is_empty()).then(|| self.selected_label().to_string())
         };
         let mut node = AccessNode::new(Role::ComboBox)
             .with_optional_name(name)
@@ -979,7 +1033,7 @@ impl Widget for Dropdown {
                 ..Default::default()
             });
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
-        if let Some(idx) = self.options.iter().position(|o| *o == self.selected) {
+        if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
         }
         if self.action.is_none() && self.on_change.is_none() {
@@ -1021,8 +1075,10 @@ impl Widget for Dropdown {
                 true
             }
             Action::SetValue(value) => {
-                let Some(value) = self.options.iter().find(|option| *option == value).cloned()
-                else {
+                let Some(index) = self.options.iter().position(|option| option == value) else {
+                    return false;
+                };
+                let Some(value) = self.values.get(index).cloned() else {
                     return false;
                 };
                 self.commit_value(&value, state, root);
@@ -1653,6 +1709,21 @@ mod tests {
         let dd2 = Dropdown::new(opts(), "tz").with_enabled(false);
         let node2 = Widget::accessibility(&dd2).unwrap();
         assert!(node2.state.disabled);
+    }
+
+    #[test]
+    fn external_overlay_height_hugs_short_lists_and_caps_long_ones() {
+        let short = Dropdown::new(opts(), "tz");
+        assert_eq!(
+            short.open_overlay_height(),
+            CONTROL_HEIGHT + LIST_GAP + 4.0 * ITEM_HEIGHT
+        );
+
+        let long = Dropdown::new((0..100).map(|index| index.to_string()).collect(), "value");
+        assert_eq!(
+            long.open_overlay_height(),
+            CONTROL_HEIGHT + LIST_GAP + MAX_LIST_HEIGHT
+        );
     }
 
     #[test]

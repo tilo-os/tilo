@@ -38,6 +38,7 @@ use fs::{
     load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -456,10 +457,6 @@ enum Command {
 }
 
 #[tokio::main]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the CLI entry point performs one exhaustive command dispatch with no shared execution state"
-)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(path) = &cli.test_clock_file {
@@ -507,37 +504,12 @@ async fn main() -> Result<()> {
             link,
             link_stdin,
             cache_dir,
-        } => {
-            Box::pin(mount_share(
-                mount_point,
-                SharedCredential::Bearer(FileShareLinkV2::decode_uri(&read_share_uri(
-                    link, link_stdin,
-                )?)?),
-                cache_dir,
-            ))
-            .await
-        }
+        } => mount_bearer_share(mount_point, link, link_stdin, cache_dir).await,
         Command::MountNamedShare {
             mount_point,
             envelope_stdin,
             cache_dir,
-        } => {
-            if !envelope_stdin {
-                bail!("named-share envelope stdin is required");
-            }
-            let encoded =
-                read_bounded_stdin(fs::named_share_delivery::MAX_NAMED_SHARE_ENVELOPE_BYTES * 2)?;
-            let bytes =
-                hex::decode(encoded).context("named-share envelope is not canonical hex")?;
-            let envelope: fs::NamedShareEnvelopeV1 =
-                collab_types::canonical::from_canonical_bytes(&bytes)?;
-            Box::pin(mount_share(
-                mount_point,
-                SharedCredential::Named(envelope),
-                cache_dir,
-            ))
-            .await
-        }
+        } => mount_named_share(mount_point, envelope_stdin, cache_dir).await,
         Command::RecipientService {
             socket,
             mounts_root,
@@ -613,9 +585,40 @@ async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Result<()> {
-    use std::io::Read;
+async fn mount_bearer_share(
+    mount_point: PathBuf,
+    link: Option<String>,
+    link_stdin: bool,
+    cache_dir: PathBuf,
+) -> Result<()> {
+    Box::pin(mount_share(
+        mount_point,
+        SharedCredential::Bearer(FileShareLinkV2::decode_uri(&read_share_uri(
+            link, link_stdin,
+        )?)?),
+        cache_dir,
+    ))
+    .await
+}
 
+async fn mount_named_share(
+    mount_point: PathBuf,
+    envelope_stdin: bool,
+    cache_dir: PathBuf,
+) -> Result<()> {
+    anyhow::ensure!(envelope_stdin, "named-share envelope stdin is required");
+    let encoded = read_bounded_stdin(fs::named_share_delivery::MAX_NAMED_SHARE_ENVELOPE_BYTES * 2)?;
+    let bytes = hex::decode(encoded).context("named-share envelope is not canonical hex")?;
+    let envelope: fs::NamedShareEnvelopeV1 = collab_types::canonical::from_canonical_bytes(&bytes)?;
+    Box::pin(mount_share(
+        mount_point,
+        SharedCredential::Named(envelope),
+        cache_dir,
+    ))
+    .await
+}
+
+async fn register_content_peer(cache_dir: PathBuf, endpoint_stdin: bool) -> Result<()> {
     anyhow::ensure!(endpoint_stdin, "content endpoint must be supplied on stdin");
     let mut encoded = Vec::new();
     std::io::stdin().take(64 * 1024).read_to_end(&mut encoded)?;
@@ -1058,16 +1061,16 @@ async fn replica(config_path: PathBuf) -> Result<()> {
         });
     }
     drop(status_tx);
-    let mut worker_statuses = vec![fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
+    let mut states = vec![fs::full_replica::FullReplicaStatus::syncing(); workspace_count];
     loop {
-        let Some((index, status)) = status_rx.recv().await else {
+        let Some((index, worker_status)) = status_rx.recv().await else {
             bail!("all home-peer workspace workers exited");
         };
-        let Some(worker_status) = worker_statuses.get_mut(index) else {
-            bail!("home-peer worker reported an invalid index {index}");
+        let Some(state) = states.get_mut(index) else {
+            bail!("home-peer worker returned an invalid workspace index");
         };
-        *worker_status = status;
-        let aggregate = aggregate_status(&worker_statuses);
+        *state = worker_status;
+        let aggregate = aggregate_status(&states);
         save_status(&bundle.status_file, &aggregate)?;
     }
 }
@@ -2848,6 +2851,11 @@ async fn run_mount(
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
     let predictive_policy_task =
         fs::smart_monitor::start(Arc::clone(&heuristics), predictive_cache_root).await;
+    // Settings' socket receives these same durable services below; it must
+    // never fall back to Hydrator-only proof or direct blob deletion.
+    let storage_availability = availability.clone();
+    let storage_eviction_queue = eviction_queue.clone();
+    let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let fs = QuickFS::new(namespace, hydrator, heuristics);
     let fs = if allow_legacy_record_migration {
         fs
@@ -2916,8 +2924,10 @@ async fn run_mount(
         fs::storage::StorageAuthority::new(
             Arc::clone(&fs.namespace),
             Arc::clone(&fs.hydrator),
-            Arc::clone(&fs.hydrator.store),
             fs.write_buffers_handle(),
+            storage_availability,
+            storage_eviction_queue,
+            storage_history,
             "Current workspace",
         )
     });

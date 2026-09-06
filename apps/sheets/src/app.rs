@@ -161,6 +161,12 @@ struct Pending {
     commit: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingReveal {
+    Sheet { sheet_id: String },
+    Cell { sheet_id: String, addr: Addr },
+}
+
 struct MenuButton {
     rect: Rect,
     label: String,
@@ -343,6 +349,9 @@ pub struct SheetsApp {
     /// Whether a drag that began in the formula bar is selecting text.
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
+    /// Query-ready workbook projection, rebuilt only when document heads
+    /// change so global search never reads the CRDT synchronously.
+    searchable_sheets: Vec<actions::SearchableSheet>,
     active_sheet: usize,
     /// The latest transient action message (e.g. "Pasted into B2"), surfaced
     /// via the floating [`status_bubble`](Self::status_bubble) rather than a
@@ -386,6 +395,7 @@ pub struct SheetsApp {
     resource_invocation: Option<qos_actions::InvocationId>,
     resource_result: Option<qos_actions::InvocationUpdate>,
     pending_resource_io: Option<(qos_actions::InvocationId, actions::SheetsOperation)>,
+    pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -465,6 +475,7 @@ impl SheetsApp {
             formula_char_x: Vec::new(),
             formula_bar_selecting: false,
             sheet_names: Vec::new(),
+            searchable_sheets: Vec::new(),
             active_sheet: 0,
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
@@ -489,6 +500,7 @@ impl SheetsApp {
             resource_invocation: None,
             resource_result: None,
             pending_resource_io: None,
+            pending_reveal: None,
             clipboard: None,
             palette: CommandPalette::commands(),
             actions: ui::ActionHost::new(),
@@ -515,15 +527,52 @@ impl SheetsApp {
     /// The presentation context the Ctrl+K resource tree is built from: the open
     /// sheet names. Everything here mirrors state the document already holds.
     pub(crate) fn sheets_resource_ctx(&self) -> SheetsResourceCtx {
+        let palette_actions = self.native_palette_actions();
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let label = if (c0, r0) == (c1, r1) {
+            crate::model::addr_to_a1(c0, r0)
+        } else {
+            format!(
+                "{}:{}",
+                crate::model::addr_to_a1(c0, r0),
+                crate::model::addr_to_a1(c1, r1)
+            )
+        };
+        let selection =
+            self.searchable_sheets
+                .get(self.active_sheet)
+                .map(|sheet| actions::RangeResourceCtx {
+                    sheet_id: sheet.id.clone(),
+                    label,
+                    // Navigation and formula visibility are workbook views, not
+                    // range mutations. Keeping those two on the workbook avoids
+                    // duplicate prompted Ctrl+K entries while every selection
+                    // operation (sum/fill/format/structure) remains addressable
+                    // through this range resource.
+                    actions: palette_actions
+                        .iter()
+                        .filter(|action| {
+                            action.id != "go-to-cell" && action.id != "toggle-formula-view"
+                        })
+                        .cloned()
+                        .collect(),
+                });
         SheetsResourceCtx {
             sheet_names: self.sheet_names.clone(),
-            palette_actions: self.native_palette_actions(),
+            searchable_sheets: self.searchable_sheets.clone(),
+            palette_actions,
+            selection,
         }
     }
 
     /// Build the context-sensitive command surface once, as resource actions.
     /// Dense spreadsheet commands can retain their custom UI while still
     /// sharing byte-identical action values with agents and the search bar.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::expect_used,
+        reason = "the palette builds serializable action enum values in one authoritative surface"
+    )]
     fn native_palette_actions(&self) -> Vec<qos_actions::ActionSpec> {
         use qos_actions::{ActionSpec, OperationKind};
 
@@ -533,6 +582,7 @@ impl SheetsApp {
                 .reversible()
         };
         let sheet = self.active_sheet;
+        let sheet_id = self.sheet_identity(sheet);
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let target_r = r1.saturating_add(1);
         let sum_writes: Vec<(Addr, String, Option<CellFormat>)> = (c0..=c1)
@@ -552,28 +602,28 @@ impl SheetsApp {
             immediate(
                 "sum-selection",
                 "Sum selection",
-                actions::set_cells_action(sheet, sum_writes),
+                actions::set_cells_action(sheet, sheet_id.clone(), sum_writes),
             ),
             immediate(
                 "insert-row-active",
                 "Insert row above",
-                actions::insert_row_action(sheet, self.grid.active().1),
+                actions::insert_row_action(sheet, sheet_id.clone(), self.grid.active().1),
             ),
             immediate(
                 "delete-row-active",
                 "Delete row",
-                actions::delete_row_action(sheet, self.grid.active().1),
+                actions::delete_row_action(sheet, sheet_id.clone(), self.grid.active().1),
             )
             .destructive(),
             immediate(
                 "insert-column-active",
                 "Insert column left",
-                actions::insert_column_action(sheet, self.grid.active().0),
+                actions::insert_column_action(sheet, sheet_id.clone(), self.grid.active().0),
             ),
             immediate(
                 "delete-column-active",
                 "Delete column",
-                actions::delete_column_action(sheet, self.grid.active().0),
+                actions::delete_column_action(sheet, sheet_id.clone(), self.grid.active().0),
             )
             .destructive(),
         ];
@@ -596,7 +646,7 @@ impl SheetsApp {
             specs.push(immediate(
                 id,
                 label,
-                actions::set_formats_action(sheet, cells),
+                actions::set_formats_action(sheet, sheet_id.clone(), cells),
             ));
         }
 
@@ -613,7 +663,7 @@ impl SheetsApp {
         specs.push(immediate(
             "fill-down",
             "Fill down",
-            actions::set_cells_action(sheet, down),
+            actions::set_cells_action(sheet, sheet_id.clone(), down),
         ));
 
         let mut right = Vec::new();
@@ -629,7 +679,7 @@ impl SheetsApp {
         specs.push(immediate(
             "fill-right",
             "Fill right",
-            actions::set_cells_action(sheet, right),
+            actions::set_cells_action(sheet, sheet_id.clone(), right),
         ));
 
         let (c, r) = self.grid.active();
@@ -651,7 +701,7 @@ impl SheetsApp {
                 specs.push(immediate(
                     "autosum-active",
                     "AutoSum column",
-                    actions::set_cell_action(sheet, (c, r), &formula, None),
+                    actions::set_cell_action(sheet, sheet_id, (c, r), &formula, None),
                 ));
             }
         }
@@ -710,6 +760,11 @@ impl SheetsApp {
     /// activation navigated.
     pub fn active_sheet_index(&self) -> usize {
         self.active_sheet
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_cell(&self) -> Addr {
+        self.grid.active()
     }
 
     /// `--shots`: force the floating status bubble fully visible so a single
@@ -791,6 +846,12 @@ impl SheetsApp {
         self.open_command_palette();
     }
 
+    /// Shots hook: offset both axes so the scrollbar thumbs visibly prove the
+    /// two-dimensional grid viewport rather than merely drawing idle rails.
+    pub fn shots_scroll_both_axes(&mut self) {
+        self.grid.on_scroll(540.0, 260.0);
+    }
+
     /// Shots hook: seed three fill patterns in an empty region and extend each
     /// through the *real* fill-handle path, so the captured frame shows genuine
     /// filled series — a linear number run (1, 2 → …6), a weekday sequence
@@ -856,6 +917,34 @@ impl SheetsApp {
 
     fn default_currency(&self) -> Currency {
         self.locale().currency
+    }
+
+    /// The durable identity cached alongside the rendered sheet list.  The
+    /// cache is refreshed from the CRDT before UI actions are offered, so an
+    /// encoded UI/palette action never falls back to a positional target.
+    fn sheet_identity(&self, idx: usize) -> String {
+        self.searchable_sheets
+            .get(idx)
+            .map(|sheet| sheet.id.clone())
+            .unwrap_or_default()
+    }
+
+    fn sheet_slot_anchors(
+        &self,
+        at: usize,
+        excluding: Option<usize>,
+    ) -> (Option<String>, Option<String>) {
+        let ids: Vec<String> = self
+            .searchable_sheets
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| Some(*idx) != excluding)
+            .map(|(_, sheet)| sheet.id.clone())
+            .collect();
+        (
+            ids.get(at).cloned(),
+            at.checked_sub(1).and_then(|idx| ids.get(idx)).cloned(),
+        )
     }
 
     // --- document plumbing --------------------------------------------------
@@ -945,6 +1034,39 @@ impl SheetsApp {
         self.sheet_colors = SheetsDoc::sheet_colors(doc);
         self.doc_settings = SheetsDoc::doc_settings(doc);
         let cur = self.default_currency();
+        self.searchable_sheets = (0..self.sheet_names.len())
+            .filter_map(|idx| {
+                let id = SheetsDoc::sheet_resource_id(doc, idx)?;
+                let snap = SheetsDoc::snapshot_sheet(doc, idx, cur);
+                let values = formula::recalculate(&snap.raw);
+                let mut cells = snap
+                    .raw
+                    .iter()
+                    .map(|(&(col, row), raw)| {
+                        let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
+                            raw.strip_prefix('=')
+                                .and_then(|body| formula::infer_result_format(body, &snap.fmt))
+                                .unwrap_or(CellFormat::General)
+                        });
+                        let display = values
+                            .get(&(col, row))
+                            .map_or_else(String::new, |value| format_value(value, fmt));
+                        actions::SearchableCell {
+                            col,
+                            row,
+                            raw: raw.clone(),
+                            display,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                cells.sort_by_key(|cell| (cell.row, cell.col));
+                Some(actions::SearchableSheet {
+                    id,
+                    name: snap.name,
+                    cells,
+                })
+            })
+            .collect();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
         let values = formula::recalculate(&snap.raw);
 
@@ -1002,7 +1124,14 @@ impl SheetsApp {
             }
         }
         if !writes.is_empty() {
-            self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+            self.perform_action(
+                doc,
+                &actions::set_cells_action(
+                    sheet,
+                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                    writes,
+                ),
+            );
             self.reload(doc);
         }
     }
@@ -1019,7 +1148,14 @@ impl SheetsApp {
             .map(|a| (a, fmt))
             .collect();
         if !cells.is_empty() {
-            self.perform_action(doc, &actions::set_formats_action(sheet, cells));
+            self.perform_action(
+                doc,
+                &actions::set_formats_action(
+                    sheet,
+                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                    cells,
+                ),
+            );
         }
         self.reload(doc);
         self.status = format!("Applied {} to {}", fmt.label(), self.grid.selection_label());
@@ -1034,7 +1170,14 @@ impl SheetsApp {
             .map(|a| (a, CellFormat::General))
             .collect();
         if !cells.is_empty() {
-            self.perform_action(doc, &actions::set_formats_action(sheet, cells));
+            self.perform_action(
+                doc,
+                &actions::set_formats_action(
+                    sheet,
+                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                    cells,
+                ),
+            );
         }
         self.reload(doc);
         self.status = format!("Cleared format on {}", self.grid.selection_label());
@@ -1182,7 +1325,14 @@ impl SheetsApp {
                     }
                 }
             }
-            self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+            self.perform_action(
+                doc,
+                &actions::set_cells_action(
+                    sheet,
+                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                    writes,
+                ),
+            );
             if !cb.cut {
                 self.clipboard = Some(cb);
             }
@@ -1227,7 +1377,14 @@ impl SheetsApp {
                 last = addr;
             }
         }
-        self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+        self.perform_action(
+            doc,
+            &actions::set_cells_action(
+                sheet,
+                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                writes,
+            ),
+        );
         self.grid.select_range_public(target, last);
         true
     }
@@ -1261,7 +1418,13 @@ impl SheetsApp {
         );
         self.perform_action(
             doc,
-            &actions::set_cell_action(self.active_sheet, (c, r), &formula, None),
+            &actions::set_cell_action(
+                self.active_sheet,
+                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
+                (c, r),
+                &formula,
+                None,
+            ),
         );
         self.reload(doc);
         self.status = format!("Inserted {formula}");
@@ -1290,7 +1453,14 @@ impl SheetsApp {
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
-        self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+        self.perform_action(
+            doc,
+            &actions::set_cells_action(
+                sheet,
+                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                writes,
+            ),
+        );
         self.reload(doc);
         self.status = format!("Filled down {}", self.grid.selection_label());
     }
@@ -1316,7 +1486,14 @@ impl SheetsApp {
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
-        self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+        self.perform_action(
+            doc,
+            &actions::set_cells_action(
+                sheet,
+                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                writes,
+            ),
+        );
         self.reload(doc);
         self.status = format!("Filled right {}", self.grid.selection_label());
     }
@@ -1369,7 +1546,14 @@ impl SheetsApp {
         if writes.is_empty() {
             return;
         }
-        self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+        self.perform_action(
+            doc,
+            &actions::set_cells_action(
+                sheet,
+                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                writes,
+            ),
+        );
         self.reload(doc);
         self.grid.select_range_public(src_tl, dst_br);
         self.status = format!("Filled {}", self.grid.selection_label());
@@ -1830,7 +2014,14 @@ impl SheetsApp {
             );
             writes.push(((c, target_r), formula, None));
         }
-        self.perform_action(doc, &actions::set_cells_action(sheet, writes));
+        self.perform_action(
+            doc,
+            &actions::set_cells_action(
+                sheet,
+                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
+                writes,
+            ),
+        );
         self.reload(doc);
         self.grid
             .select_range_public((c0, target_r), (c1, target_r));
@@ -1840,7 +2031,14 @@ impl SheetsApp {
     #[cfg(test)]
     fn insert_row(&mut self, doc: &mut AutoCommit) {
         let r0 = self.grid.active().1;
-        self.perform_action(doc, &actions::insert_row_action(self.active_sheet, r0));
+        self.perform_action(
+            doc,
+            &actions::insert_row_action(
+                self.active_sheet,
+                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
+                r0,
+            ),
+        );
         self.reload(doc);
         self.status = format!("Inserted row {}", r0.saturating_add(1));
     }
@@ -1848,7 +2046,14 @@ impl SheetsApp {
     #[cfg(test)]
     fn delete_row(&mut self, doc: &mut AutoCommit) {
         let r0 = self.grid.active().1;
-        self.perform_action(doc, &actions::delete_row_action(self.active_sheet, r0));
+        self.perform_action(
+            doc,
+            &actions::delete_row_action(
+                self.active_sheet,
+                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
+                r0,
+            ),
+        );
         self.reload(doc);
         self.status = format!("Deleted row {}", r0.saturating_add(1));
     }
@@ -1856,7 +2061,14 @@ impl SheetsApp {
     #[cfg(test)]
     fn insert_column(&mut self, doc: &mut AutoCommit) {
         let c0 = self.grid.active().0;
-        self.perform_action(doc, &actions::insert_column_action(self.active_sheet, c0));
+        self.perform_action(
+            doc,
+            &actions::insert_column_action(
+                self.active_sheet,
+                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
+                c0,
+            ),
+        );
         self.reload(doc);
         self.status = format!(
             "Inserted column {}",
@@ -1867,7 +2079,14 @@ impl SheetsApp {
     #[cfg(test)]
     fn delete_column(&mut self, doc: &mut AutoCommit) {
         let c0 = self.grid.active().0;
-        self.perform_action(doc, &actions::delete_column_action(self.active_sheet, c0));
+        self.perform_action(
+            doc,
+            &actions::delete_column_action(
+                self.active_sheet,
+                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
+                c0,
+            ),
+        );
         self.reload(doc);
         self.status = format!(
             "Deleted column {}",
@@ -3408,24 +3627,30 @@ impl Widget for SheetsApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
         match operation {
             actions::SheetsOperation::ImportCsv { path: None } => {
-                self.begin_import(Interchange::Csv)
+                self.begin_import(Interchange::Csv);
             }
             actions::SheetsOperation::ImportXlsx { path: None } => {
-                self.begin_import(Interchange::Xlsx)
+                self.begin_import(Interchange::Xlsx);
             }
             actions::SheetsOperation::ImportOds { path: None } => {
-                self.begin_import(Interchange::Ods)
+                self.begin_import(Interchange::Ods);
             }
             actions::SheetsOperation::ExportCsv { path: None } => {
-                self.begin_export(Interchange::Csv)
+                self.begin_export(Interchange::Csv);
             }
             actions::SheetsOperation::ExportXlsx { path: None } => {
-                self.begin_export(Interchange::Xlsx)
+                self.begin_export(Interchange::Xlsx);
             }
             actions::SheetsOperation::ExportOds { path: None } => {
-                self.begin_export(Interchange::Ods)
+                self.begin_export(Interchange::Ods);
             }
             actions::SheetsOperation::ImportCsv { path: Some(_) }
             | actions::SheetsOperation::ImportXlsx { path: Some(_) }
@@ -3445,6 +3670,31 @@ impl Widget for SheetsApp {
                     "Showing results".into()
                 };
             }
+            actions::SheetsOperation::RevealSheet { sheet_id } => {
+                if !self
+                    .searchable_sheets
+                    .iter()
+                    .any(|sheet| sheet.id == sheet_id)
+                {
+                    return Err("sheet no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
+            }
+            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
+                if !self.searchable_sheets.iter().any(|sheet| {
+                    sheet.id == sheet_id
+                        && sheet
+                            .cells
+                            .iter()
+                            .any(|cell| cell.col == col && cell.row == row)
+                }) {
+                    return Err("cell no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Cell {
+                    sheet_id,
+                    addr: (col, row),
+                });
+            }
         }
         Ok(true)
     }
@@ -3461,6 +3711,12 @@ impl Widget for SheetsApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
         let direct = match &operation {
             actions::SheetsOperation::ImportCsv { path }
             | actions::SheetsOperation::ImportXlsx { path }
@@ -3549,6 +3805,23 @@ impl Widget for SheetsApp {
                     output: qos_actions::ActionOutput::default(),
                 }
             });
+        }
+        if let Some(reveal) = self.pending_reveal.take() {
+            let (sheet_id, selection) = match reveal {
+                PendingReveal::Sheet { sheet_id } => (sheet_id, (0, 0)),
+                PendingReveal::Cell { sheet_id, addr } => (sheet_id, addr),
+            };
+            if let Some(idx) = SheetsDoc::sheet_index_by_resource_id(state, &sheet_id) {
+                self.switch_sheet(state, idx);
+                self.grid.select_only(selection);
+                self.status = format!(
+                    "Went to {}!{}",
+                    self.sheet_names.get(idx).cloned().unwrap_or_default(),
+                    crate::model::addr_to_a1(selection.0, selection.1)
+                );
+            } else {
+                self.status = "That sheet no longer exists".into();
+            }
         }
         // Land a finished import/export file dialog before reloading, so the
         // imported sheet (or the export's status) is reflected this frame.
@@ -3680,6 +3953,10 @@ impl Widget for SheetsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary bracketing it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -3687,23 +3964,12 @@ impl Widget for SheetsApp {
         self.actions.take_committed()
     }
 
-    /// Fold the workbook's sheets into the unified Ctrl+K palette: a snapshot
-    /// [`SheetSearchProvider`](crate::search_provider::SheetSearchProvider)
-    /// makes every sheet findable there by name, alongside the actions the app
-    /// exports.
+    /// Fold sheets and populated cells into unified search. Every hit names an
+    /// exported resource View action; no app-owned activation callback exists.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::SheetSearchProvider::new(
-            &self.sheet_names,
+            &self.searchable_sheets,
         ))]
-    }
-
-    /// Switch to the sheet a chosen palette row identifies.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
-        if let Some(idx) = crate::search_provider::SheetSearchProvider::parse_action_id(action_id)
-            && idx < self.sheet_names.len()
-        {
-            self.switch_sheet(doc, idx);
-        }
     }
 
     fn handle_event(
@@ -4566,7 +4832,14 @@ impl SheetsApp {
                     .get(rename.idx)
                     .is_some_and(|current| current == trimmed);
                 if !trimmed.is_empty() && !unchanged {
-                    self.perform_action(doc, &actions::rename_sheet_action(rename.idx, trimmed));
+                    self.perform_action(
+                        doc,
+                        &actions::rename_sheet_action(
+                            rename.idx,
+                            SheetsDoc::sheet_resource_id(doc, rename.idx).unwrap_or_default(),
+                            trimmed,
+                        ),
+                    );
                     self.reload(doc);
                     self.status = format!("Renamed sheet to {trimmed}");
                 }
@@ -4649,12 +4922,22 @@ impl SheetsApp {
     }
 
     /// Execute a tab context-menu action against sheet `idx`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "tab menu actions stay together to preserve their shared active-sheet update rules"
+    )]
     fn run_tab_action(&mut self, doc: &mut AutoCommit, idx: usize, act: TabAction) {
         match act {
             TabAction::Rename => self.begin_tab_rename(idx),
             TabAction::Duplicate => {
                 if idx < SheetsDoc::sheet_count(doc) {
-                    self.perform_action(doc, &actions::duplicate_sheet_action(idx));
+                    self.perform_action(
+                        doc,
+                        &actions::duplicate_sheet_action(
+                            idx,
+                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
+                        ),
+                    );
                     // The duplicate lands immediately after the source.
                     SheetsDoc::set_active_index(doc, idx + 1);
                     self.grid.select_only((0, 0));
@@ -4665,9 +4948,15 @@ impl SheetsApp {
             TabAction::InsertRight => {
                 let n = SheetsDoc::sheet_count(doc);
                 let at = (idx + 1).min(n);
+                let (before_sheet_id, after_sheet_id) = self.sheet_slot_anchors(at, None);
                 self.perform_action(
                     doc,
-                    &actions::insert_sheet_action(at, &format!("Sheet{}", n + 1)),
+                    &actions::insert_sheet_action(
+                        at,
+                        before_sheet_id,
+                        after_sheet_id,
+                        &format!("Sheet{}", n + 1),
+                    ),
                 );
                 SheetsDoc::set_active_index(doc, at);
                 self.grid.select_only((0, 0));
@@ -4676,7 +4965,18 @@ impl SheetsApp {
             }
             TabAction::MoveLeft => {
                 if idx > 0 {
-                    self.perform_action(doc, &actions::move_sheet_action(idx, idx - 1));
+                    let (before_sheet_id, after_sheet_id) =
+                        self.sheet_slot_anchors(idx - 1, Some(idx));
+                    self.perform_action(
+                        doc,
+                        &actions::move_sheet_action(
+                            idx,
+                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
+                            idx - 1,
+                            before_sheet_id,
+                            after_sheet_id,
+                        ),
+                    );
                     SheetsDoc::set_active_index(doc, idx - 1);
                     self.reload(doc);
                     self.status = "Moved sheet left".into();
@@ -4684,7 +4984,18 @@ impl SheetsApp {
             }
             TabAction::MoveRight => {
                 if idx + 1 < SheetsDoc::sheet_count(doc) {
-                    self.perform_action(doc, &actions::move_sheet_action(idx, idx + 1));
+                    let (before_sheet_id, after_sheet_id) =
+                        self.sheet_slot_anchors(idx + 1, Some(idx));
+                    self.perform_action(
+                        doc,
+                        &actions::move_sheet_action(
+                            idx,
+                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
+                            idx + 1,
+                            before_sheet_id,
+                            after_sheet_id,
+                        ),
+                    );
                     SheetsDoc::set_active_index(doc, idx + 1);
                     self.reload(doc);
                     self.status = "Moved sheet right".into();
@@ -4696,7 +5007,13 @@ impl SheetsApp {
                     self.status = "A workbook keeps at least one sheet".into();
                 } else {
                     let old_active = SheetsDoc::active_index(doc);
-                    self.perform_action(doc, &actions::delete_sheet_action(idx));
+                    self.perform_action(
+                        doc,
+                        &actions::delete_sheet_action(
+                            idx,
+                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
+                        ),
+                    );
                     if SheetsDoc::sheet_count(doc) < count_before {
                         let count = SheetsDoc::sheet_count(doc);
                         let new_active = match idx.cmp(&old_active) {
@@ -4712,7 +5029,14 @@ impl SheetsApp {
                 }
             }
             TabAction::SetColor(color) => {
-                self.perform_action(doc, &actions::set_sheet_color_action(idx, color));
+                self.perform_action(
+                    doc,
+                    &actions::set_sheet_color_action(
+                        idx,
+                        SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
+                        color,
+                    ),
+                );
                 self.reload(doc);
                 self.status = if color.is_some() {
                     "Set tab colour".into()
@@ -4886,6 +5210,44 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let (mut app, doc) = seeded_app();
+        assert!(!app.grid.formula_view());
+        let toggle = serde_json::to_vec(&actions::SheetsOperation::ToggleFormulaView).unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                actions::SHEETS_OPERATION_TYPE,
+                &toggle,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(!app.grid.formula_view());
+
+        let import = serde_json::to_vec(&actions::SheetsOperation::ImportCsv {
+            path: Some("/tmp/wrong-kind.csv".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::View,
+                actions::SHEETS_OPERATION_TYPE,
+                &import,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.pending_resource_io.is_none());
+        assert!(app.resource_invocation.is_none());
     }
 
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
@@ -6232,7 +6594,7 @@ mod tests {
         let action: crate::actions::SheetsAction =
             serde_json::from_slice(&dispatched.payload).expect("payload decodes to SheetsAction");
         match action {
-            crate::actions::SheetsAction::SetCells { sheet, cells } => {
+            crate::actions::SheetsAction::SetCells { sheet, cells, .. } => {
                 assert_eq!(sheet, 0);
                 assert_eq!(cells.len(), 1, "one cell edited");
                 assert_eq!(

@@ -55,6 +55,63 @@ class AppResourceActionContractTests(unittest.TestCase):
         self.assertIn("Widget::resources", reasons)
         self.assertIn("ActionSpec", reasons)
 
+    def test_app_search_provider_must_override_limited_query(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search(&self, _: &str) -> Vec<SearchResult> { vec![] }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("unbounded search_limited fallback" in item.reason for item in violations))
+
+    def test_app_search_provider_with_budgeted_override_passes_search_gate(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search(&self, q: &str) -> Vec<SearchResult> { self.search_limited(q, 32) }\n"
+            " fn search_limited(&self, _: &str, limit: usize) -> Vec<SearchResult> {\n"
+            "   self.rows.iter().take(limit).cloned().collect()\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertFalse(any("search_limited" in item.reason for item in violations))
+
+    def test_limited_provider_cannot_search_everything_then_truncate(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search(&self, _: &str) -> Vec<SearchResult> { vec![] }\n"
+            " fn search_limited(&self, q: &str, limit: usize) -> Vec<SearchResult> {\n"
+            "   let mut rows = self.search(q); rows.truncate(limit); rows\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("calls unbounded search" in item.reason for item in violations))
+
+    def test_durable_provider_cannot_truncate_index_before_query(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search(&self, q: &str) -> Vec<SearchResult> { self.search_limited(q, 32) }\n"
+            " fn search_limited(&self, _: &str, limit: usize) -> Vec<SearchResult> {\n"
+            "   self.rows.iter().take(DEFAULT_SEARCH_INDEX_LIMIT).take(limit).cloned().collect()\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("truncates its corpus" in item.reason for item in violations))
+
     def test_effect_action_without_handler_registry_fails(self):
         root = self.fixture(
             "use qos_actions::ActionSpec;\n"
@@ -263,6 +320,66 @@ class AppResourceActionContractTests(unittest.TestCase):
         reasons = "\n".join(item.reason for item in violations)
         self.assertIn("private command-palette argument route", reasons)
         self.assertIn("private command-palette outcome", reasons)
+
+    def test_test_only_action_registration_does_not_satisfy_live_contract(self):
+        root = self.fixture(
+            "use qos_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "#[test] fn registration_test() { actions::register(&mut registry()); }\n"
+        )
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text("fn main() { launch(App); }\n", encoding="utf-8")
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("production app launch" in item.reason for item in violations))
+
+    def test_dead_main_file_registration_helper_does_not_satisfy_live_contract(self):
+        root = self.fixture(
+            "use qos_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text(
+            "fn main() { launch(App); }\n"
+            "#[cfg(test)] fn configure_for_test(app: &mut App) {\n"
+            " actions::register(app.action_registry_mut()); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("production app launch" in item.reason for item in violations))
+
+    def test_production_action_registration_satisfies_live_contract(self):
+        root = self.fixture(
+            "use qos_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text(
+            "fn main() { LaunchSpec::new(root).configure_app(|app| "
+            "actions::register(app.action_registry_mut())); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertEqual(violations, [])
+
+    def test_new_opaque_search_activation_is_rejected(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] }\n"
+            " fn activate_search_result(&mut self, id: &str) { private_open(id); } }\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("opaque search activation bypass" in item.reason for item in violations))
 
 
 if __name__ == "__main__":

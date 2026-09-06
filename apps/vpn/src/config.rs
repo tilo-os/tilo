@@ -10,6 +10,94 @@
 
 use crate::model::{ConnKind, Connection};
 
+/// Maximum provider configuration accepted through the import portal.
+pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// Validate that an imported profile contains the minimum information needed
+/// to create a real `NetworkManager` connection. Credentials are checked for
+/// presence but are never returned or copied into the collaborative model.
+///
+/// # Errors
+///
+/// Returns an actionable list of missing readiness or server-verification
+/// fields when the provider profile is incomplete.
+pub fn validate_config(kind: ConnKind, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("The selected configuration is empty.".into());
+    }
+    match kind {
+        ConnKind::WireGuard => {
+            let has = |section: &str, key: &str| {
+                let mut current = "";
+                text.lines().any(|raw| {
+                    let line = strip_comment(raw).trim();
+                    if let Some(next) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                        current = next.trim();
+                        return false;
+                    }
+                    current.eq_ignore_ascii_case(section)
+                        && split_kv(line).is_some_and(|(candidate, value)| {
+                            candidate.eq_ignore_ascii_case(key) && !value.trim().is_empty()
+                        })
+                })
+            };
+            let mut missing = Vec::new();
+            for (section, key) in [
+                ("Interface", "PrivateKey"),
+                ("Interface", "Address"),
+                ("Peer", "PublicKey"),
+                ("Peer", "Endpoint"),
+                ("Peer", "AllowedIPs"),
+            ] {
+                if !has(section, key) {
+                    missing.push(format!("{section}.{key}"));
+                }
+            }
+            if missing.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "WireGuard profile is incomplete; missing {}.",
+                    missing.join(", ")
+                ))
+            }
+        }
+        ConnKind::OpenVpn => {
+            let lower = text.to_ascii_lowercase();
+            let has_remote = lower
+                .lines()
+                .any(|line| line.trim_start().starts_with("remote "));
+            let has_server_auth = lower.contains("<ca>")
+                || lower.lines().any(|line| {
+                    let line = line.trim_start();
+                    line.starts_with("ca ") || line.starts_with("peer-fingerprint ")
+                });
+            if !has_remote {
+                return Err("OpenVPN profile is incomplete; no remote server is declared.".into());
+            }
+            if !has_server_auth {
+                return Err("OpenVPN profile does not declare a CA or peer fingerprint, so the server identity cannot be verified.".into());
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Query `NetworkManager`'s authoritative active state for a saved profile.
+///
+/// # Errors
+///
+/// Returns an error when `NetworkManager` is unavailable or the named profile
+/// no longer exists.
+pub fn network_manager_active(name: &str) -> Result<bool, String> {
+    let profiles = os_actions::list_vpn_connections()?;
+    profiles
+        .into_iter()
+        .find(|profile| profile.name == name)
+        .map(|profile| profile.active)
+        .ok_or_else(|| format!("NetworkManager did not expose a VPN profile named '{name}'"))
+}
+
 /// Parse the textual contents of a config file into a [`Connection`].
 ///
 /// `kind` disambiguates the grammar; `name` seeds the display title
@@ -126,7 +214,9 @@ fn parse_openvpn(name: &str, text: &str) -> Connection {
     if !routes.is_empty() {
         conn.allowed_ips = routes.join(", ");
     }
-    conn.public_key = format!("CN={name}");
+    // OpenVPN certificates and user credentials remain under
+    // NetworkManager's secret-agent ownership; never invent a server CN.
+    conn.public_key.clear();
     conn
 }
 
@@ -187,10 +277,10 @@ pub enum Backend {
 /// The bring-up references the tunnel's real, imported config file whenever
 /// one is present: `wg-quick up <config-path>` derives the interface from the
 /// file's basename, and `openvpn --config <config-path>` starts the daemon on
-/// the exact `.ovpn` the user imported. Without an imported config (a
-/// hand-added stub) it falls back to the conventional `/etc/...` location and
-/// the interface name — that command will honestly fail at run time if no such
-/// file exists, rather than pretend to connect.
+/// the exact `.ovpn` the user imported. Legacy records without an imported
+/// config fall back to the conventional `/etc/...` location and interface
+/// name; the command fails honestly at run time if no such configuration
+/// exists rather than pretending to connect.
 pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
     match backend {
         Backend::WgQuick => {
@@ -396,12 +486,29 @@ dhcp-option DNS 172.20.4.1
     }
 
     #[test]
+    fn readiness_validation_rejects_partial_or_unverifiable_profiles() {
+        assert!(validate_config(ConnKind::WireGuard, "[Peer]\nEndpoint=x:1").is_err());
+        assert!(validate_config(ConnKind::WireGuard, WG).is_ok());
+        assert!(validate_config(ConnKind::OpenVpn, "client\nremote vpn.example 1194").is_err());
+        assert!(
+            validate_config(
+                ConnKind::OpenVpn,
+                "client\nremote vpn.example 1194\n<ca>\ncertificate\n</ca>"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn openvpn_parses_remote_and_routes() {
         let c = parse_config("Work", ConnKind::OpenVpn, OVPN);
         assert_eq!(c.endpoint, "vpn.workcorp.example:1194 (UDP)");
         assert_eq!(c.allowed_ips, "172.20.0.0/255.255.0.0");
         assert_eq!(c.dns, "172.20.4.1");
-        assert_eq!(c.public_key, "CN=Work");
+        assert!(
+            c.public_key.is_empty(),
+            "certificate identity is not invented"
+        );
     }
 
     #[test]

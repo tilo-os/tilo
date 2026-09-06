@@ -44,10 +44,9 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
     let pending = app_id
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_and_instance_for_toplevel(id, surface_id));
-    let placement = pending.map_or_else(
-        || crate::shell::placement::placement_for_new_window(tree, None),
-        |(placement, _)| placement,
-    );
+    let placement = pending
+        .map(|(placement, _)| placement)
+        .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
     // If this window is what a document open asked for, record that here — the launch and the window it produced meet at this point.
     if let Some(id) = app_id.as_deref() {
         crate::shell::doc_open::claim_surface_for_document(id, surface_id);
@@ -307,11 +306,11 @@ pub fn close_tab_for_destroyed_surface(
                             if *s == destroyed_surface_id
                     )
                 }) {
-                    let removed = group.tabs.remove(pos);
-                    let tab_id = removed.id;
+                    let tab_id = group.tabs[pos].id;
                     if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
                         tree.continuation_closed_tabs.insert(tab_id, room);
                     }
+                    let removed = group.tabs.remove(pos);
                     if let Ok(mut registry) =
                         crate::shell::personal_continuity_registry::global_registry().lock()
                     {

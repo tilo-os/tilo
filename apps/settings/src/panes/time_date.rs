@@ -37,12 +37,17 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::region::{RegionSettings, TimeStyle};
 use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
 
 pub const AUTO_TIME_KEY: &str = "time.auto";
 pub const H24_KEY: &str = "time.h24";
 pub const TIMEZONE_KEY: &str = "time.timezone";
+
+fn draft_key(key: &str) -> String {
+    format!("{key}.edit")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimeZonePoint {
@@ -273,7 +278,7 @@ impl TimeZoneMap {
             self.cursor = Some(index);
             // The parent pane validates this against the timedated-derived
             // list before dispatching it to the privileged authority.
-            let _ = state.put(root, TIMEZONE_KEY, point.id.as_str());
+            let _ = state.put(root, draft_key(TIMEZONE_KEY), point.id.as_str());
             self.needs_commit = true;
         }
     }
@@ -673,6 +678,16 @@ fn read_text_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<Stri
     }
 }
 
+fn read_bool_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
+    match state.get(root, key).ok().flatten() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            automerge::ScalarValue::Boolean(value) => Some(*value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
 /// re-render the live clock when the 24-hour preference flips.
 #[allow(
@@ -701,6 +716,7 @@ pub struct TimeDatePane {
     commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    actions: ui::ActionHost,
 }
 
 impl Default for TimeDatePane {
@@ -746,6 +762,7 @@ impl TimeDatePane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -782,6 +799,7 @@ impl TimeDatePane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -794,16 +812,21 @@ impl TimeDatePane {
             rows(vec![
                 setting_row(
                     "Set time automatically",
-                    Box::new(Toggle::new("settings.time.auto", AUTO_TIME_KEY).with_id("time.auto")),
+                    Box::new(
+                        Toggle::new("settings.time.auto", &draft_key(AUTO_TIME_KEY))
+                            .with_id("time.auto"),
+                    ),
                 ),
                 setting_row(
                     "24-hour clock",
-                    Box::new(Toggle::new("settings.time.h24", H24_KEY).with_id("time.h24")),
+                    Box::new(
+                        Toggle::new("settings.time.h24", &draft_key(H24_KEY)).with_id("time.h24"),
+                    ),
                 ),
                 choice_row(
                     "Time zone",
                     Box::new(
-                        Dropdown::new(self.timezones.clone(), TIMEZONE_KEY)
+                        Dropdown::new(self.timezones.clone(), &draft_key(TIMEZONE_KEY))
                             .with_id("time.timezone")
                             .with_placeholder(&self.timezone),
                     ),
@@ -875,6 +898,15 @@ impl TimeDatePane {
         }
         crate::widgets::cards(cards)
     }
+
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -891,13 +923,41 @@ impl Widget for TimeDatePane {
                     automerge::ScalarValue::Boolean(self.initial_auto),
                 );
             }
+            let _ = state.put(root, draft_key(AUTO_TIME_KEY), self.initial_auto);
             if state.get(root, H24_KEY).ok().flatten().is_none() {
                 let _ = state.put(root, H24_KEY, automerge::ScalarValue::Boolean(self.h24));
             }
+            let _ = state.put(root, draft_key(H24_KEY), self.h24);
             if state.get(root, TIMEZONE_KEY).ok().flatten().is_none() {
                 let _ = state.put(root, TIMEZONE_KEY, self.timezone.as_str());
             }
+            let _ = state.put(root, draft_key(TIMEZONE_KEY), self.timezone.as_str());
             self.needs_seed = false;
+        }
+
+        // Widgets only edit local `.edit` drafts.  The canonical keys are
+        // changed exclusively through SettingsAction, which gives direct
+        // controls the same replay, permission and undo path as Ctrl+K.
+        let timezone_value = read_text_setting(state, root, TIMEZONE_KEY)
+            .unwrap_or_else(|| self.last_timezone.clone());
+        let timezone_draft = read_text_setting(state, root, &draft_key(TIMEZONE_KEY))
+            .unwrap_or_else(|| timezone_value.clone());
+        if timezone_value == self.last_timezone
+            && timezone_draft != timezone_value
+            && self.timezones.iter().any(|zone| zone == &timezone_draft)
+        {
+            self.dispatch(state, &set_text_action(TIMEZONE_KEY, timezone_draft));
+        }
+        let auto_value = read_bool_setting(state, root, AUTO_TIME_KEY).unwrap_or(self.last_auto);
+        let auto_draft =
+            read_bool_setting(state, root, &draft_key(AUTO_TIME_KEY)).unwrap_or(auto_value);
+        if auto_value == self.last_auto && auto_draft != auto_value {
+            self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, auto_draft));
+        }
+        let h24_value = read_bool_setting(state, root, H24_KEY).unwrap_or(self.last_h24);
+        let h24_draft = read_bool_setting(state, root, &draft_key(H24_KEY)).unwrap_or(h24_value);
+        if h24_value == self.last_h24 && h24_draft != h24_value {
+            self.dispatch(state, &set_bool_action(H24_KEY, h24_draft));
         }
 
         if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY)
@@ -908,13 +968,18 @@ impl Widget for TimeDatePane {
                 Ok(()) => {
                     self.timezone.clone_from(&value);
                     self.last_timezone.clone_from(&value);
-                    self.sync_status.timezone = Some(value);
+                    self.sync_status.timezone = Some(value.clone());
                     self.notice = None;
+                    let _ = state.put(root, draft_key(TIMEZONE_KEY), value.as_str());
                     self.structure_dirty = true;
                 }
                 Err(error) => {
                     warn!(target: "qos::settings", op = "set_timezone", error = %error, "time-zone change failed");
-                    let _ = state.put(root, TIMEZONE_KEY, self.last_timezone.as_str());
+                    self.dispatch(
+                        state,
+                        &set_text_action(TIMEZONE_KEY, self.last_timezone.clone()),
+                    );
+                    let _ = state.put(root, draft_key(TIMEZONE_KEY), self.last_timezone.as_str());
                     self.notice = Some(format!("The time zone could not be changed: {error}"));
                     self.structure_dirty = true;
                 }
@@ -933,10 +998,12 @@ impl Widget for TimeDatePane {
                     self.initial_auto = *b;
                     self.sync_status.ntp_enabled = Some(*b);
                     self.notice = None;
+                    let _ = state.put(root, draft_key(AUTO_TIME_KEY), *b);
                 }
                 Err(e) => {
                     warn!(target: "qos::settings", op = "set_ntp", error = %e, "time pane dispatch failed");
-                    let _ = state.put(root, AUTO_TIME_KEY, previous);
+                    self.dispatch(state, &set_bool_action(AUTO_TIME_KEY, previous));
+                    let _ = state.put(root, draft_key(AUTO_TIME_KEY), previous);
                     self.notice = Some(format!("Automatic time could not be changed: {e}"));
                 }
             }
@@ -946,14 +1013,14 @@ impl Widget for TimeDatePane {
         // 24-hour preference → re-render the live clock AND persist to the
         // shared locale so Region & Formats and every consumer stay in sync
         // and the choice survives a restart.
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, H24_KEY)
-            && let automerge::ScalarValue::Boolean(b) = s.as_ref()
-            && *b != self.last_h24
+        if let Some(h24) = read_bool_setting(state, root, H24_KEY)
+            && h24 != self.last_h24
         {
-            self.last_h24 = *b;
-            self.h24 = *b;
+            self.last_h24 = h24;
+            self.h24 = h24;
+            let _ = state.put(root, draft_key(H24_KEY), h24);
             self.structure_dirty = true;
-            (self.persist_format)(*b);
+            (self.persist_format)(h24);
         }
 
         if let Some(c) = &mut self.composed {
@@ -1073,6 +1140,10 @@ impl Widget for TimeDatePane {
             "Time & date",
             "Change time and date preferences",
         )
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &'static str {
@@ -1204,7 +1275,7 @@ mod tests {
             &root,
         ));
         assert_eq!(
-            read_text_setting(&doc, &root, TIMEZONE_KEY).as_deref(),
+            read_text_setting(&doc, &root, &draft_key(TIMEZONE_KEY)).as_deref(),
             Some("Europe/Berlin")
         );
         assert!(map.needs_commit(), "a real timezone choice is durable");

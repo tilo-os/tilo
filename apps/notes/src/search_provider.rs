@@ -4,58 +4,64 @@
 //! searchable type by implementing [`SearchProvider`] over a snapshot of the
 //! page tree, so every note page becomes a typed [`SearchResult`] the unified
 //! Ctrl+K palette can rank alongside every other provider's hits. Activating a
-//! row hands back an opaque `action_id` the app resolves to a [`PageId`] and
-//! navigates to.
+//! row addresses the `open` view action exported by that page or block
+//! resource. The shared broker therefore owns activation for pointer,
+//! keyboard, assistive technology, search and agents alike.
 //!
-//! The provider is deliberately **library-scoped and synchronous**: it matches
-//! against page *titles* held in memory (`Workspace::pages`), never touching
-//! disk or the network on the query path. Page bodies live as `.md` files on
-//! disk (see [`crate::storage`]); reading every one on each keystroke would
-//! violate the toolkit's no-per-frame-IO rule, so body text is intentionally
-//! out of scope here.
+//! The provider is deliberately **library-scoped and synchronous**: a retained
+//! complete catalogue is incrementally updated from the app's in-memory CRDT
+//! projection, so opening or querying search never touches disk, network, or
+//! the full notebook.
+
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use ui::icons::Icon;
-use ui::search::{SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 use crate::model::{PageId, PageMeta, Workspace};
 
 /// The kind label (and result-group header) Notes produces.
 pub const NOTE_KIND: &str = "Notes";
-
-/// The `action_id` prefix. A chosen row's `action_id` is `note:<uuid>`;
-/// [`parse_action_id`] turns it back into a [`PageId`].
-const ACTION_PREFIX: &str = "note:";
+pub const BLOCK_KIND: &str = "Note blocks";
 
 /// The title shown for a page whose title is still blank.
 const UNTITLED: &str = "Untitled";
 
-/// A [`SearchProvider`] over a snapshot of the page tree. Rebuild it (cheap —
-/// it clones only the lightweight [`PageMeta`] list, not the bodies) whenever
-/// the search surface opens.
+/// A retained complete catalogue. Cloning this provider when Ctrl+K opens is
+/// O(1); the app incrementally updates only changed page/block resources.
+#[derive(Clone)]
 pub struct NoteSearchProvider {
+    catalog: SearchCatalog,
+    snapshot: Arc<RwLock<Snapshot>>,
+}
+
+#[derive(Default)]
+struct Snapshot {
     pages: Vec<PageMeta>,
+    blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
 }
 
 impl NoteSearchProvider {
     /// Snapshot the current page tree into a provider.
     pub fn new(workspace: &Workspace) -> Self {
-        Self {
-            pages: workspace.pages().to_vec(),
-        }
+        Self::with_blocks(workspace, &HashMap::new())
     }
 
-    /// The `action_id` for a page — what a chosen row hands back.
-    pub fn action_id(id: PageId) -> String {
-        format!("{ACTION_PREFIX}{id}")
-    }
-
-    /// Resolve an `action_id` produced by this provider back to a [`PageId`],
-    /// so the host can navigate to the chosen page. Returns `None` for an id
-    /// this provider did not emit.
-    pub fn parse_action_id(action_id: &str) -> Option<PageId> {
-        action_id
-            .strip_prefix(ACTION_PREFIX)
-            .and_then(|rest| PageId::parse_str(rest).ok())
+    /// Snapshot page metadata together with searchable plain-text blocks.
+    pub fn with_blocks(
+        workspace: &Workspace,
+        blocks: &HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    ) -> Self {
+        let mut provider = Self {
+            catalog: SearchCatalog::new(NOTE_KIND),
+            snapshot: Arc::new(RwLock::new(Snapshot::default())),
+        };
+        provider.update(workspace, blocks);
+        provider
     }
 
     /// The display title for a page, substituting a placeholder for a blank
@@ -67,6 +73,105 @@ impl NoteSearchProvider {
             page.title.as_str()
         }
     }
+
+    /// Reconcile only changed durable resources into the retained catalogue.
+    pub fn update(
+        &mut self,
+        workspace: &Workspace,
+        blocks: &HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    ) {
+        let pages = workspace.pages().to_vec();
+        let blocks = pages
+            .iter()
+            .filter_map(|page| blocks.get(&page.id).map(|rows| (page.id, rows.clone())))
+            .collect::<HashMap<_, _>>();
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let old_pages = snapshot
+            .pages
+            .iter()
+            .map(|page| (page.id, page))
+            .collect::<HashMap<_, _>>();
+        let new_pages = pages
+            .iter()
+            .map(|page| (page.id, page))
+            .collect::<HashMap<_, _>>();
+        for page in old_pages.keys().filter(|id| !new_pages.contains_key(*id)) {
+            self.catalog
+                .remove(&crate::actions::page_resource_id(*page));
+        }
+        for (page, old_blocks) in &snapshot.blocks {
+            if new_pages.contains_key(page) {
+                continue;
+            }
+            for block in old_blocks {
+                self.catalog
+                    .remove(&crate::actions::block_resource_id(*page, &block.id));
+            }
+        }
+        for page in &pages {
+            let page_changed = old_pages.get(&page.id).copied() != Some(page);
+            if page_changed {
+                let result = SearchResult::for_action(
+                    NOTE_KIND,
+                    Self::display_title(page),
+                    crate::actions::open_page_address(page.id),
+                )
+                .with_icon(Icon::FileText);
+                let _ = self.catalog.upsert(
+                    crate::actions::page_resource_id(page.id),
+                    Self::display_title(page),
+                    result,
+                );
+            }
+            let old_blocks = snapshot.blocks.get(&page.id).cloned().unwrap_or_default();
+            let new_blocks = blocks.get(&page.id).cloned().unwrap_or_default();
+            let old = old_blocks
+                .iter()
+                .map(|block| (block.id.as_str(), block))
+                .collect::<HashMap<_, _>>();
+            let new = new_blocks
+                .iter()
+                .map(|block| (block.id.as_str(), block))
+                .collect::<HashMap<_, _>>();
+            for id in old.keys().filter(|id| !new.contains_key(**id)) {
+                self.catalog
+                    .remove(&crate::actions::block_resource_id(page.id, id));
+            }
+            for block in &new_blocks {
+                if !page_changed && old.get(block.id.as_str()).copied() == Some(block) {
+                    continue;
+                }
+                let resource = crate::actions::block_resource_id(page.id, &block.id);
+                let collapsed = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if collapsed.is_empty() {
+                    self.catalog.remove(&resource);
+                    continue;
+                }
+                let label = if collapsed.chars().count() > 72 {
+                    collapsed.chars().take(69).collect::<String>() + "…"
+                } else {
+                    collapsed
+                };
+                let result = SearchResult::for_action(
+                    BLOCK_KIND,
+                    label,
+                    crate::actions::open_block_address(page.id, &block.id),
+                )
+                .with_subtitle(Self::display_title(page))
+                .with_icon(Icon::List);
+                let _ = self.catalog.upsert(
+                    resource,
+                    format!("{}\n{}", Self::display_title(page), block.text),
+                    result,
+                );
+            }
+        }
+        snapshot.pages = pages;
+        snapshot.blocks = blocks;
+    }
 }
 
 impl SearchProvider for NoteSearchProvider {
@@ -75,19 +180,49 @@ impl SearchProvider for NoteSearchProvider {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        // Substring filter over the (placeholder-substituted) title; the
-        // registry re-ranks the survivors by `fuzzy_score` against the same
-        // title. An empty query matches everything (the whole notebook is
-        // browsable), matching the contacts reference.
-        let q = query.to_lowercase();
-        self.pages
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
+        if limit == 0 {
+            return Vec::new();
+        }
+        self.catalog.search_limited(query, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(
+        &self,
+        address: &qos_actions::ActionAddress,
+    ) -> Option<qos_actions::Resource> {
+        let snapshot = self
+            .snapshot
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(page) = snapshot
+            .pages
             .iter()
-            .filter(|p| Self::display_title(p).to_lowercase().contains(&q))
-            .map(|p| {
-                SearchResult::new(NOTE_KIND, Self::display_title(p), Self::action_id(p.id))
-                    .with_icon(Icon::FileText)
-            })
-            .collect()
+            .find(|page| crate::actions::open_page_address(page.id) == *address)
+        {
+            return Some(crate::actions::page_resource(page, &snapshot.pages));
+        }
+        snapshot.blocks.iter().find_map(|(page, blocks)| {
+            blocks
+                .iter()
+                .find(|block| crate::actions::open_block_address(*page, &block.id) == *address)
+                .and_then(|block| crate::actions::block_resource(*page, block))
+        })
     }
 }
 
@@ -133,7 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn action_id_round_trips_to_the_chosen_page() {
+    fn limited_search_honours_the_materialisation_budget() {
+        let provider = NoteSearchProvider::new(&populated());
+        assert_eq!(provider.search_limited("", 1).len(), 1);
+        assert!(provider.search_limited("", 0).is_empty());
+    }
+
+    #[test]
+    fn page_result_addresses_the_exported_open_action() {
         let ws = populated();
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(NoteSearchProvider::new(&ws)));
@@ -143,23 +285,71 @@ mod tests {
         let top = &groups[0].results[0];
         assert_eq!(top.title, "Trip planning", "the best match leads");
 
-        let id = NoteSearchProvider::parse_action_id(&top.action_id)
-            .expect("action_id parses to a PageId");
-        assert!(
-            ws.get(id).is_some(),
-            "the id resolves to a real stored page"
-        );
         assert_eq!(
-            ws.get(id).unwrap().title,
-            top.title,
-            "activation lands on the right page"
+            top.action_address(),
+            Some(crate::actions::open_page_address(
+                ws.pages()
+                    .iter()
+                    .find(|page| page.title == top.title)
+                    .unwrap()
+                    .id
+            )),
+            "search and the resource tree publish one canonical address"
         );
     }
 
     #[test]
-    fn parse_action_id_rejects_foreign_ids() {
-        assert!(NoteSearchProvider::parse_action_id("file:/etc/passwd").is_none());
-        assert!(NoteSearchProvider::parse_action_id("note:not-a-uuid").is_none());
+    fn block_result_addresses_its_exported_reveal_action() {
+        let ws = populated();
+        let page = ws
+            .pages()
+            .iter()
+            .find(|page| page.title == "Meeting notes")
+            .unwrap();
+        let provider = NoteSearchProvider::with_blocks(
+            &ws,
+            &std::collections::HashMap::from([(
+                page.id,
+                vec![crate::actions::NoteBlockResource {
+                    id: "block-object".into(),
+                    text: "Budget decisions".into(),
+                }],
+            )]),
+        );
+        let hit = provider.search("budget").pop().expect("block hit");
+        assert_eq!(hit.kind, BLOCK_KIND);
+        assert_eq!(hit.subtitle.as_deref(), Some("Meeting notes"));
+        assert_eq!(
+            hit.action_address(),
+            Some(crate::actions::open_block_address(page.id, "block-object"))
+        );
+    }
+
+    #[test]
+    fn retained_catalog_pages_adversarial_queries_without_omitting_late_blocks() {
+        let ws = populated();
+        let page = ws.pages()[0].id;
+        let mut blocks = Vec::with_capacity(100_001);
+        for index in 0..100_001 {
+            blocks.push(crate::actions::NoteBlockResource {
+                id: uuid::Uuid::new_v4().to_string(),
+                text: format!("shared ordinary text {index}"),
+            });
+        }
+        blocks.last_mut().unwrap().text = "needle-at-the-end".into();
+        let provider = NoteSearchProvider::with_blocks(&ws, &HashMap::from([(page, blocks)]));
+        assert!(
+            provider
+                .search("needle-at-the-end")
+                .iter()
+                .any(|result| result.title == "needle-at-the-end"),
+            "the final record of a >100k catalogue remains reachable"
+        );
+        let first = provider.search_page("shared", None, 7, 3);
+        assert!(first.next.is_some(), "broad query exposes a continuation");
+        assert!(first.inspected <= 7 && first.results.len() <= 3);
+        let second = provider.search_page("shared", first.next.as_ref(), 7, 3);
+        assert!(second.inspected <= 7 && second.results.len() <= 3);
     }
 
     #[test]

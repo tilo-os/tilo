@@ -23,7 +23,7 @@ if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/shell"; then
     exit 1
 fi
 
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,license}
+mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,systemd-user,license}
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/qos-shell"
 install -pm 0755 "$bin_dir/qos-launcher"      "$stage/bin/qos-launcher"
 install -pm 0755 "$bin_dir/qos-unlock-helper" "$stage/libexec/qos-unlock-helper"
@@ -32,7 +32,11 @@ install -pm 0755 "$repo_root/dist/session/qos-session-dev" "$stage/libexec/qos-s
 install -pm 0644 "$repo_root/dist/session/qos.desktop"     "$stage/wayland-sessions/qos.desktop"
 install -pm 0644 "$repo_root/dist/session/qos-dev.desktop" "$stage/wayland-sessions/qos-dev.desktop"
 install -pm 0644 "$repo_root/os/etc/pam.d/qos-unlock"      "$stage/pam/qos-unlock"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/qos-graphical-session.target" \
+                 "$stage/systemd-user/qos-graphical-session.target"
 
 portal_src=$repo_root/os/usr/share/xdg-desktop-portal/portals/qos.portal
 install -pm 0644 "$portal_src" "$stage/portal/qos.portal"
+install -pm 0644 "$repo_root/os/usr/share/xdg-desktop-portal/nirios-portals.conf" \
+                 "$stage/portal/nirios-portals.conf"
 install -pm 0644 "$repo_root/LICENSE" "$stage/license/LICENSE"

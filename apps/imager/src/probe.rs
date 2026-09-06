@@ -83,7 +83,144 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
         return None;
     }
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;
-    parse_lsblk(&json)
+    let drives = parse_lsblk(&json)?;
+    #[cfg(feature = "flatpak-media-writer")]
+    if std::env::var("QOS_IMAGER_FLATPAK").as_deref() == Ok("1") {
+        return harden_flatpak_inventory(drives);
+    }
+    Some(drives)
+}
+
+/// Reconcile the sandbox-visible sysfs inventory with the host's `UDisks2`
+/// view. Mountpoints in a Flatpak's own namespace cannot prove that a USB disk
+/// is not the host's root disk, so failure to obtain the host-side safety
+/// properties fails closed and hides that candidate.
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>> {
+    let connection = zbus::blocking::Connection::system().ok()?;
+    let mut safe = Vec::new();
+    for mut drive in drives {
+        let Ok(proxy) = zbus::blocking::Proxy::new(
+            &connection,
+            "org.freedesktop.UDisks2",
+            udisks_object_path(&drive.name),
+            "org.freedesktop.UDisks2.Block",
+        ) else {
+            continue;
+        };
+        let host_size = proxy.get_property::<u64>("Size").ok();
+        let read_only = proxy.get_property::<bool>("ReadOnly").ok();
+        let hint_system = proxy.get_property::<bool>("HintSystem").ok();
+        let root_usage = proxy.get_property::<String>("IdUsage").ok();
+        let mut host_system_mount = false;
+        let mut complete_partition_evidence = true;
+        if root_usage.as_deref() == Some("filesystem") {
+            let root_filesystem = zbus::blocking::Proxy::new(
+                &connection,
+                "org.freedesktop.UDisks2",
+                udisks_object_path(&drive.name),
+                "org.freedesktop.UDisks2.Filesystem",
+            );
+            let root_mounts = root_filesystem
+                .ok()
+                .and_then(|filesystem| filesystem.get_property::<Vec<Vec<u8>>>("MountPoints").ok());
+            if let Some(mounts) = root_mounts {
+                host_system_mount |= mounts.iter().any(|bytes| host_mount_is_system(bytes));
+            } else {
+                complete_partition_evidence = false;
+            }
+        } else if root_usage.is_none() {
+            complete_partition_evidence = false;
+        }
+        for partition in &drive.partitions {
+            let Ok(block) = zbus::blocking::Proxy::new(
+                &connection,
+                "org.freedesktop.UDisks2",
+                udisks_object_path(&partition.name),
+                "org.freedesktop.UDisks2.Block",
+            ) else {
+                complete_partition_evidence = false;
+                break;
+            };
+            let Ok(partition_system) = block.get_property::<bool>("HintSystem") else {
+                complete_partition_evidence = false;
+                break;
+            };
+            host_system_mount |= partition_system;
+            let Ok(usage) = block.get_property::<String>("IdUsage") else {
+                complete_partition_evidence = false;
+                break;
+            };
+            if usage == "filesystem" {
+                let Ok(filesystem) = zbus::blocking::Proxy::new(
+                    &connection,
+                    "org.freedesktop.UDisks2",
+                    udisks_object_path(&partition.name),
+                    "org.freedesktop.UDisks2.Filesystem",
+                ) else {
+                    complete_partition_evidence = false;
+                    break;
+                };
+                let Ok(mounts) = filesystem.get_property::<Vec<Vec<u8>>>("MountPoints") else {
+                    complete_partition_evidence = false;
+                    break;
+                };
+                host_system_mount |= mounts.iter().any(|bytes| host_mount_is_system(bytes));
+            }
+        }
+        let Some(host_system) = reconcile_flatpak_host_safety(
+            drive.size,
+            host_size,
+            read_only,
+            hint_system,
+            complete_partition_evidence.then_some(host_system_mount),
+        ) else {
+            continue;
+        };
+        drive.is_system |= host_system;
+        safe.push(drive);
+    }
+    (!safe.is_empty()).then_some(safe)
+}
+
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn host_mount_is_system(bytes: &[u8]) -> bool {
+    let mount = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    matches!(mount, b"/" | b"/boot" | b"/boot/efi") || mount.starts_with(b"/var")
+}
+
+/// Return the host's system-disk classification only when every safety fact
+/// was obtained. Any missing property, partition-query error, read-only
+/// target, or cross-namespace size disagreement rejects the candidate.
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn reconcile_flatpak_host_safety(
+    expected_size: u64,
+    host_size: Option<u64>,
+    read_only: Option<bool>,
+    hint_system: Option<bool>,
+    system_mount: Option<bool>,
+) -> Option<bool> {
+    let host_size = host_size?;
+    let read_only = read_only?;
+    let hint_system = hint_system?;
+    let system_mount = system_mount?;
+    (!read_only && host_size == expected_size).then_some(hint_system || system_mount)
+}
+
+#[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+fn udisks_object_path(device_name: &str) -> String {
+    use std::fmt::Write as _;
+
+    let leaf = device_name.strip_prefix("/dev/").unwrap_or(device_name);
+    let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
+    for byte in leaf.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            path.push(byte as char);
+        } else {
+            let _ = write!(path, "_{byte:02x}");
+        }
+    }
+    path
 }
 
 /// macOS: enumerate external physical media only. Internal disks are omitted
@@ -465,6 +602,78 @@ fn as_bool(v: &Value) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    #[test]
+    fn flatpak_host_reconciliation_rejects_every_unknown_or_mismatch() {
+        let complete = (Some(32_000), Some(false), Some(false), Some(false));
+        assert_eq!(
+            reconcile_flatpak_host_safety(32_000, complete.0, complete.1, complete.2, complete.3),
+            Some(false)
+        );
+        assert_eq!(
+            reconcile_flatpak_host_safety(
+                32_000,
+                Some(32_000),
+                Some(false),
+                Some(true),
+                Some(false)
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            reconcile_flatpak_host_safety(
+                32_000,
+                Some(32_000),
+                Some(false),
+                Some(false),
+                Some(true)
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            reconcile_flatpak_host_safety(
+                32_000,
+                Some(31_999),
+                Some(false),
+                Some(false),
+                Some(false)
+            ),
+            None
+        );
+        assert_eq!(
+            reconcile_flatpak_host_safety(
+                32_000,
+                Some(32_000),
+                Some(true),
+                Some(false),
+                Some(false)
+            ),
+            None
+        );
+        for missing in 0..4 {
+            let mut facts = complete;
+            match missing {
+                0 => facts.0 = None,
+                1 => facts.1 = None,
+                2 => facts.2 = None,
+                _ => facts.3 = None,
+            }
+            assert_eq!(
+                reconcile_flatpak_host_safety(32_000, facts.0, facts.1, facts.2, facts.3),
+                None,
+                "missing host safety fact {missing} must reject the drive"
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
+    #[test]
+    fn host_mount_classification_uses_host_paths_and_tolerates_nul() {
+        assert!(host_mount_is_system(b"/\0"));
+        assert!(host_mount_is_system(b"/var/home\0"));
+        assert!(!host_mount_is_system(b"/run/media/alice/USB\0"));
+    }
 
     #[test]
     fn parses_usb_and_nvme_from_fixture() {

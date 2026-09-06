@@ -92,6 +92,11 @@ pub fn main() {
                 "--shots-overlay",
                 "--shots-pip-empty",
                 "--shots-settings",
+                "--shots-loading",
+                "--shots-error",
+                "--shots-library",
+                "--library-section",
+                "--audit-state",
                 "--url",
                 "--size",
             ])
@@ -111,9 +116,19 @@ fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
-    launch_target(args.positionals()).map_or_else(BrowserWidget::new, |uri| {
+    let mut widget = launch_target(args.positionals()).map_or_else(BrowserWidget::new, |uri| {
         BrowserWidget::new().with_initial_uri(uri)
-    })
+    });
+    match args.value("--audit-state") {
+        Some("error") => widget.debug_show_load_error(),
+        Some("history") => widget.debug_show_library("history"),
+        Some("bookmarks") => widget.debug_show_library("bookmarks"),
+        Some("downloads") => widget.debug_show_library("downloads"),
+        Some("extensions") => widget.debug_show_library("extensions"),
+        Some("settings") => widget.debug_show_settings(),
+        _ => {}
+    }
+    widget
 }
 
 #[allow(
@@ -138,7 +153,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.browser");
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    let mut app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    browser::actions::register(app.action_registry_mut());
     // Wake the (otherwise event-driven) winit loop whenever the engine
     // publishes a frame or a navigation event, so pages animate and
     // finish loading without waiting for user input.
@@ -182,17 +198,57 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .value("--size")
             .and_then(parse_size)
             .unwrap_or((1000, 650));
+        widget.debug_set_viewport_width(size.0);
         render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-settings") {
-        render_shot_to_png(
-            Box::new(browser::settings::SettingsPane::new()),
-            (900, 700),
-            std::path::Path::new(out),
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_settings();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-loading") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_loading();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 620));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-library") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_library(args.value("--library-section").unwrap_or("history"));
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((1000, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-error") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_load_error();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 620));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     Ok(false)
@@ -204,12 +260,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     if args.has("--pip-active") {
         widget.debug_show_active_pip();
     }
-    render_shot_to_png(
-        Box::new(widget),
-        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        out,
-    )
-    .map_err(|error| LaunchError::Operation(error.to_string()))
+    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+    widget.debug_set_viewport_width(viewport.0);
+    render_shot_to_png(Box::new(widget), viewport, out)
+        .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 fn parse_size(value: &str) -> Option<(u32, u32)> {

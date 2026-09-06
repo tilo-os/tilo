@@ -26,7 +26,10 @@ use app_catalogue::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
 use pkg::pack::{SigningIdentity, pack};
 use pkg::{Manifest, MemoryBlobStore};
-use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+use registry_types::{
+    PublisherAuthorization, RegistryEntry, RegistryVersion, SignedRegistrySnapshot, sign_entry,
+    sign_snapshot,
+};
 
 /// The .qpkg-authoring the local test registry does, shared verbatim
 /// so tests hold the served package to its real contract.
@@ -137,6 +140,30 @@ fn signed_entry(package_id: &str, qpkg_url: &str, qpkg: &[u8]) -> RegistryEntry 
     entry
 }
 
+fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let publisher = entry.publisher_pubkey_hex.clone();
+    let mut snapshot = SignedRegistrySnapshot {
+        protocol: registry_types::SNAPSHOT_PROTOCOL,
+        sequence: 1,
+        issued_at_unix: now,
+        expires_at_unix: now.saturating_add(3600),
+        previous_snapshot_hash_hex: String::new(),
+        moderation_head_hex: String::new(),
+        publishers: vec![PublisherAuthorization {
+            pubkey_hex: publisher,
+            can_add_new: true,
+        }],
+        entries: vec![entry],
+        owner_signature_hex: String::new(),
+    };
+    sign_snapshot(&mut snapshot, owner).unwrap();
+    serde_json::to_string(&snapshot).unwrap()
+}
+
 /// A minimal real HTTP server: GET /entries returns the catalogue JSON, GET /<name>.qpkg returns the package bytes.
 struct Registry {
     port: u16,
@@ -239,6 +266,7 @@ const PACKAGE_ID: &str = "dev.qos.catalogue-e2e";
 #[test]
 fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     let publisher = test_publisher();
+    let owner = SigningKey::from_bytes(&[12; 32]);
     let qpkg = author_qpkg(PACKAGE_ID, &publisher);
 
     // Serve it.
@@ -247,7 +275,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     drop(port_probe);
     let url = format!("http://127.0.0.1:{planned_port}/sheets.qpkg");
     let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
-    let entries_json = serde_json::to_string(&vec![entry]).unwrap();
+    let entries_json = signed_snapshot_json(entry, &owner);
     // Bind for real; if the planned port was taken, fall back to whatever we get and rewrite the URL.
     let registry = Registry::start(entries_json, qpkg.clone());
     let registry = if registry.port == planned_port {
@@ -255,7 +283,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     } else {
         let url = format!("http://127.0.0.1:{}/sheets.qpkg", registry.port);
         let entry = signed_entry(PACKAGE_ID, &url, &qpkg);
-        Registry::start(serde_json::to_string(&vec![entry]).unwrap(), qpkg)
+        Registry::start(signed_snapshot_json(entry, &owner), qpkg)
     };
 
     let config_dir = tempfile::tempdir().unwrap();
@@ -267,7 +295,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
             registries: vec![RegistryConfig {
                 name: "local".into(),
                 base_url: registry.base_url(),
-                owner_pubkey_hex: String::new(),
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
             }],
         })
@@ -555,8 +583,15 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
         launcher::services::ensure_services_root().expect("create the services dir");
     let _listener = std::os::unix::net::UnixListener::bind(services_root.join("collab.sock"))
         .expect("bind a collab socket for the launcher to dial");
-    let binds = launcher::services::resolve_service_binds(&reached.sandbox.services, false)
-        .expect("resolution must not fail on optional services");
+    let binds = launcher::services::resolve_service_binds_for_launch(
+        &reached.sandbox.services,
+        false,
+        launcher::services::ServiceLaunchContext {
+            app_id: PKG,
+            workspace_id: Some("catalogue-e2e-workspace"),
+        },
+    )
+    .expect("resolution must not fail with authenticated launch context");
     assert!(
         binds.iter().any(|b| b.name == "collab"),
         "the installed app must be handed a collab descriptor; \

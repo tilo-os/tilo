@@ -5,9 +5,9 @@
 //! # Why Settings owns these
 //!
 //! Account inventory in qOS is presented in one place: this app's External
-//! Accounts panel. Email accounts can currently be added there. Other account
-//! types are listed when an owning application provisions their canonical
-//! record; Settings does not duplicate those applications' authorization UI.
+//! Accounts panel. Password/app-password accounts for Mail, `CalDAV`, `WebDAV`,
+//! and Nextcloud can be added, edited, tested, reauthenticated, and removed
+//! there. Provider-specific OAuth authorization remains in its owning app.
 //!
 //! # Where email + `CalDAV` live: the shared `accounts` crate
 //!
@@ -23,19 +23,15 @@
 //! unchanged while the on-disk store is the shared one. Consequently the
 //! `MailStore` / `MailAccount` / `AccountConfig` types below are now **render
 //! view-models** populated from the shared store — the legacy
-//! `MailStore::path` / `MailStore::save` are no longer the path that feeds
-//! Mail (kept only for the file-store kinds that have not migrated yet).
+//! `MailStore::path` / `MailStore::save` remain only as legacy-format helpers;
+//! every account kind now writes the canonical store.
 //!
-//! # The still-separate file stores (format contracts)
+//! # Legacy migration
 //!
-//! `WebDAV` (files) and Nextcloud accounts keep their own JSON documents at
-//! fixed per-user paths for now; each app reads the same file with the same
-//! shape:
-//!
-//! | Store | Path | Consumed by |
-//! |-------|------|-------------|
-//! | [`DavStore`] (files) | `~/.config/qos/files/accounts.json` | reserved file-client contract |
-//! | [`NextcloudStore`] | `~/.config/qos/nextcloud/accounts.json` | reserved integration contract |
+//! Older installs kept `WebDAV` and Nextcloud metadata in per-app JSON files.
+//! [`AccountDirectory::load`] imports those records into the canonical store
+//! once (upsert by stable id), leaving the old files untouched as a rollback
+//! aid. New writes only target the canonical store.
 //!
 //! # Credentials are never serialised
 //!
@@ -47,6 +43,109 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AccountMutationJournal {
+    #[serde(rename = "previous_store")]
+    store: accounts::AccountStore,
+    #[serde(rename = "previous_statuses")]
+    statuses: accounts::AccountSyncStatusStore,
+    /// Previous vault ciphertext, never plaintext credential material.
+    #[serde(rename = "previous_vault_ciphertext")]
+    vault_ciphertext: Option<Vec<u8>>,
+}
+
+fn mutation_journal_path() -> Result<PathBuf, String> {
+    let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
+    Ok(accounts::accounts_dir_in(&root).join("mutation-journal.json"))
+}
+
+/// # Errors
+///
+/// Returns an error when the recovery check or durable journal write fails.
+pub fn begin_account_mutation(
+    previous_store: &accounts::AccountStore,
+    previous_statuses: &accounts::AccountSyncStatusStore,
+) -> Result<(), String> {
+    recover_account_mutation()?;
+    let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
+    let vault_ciphertext = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).ok();
+    let journal = AccountMutationJournal {
+        store: previous_store.clone(),
+        statuses: previous_statuses.clone(),
+        vault_ciphertext,
+    };
+    let bytes = serde_json::to_vec(&journal)
+        .map_err(|error| format!("could not serialize account transaction: {error}"))?;
+    atomic_file::write_creating_parent_with_mode(&mutation_journal_path()?, &bytes, 0o600)
+        .map_err(|error| format!("could not persist account transaction intent: {error}"))
+}
+
+/// # Errors
+///
+/// Returns an error when the completed mutation journal cannot be removed.
+pub fn finish_account_mutation() -> Result<(), String> {
+    let path = mutation_journal_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            if let Some(parent) = path.parent()
+                && let Ok(directory) = std::fs::File::open(parent)
+            {
+                let _ = directory.sync_all();
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not clear account transaction intent: {error}"
+        )),
+    }
+}
+
+/// Roll back an interrupted metadata/vault/status mutation before presenting
+/// the account inventory. The journal contains ciphertext, never a plaintext
+/// password or token.
+///
+/// # Errors
+///
+/// Returns an error when the journal or the recovered stores cannot be read
+/// or durably restored.
+pub fn recover_account_mutation() -> Result<(), String> {
+    let path = mutation_journal_path()?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "could not read account transaction intent: {error}"
+            ));
+        }
+    };
+    let journal: AccountMutationJournal = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("account transaction intent is invalid: {error}"))?;
+    journal
+        .store
+        .save()
+        .map_err(|error| format!("could not recover account metadata: {error}"))?;
+    journal
+        .statuses
+        .save()
+        .map_err(|error| format!("could not recover account sync status: {error}"))?;
+    let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
+    let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
+    match journal.vault_ciphertext {
+        Some(ciphertext) => {
+            atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
+                .map_err(|error| format!("could not recover credential vault: {error}"))?;
+        }
+        None => match std::fs::remove_file(&vault_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("could not recover credential vault: {error}")),
+        },
+    }
+    finish_account_mutation()
+}
 
 // ---------------------------------------------------------------------------
 // Mail store — byte-compatible with Mail's `~/.config/qos/mail/accounts.json`.
@@ -469,15 +568,53 @@ pub struct AccountDirectory {
 impl AccountDirectory {
     /// Load every store. Email and `CalDAV` accounts come from the shared
     /// canonical store ([`accounts::AccountStore`]) — the same store Mail and
-    /// Calendar read, so the shapes can no longer drift apart. `WebDAV` (files)
-    /// and Nextcloud keep their own stores for now. Missing stores are empty.
+    /// Calendar read, so the shapes can no longer drift apart. Legacy `WebDAV`
+    /// and Nextcloud JSON is imported idempotently before projecting the view.
     pub fn load() -> Self {
-        let shared = accounts::AccountStore::load();
+        if accounts::config_root().is_some()
+            && let Err(error) = recover_account_mutation()
+        {
+            tracing::warn!(target: "qos::settings", %error, "could not recover interrupted account mutation");
+        }
+        let mut shared = accounts::AccountStore::load();
+        if let Some(root) = accounts::config_root() {
+            let marker = accounts::accounts_dir_in(&root).join("legacy-settings-import-v1");
+            if !marker.exists() {
+                let changed = import_legacy_accounts(
+                    &mut shared,
+                    &DavStore::load_from(DavStore::files_path()),
+                    &NextcloudStore::load(),
+                );
+                let persisted = if changed {
+                    match shared.save() {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::warn!(target: "qos::settings", %error, "could not persist imported legacy accounts");
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+                let mark_imported = || -> std::io::Result<()> {
+                    if let Some(parent) = marker.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    atomic_file::write(&marker, b"imported\n")
+                };
+                if persisted && let Err(error) = mark_imported() {
+                    // Without a durable marker the import safely repeats as
+                    // upserts. Reporting this matters because a subsequently
+                    // removed legacy account could otherwise reappear.
+                    tracing::warn!(target: "qos::settings", %error, "could not mark legacy account import complete");
+                }
+            }
+        }
         Self {
             mail: mail_store_from_shared(&shared),
             calendar: caldav_store_from_shared(&shared),
-            files: DavStore::load_from(DavStore::files_path()),
-            nextcloud: NextcloudStore::load(),
+            files: webdav_store_from_shared(&shared),
+            nextcloud: nextcloud_store_from_shared(&shared),
         }
     }
 
@@ -587,6 +724,8 @@ fn default_version() -> u32 {
 const MAIL_TYPE: &str = "email";
 /// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
 const CALDAV_TYPE: &str = "caldav";
+pub const WEBDAV_TYPE: &str = "webdav";
+pub const NEXTCLOUD_TYPE: &str = "nextcloud";
 
 /// Project the shared store's email accounts into a [`MailStore`].
 fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
@@ -645,6 +784,80 @@ fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
         version: 1,
         accounts,
     }
+}
+
+fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
+    let ty = accounts::AccountTypeId::from(WEBDAV_TYPE);
+    DavStore {
+        version: 1,
+        accounts: shared
+            .list(&ty)
+            .into_iter()
+            .filter_map(|a| {
+                let mut config = a.config_as::<DavAccount>()?;
+                config.id = a.id.to_string();
+                config.label.clone_from(&a.display_name);
+                config.enabled = a.enabled;
+                config.tint = a.tint;
+                config.password.clear();
+                Some(config)
+            })
+            .collect(),
+    }
+}
+
+fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStore {
+    let ty = accounts::AccountTypeId::from(NEXTCLOUD_TYPE);
+    NextcloudStore {
+        version: 1,
+        accounts: shared
+            .list(&ty)
+            .into_iter()
+            .filter_map(|a| {
+                let mut config = a.config_as::<NextcloudAccount>()?;
+                config.id = a.id.to_string();
+                config.label.clone_from(&a.display_name);
+                config.enabled = a.enabled;
+                config.tint = a.tint;
+                config.password.clear();
+                Some(config)
+            })
+            .collect(),
+    }
+}
+
+/// Import old per-app account metadata without duplicating records. Credentials
+/// were `serde(skip)` in those formats, so this operation cannot move or expose
+/// a password; existing vault entries remain keyed by the same stable ids.
+pub fn import_legacy_accounts(
+    shared: &mut accounts::AccountStore,
+    webdav: &DavStore,
+    nextcloud: &NextcloudStore,
+) -> bool {
+    let before = shared.len();
+    for legacy in &webdav.accounts {
+        let id = accounts::AccountId::from(legacy.id.clone());
+        if shared.get(&id).is_none() {
+            let mut stored = accounts::Account::new(id, WEBDAV_TYPE);
+            stored.display_name.clone_from(&legacy.label);
+            stored.enabled = legacy.enabled;
+            stored.tint = legacy.tint;
+            stored.set_config(legacy);
+            shared.upsert(stored);
+        }
+    }
+    for legacy in &nextcloud.accounts {
+        let id = accounts::AccountId::from(legacy.id.clone());
+        if shared.get(&id).is_none() {
+            let mut stored = accounts::Account::new(id, NEXTCLOUD_TYPE);
+            stored.display_name.clone_from(&legacy.label);
+            stored.enabled = legacy.enabled;
+            stored.tint = legacy.tint;
+            stored.set_config(legacy);
+            shared.upsert(stored);
+        }
+    }
+    shared.len() != before
 }
 
 /// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
@@ -838,5 +1051,112 @@ mod tests {
     fn empty_directory_is_detected() {
         assert!(AccountDirectory::default().is_empty());
         assert!(!sample_directory().is_empty());
+    }
+
+    #[test]
+    fn legacy_webdav_and_nextcloud_import_is_idempotent_and_secret_free() {
+        let mut web = DavAccount::new("Files", "https://dav.example/files", "ada");
+        web.password = "must-not-migrate".into();
+        let mut cloud = NextcloudAccount::new("Cloud", "https://cloud.example", "ada");
+        cloud.password = "also-must-not-migrate".into();
+        let files = DavStore {
+            version: 1,
+            accounts: vec![web.clone()],
+        };
+        let clouds = NextcloudStore {
+            version: 1,
+            accounts: vec![cloud.clone()],
+        };
+        let mut shared = accounts::AccountStore::new();
+
+        assert!(import_legacy_accounts(&mut shared, &files, &clouds));
+        assert!(!import_legacy_accounts(&mut shared, &files, &clouds));
+        assert_eq!(shared.len(), 2);
+        let json = serde_json::to_string(&shared).expect("canonical store serializes");
+        assert!(!json.contains("must-not-migrate"));
+        assert!(!json.contains("also-must-not-migrate"));
+        assert_eq!(webdav_store_from_shared(&shared).accounts[0].id, web.id);
+        assert_eq!(
+            nextcloud_store_from_shared(&shared).accounts[0].id,
+            cloud.id
+        );
+    }
+
+    #[test]
+    fn completed_legacy_import_does_not_resurrect_a_removed_account() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("legacy_account_no_resurrection");
+        let legacy = DavAccount::new("Old files", "https://dav.example/files", "ada");
+        DavStore {
+            version: 1,
+            accounts: vec![legacy.clone()],
+        }
+        .save_to(DavStore::files_path())
+        .expect("seed legacy store");
+
+        assert_eq!(AccountDirectory::load().files.accounts.len(), 1);
+        let id = accounts::AccountId::from(legacy.id);
+        let mut canonical = accounts::AccountStore::load();
+        assert!(canonical.remove(&id));
+        canonical.save().expect("persist removal");
+
+        assert!(
+            AccountDirectory::load().files.accounts.is_empty(),
+            "the durable one-time marker prevents legacy metadata from resurrecting a removal"
+        );
+    }
+
+    #[test]
+    fn journal_recovers_each_interrupted_removal_phase() {
+        for phase in 1..=3 {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new(&format!(
+                "account_mutation_recovery_phase_{phase}"
+            ));
+            let id = accounts::AccountId::from(format!("recover-{phase}"));
+            let mut original_store = accounts::AccountStore::new();
+            let mut account = accounts::Account::new(id.clone(), NEXTCLOUD_TYPE);
+            account.display_name = "Recover me".into();
+            account.config = serde_json::json!({
+                "id": id.as_str(), "label": "Recover me", "server_url": "https://cloud.example",
+                "username": "ada", "use_files": true, "use_calendar": true, "use_mail": true
+            });
+            original_store.upsert(account);
+            original_store.save().expect("seed metadata");
+            let mut vault = accounts::SecretVault::open();
+            vault.put(&id, &accounts::Secret::password("sealed-secret"));
+            vault.try_save().expect("seed vault");
+            let reporter = accounts::AccountSyncReporter::new(id.clone());
+            reporter.succeeded().expect("seed status");
+            let original_statuses = accounts::AccountSyncStatusStore::load();
+
+            begin_account_mutation(&original_store, &original_statuses).expect("journal intent");
+            let mut vault = accounts::SecretVault::open();
+            vault.remove(&id);
+            vault.try_save().expect("phase one");
+            if phase >= 2 {
+                let mut store = accounts::AccountStore::load();
+                store.remove(&id);
+                store.save().expect("phase two");
+            }
+            if phase >= 3 {
+                let mut statuses = accounts::AccountSyncStatusStore::load();
+                statuses.remove(&id);
+                statuses.save().expect("phase three");
+            }
+
+            let recovered = AccountDirectory::load();
+            assert_eq!(recovered.nextcloud.accounts.len(), 1, "phase {phase}");
+            assert_eq!(
+                accounts::SecretVault::open()
+                    .get(&id)
+                    .map(|secret| secret.password),
+                Some("sealed-secret".into()),
+                "phase {phase} restores encrypted credential"
+            );
+            assert!(
+                accounts::AccountSyncStatusStore::load().get(&id).is_some(),
+                "phase {phase} restores sync status"
+            );
+            assert!(!mutation_journal_path().expect("journal path").exists());
+        }
     }
 }

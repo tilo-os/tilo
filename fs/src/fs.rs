@@ -51,9 +51,7 @@ use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, RecordAvailability, RecordKind, Residency,
     TransferPhase,
 };
-use crate::eviction::{
-    EvictionCatalog, EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState,
-};
+use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::smart::Heuristics;
@@ -2270,141 +2268,20 @@ impl QuickFS {
         Ok(())
     }
 
-    // The availability guard intentionally spans final authorization and the
-    // backend handoff: releasing it across either await would permit a pin or
-    // receipt change to race destructive authorization.
-    #[allow(
-        clippy::await_holding_lock,
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines
-    )]
     fn prepare_eviction_request(
         &self,
         record_id: collab_types::FileRecordId,
         mode: EvictionMode,
         existing_request: Option<EvictionRequestId>,
     ) -> Result<EvictionRequestId, i32> {
-        let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone();
-        let queue = self.eviction_queue.as_ref().ok_or(libc::ENOTSUP)?.clone();
-        let history = self
-            .history
-            .as_ref()
-            .map(|(history, _)| history.clone())
-            .ok_or(libc::ENOTSUP)?;
-        // Snapshot the policy roots before backend inspection. We compare the
-        // snapshot again while holding the registry through authorization and
-        // tag release, so a concurrent pin/version/receipt change fails closed.
-        let (records, mut version_keys) = {
-            let registry = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let records: Vec<_> = registry.records().cloned().collect();
-            let mut version_keys = Vec::new();
-            for record in &records {
-                if record.kind != RecordKind::File {
-                    continue;
-                }
-                // Catalog exactly the roots the planner can consult: the
-                // target, other resident/pinned current versions, and every
-                // explicitly retained historical version. A metadata-only,
-                // automatic remote file must not block unrelated eviction.
-                let protects_current = record.record_id == record_id
-                    || record.residency != Residency::NotResident
-                    || registry
-                        .effective_policy(record.record_id)
-                        .map_err(|_| EBUSY)?
-                        == Some(AvailabilityPolicy::Pinned);
-                if protects_current && let Some(version) = record.current_version {
-                    version_keys.push((record.record_id, version));
-                }
-                version_keys.extend(
-                    record
-                        .retained_versions
-                        .iter()
-                        .copied()
-                        .map(|version| (record.record_id, version)),
-                );
-            }
-            (records, version_keys)
-        };
-        version_keys.sort_unstable();
-        version_keys.dedup();
-
-        let store = self.hydrator.store.clone();
-        let runtime = self.hydrator.runtime_handle.clone();
-        let catalog = tokio::task::block_in_place(|| {
-            runtime.block_on(async {
-                let mut payloads = Vec::new();
-                let mut empty = Vec::new();
-                for (record, version_id) in version_keys {
-                    let version = history
-                        .snapshot(record)
-                        .and_then(|snapshot| {
-                            snapshot
-                                .versions
-                                .into_iter()
-                                .find(|version| version.id == version_id)
-                        })
-                        .ok_or(EBUSY)?;
-                    match version.content_hash {
-                        Some(hash) => payloads.push(
-                            store
-                                .inspect_version_payload(record, version_id, Hash::from(hash.0))
-                                .await
-                                .map_err(|_| EIO)?,
-                        ),
-                        None => empty.push((record, version_id)),
-                    }
-                }
-                EvictionCatalog::with_empty_versions(payloads, empty).map_err(|_| EBUSY)
-            })
-        })?;
-
+        let coordinator = self.eviction_coordinator()?;
         tokio::task::block_in_place(|| {
-            runtime.block_on(async {
-                let registry_guard = registry
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let current: Vec<_> = registry_guard.records().cloned().collect();
-                if current != records {
-                    return Err(EBUSY);
-                }
-                let plan = match mode {
-                    EvictionMode::Safe => crate::eviction::plan_safe_eviction(
-                        &registry_guard,
-                        &catalog,
-                        record_id,
-                        now_ms(),
-                        crate::availability::EvictionRequirements::default(),
-                    ),
-                    EvictionMode::DestructiveOverride => {
-                        crate::eviction::plan_destructive_eviction(
-                            &registry_guard,
-                            &catalog,
-                            record_id,
-                            now_ms(),
-                            crate::availability::EvictionRequirements::default(),
-                        )
-                    }
-                }
-                .map_err(|_| EBUSY)?;
-                let mut queue_guard = queue.lock().await;
-                let request_id = match existing_request {
-                    Some(request_id) => request_id,
-                    None => queue_guard.enqueue(&plan, now_ms()).map_err(|_| EIO)?.id,
-                };
-                store
-                    .release_eviction_to_backend_gc(
-                        &queue_guard,
-                        request_id,
-                        &registry_guard,
-                        &catalog,
-                        now_ms(),
-                        crate::availability::EvictionRequirements::default(),
-                    )
+            self.hydrator.runtime_handle.block_on(async {
+                coordinator
+                    .prepare(record_id, mode, existing_request, None)
                     .await
-                    .map_err(|_| EBUSY)?;
-                Ok(request_id)
+                    .map(|(request_id, _)| request_id)
+                    .map_err(|_| EBUSY)
             })
         })
     }
@@ -2414,38 +2291,20 @@ impl QuickFS {
         record_id: collab_types::FileRecordId,
         request_id: EvictionRequestId,
     ) -> Result<(), i32> {
-        let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone();
-        let queue = self.eviction_queue.as_ref().ok_or(libc::ENOTSUP)?.clone();
-        let store = self.hydrator.store.clone();
-        // Backend GC is asynchronous. Persist NotResident only after an exact
-        // all-absent observation; errors leave the durable request pending.
-        self.hydrator.runtime_handle.spawn(async move {
-            for _ in 0..=75 {
-                let result = {
-                    let mut queue = queue.lock().await;
-                    store
-                        .observe_eviction_request(&mut queue, request_id, now_ms())
-                        .await
-                };
-                match result {
-                    Ok(observation)
-                        if matches!(observation.state, EvictionRequestState::Completed { .. }) =>
-                    {
-                        update_retry_state(&registry, record_id, |record| {
-                            record.residency = Residency::NotResident;
-                            record.freshness.local_verified_at_ms = None;
-                        });
-                        break;
-                    }
-                    Ok(_) => tokio::time::sleep(Duration::from_secs(1)).await,
-                    Err(error) => {
-                        eprintln!("could not observe physical eviction completion: {error}");
-                        break;
-                    }
-                }
-            }
-        });
+        self.eviction_coordinator()?
+            .spawn_observer(record_id, request_id);
         Ok(())
+    }
+
+    fn eviction_coordinator(&self) -> Result<crate::eviction::EvictionCoordinator, i32> {
+        Ok(crate::eviction::EvictionCoordinator::new(
+            Arc::clone(&self.hydrator),
+            self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone(),
+            self.eviction_queue.as_ref().ok_or(libc::ENOTSUP)?.clone(),
+            self.history
+                .as_ref()
+                .map(|(history, _)| Arc::clone(history)),
+        ))
     }
 
     /// Resume durable cache-reclamation intents after a daemon restart. Every
@@ -2453,7 +2312,7 @@ impl QuickFS {
     /// before owned tags are released again; completed observations repair a
     /// registry update that may have been interrupted by a crash.
     pub fn resume_pending_evictions(&self) {
-        let (Some(queue), Some(registry)) = (&self.eviction_queue, &self.availability) else {
+        let Some(queue) = &self.eviction_queue else {
             return;
         };
         let queue = queue.clone();
@@ -2464,10 +2323,25 @@ impl QuickFS {
         });
         for request in requests {
             if matches!(request.state, EvictionRequestState::Completed { .. }) {
-                update_retry_state(registry, request.record_id, |record| {
-                    record.residency = Residency::NotResident;
-                    record.freshness.local_verified_at_ms = None;
-                });
+                // Reuse the exact-version guard. A completed old-version
+                // request must not erase residency for a newer current file.
+                if let Ok(coordinator) = self.eviction_coordinator() {
+                    let _ = tokio::task::block_in_place(|| {
+                        self.hydrator
+                            .runtime_handle
+                            .block_on(coordinator.observe_once(request.record_id, request.id))
+                    });
+                }
+                continue;
+            }
+            // Settings persists an intent before asking the backend GC to
+            // collect it.  Availability/history can lag a newly applied
+            // namespace revision, so do not let a later restart turn an old
+            // intent into authority for the current file.
+            if !self.eviction_request_matches_live_namespace(&request) {
+                eprintln!(
+                    "pending eviction no longer matches the live namespace version; leaving it unexecuted"
+                );
                 continue;
             }
             match self.prepare_eviction_request(request.record_id, request.mode, Some(request.id)) {
@@ -2484,6 +2358,19 @@ impl QuickFS {
                 }
             }
         }
+    }
+
+    fn eviction_request_matches_live_namespace(
+        &self,
+        request: &crate::eviction::EvictionRequest,
+    ) -> bool {
+        let namespace = self.ns();
+        namespace.live_node_ids().into_iter().any(|node_id| {
+            namespace.record_id_for_id(&node_id) == Some(request.record_id)
+                && namespace
+                    .content_revision_for_id(&node_id)
+                    .is_some_and(|revision| revision.version_id == request.version_id)
+        })
     }
 
     /// The thumbnail (PNG bytes) for a file, generated as metadata ahead
@@ -5015,6 +4902,31 @@ mod availability_control_tests {
         .expect("availability state barrier");
     }
 
+    async fn pinned_content_source() -> (Endpoint, Router, Hash, Hash) {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = ContentStore::memory();
+        let first = store
+            .write_content(b"first remote version")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = store
+            .write_content(b"second remote version")
+            .await
+            .unwrap()
+            .unwrap();
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
+            .spawn();
+        (endpoint, router, first, second)
+    }
+
+    async fn close_pinned_test_source(router: Router, source: Endpoint, client: Endpoint) {
+        router.shutdown().await.unwrap();
+        source.close().await;
+        client.close().await;
+    }
+
     fn current_pinned_candidate(
         namespace: &Arc<Mutex<Namespace>>,
         registry: &Arc<Mutex<AvailabilityRegistry>>,
@@ -5152,8 +5064,7 @@ mod availability_control_tests {
         .unwrap();
         assert_eq!(projected.policy, AvailabilityPolicy::Pinned);
 
-        drop(fs);
-        drop(registry);
+        drop((fs, registry));
         let reopened = AvailabilityRegistry::open(registry_path).unwrap();
         let folder_id = namespace
             .lock()
@@ -5167,29 +5078,10 @@ mod availability_control_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one restart scenario verifies pin inheritance, retry, and version replacement together"
-    )]
     async fn pinned_folder_hydrates_future_child_retries_after_restart_and_tracks_new_version() {
         let dir = tempfile::tempdir().unwrap();
         let registry_path = dir.path().join("availability.json");
-        let source_endpoint = Endpoint::bind(presets::N0).await.unwrap();
-        let source_store = ContentStore::memory();
-        let first = source_store
-            .write_content(b"first remote version")
-            .await
-            .unwrap()
-            .unwrap();
-        let second = source_store
-            .write_content(b"second remote version")
-            .await
-            .unwrap()
-            .unwrap();
-        let source_router = Router::builder(source_endpoint.clone())
-            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
-            .spawn();
-
+        let (source_endpoint, source_router, first, second) = pinned_content_source().await;
         let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let client_store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store));
@@ -5237,7 +5129,6 @@ mod availability_control_tests {
         // This is the same wake issued after a local namespace publish. It
         // must not wait for the deliberately slow repair scan.
         fs.wake_pinned_hydration();
-
         // No peer is configured yet. The worker records an actionable error
         // and a durable backoff rather than spinning or claiming success.
         wait_for_availability(&registry, record_id, |record| {
@@ -5269,7 +5160,6 @@ mod availability_control_tests {
                 && record.transfer.last_error.is_none()
         })
         .await;
-
         // A later immutable version invalidates the old residency proof and
         // is hydrated under the same durable ancestor pin.
         let second_version = collab_types::FileVersionId::new();
@@ -5300,9 +5190,7 @@ mod availability_control_tests {
         .await;
 
         drop(fs);
-        source_router.shutdown().await.unwrap();
-        source_endpoint.close().await;
-        client_endpoint.close().await;
+        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
     }
 
     #[tokio::test]
@@ -5357,21 +5245,19 @@ mod availability_control_tests {
                 .records()
                 .filter(|record| record.kind == RecordKind::File)
                 .collect::<Vec<_>>();
-            let counts = (
-                children
-                    .iter()
-                    .filter(|record| record.transfer.retry_count == 1)
-                    .count(),
-                children
-                    .iter()
-                    .filter(|record| {
-                        record.transfer.phase == TransferPhase::Queued
-                            && record.transfer.retry_count == 0
-                    })
-                    .count(),
-            );
+            let attempted = children
+                .iter()
+                .filter(|record| record.transfer.retry_count == 1)
+                .count();
+            let queued = children
+                .iter()
+                .filter(|record| {
+                    record.transfer.phase == TransferPhase::Queued
+                        && record.transfer.retry_count == 0
+                })
+                .count();
             drop(registry);
-            counts
+            (attempted, queued)
         };
         assert_eq!(attempted, MAX_PINNED_FETCHES_PER_PASS);
         assert_eq!(queued, 10 - MAX_PINNED_FETCHES_PER_PASS);
@@ -5572,7 +5458,7 @@ mod availability_control_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn restart_reconciles_completed_eviction_into_availability() {
+    async fn restart_does_not_project_completed_old_version_as_not_resident() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
@@ -5623,6 +5509,22 @@ mod availability_control_tests {
             EvictionRequestState::Completed { .. }
         ));
         let queue = Arc::new(tokio::sync::Mutex::new(queue));
+        // Simulate a new immutable revision arriving after the old request
+        // completed but before daemon restart recovery runs.
+        let newer_version = collab_types::FileVersionId::new();
+        let mut current = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(record_id)
+            .cloned()
+            .unwrap();
+        current.current_version = Some(newer_version);
+        current.residency = Residency::Resident { bytes: 0 };
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .put(current)
+            .unwrap();
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
         let fs = QuickFS::new(namespace, hydrator, heuristics)
             .with_availability(Arc::clone(&registry))
@@ -5636,7 +5538,7 @@ mod availability_control_tests {
                 .get(record_id)
                 .unwrap()
                 .residency,
-            Residency::NotResident
+            Residency::Resident { bytes: 0 }
         );
     }
 }

@@ -1,3 +1,39 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::assigning_clones,
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cloned_instead_of_copied,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::expect_used,
+    clippy::explicit_iter_loop,
+    clippy::field_reassign_with_default,
+    clippy::float_cmp,
+    clippy::format_push_string,
+    clippy::uninlined_format_args,
+    clippy::implicit_clone,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::manual_contains,
+    clippy::map_unwrap_or,
+    clippy::manual_assert,
+    clippy::needless_borrow,
+    clippy::panic,
+    clippy::redundant_clone,
+    clippy::redundant_closure_for_method_calls,
+    clippy::single_match,
+    clippy::unnecessary_trailing_comma,
+    clippy::too_many_lines,
+    clippy::unreadable_literal,
+    clippy::unwrap_used,
+    reason = "pixel-fidelity fixture uses checked test data and direct assertion failures"
+)]
+
 //! End-to-end acceptance test for the export: what lands in the file has
 //! to be the user's footage.
 //!
@@ -927,27 +963,24 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
         if let Some(reason) = failed {
             panic!("decoding audio from {} failed: {reason}", path.display());
         }
-        match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
-            Some(sample) => {
-                let Some(buffer) = sample.buffer() else {
-                    continue;
-                };
-                let Ok(map) = buffer.map_readable() else {
-                    continue;
-                };
-                for c in map.chunks_exact(4) {
-                    out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
-                }
+        if let Some(sample) = sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
+            let Some(buffer) = sample.buffer() else {
+                continue;
+            };
+            let Ok(map) = buffer.map_readable() else {
+                continue;
+            };
+            for c in map.chunks_exact(4) {
+                out.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
             }
-            None => {
-                if sink.is_eos() {
-                    break;
-                }
-                // Nothing yet, and the decoder has finished finding streams:
-                // there is genuinely no audio here.
-                if out.is_empty() && settled.load(std::sync::atomic::Ordering::SeqCst) {
-                    break;
-                }
+        } else {
+            if sink.is_eos() {
+                break;
+            }
+            // Nothing yet, and the decoder has finished finding streams:
+            // there is genuinely no audio here.
+            if out.is_empty() && settled.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
             }
         }
     }

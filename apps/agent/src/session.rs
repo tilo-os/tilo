@@ -29,6 +29,8 @@ struct TaskAction {
     app: String,
     peer_id: u64,
     resource: String,
+    resource_kind: String,
+    resource_label: String,
     action: String,
     arguments: serde_json::Map<String, serde_json::Value>,
     label: String,
@@ -140,6 +142,8 @@ fn task_action_from_offer(
         app: offer.app.clone(),
         peer_id,
         resource: offer.descriptor.address.resource.clone(),
+        resource_kind: offer.descriptor.resource_kind.clone(),
+        resource_label: offer.descriptor.resource_label.clone(),
         action: offer.descriptor.address.action.clone(),
         arguments,
         label: offer.descriptor.action_label.clone(),
@@ -402,6 +406,11 @@ impl Session {
     /// separate mode from document listening: a title is not a document
     /// instruction, and an unattended task may invoke only actions that the
     /// authenticated broker currently publishes to this agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when receiving catalogue updates or reporting task
+    /// progress through the collaboration link fails.
     pub fn run_task_runs(&mut self) -> Result<()> {
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
@@ -409,62 +418,62 @@ impl Session {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.broker_surfaces = surfaces;
                 }
-                Some(CollabEvent::TaskRun(run)) => self.run_task(run)?,
+                Some(CollabEvent::TaskRun(run)) => self.run_task(&run)?,
                 Some(_) | None => {}
             }
         }
     }
 
-    fn run_task(&mut self, run: runtime_collab::TaskRunEnvelope) -> Result<()> {
-        if let Err(message) = validate_task_run(&run) {
+    fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
+        if let Err(message) = validate_task_run(run) {
             tracing::warn!(run_id = run.run_id, %message, "refused malformed task run");
-            self.report_task(&run, runtime_collab::TaskRunUpdate::Failed { message })?;
+            self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
             return Ok(());
         }
-        self.report_task(&run, runtime_collab::TaskRunUpdate::Accepted)?;
+        self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         self.report_task(
-            &run,
+            run,
             runtime_collab::TaskRunUpdate::Progress {
                 message: "Reviewing the permission-filtered action catalogue".into(),
             },
         )?;
         self.wait_for_task_catalogue()?;
-        if self.task_cancelled(&run)? {
-            return self.cancel_task(&run, "Cancelled before planning");
+        if self.task_cancelled(run)? {
+            return self.cancel_task(run, "Cancelled before planning");
         }
-        let actions = match self.plan_task(&run) {
+        let actions = match self.plan_task(run) {
             Ok(actions) if !actions.is_empty() => actions,
             Ok(_) => {
-                return self.fail_task(&run, "No permitted live action can complete this task");
+                return self.fail_task(run, "No permitted live action can complete this task");
             }
-            Err(message) => return self.fail_task(&run, &message),
+            Err(message) => return self.fail_task(run, &message),
         };
         let mut previous = None;
         for (index, action) in actions.iter().enumerate() {
-            if self.task_cancelled(&run)? {
-                return self.cancel_task(&run, "Cancelled before the next action");
+            if self.task_cancelled(run)? {
+                return self.cancel_task(run, "Cancelled before the next action");
             }
             let arguments =
                 match arguments_for_step(action.carries, &action.arguments, previous.as_ref()) {
                     Ok(arguments) => arguments,
-                    Err(message) => return self.fail_task(&run, &message),
+                    Err(message) => return self.fail_task(run, &message),
                 };
             self.report_task(
-                &run,
+                run,
                 runtime_collab::TaskRunUpdate::Progress {
                     message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
                 },
             )?;
-            match self.invoke_task_action(&run, action, &arguments)? {
+            match self.invoke_task_action(run, action, &arguments)? {
                 Ok(outcome) => previous = Some(outcome),
                 Err(TaskActionStop::Cancelled) => {
-                    return self.cancel_task(&run, "Cancelled while an action was running");
+                    return self.cancel_task(run, "Cancelled while an action was running");
                 }
-                Err(TaskActionStop::Failed(message)) => return self.fail_task(&run, &message),
+                Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }
         }
         self.report_task(
-            &run,
+            run,
             runtime_collab::TaskRunUpdate::Succeeded {
                 message: format!("Completed {} broker-approved action(s)", actions.len()),
             },
@@ -652,6 +661,8 @@ impl Session {
             Ok(result) => result,
             Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
         };
+        let mut interaction_sequence = 0_u64;
+        self.publish_task_interaction(run, action, &update, interaction_sequence);
         let deadline = Instant::now() + TASK_ACTION_WAIT;
         while !update.is_terminal() && Instant::now() < deadline {
             if self.task_cancelled(run)? {
@@ -661,6 +672,12 @@ impl Session {
                     id,
                 })?;
                 let _ = self.wait_for_broker_result(cancel_request)?;
+                interaction_sequence = interaction_sequence.saturating_add(1);
+                let cancelled = qos_actions::InvocationUpdate::Cancelled {
+                    invocation: update.invocation(),
+                    message: Some("Cancelled from Task Center".into()),
+                };
+                self.publish_task_interaction(run, action, &cancelled, interaction_sequence);
                 return Ok(Err(TaskActionStop::Cancelled));
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -671,6 +688,8 @@ impl Session {
                 Ok((_, update)) => update,
                 Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
             };
+            interaction_sequence = interaction_sequence.saturating_add(1);
+            self.publish_task_interaction(run, action, &update, interaction_sequence);
         }
         match update {
             qos_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
@@ -681,10 +700,113 @@ impl Session {
             qos_actions::InvocationUpdate::Failed { error, .. } => {
                 Ok(Err(TaskActionStop::Failed(error.message)))
             }
-            _ => Ok(Err(TaskActionStop::Failed(
-                "Task action did not reach a terminal state before its deadline".into(),
-            ))),
+            other => {
+                let message = "Task action did not reach a terminal state before its deadline";
+                interaction_sequence = interaction_sequence.saturating_add(1);
+                self.publish_task_interaction(
+                    run,
+                    action,
+                    &qos_actions::InvocationUpdate::Failed {
+                        invocation: other.invocation(),
+                        error: qos_actions::ActionFailure {
+                            code: "timeout".into(),
+                            message: message.into(),
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                    interaction_sequence,
+                );
+                Ok(Err(TaskActionStop::Failed(message.into())))
+            }
         }
+    }
+
+    /// Project a real broker invocation into semantic presence. No pointer,
+    /// caret, focus, or viewport mutation is synthesized: peers receive the
+    /// resource/action lifecycle and resolve its stable anchor natively.
+    fn publish_task_interaction(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        action: &TaskAction,
+        update: &qos_actions::InvocationUpdate,
+        sequence: u64,
+    ) {
+        let phase = match update {
+            qos_actions::InvocationUpdate::Accepted { .. } => {
+                qos_actions::InteractionPhase::Applying
+            }
+            qos_actions::InvocationUpdate::Progress {
+                phase,
+                completed,
+                total,
+                ..
+            } => qos_actions::InteractionPhase::Progress {
+                label: phase.clone(),
+                completed: *completed,
+                total: *total,
+            },
+            qos_actions::InvocationUpdate::Item { .. } => qos_actions::InteractionPhase::Applying,
+            qos_actions::InvocationUpdate::Succeeded { .. } => {
+                qos_actions::InteractionPhase::Committed
+            }
+            qos_actions::InvocationUpdate::Failed { error, .. } => {
+                qos_actions::InteractionPhase::Failed {
+                    code: Some(error.code.clone()),
+                    message: error.message.clone(),
+                }
+            }
+            qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                qos_actions::InteractionPhase::Cancelled {
+                    message: message.clone(),
+                }
+            }
+        };
+        let context =
+            serde_json::from_value::<qos_actions::ActionContext>(run.action_context.clone()).ok();
+        let interaction = qos_actions::SemanticInteraction {
+            version: qos_actions::INTERACTION_VERSION,
+            invocation: update.invocation(),
+            sequence,
+            // The local broker replaces these fields from the authenticated
+            // admission before fan-out. They are populated only so the
+            // strongly typed value is valid before crossing that boundary.
+            actor: qos_actions::InteractionActor {
+                id: self.cfg.name.clone(),
+                kind: qos_actions::InteractionActorKind::Agent,
+            },
+            phase,
+            action: qos_actions::InteractionAction {
+                id: action.action.clone(),
+                label: action.label.clone(),
+                app: Some(qos_actions::ActionApp {
+                    id: action.app.clone(),
+                    label: action.app.clone(),
+                }),
+            },
+            resource: qos_actions::ActionResource {
+                id: action.resource.clone(),
+                kind: action.resource_kind.clone(),
+                label: action.resource_label.clone(),
+            },
+            anchor: if let Some(id) = action.resource.strip_prefix("ui:") {
+                qos_actions::InteractionAnchor::SemanticControl { id: id.into() }
+            } else if action.resource_kind.contains("entry")
+                || action.resource_kind.contains("file")
+            {
+                qos_actions::InteractionAnchor::ListItems {
+                    ids: vec![action.resource.clone()],
+                }
+            } else {
+                qos_actions::InteractionAnchor::Resource
+            },
+            group: context.and_then(|context| context.group),
+        };
+        let key = PresenceKey::resource(&action.app, &action.resource, &action.resource_kind);
+        let _ = self.link.send(&CollabRequest::Presence {
+            key,
+            payload: PresencePayload::Interaction(Box::new(interaction)),
+        });
     }
 
     fn wait_for_task_action_result(
@@ -713,8 +835,12 @@ impl Session {
                     return Ok(result);
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
-                Some(CollabEvent::Document { envelope, .. }) => {
-                    match DocumentMutation::decode(&envelope.payload)? {
+                Some(event @ CollabEvent::Document { .. }) => {
+                    match event
+                        .document_mutation()
+                        .transpose()?
+                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
+                    {
                         DocumentMutation::Snapshot(data) => {
                             let _ = self.absorb_snapshot(&data)?;
                         }
@@ -784,8 +910,12 @@ impl Session {
             tracing::debug!("asked the room for the document again");
         }
         match self.link.recv(wait)? {
-            Some(CollabEvent::Document { envelope, .. }) => {
-                changed = match DocumentMutation::decode(&envelope.payload)? {
+            Some(event @ CollabEvent::Document { .. }) => {
+                changed = match event
+                    .document_mutation()
+                    .transpose()?
+                    .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
+                {
                     DocumentMutation::Snapshot(data) => self.absorb_snapshot(&data)?,
                     DocumentMutation::Incremental(data) => {
                         self.merge_incremental_anywhere(&data)?
@@ -951,7 +1081,7 @@ impl Session {
         held: &[(&'static AppContract, &automerge::AutoCommit)],
         view: &View,
     ) -> Vec<surface::Offer> {
-        let mut offers = surface::broker_offers(&self.broker_surfaces);
+        let mut offers = Self::document_broker_offers(&self.broker_surfaces, &self.cfg.permissions);
         for local in surface::offers(held, view, &self.cfg.permissions) {
             if !offers
                 .iter()
@@ -963,6 +1093,21 @@ impl Session {
         offers
     }
 
+    /// Broker authorization is necessary but the invitation carried by this
+    /// document session remains an independent upper bound. Task leases use
+    /// the broker catalogue directly; document instructions use the
+    /// intersection so a stale or narrower launch grant cannot be widened by
+    /// a broader workspace catalogue.
+    fn document_broker_offers(
+        surfaces: &[ui::collaboration::BrokerActionSurface],
+        permissions: &PermissionContext,
+    ) -> Vec<surface::Offer> {
+        surface::broker_offers(surfaces)
+            .into_iter()
+            .filter(|offer| surface::permitted_descriptor(permissions, &offer.descriptor))
+            .collect()
+    }
+
     /// Where the agent is looking: `focus` on a document, and the
     /// directory it was configured to browse, when it has one.
     fn view(&self, focus: Option<String>) -> View {
@@ -970,6 +1115,9 @@ impl Session {
             focus_block: focus.clone(),
             focus_offset: 0,
             target_blocks: focus.into_iter().collect(),
+            format_spans: Vec::new(),
+            selection: None,
+            region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: self.cfg.directory.clone(),
         }
@@ -989,11 +1137,55 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
     ) -> Result<Result<StepOutcome, String>> {
-        let offers = surface::broker_offers(&self.broker_surfaces);
-        if let Some(offer) = surface::find(&offers, id).cloned() {
+        if let Some(offer) = self.wait_for_broker_offer(id)? {
             return self.perform_broker(id, &offer, arguments, confirmation);
         }
         self.perform_local(id, arguments, confirmation)
+    }
+
+    /// Give the broker's independently delivered catalogue stream a chance
+    /// to catch up with the document stream before falling back to local
+    /// execution. An app publishes its actions before its snapshot, but the
+    /// two replies travel on separate Cap'n Proto streams and therefore have
+    /// no cross-stream ordering guarantee.
+    fn wait_for_broker_offer(&mut self, id: &str) -> Result<Option<surface::Offer>> {
+        // A broker-prefixed id pins an exact live publisher. Only a local
+        // compatibility offer may be upgraded to the matching broker route;
+        // never silently retarget a vanished broker selection to another app.
+        let wanted = (!id.starts_with("broker:"))
+            .then(|| surface::decode_address(id))
+            .flatten();
+        let permissions = self.cfg.permissions.clone();
+        let find = |surfaces: &[ui::collaboration::BrokerActionSurface]| {
+            let offers = Self::document_broker_offers(surfaces, &permissions);
+            surface::find(&offers, id).cloned().or_else(|| {
+                wanted
+                    .as_ref()
+                    .and_then(|address| offers.into_iter().find(|offer| offer.address() == address))
+            })
+        };
+        if let Some(offer) = find(&self.broker_surfaces) {
+            return Ok(Some(offer));
+        }
+        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
+        let mut deferred = Vec::new();
+        let mut found = None;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
+                Some(CollabEvent::ActionCatalogue { surfaces }) => {
+                    self.broker_surfaces = surfaces;
+                    if let Some(offer) = find(&self.broker_surfaces) {
+                        found = Some(offer);
+                        break;
+                    }
+                }
+                Some(event) => deferred.push(event),
+                None => {}
+            }
+        }
+        self.link.defer(deferred);
+        Ok(found)
     }
 
     /// What the named application's current document denotes after an
@@ -1217,8 +1409,12 @@ impl Session {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
                     self.broker_surfaces = surfaces;
                 }
-                Some(CollabEvent::Document { envelope, .. }) => {
-                    match DocumentMutation::decode(&envelope.payload)? {
+                Some(event @ CollabEvent::Document { .. }) => {
+                    match event
+                        .document_mutation()
+                        .transpose()?
+                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
+                    {
                         DocumentMutation::Snapshot(data) => {
                             let _ = self.absorb_snapshot(&data)?;
                         }
@@ -1369,8 +1565,7 @@ impl Session {
     ///
     /// A pure function of what was seen last time and what is seen now, so
     /// the debounce is checkable against an injected clock rather than a
-    /// real wait — the same reason [`crate::model::while_busy`] takes its
-    /// clock as an argument. `watched` is `None` the first time this text
+    /// real wait. `watched` is `None` the first time this text
     /// is seen at all, which is never settled: there is nothing yet to
     /// compare it against.
     fn settled(
@@ -1690,12 +1885,24 @@ impl Session {
         };
         self.edit(
             &title_id,
-            &wp::set_paragraph_style_action(vec![title_id.clone()], "heading", Some(1), None),
+            &wp::set_paragraph_style_action(
+                wp::RegionKind::Body,
+                vec![title_id.clone()],
+                "heading",
+                Some(1),
+                None,
+            ),
         )?;
         if let Some(anchor) = found.sections.first().cloned() {
             self.edit(
                 &anchor,
-                &wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
+                &wp::set_paragraph_style_action(
+                    wp::RegionKind::Body,
+                    found.sections.clone(),
+                    "heading",
+                    Some(2),
+                    None,
+                ),
             )?;
         }
         tracing::info!(sections = found.sections.len(), "made the draft a document");
@@ -1704,8 +1911,56 @@ impl Session {
 
     /// Show the caret on `focus`, apply `action`, broadcast the change, and
     /// pause so the room can see it happen.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one action lifecycle keeps invocation, attribution, broadcast, and user-visible reporting in a single auditable transaction"
+    )]
     fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
+        let invocation = qos_actions::InvocationId::new();
+        let resource_id = "word-processor.document".to_string();
+        let agent_name = self.cfg.name.clone();
+        let app_id = self.cfg.app_id.clone();
+        let resource_label = self
+            .cfg
+            .record
+            .clone()
+            .unwrap_or_else(|| "Open document".into());
+        let group = self.task_context().and_then(|context| context.group);
+        let semantic = |phase, sequence| qos_actions::SemanticInteraction {
+            version: qos_actions::INTERACTION_VERSION,
+            invocation,
+            sequence,
+            actor: qos_actions::InteractionActor {
+                id: agent_name.clone(),
+                kind: qos_actions::InteractionActorKind::Agent,
+            },
+            phase,
+            action: qos_actions::InteractionAction {
+                id: "word-processor.edit".into(),
+                label: describe(action),
+                app: Some(qos_actions::ActionApp {
+                    id: app_id.clone(),
+                    label: "Word Processor".into(),
+                }),
+            },
+            resource: qos_actions::ActionResource {
+                id: resource_id.clone(),
+                kind: "word-processor.document".into(),
+                label: resource_label.clone(),
+            },
+            anchor: word_action_anchor(action, focus),
+            group: group.clone(),
+        };
+        let interaction_key =
+            PresenceKey::resource(&self.cfg.app_id, &resource_id, "word-processor.document");
+        let _ = self.link.send(&CollabRequest::Presence {
+            key: interaction_key.clone(),
+            payload: PresencePayload::Interaction(Box::new(semantic(
+                qos_actions::InteractionPhase::Applying,
+                0,
+            ))),
+        });
         let caret_pos = self
             .editor
             .as_ref()
@@ -1729,6 +1984,26 @@ impl Session {
         if let Some(data) = delta {
             self.link
                 .send(&CollabRequest::DocumentIncremental { data })?;
+            if let WordProcessorAction::SpliceText { at, ins, .. } = action
+                && !ins.is_empty()
+            {
+                let end = at.saturating_add(ins.chars().count());
+                self.link.send(&CollabRequest::Presence {
+                    key: block_key(focus),
+                    payload: PresencePayload::Typing { start: *at, end },
+                })?;
+                self.link.send(&CollabRequest::Presence {
+                    key: block_key(focus),
+                    payload: PresencePayload::Caret { pos: end },
+                })?;
+            }
+            let _ = self.link.send(&CollabRequest::Presence {
+                key: interaction_key,
+                payload: PresencePayload::Interaction(Box::new(semantic(
+                    qos_actions::InteractionPhase::Committed,
+                    1,
+                ))),
+            });
             tracing::info!(block = %focus, "applied {}", describe(action));
             if let Some(end) = self.editor.as_mut().and_then(Editor::latest_entry_id)
                 && Some(end) != before
@@ -1738,10 +2013,115 @@ impl Session {
                 self.capture_step(&app, &record, describe(action), end);
             }
         } else {
+            let _ = self.link.send(&CollabRequest::Presence {
+                key: interaction_key,
+                payload: PresencePayload::Interaction(Box::new(semantic(
+                    qos_actions::InteractionPhase::Failed {
+                        code: Some("no_change".into()),
+                        message: "The operation made no change".into(),
+                    },
+                    1,
+                ))),
+            });
             tracing::warn!(block = %focus, "{} changed nothing", describe(action));
         }
         std::thread::sleep(self.cfg.pace);
         Ok(())
+    }
+}
+
+fn word_action_anchor(
+    action: &WordProcessorAction,
+    _focus: &str,
+) -> qos_actions::InteractionAnchor {
+    match action {
+        WordProcessorAction::SpliceText {
+            block,
+            at,
+            del,
+            ins,
+            ..
+        } => qos_actions::InteractionAnchor::Text {
+            region: "document".into(),
+            ranges: vec![qos_actions::InteractionTextRange {
+                block: block.clone(),
+                start: u64::try_from(*at).unwrap_or(u64::MAX),
+                end: u64::try_from(at.saturating_add((*del).max(ins.chars().count())))
+                    .unwrap_or(u64::MAX),
+            }],
+        },
+        WordProcessorAction::ReplaceSelection {
+            start_block,
+            start,
+            end_block,
+            end,
+            ..
+        } => qos_actions::InteractionAnchor::Text {
+            region: "document".into(),
+            ranges: if start_block == end_block {
+                vec![qos_actions::InteractionTextRange {
+                    block: start_block.clone(),
+                    start: u64::try_from(*start).unwrap_or(u64::MAX),
+                    end: u64::try_from(*end).unwrap_or(u64::MAX),
+                }]
+            } else {
+                vec![
+                    qos_actions::InteractionTextRange {
+                        block: start_block.clone(),
+                        start: u64::try_from(*start).unwrap_or(u64::MAX),
+                        end: u64::try_from(*start).unwrap_or(u64::MAX),
+                    },
+                    qos_actions::InteractionTextRange {
+                        block: end_block.clone(),
+                        start: u64::try_from(*end).unwrap_or(u64::MAX),
+                        end: u64::try_from(*end).unwrap_or(u64::MAX),
+                    },
+                ]
+            },
+        },
+        WordProcessorAction::SetMark { spans, .. } => qos_actions::InteractionAnchor::Text {
+            region: "document".into(),
+            ranges: spans
+                .iter()
+                .map(|span| qos_actions::InteractionTextRange {
+                    block: span.block.clone(),
+                    start: u64::try_from(span.start).unwrap_or(u64::MAX),
+                    end: u64::try_from(span.end).unwrap_or(u64::MAX),
+                })
+                .collect(),
+        },
+        WordProcessorAction::SetParagraphStyle { blocks, .. }
+        | WordProcessorAction::ApplyNamedStyle { blocks, .. }
+        | WordProcessorAction::SetBlockAttr { blocks, .. }
+        | WordProcessorAction::RemoveBlocks { blocks } => qos_actions::InteractionAnchor::Objects {
+            ids: blocks.clone(),
+        },
+        WordProcessorAction::InsertParagraph { after, .. }
+        | WordProcessorAction::InsertTable { after, .. } => {
+            qos_actions::InteractionAnchor::Objects {
+                ids: vec![after.clone()],
+            }
+        }
+        WordProcessorAction::InsertImage { block, .. }
+        | WordProcessorAction::InsertPageBreak { block, .. }
+        | WordProcessorAction::SetImageCrop { block, .. }
+        | WordProcessorAction::SetImageSize { block, .. }
+        | WordProcessorAction::SetImagePlacement { block, .. } => {
+            qos_actions::InteractionAnchor::Objects {
+                ids: vec![block.clone()],
+            }
+        }
+        WordProcessorAction::ReplaceBody { .. } => qos_actions::InteractionAnchor::Resource,
+        WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
+            .as_ref()
+            .map_or(qos_actions::InteractionAnchor::Resource, |id| {
+                qos_actions::InteractionAnchor::Objects {
+                    ids: vec![id.clone()],
+                }
+            }),
+        WordProcessorAction::ResolveComment { id } => qos_actions::InteractionAnchor::Objects {
+            ids: vec![id.clone()],
+        },
     }
 }
 
@@ -1763,6 +2143,41 @@ fn describe(action: &WordProcessorAction) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_layout_actions_anchor_the_exact_document_object() {
+        let actions = [
+            WordProcessorAction::SetImageCrop {
+                block: "image-7".into(),
+                left: 250,
+                top: 250,
+                right: 250,
+                bottom: 250,
+            },
+            WordProcessorAction::SetImageSize {
+                block: "image-7".into(),
+                width: 300,
+                height: 180,
+            },
+            WordProcessorAction::SetImagePlacement {
+                block: "image-7".into(),
+                anchor: "page".into(),
+                wrap: "none".into(),
+                x: 24,
+                y: 36,
+                page: 0,
+            },
+        ];
+
+        for action in actions {
+            assert_eq!(
+                word_action_anchor(&action, "unused-focus"),
+                qos_actions::InteractionAnchor::Objects {
+                    ids: vec!["image-7".into()],
+                }
+            );
+        }
+    }
 
     fn task_run() -> runtime_collab::TaskRunEnvelope {
         runtime_collab::TaskRunEnvelope {

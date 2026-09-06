@@ -14,6 +14,7 @@ use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sy
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
 use crate::views::file_view::ThumbCtx;
 use crate::{config, favorites, fileops, templates};
+use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -56,6 +57,29 @@ type MergePreflightResult = Arc<
         )>,
     >,
 >;
+enum RemoteDavResult {
+    Browse(Vec<crate::remote_dav::RemoteEntry>),
+    Downloaded(PathBuf),
+    Mutated(String),
+}
+type RemoteBrowseResult =
+    Arc<std::sync::Mutex<Option<(String, Result<RemoteDavResult, crate::remote_dav::DavError>)>>>;
+
+/// The account projection is deliberately conservative only for an account
+/// Settings has explicitly disabled. `Offline` is last-observed reachability,
+/// not a live probe, so blocking a request on it would prevent the request
+/// that discovers a recovered server. Authentication and transport failures
+/// are likewise returned by the narrowly scoped DAV handoff as a useful,
+/// current outcome rather than guessed from stale metadata here.
+fn remote_dav_availability(health: crate::remote_accounts::RemoteAccountHealth) -> Availability {
+    match health {
+        crate::remote_accounts::RemoteAccountHealth::Disabled => Availability::Unavailable {
+            code: "account_disabled".into(),
+            reason: health.unavailable_reason().into(),
+        },
+        _ => Availability::Available,
+    }
+}
 
 fn format_duration(duration_ms: u64) -> String {
     let seconds = duration_ms / 1_000;
@@ -164,6 +188,22 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
+}
+
+/// Opaque, bounded resource identity for a local Templates entry.
+///
+/// A resource tree is searchable and may be retained in activity/history, so
+/// it must not turn an absolute local template path into an identifier. The
+/// full path remains an invocation payload only and is revalidated against the
+/// current template catalogue before it is read.
+fn template_resource_id(path: &str) -> String {
+    // Resource addresses cross the action door and history, so a collision
+    // must be cryptographically infeasible rather than merely improbable. The
+    // 128-bit SHA-256 prefix is stable, opaque, and far beyond the collision
+    // bound of the small, local Templates catalogue; SHA-2 is already part of
+    // the qOS shared cryptographic stack.
+    let digest = Sha256::digest(path.as_bytes());
+    format!("files.template:{}", hex_prefix(&digest, 16))
 }
 
 fn short_fingerprint(key: &[u8; 32]) -> String {
@@ -504,6 +544,11 @@ pub struct FileExplorerWidget {
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
     resource_invocation: Option<qos_actions::InvocationId>,
     resource_result: Option<qos_actions::InvocationUpdate>,
+    /// One bounded remote DAV browse at a time. The worker owns the network
+    /// request; the UI thread only adopts the resulting metadata projection.
+    remote_browse_result: RemoteBrowseResult,
+    remote_browse_pending: Option<String>,
+    remote_entries: HashMap<String, Vec<crate::remote_dav::RemoteEntry>>,
     host_intent: Option<ui::widget::AppHostIntent>,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
@@ -555,6 +600,48 @@ impl FileExplorerWidget {
         const MAX_STATUS_CHARS: usize = 512;
         self.status = Some(status.as_ref().chars().take(MAX_STATUS_CHARS).collect());
         self.structure_dirty = true;
+    }
+
+    /// Deterministic visual-test seam for the remote-account details sheet.
+    /// Production paths always re-read the canonical store immediately before
+    /// opening this surface; the seam never persists a sample account.
+    #[doc(hidden)]
+    pub fn debug_show_remote_account(
+        &mut self,
+        account: &crate::remote_accounts::RemoteAccount,
+        reauthenticate: bool,
+    ) {
+        self.show_remote_account_panel(account, reauthenticate);
+    }
+
+    fn show_remote_account_panel(
+        &mut self,
+        account: &crate::remote_accounts::RemoteAccount,
+        reauthenticate: bool,
+    ) {
+        let title = if reauthenticate {
+            format!("Sign in again: {}", account.label)
+        } else {
+            format!("{} files", account.label)
+        };
+        let mut lines = vec![
+            format!("{} · {}", account.kind.label(), account.host),
+            format!("Status: {}", account.health.label()),
+            account.health.unavailable_reason().to_string(),
+        ];
+        if reauthenticate {
+            lines.push(
+                "Open Settings → External Accounts and choose Sign in again. Credentials stay in the system vault and are never shown to Files."
+                    .into(),
+            );
+        }
+        self.show_collab_panel(CollabPanel {
+            title,
+            summary: "Remote account details".into(),
+            lines,
+            action: None,
+            history: None,
+        });
     }
 
     /// Construct with an explicit persistence directory + home, resolving the
@@ -632,6 +719,11 @@ impl FileExplorerWidget {
             // pixel-stable.
             nav: NavShell::sidebar_over_content(Box::new(Text::new("")), Box::new(Text::new("")))
                 .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
+                // A narrow drawer should read as navigation, not leave a
+                // sliver of obscured list columns competing for attention.
+                // Keep the compact 200px desktop dock, but give phone-width
+                // places enough room for labels and touch targets.
+                .with_narrow_sidebar_width(320.0)
                 .with_breakpoint(BODY_BREAKPOINT_PX)
                 // The docked places list is permanent — no in-sidebar collapse chip;
                 // the hamburger still summons the drawer when narrow.
@@ -674,6 +766,9 @@ impl FileExplorerWidget {
             merge_preflight_pending: None,
             resource_invocation: None,
             resource_result: None,
+            remote_browse_result: Arc::new(std::sync::Mutex::new(None)),
+            remote_browse_pending: None,
+            remote_entries: HashMap::new(),
             host_intent: None,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
@@ -1001,6 +1096,14 @@ impl FileExplorerWidget {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
+    }
+
+    /// A narrow places drawer is a modal flap: the file view and every one of
+    /// its transient affordances live behind its scrim. The bubble is drawn by
+    /// this app (rather than by `NavShell`), so make that ownership boundary
+    /// explicit instead of accidentally painting it over the flap.
+    fn status_bubble_is_occluded_by_places_drawer(&self) -> bool {
+        self.nav.mode() == ShellMode::Narrow && self.nav.is_sidebar_open()
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -4780,6 +4883,14 @@ impl FileExplorerWidget {
     /// Open the "New File" flyout listing one "New <name>" entry per template.
     fn open_templates_submenu(&mut self, at: Point) {
         let tpls = self.available_templates();
+        // The catalogue can change after its parent menu was opened.  Do not
+        // leave a focusable, visually empty flyout behind when its last
+        // template vanishes (and keep headless action-state shots truthful).
+        if tpls.is_empty() {
+            self.submenu.close();
+            self.submenu_commands.clear();
+            return;
+        }
         let mut menu = ContextMenu::new();
         let mut cmds = Vec::with_capacity(tpls.len());
         for t in tpls {
@@ -5186,6 +5297,80 @@ impl FileExplorerWidget {
                 }
             }
             Err(error) => self.status = Some(error),
+        }
+        self.structure_dirty = true;
+        if lifecycle.is_some() {
+            self.resource_result = lifecycle;
+        }
+        true
+    }
+
+    fn poll_remote_browse_result(&mut self) -> bool {
+        let result = self
+            .remote_browse_result
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        let Some((account_id, result)) = result else {
+            return false;
+        };
+        self.remote_browse_pending = None;
+        let lifecycle = self
+            .resource_invocation
+            .take()
+            .map(|invocation| match &result {
+                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                },
+                Err(error) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "files.remote_dav_failed".into(),
+                        message: error.message().into(),
+                        details: None,
+                        retryable: matches!(error, crate::remote_dav::DavError::Offline),
+                    },
+                },
+            });
+        match result {
+            Ok(RemoteDavResult::Browse(entries)) => {
+                self.remote_entries
+                    .insert(account_id.clone(), entries.clone());
+                let account = crate::remote_accounts::find(&account_id);
+                let label = account
+                    .as_ref()
+                    .map_or("Remote files", |account| account.label.as_str());
+                let lines = if entries.is_empty() {
+                    vec!["This remote folder is empty.".into()]
+                } else {
+                    entries
+                        .iter()
+                        .take(crate::remote_dav::MAX_REMOTE_ENTRIES)
+                        .map(|entry| {
+                            let kind = if entry.is_dir { "Folder" } else { "File" };
+                            format!("{kind} · {}", entry.name)
+                        })
+                        .collect()
+                };
+                self.status = Some(format!("Loaded {} remote item(s)", entries.len()));
+                self.show_collab_panel(CollabPanel {
+                    title: format!("{label} files"),
+                    summary: "Remote folder".into(),
+                    lines,
+                    action: None,
+                    history: None,
+                });
+            }
+            Ok(RemoteDavResult::Downloaded(path)) => {
+                self.status = Some(format!("Downloaded to {}", path.display()));
+                self.refresh_metadata_preserving_view();
+            }
+            Ok(RemoteDavResult::Mutated(message)) => {
+                self.status = Some(message);
+                self.remote_entries.remove(&account_id);
+            }
+            Err(error) => self.status = Some(error.message().into()),
         }
         self.structure_dirty = true;
         if lifecycle.is_some() {
@@ -5792,11 +5977,16 @@ impl Widget for FileExplorerWidget {
             "files.refresh",
             "files.new-folder",
             "files.paste",
+            "files.new-from-template",
             "files.navigate",
             "files.open",
+            "files.reveal-record",
             "files.folder-command",
             "files.entry-command",
+            "files.rename",
             "files.share-link",
+            "files.remote-account",
+            "files.remote-dav",
         ]
     }
 
@@ -5810,7 +6000,7 @@ impl Widget for FileExplorerWidget {
     )]
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut folder = Resource::new(
-            format!("folder:{}", self.current_path.display()),
+            crate::search_provider::folder_resource_id(&self.current_path),
             "files.folder",
             self.current_path.display().to_string(),
         );
@@ -5866,6 +6056,56 @@ impl Widget for FileExplorerWidget {
                 "hidden",
                 OperationKind::View,
             ),
+            ("list", "Use list view", "list", OperationKind::View),
+            ("grid", "Use grid view", "grid", OperationKind::View),
+            (
+                "sort-name",
+                "Sort by name",
+                "sort-name",
+                OperationKind::View,
+            ),
+            (
+                "sort-size",
+                "Sort by size",
+                "sort-size",
+                OperationKind::View,
+            ),
+            (
+                "sort-type",
+                "Sort by type",
+                "sort-type",
+                OperationKind::View,
+            ),
+            (
+                "sort-modified",
+                "Sort by modified date",
+                "sort-modified",
+                OperationKind::View,
+            ),
+            (
+                "sort-ascending",
+                "Sort ascending",
+                "sort-ascending",
+                OperationKind::View,
+            ),
+            (
+                "sort-descending",
+                "Sort descending",
+                "sort-descending",
+                OperationKind::View,
+            ),
+            (
+                "zoom-in",
+                "Increase item size",
+                "zoom-in",
+                OperationKind::View,
+            ),
+            (
+                "zoom-out",
+                "Decrease item size",
+                "zoom-out",
+                OperationKind::View,
+            ),
         ] {
             folder.actions.push(
                 ActionSpec::operation(id, label, kind, "files.folder-command", &verb)
@@ -5877,6 +6117,44 @@ impl Widget for FileExplorerWidget {
                     }),
             );
         }
+        let current_is_favorite = self
+            .favs
+            .borrow()
+            .favorites
+            .iter()
+            .any(|favorite| favorite.path == self.current_path);
+        let (favorite_id, favorite_label, favorite_verb) = if current_is_favorite {
+            (
+                "remove-favorite",
+                "Remove from Favourites",
+                "remove-favorite",
+            )
+        } else {
+            ("add-favorite", "Add to Favourites", "add-favorite")
+        };
+        folder.actions.push(
+            ActionSpec::operation(
+                favorite_id,
+                favorite_label,
+                OperationKind::Effect,
+                "files.folder-command",
+                &favorite_verb,
+            )
+            .expect("favourite command is serializable")
+            .with_contract(ActionContract {
+                availability: if self.current_path.is_dir() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_unavailable".into(),
+                        reason: "The current location cannot be a favourite".into(),
+                    }
+                },
+                permission: PermissionRequirement::Write,
+                retry: RetryPolicy::AtMostOnce,
+                ..ActionContract::default()
+            }),
+        );
         let new_folder = ActionSpec::prompted_operation(
             "new-folder",
             "New folder",
@@ -5899,10 +6177,70 @@ impl Widget for FileExplorerWidget {
                 }
             },
             permission: PermissionRequirement::Write,
-            reversible: true,
+            // Creation is a host-filesystem effect. The app does not retain a
+            // durable inverse, so advertising an undo boundary here would let
+            // the shared history promise something it cannot perform.
+            reversible: false,
             ..ActionContract::default()
         });
         folder.actions.push(new_folder);
+        if self.is_trash_view() {
+            folder.actions.push(
+                ActionSpec::operation(
+                    "empty-trash",
+                    t("files-menu-empty-trash"),
+                    OperationKind::Effect,
+                    "files.folder-command",
+                    &"empty-trash",
+                )
+                .expect("empty-trash command is serializable")
+                .destructive()
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        } else if let Some(template_dir) = templates::templates_dir() {
+            // Each resource is an existing regular template, not an arbitrary
+            // local source path supplied by a caller. Invocation rechecks this
+            // bounded catalogue before copying, so a stale action cannot turn
+            // into an ambient file-read capability.
+            for template in templates::list_templates(&template_dir) {
+                let template_path = template.to_string_lossy().into_owned();
+                let mut template_resource = Resource::new(
+                    template_resource_id(&template_path),
+                    "files.template",
+                    templates::menu_label(&template),
+                );
+                template_resource.actions.push(
+                    ActionSpec::operation(
+                        "create",
+                        templates::menu_label(&template),
+                        OperationKind::Effect,
+                        "files.new-from-template",
+                        &template_path,
+                    )
+                    .expect("template path is serializable")
+                    .with_contract(ActionContract {
+                        availability: if self.current_path.is_dir() {
+                            Availability::Available
+                        } else {
+                            Availability::Unavailable {
+                                code: "location_unavailable".into(),
+                                reason: "The current location cannot contain a new file".into(),
+                            }
+                        },
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    }),
+                );
+                folder.children.push(template_resource);
+            }
+        }
         let paste =
             ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
                 .expect("file operation payload is serializable")
@@ -5923,25 +6261,363 @@ impl Widget for FileExplorerWidget {
                     ..ActionContract::default()
                 });
         folder.actions.push(paste);
+        // Search, the sidebar, assistive technology and headless agents all
+        // address the same View operation for a place. These children are not
+        // limited to the currently visible directory.
+        for favorite in &self.favs.borrow().favorites {
+            let path = favorite.path.to_string_lossy().into_owned();
+            let resource = Resource::new(
+                crate::search_provider::place_resource_id(&favorite.path),
+                "files.place",
+                favorite.label.clone(),
+            )
+            .with_action(
+                ActionSpec::operation(
+                    crate::search_provider::OPEN_ACTION,
+                    "Open",
+                    OperationKind::View,
+                    "files.open",
+                    &path,
+                )
+                .expect("place path is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            folder.children.push(resource);
+        }
+        // External file accounts are a read-only projection of Settings'
+        // canonical account store. Files intentionally has no network
+        // permission and never opens the credential vault; opening one shows
+        // its truthful lifecycle/mount state rather than fabricating a remote
+        // directory that this sandbox cannot actually access.
+        for account in crate::remote_accounts::load() {
+            let resource_id = crate::remote_accounts::resource_id(&account.id);
+            let payload = vec!["details".to_string(), account.id.to_string()];
+            let mut resource =
+                Resource::new(resource_id, "files.remote-account", account.label.clone());
+            resource.actions.push(
+                ActionSpec::operation(
+                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                    "Show connection details",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &payload,
+                )
+                .expect("remote account detail payload is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            let create_account_id = account.id.to_string();
+            resource.actions.push(
+                ActionSpec::prompted_operation(
+                    "create-folder",
+                    "Create remote folder",
+                    "Folder name",
+                    "New Folder",
+                    OperationKind::Effect,
+                    "files.remote-dav",
+                    move |name| {
+                        EncodedAction::encode_operation(
+                            "files.remote-dav",
+                            &vec!["create-folder", create_account_id.as_str(), name],
+                        )
+                        .expect("remote create-folder payload is serializable")
+                    },
+                )
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job)
+                .with_contract(ActionContract {
+                    availability: remote_dav_availability(account.health),
+                    permission: PermissionRequirement::Write,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+            let upload_account_id = account.id.to_string();
+            resource.actions.push(
+                ActionSpec::prompted_operation(
+                    "upload",
+                    "Upload local file",
+                    "Absolute local file path",
+                    "/home/me/Document.pdf",
+                    OperationKind::Effect,
+                    "files.remote-dav",
+                    move |path| {
+                        EncodedAction::encode_operation(
+                            "files.remote-dav",
+                            &vec!["upload", upload_account_id.as_str(), path],
+                        )
+                        .expect("remote upload payload is serializable")
+                    },
+                )
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job)
+                .with_contract(ActionContract {
+                    availability: remote_dav_availability(account.health),
+                    permission: PermissionRequirement::Write,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+            let browse_payload = vec!["browse".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    "browse",
+                    "Browse remote files",
+                    OperationKind::Effect,
+                    "files.remote-dav",
+                    &browse_payload,
+                )
+                .expect("remote browse payload is serializable")
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job)
+                .with_contract(ActionContract {
+                    availability: remote_dav_availability(account.health),
+                    permission: PermissionRequirement::Read,
+                    retry: RetryPolicy::Idempotent,
+                    ..ActionContract::default()
+                }),
+            );
+            let reauth_payload = vec!["reauthenticate".to_string(), account.id.to_string()];
+            resource.actions.push(
+                ActionSpec::operation(
+                    "reauthenticate",
+                    "How to sign in again",
+                    OperationKind::View,
+                    "files.remote-account",
+                    &reauth_payload,
+                )
+                .expect("remote account reauthentication payload is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            if let Some(entries) = self.remote_entries.get(account.id.as_str()) {
+                for entry in entries {
+                    let entry_id = format!(
+                        "{}:{}",
+                        crate::remote_accounts::resource_id(&account.id),
+                        hex_prefix(entry.href.as_bytes(), entry.href.len())
+                    );
+                    let download_payload =
+                        vec!["download", account.id.as_str(), entry.href.as_str()];
+                    let delete_payload = vec!["delete", account.id.as_str(), entry.href.as_str()];
+                    let rename_account_id = account.id.to_string();
+                    let rename_href = entry.href.clone();
+                    let mut remote_entry =
+                        Resource::new(entry_id, "files.remote-entry", entry.name.clone());
+                    remote_entry.actions.push(
+                        ActionSpec::operation(
+                            "download",
+                            "Download to this folder",
+                            OperationKind::Effect,
+                            "files.remote-dav",
+                            &download_payload,
+                        )
+                        .expect("remote download payload")
+                        .execution(ExecutionMode::Background { cancellable: false })
+                        .returns(ResultSpec::Job)
+                        .with_contract(ActionContract {
+                            availability: remote_dav_availability(account.health),
+                            permission: PermissionRequirement::Read,
+                            // A prior attempt may already have written the
+                            // local destination before its result was lost.
+                            retry: RetryPolicy::AtMostOnce,
+                            ..ActionContract::default()
+                        }),
+                    );
+                    remote_entry.actions.push(
+                        ActionSpec::prompted_operation(
+                            "rename",
+                            "Rename",
+                            "New name",
+                            &entry.name,
+                            OperationKind::Effect,
+                            "files.remote-dav",
+                            move |name| {
+                                EncodedAction::encode_operation(
+                                    "files.remote-dav",
+                                    &vec![
+                                        "rename",
+                                        rename_account_id.as_str(),
+                                        rename_href.as_str(),
+                                        name,
+                                    ],
+                                )
+                                .expect("remote rename payload")
+                            },
+                        )
+                        .execution(ExecutionMode::Background { cancellable: false })
+                        .returns(ResultSpec::Job)
+                        .with_contract(ActionContract {
+                            availability: remote_dav_availability(account.health),
+                            permission: PermissionRequirement::Write,
+                            retry: RetryPolicy::AtMostOnce,
+                            ..ActionContract::default()
+                        }),
+                    );
+                    remote_entry.actions.push(
+                        ActionSpec::operation(
+                            "delete",
+                            "Delete remote file",
+                            OperationKind::Effect,
+                            "files.remote-dav",
+                            &delete_payload,
+                        )
+                        .expect("remote delete payload")
+                        .destructive()
+                        .execution(ExecutionMode::Background { cancellable: false })
+                        .returns(ResultSpec::Job)
+                        .with_contract(ActionContract {
+                            availability: remote_dav_availability(account.health),
+                            permission: PermissionRequirement::Write,
+                            risk: RiskLevel::Destructive,
+                            confirmation: ConfirmationPolicy::Confirm,
+                            retry: RetryPolicy::AtMostOnce,
+                            execution: ExecutionMode::Background { cancellable: false },
+                            result: ResultSpec::Job,
+                            ..ActionContract::default()
+                        }),
+                    );
+                    resource.children.push(remote_entry);
+                }
+            }
+            folder.children.push(resource);
+        }
+        // Collaborative identity is the immutable record UUID. The operation
+        // resolves its mutable path only when invoked, so rename/move races do
+        // not turn stale search provenance into navigation authority.
+        // An entry already visible in this folder publishes the canonical
+        // record resource below, with its complete command surface. Avoid a
+        // second resource with the same UUID address here: duplicates make an
+        // action-door lookup depend on incidental tree order.
+        let visible_record_ids: std::collections::BTreeSet<_> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.record_id.map(uuid::Uuid::from_bytes))
+            .collect();
+        let mut exported_records = std::collections::BTreeSet::new();
+        for record in crate::model::read_workspace_record_index(&self.workspace_roots)
+            .records
+            .into_iter()
+            .filter(|record| {
+                !visible_record_ids.contains(&record.record_id)
+                    && exported_records.insert(record.record_id)
+            })
+        {
+            let resource = Resource::new(
+                crate::search_provider::record_resource_id(record.record_id),
+                "files.record",
+                record.name,
+            )
+            .with_action(
+                ActionSpec::operation(
+                    crate::search_provider::REVEAL_ACTION,
+                    "Reveal in Files",
+                    OperationKind::View,
+                    "files.reveal-record",
+                    &record.record_id.to_string(),
+                )
+                .expect("record id is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            folder.children.push(resource);
+        }
         for entry in &self.entries {
             let path = entry.path.to_string_lossy().into_owned();
-            let mut resource =
-                Resource::new(format!("entry:{path}"), "files.entry", entry.name.clone());
-            if let Ok(spec) =
-                ActionSpec::operation("open", "Open", OperationKind::View, "files.open", &path)
-            {
+            let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
+            let mut resource = Resource::new(
+                record_id.map_or_else(
+                    || crate::search_provider::entry_resource_id(&entry.path),
+                    crate::search_provider::record_resource_id,
+                ),
+                if record_id.is_some() {
+                    "files.record"
+                } else {
+                    "files.entry"
+                },
+                entry.name.clone(),
+            );
+            if let Some(record_id) = record_id {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        crate::search_provider::REVEAL_ACTION,
+                        t("files-action-reveal"),
+                        OperationKind::View,
+                        "files.reveal-record",
+                        &record_id.to_string(),
+                    )
+                    .expect("record id is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+            }
+            if let Ok(spec) = ActionSpec::operation(
+                "open",
+                t("files-menu-open"),
+                OperationKind::View,
+                "files.open",
+                &path,
+            ) {
                 resource
                     .actions
                     .push(spec.with_contract(ActionContract::view()));
             }
-            for (id, label, verb, destructive) in [
-                ("copy", "Copy", "copy", false),
-                ("cut", "Cut", "cut", false),
-                ("trash", "Move to Trash", "trash", true),
-                ("properties", "Properties", "properties", false),
-                ("sharing", "Sharing and access", "sharing", false),
-                ("history", "Version history", "history", false),
-            ] {
+            if !self.is_trash_view() {
+                let rename_path = path.clone();
+                resource.actions.push(
+                    ActionSpec::prompted_operation(
+                        "rename",
+                        t("files-menu-rename"),
+                        t("files-action-rename-prompt"),
+                        &entry.name,
+                        OperationKind::Effect,
+                        "files.rename",
+                        move |name| {
+                            EncodedAction::encode_operation(
+                                "files.rename",
+                                &vec![rename_path.as_str(), name],
+                            )
+                            .expect("rename payload is serializable")
+                        },
+                    )
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        // The FUSE/host filesystem owns durable history. This
+                        // external effect has no qOS action inverse, so never
+                        // advertise an undo boundary we cannot honor.
+                        ..ActionContract::default()
+                    }),
+                );
+            }
+            let entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
+                vec![
+                    ("restore", t("files-menu-restore"), "restore", false),
+                    (
+                        "delete-permanently",
+                        t("files-menu-delete-permanently"),
+                        "purge",
+                        true,
+                    ),
+                    (
+                        "properties",
+                        t("files-menu-properties"),
+                        "properties",
+                        false,
+                    ),
+                ]
+            } else {
+                vec![
+                    ("copy", t("files-menu-copy"), "copy", false),
+                    ("cut", t("files-menu-cut"), "cut", false),
+                    ("trash", t("files-menu-move-trash"), "trash", true),
+                    (
+                        "properties",
+                        t("files-menu-properties"),
+                        "properties",
+                        false,
+                    ),
+                    ("sharing", t("files-sharing-access"), "sharing", false),
+                    ("history", t("files-version-history"), "history", false),
+                ]
+            };
+            for (id, label, verb, destructive) in entry_commands {
                 let mut spec = ActionSpec::operation(
                     id,
                     label,
@@ -5958,6 +6634,87 @@ impl Widget for FileExplorerWidget {
                     spec = spec.destructive();
                 }
                 resource.actions.push(spec);
+            }
+            if let Some(availability) = entry.availability.as_ref() {
+                resource.actions.push(
+                    ActionSpec::operation(
+                        "availability",
+                        t("files-availability-title-short"),
+                        OperationKind::View,
+                        "files.entry-command",
+                        &vec!["availability".to_string(), path.clone()],
+                    )
+                    .expect("availability payload is serializable")
+                    .with_contract(ActionContract::view()),
+                );
+                let mut availability_command =
+                    |id: &str, label: String, verb: &str, destructive: bool| {
+                        let mut spec = ActionSpec::operation(
+                            id,
+                            label,
+                            OperationKind::Effect,
+                            "files.entry-command",
+                            &vec![verb.to_string(), path.clone()],
+                        )
+                        .expect("availability command payload is serializable")
+                        .with_contract(ActionContract {
+                            permission: PermissionRequirement::Write,
+                            retry: RetryPolicy::AtMostOnce,
+                            ..ActionContract::default()
+                        });
+                        if destructive {
+                            spec = spec.destructive();
+                        }
+                        resource.actions.push(spec);
+                    };
+                if availability.policy == crate::model::AvailabilityPolicy::Automatic {
+                    availability_command(
+                        "keep-offline",
+                        t("files-keep-offline"),
+                        "keep-offline",
+                        false,
+                    );
+                }
+                if availability.policy == crate::model::AvailabilityPolicy::Pinned
+                    && !availability.policy_inherited
+                {
+                    availability_command(
+                        "automatic-storage",
+                        t("files-use-automatic-storage"),
+                        "automatic-storage",
+                        false,
+                    );
+                }
+                let releasable = !entry.is_dir
+                    && availability.policy == crate::model::AvailabilityPolicy::Automatic
+                    && !availability.policy_inherited
+                    && availability.transfer.phase == crate::model::TransferPhase::Idle
+                    && matches!(
+                        availability.residency,
+                        crate::model::Residency::Partial { .. }
+                            | crate::model::Residency::Resident { .. }
+                    );
+                if releasable {
+                    availability_command(
+                        "free-local-space",
+                        t("files-free-local-space"),
+                        "free-local-space",
+                        false,
+                    );
+                }
+                let retryable = !matches!(
+                    availability.residency,
+                    crate::model::Residency::Resident { .. }
+                ) && availability.transfer.phase
+                    == crate::model::TransferPhase::Idle;
+                if retryable {
+                    availability_command(
+                        "retry-download",
+                        t("files-retry-download"),
+                        "retry-transfer",
+                        false,
+                    );
+                }
             }
             if entry.record_id.is_some() {
                 resource.actions.push(
@@ -5997,6 +6754,21 @@ impl Widget for FileExplorerWidget {
                 fileops::new_folder(&self.current_path, &name)?;
                 self.refresh();
             }
+            (OperationKind::Effect, "files.new-from-template") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = PathBuf::from(value);
+                let Some(template_dir) = templates::templates_dir() else {
+                    return Err("the Templates directory is unavailable".into());
+                };
+                if !templates::list_templates(&template_dir)
+                    .iter()
+                    .any(|candidate| candidate == &target)
+                {
+                    return Err("the template is no longer available".into());
+                }
+                templates::create_from_template(&target, &self.current_path)?;
+                self.refresh();
+            }
             (OperationKind::Effect, "files.paste") => {
                 if self.clipboard.is_empty() {
                     return Err("The clipboard is empty".into());
@@ -6023,9 +6795,48 @@ impl Widget for FileExplorerWidget {
                     return Err(format!("paste failed: {}", failures.join("; ")));
                 }
             }
-            (OperationKind::View, "files.navigate" | "files.open") => {
+            (OperationKind::View, "files.navigate") => {
                 let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 self.open_path(PathBuf::from(value));
+            }
+            (OperationKind::View, "files.open") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = PathBuf::from(value);
+                // `open` is an action on an already-published place or entry,
+                // not a general ambient-path launcher. Re-check the live
+                // catalogue at execution time so a deleted/renamed row, or a
+                // replayed action from another folder, cannot gain authority.
+                let still_exported = self.entries.iter().any(|entry| entry.path == target)
+                    || self
+                        .favs
+                        .borrow()
+                        .favorites
+                        .iter()
+                        .any(|favorite| favorite.path == target);
+                if !still_exported {
+                    return Err("file location is no longer available".into());
+                }
+                self.open_path(target);
+            }
+            (OperationKind::View, "files.reveal-record") => {
+                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let record_id = uuid::Uuid::parse_str(&value)
+                    .map_err(|_| "invalid collaborative record id".to_string())?;
+                let record = crate::model::read_workspace_record_index(&self.workspace_roots)
+                    .records
+                    .into_iter()
+                    .find(|record| record.record_id == record_id)
+                    .ok_or_else(|| "collaborative record is no longer available".to_string())?;
+                if record.path.parent() != Some(self.current_path.as_path())
+                    && let Some(parent) = record.path.parent().map(Path::to_path_buf)
+                {
+                    self.navigate(parent);
+                }
+                if let Some(index) = self.entries.iter().position(|entry| {
+                    entry.record_id == Some(*record_id.as_bytes()) || entry.path == record.path
+                }) {
+                    self.selection.select_only(index);
+                }
             }
             (_, "files.folder-command") => {
                 let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -6033,8 +6844,37 @@ impl Widget for FileExplorerWidget {
                     "up" => self.go_up(),
                     "back" => self.history_back(),
                     "forward" => self.history_forward(),
+                    "list" => self.set_view_mode(ViewMode::List),
+                    "grid" => self.set_view_mode(ViewMode::Grid),
+                    "sort-name" => self.set_sort_by(SortBy::Name),
+                    "sort-size" => self.set_sort_by(SortBy::Size),
+                    "sort-type" => self.set_sort_by(SortBy::Type),
+                    "sort-modified" => self.set_sort_by(SortBy::Modified),
+                    "sort-ascending" => {
+                        self.apply_set_sort_order(SortOrder::Ascending);
+                    }
+                    "sort-descending" => {
+                        self.apply_set_sort_order(SortOrder::Descending);
+                    }
+                    "zoom-in" => self.set_zoom(self.zoom_level.saturating_add(1)),
+                    "zoom-out" => self.set_zoom(self.zoom_level.saturating_sub(1)),
                     "hidden" => {
                         self.apply_command(FileCommand::ToggleHidden);
+                    }
+                    "add-favorite" => {
+                        if !self.current_path.is_dir() {
+                            return Err("the current location cannot be a favourite".into());
+                        }
+                        self.apply_command(FileCommand::AddFavorite(self.current_path.clone()));
+                    }
+                    "remove-favorite" => {
+                        self.apply_command(FileCommand::RemoveFavorite(self.current_path.clone()));
+                    }
+                    "empty-trash" if self.is_trash_view() => {
+                        // The action contract was confirmation-gated by the
+                        // resource broker; do not make an agent traverse an
+                        // inaccessible second UI-only confirmation sheet.
+                        self.perform_empty_trash();
                     }
                     "terminal" => self
                         .open_terminal(&mut SystemRunner)
@@ -6051,7 +6891,7 @@ impl Widget for FileExplorerWidget {
                 let path = args.get(1).ok_or_else(|| "missing file path".to_string())?;
                 let target = PathBuf::from(path);
                 let index = self
-                    .displayed_entries()
+                    .entries
                     .iter()
                     .position(|entry| entry.path == target)
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
@@ -6068,14 +6908,39 @@ impl Widget for FileExplorerWidget {
                 let command = match verb.as_str() {
                     "copy" => FileCommand::Copy,
                     "cut" => FileCommand::Cut,
+                    "restore" if self.is_trash_view() => FileCommand::RestoreFromTrash,
+                    "purge" if self.is_trash_view() => FileCommand::ConfirmPermanentDelete {
+                        paths: vec![target],
+                    },
                     "properties" => FileCommand::ShowProperties,
                     "sharing" => FileCommand::ShowSharing,
                     "history" => FileCommand::ShowHistory,
+                    "availability" => FileCommand::ShowAvailability,
+                    "keep-offline" => FileCommand::KeepOffline,
+                    "automatic-storage" => FileCommand::RemoveOfflinePin,
+                    "free-local-space" => FileCommand::FreeLocalSpace,
+                    "retry-transfer" => FileCommand::RetryTransfer,
                     _ => return Ok(false),
                 };
                 if !self.apply_command(command) {
                     return Err("file operation could not be applied".into());
                 }
+            }
+            (OperationKind::Effect, "files.rename") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let path = args
+                    .first()
+                    .ok_or_else(|| "missing file path".to_string())?;
+                let name = args
+                    .get(1)
+                    .ok_or_else(|| "missing new file name".to_string())?;
+                let target = PathBuf::from(path);
+                if !self.entries.iter().any(|entry| entry.path == target) {
+                    return Err("file entry is no longer visible".into());
+                }
+                fileops::rename(&target, name)?;
+                self.refresh();
             }
             (OperationKind::Effect, "files.share-link") => {
                 let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -6095,12 +6960,33 @@ impl Widget for FileExplorerWidget {
                         .unwrap_or_else(|| "sharing is unavailable for this file".into()));
                 }
             }
+            (OperationKind::View, "files.remote-account") => {
+                let args: Vec<String> =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let operation = args
+                    .first()
+                    .ok_or_else(|| "missing remote account operation".to_string())?;
+                let id = args
+                    .get(1)
+                    .ok_or_else(|| "missing remote account id".to_string())?;
+                let account = crate::remote_accounts::find(id)
+                    .ok_or_else(|| "remote account is no longer available".to_string())?;
+                match operation.as_str() {
+                    "details" => self.show_remote_account_panel(&account, false),
+                    "reauthenticate" => self.show_remote_account_panel(&account, true),
+                    _ => return Ok(false),
+                }
+            }
             _ => return Ok(false),
         }
         self.structure_dirty = true;
         Ok(true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource dispatcher keeps every typed Files operation at one auditable authorization boundary"
+    )]
     fn start_resource_operation(
         &mut self,
         invocation: qos_actions::InvocationId,
@@ -6112,6 +6998,102 @@ impl Widget for FileExplorerWidget {
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if self.resource_invocation.is_some() {
             return Err("another file operation is still running".into());
+        }
+        if type_id == "files.remote-dav" {
+            let args: Vec<String> =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let operation = args
+                .first()
+                .ok_or_else(|| "missing remote DAV operation".to_string())?;
+            let account_id = args
+                .get(1)
+                .ok_or_else(|| "missing remote account id".to_string())?
+                .clone();
+            if self.remote_browse_pending.is_some() {
+                return Err("a remote operation is already running".into());
+            }
+            let args = args.clone();
+            let current_path = self.current_path.clone();
+            let known_entry = args.get(2).is_some_and(|href| {
+                self.remote_entries
+                    .get(&account_id)
+                    .is_some_and(|entries| entries.iter().any(|entry| &entry.href == href))
+            });
+            if matches!(operation.as_str(), "download" | "delete" | "rename") && !known_entry {
+                return Err("remote file is no longer available".into());
+            }
+            self.resource_invocation = Some(invocation);
+            self.remote_browse_pending = Some(account_id.clone());
+            self.status = Some("Running remote file operation…".into());
+            let result = Arc::clone(&self.remote_browse_result);
+            std::thread::spawn(move || {
+                let id = accounts::AccountId::from(account_id.clone());
+                let outcome = crate::remote_dav::DavConnection::open(&id).and_then(|connection| {
+                    match args.first().map(String::as_str) {
+                        Some("browse") => connection.list("").map(RemoteDavResult::Browse),
+                        Some("create-folder") => connection
+                            .create_folder(
+                                args.get(2)
+                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
+                            )
+                            .map(|()| RemoteDavResult::Mutated("Created remote folder".into())),
+                        Some("upload") => {
+                            let local = std::path::PathBuf::from(
+                                args.get(2)
+                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
+                            );
+                            let name = local
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?;
+                            let bytes = std::fs::read(&local)
+                                .map_err(|_| crate::remote_dav::DavError::RemoteFailure)?;
+                            connection
+                                .upload(name, &bytes, None)
+                                .map(|()| RemoteDavResult::Mutated("Uploaded remote file".into()))
+                        }
+                        Some("download") => {
+                            let href = args
+                                .get(2)
+                                .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?;
+                            let bytes = connection.download_url(href)?;
+                            let name = href
+                                .rsplit('/')
+                                .next()
+                                .filter(|name| !name.is_empty())
+                                .ok_or(crate::remote_dav::DavError::InvalidRemoteResponse)?;
+                            let destination = current_path.join(name);
+                            if destination.exists() {
+                                return Err(crate::remote_dav::DavError::Conflict);
+                            }
+                            std::fs::write(&destination, bytes)
+                                .map_err(|_| crate::remote_dav::DavError::RemoteFailure)?;
+                            Ok(RemoteDavResult::Downloaded(destination))
+                        }
+                        Some("rename") => connection
+                            .rename_url(
+                                args.get(2)
+                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
+                                args.get(3)
+                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
+                                None,
+                            )
+                            .map(|()| RemoteDavResult::Mutated("Renamed remote file".into())),
+                        Some("delete") => connection
+                            .delete_url(
+                                args.get(2)
+                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
+                                None,
+                            )
+                            .map(|()| RemoteDavResult::Mutated("Deleted remote file".into())),
+                        _ => Err(crate::remote_dav::DavError::InvalidConfiguration),
+                    }
+                });
+                if let Ok(mut slot) = result.lock() {
+                    *slot = Some((account_id, outcome));
+                }
+            });
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
@@ -6135,6 +7117,7 @@ impl Widget for FileExplorerWidget {
     ) -> Option<qos_actions::InvocationUpdate> {
         self.poll_share_result();
         self.poll_history_result();
+        self.poll_remote_browse_result();
         if self
             .resource_result
             .as_ref()
@@ -6320,6 +7303,7 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
+        self.poll_remote_browse_result();
         self.paint_background(scene, transform, theme);
         // Recurse with `draw_with_presence` (not the plain `draw`) so the
         // inner `Scrollable` pushes its viewport rect and the file list culls
@@ -6362,8 +7346,11 @@ impl Widget for FileExplorerWidget {
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
-        // content but below any open menus / drag ghost.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
+        // content but below any open menus / drag ghost. A narrow drawer is a
+        // modal flap and its scrim must occlude every content affordance.
+        if !self.status_bubble_is_occluded_by_places_drawer() {
+            self.draw_status_bubble(scene, transform, text_renderer, theme);
+        }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
@@ -6645,42 +7632,10 @@ impl Widget for FileExplorerWidget {
                     &collaborative.records,
                 ),
             ),
+            Box::new(crate::search_provider::RemoteAccountSearchProvider::new(
+                crate::remote_accounts::load(),
+            )),
         ]
-    }
-
-    /// Navigate to the place a chosen palette row identifies (its destination
-    /// path is the opaque id). Navigation is app-local presentation.
-    fn activate_search_result(
-        &mut self,
-        action_id: &str,
-        _doc: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) {
-        if let Some(dest) = crate::search_provider::PlacesSearchProvider::parse_action_id(action_id)
-        {
-            self.navigate(dest);
-        } else if let Some(record_id) =
-            crate::search_provider::CollaborativeRecordSearchProvider::parse_action_id(action_id)
-            // Resolve mutable provenance again at activation time. A remote
-            // rename or move may have landed since the palette was opened.
-            && let Some(path) = crate::model::read_workspace_record_index(&self.workspace_roots)
-                .records
-                .into_iter()
-                .find(|record| record.record_id == record_id)
-                .map(|record| record.path)
-        {
-            if path.parent() != Some(self.current_path.as_path())
-                && let Some(parent) = path.parent().map(Path::to_path_buf)
-            {
-                self.navigate(parent);
-            }
-            if let Some(index) = self.entries.iter().position(|entry| {
-                entry.record_id == Some(*record_id.as_bytes()) || entry.path == path
-            }) {
-                self.selection.select_only(index);
-                self.structure_dirty = true;
-            }
-        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -7251,6 +8206,155 @@ mod command_path_tests {
     }
 
     #[test]
+    fn resource_catalogue_exposes_view_and_favourite_commands_through_the_action_door() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        let folder = home_dir.path().join("agent-folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("b.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(
+            Some(state_dir.path().to_path_buf()),
+            Some(home_dir.path().to_path_buf()),
+        );
+        w.navigate(folder.clone());
+        let initial_zoom = w.zoom_level();
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let folder_resource = &resources[0];
+        for action in [
+            "grid",
+            "list",
+            "sort-name",
+            "sort-size",
+            "sort-type",
+            "sort-modified",
+            "sort-ascending",
+            "sort-descending",
+            "zoom-in",
+            "zoom-out",
+            "add-favorite",
+        ] {
+            assert!(
+                folder_resource.actions.iter().any(|spec| spec.id == action),
+                "folder resource must export {action}"
+            );
+        }
+        assert!(Widget::local_resource_operation_handlers(&w).contains(&"files.remote-dav"));
+
+        for command in ["grid", "sort-size", "zoom-in", "add-favorite"] {
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut w,
+                    if command == "grid" || command == "sort-size" || command == "zoom-in" {
+                        OperationKind::View
+                    } else {
+                        OperationKind::Effect
+                    },
+                    "files.folder-command",
+                    &serde_json::to_vec(command).unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap(),
+                "{command} is routed through the canonical dispatcher"
+            );
+        }
+        assert_eq!(w.view_mode(), ViewMode::Grid);
+        assert_eq!(w.sort_by(), SortBy::Size);
+        assert!(w.zoom_level() > initial_zoom);
+        assert!(w.favorites().iter().any(|favorite| favorite.path == folder));
+    }
+
+    #[test]
+    fn remote_dav_allows_recovery_from_stale_offline_but_honours_disabled() {
+        assert_eq!(
+            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Offline),
+            Availability::Available,
+            "Offline is last observed status, so the next DAV attempt may discover recovery"
+        );
+        assert!(matches!(
+            remote_dav_availability(crate::remote_accounts::RemoteAccountHealth::Disabled),
+            Availability::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn template_resource_ids_are_stable_bounded_and_do_not_disclose_paths() {
+        let first = "/home/alice/Templates/Plan.md";
+        let second = "/home/alice/Templates/Notes.md";
+        let first_id = template_resource_id(first);
+        assert_eq!(first_id, template_resource_id(first));
+        assert_ne!(first_id, template_resource_id(second));
+        assert!(first_id.starts_with("files.template:"));
+        assert_eq!(first_id.len(), "files.template:".len() + 32);
+        assert!(!first_id.contains("alice"));
+        assert!(!first_id.contains("Templates"));
+    }
+
+    #[test]
+    fn projected_availability_controls_are_discoverable_and_use_the_entry_route() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("shared.txt");
+        std::fs::write(&path, b"x").unwrap();
+        let mut entry = ent("shared.txt", false, "text/plain");
+        entry.path = path.clone();
+        entry.availability = Some(crate::model::AvailabilityProjection {
+            schema_version: 1,
+            record_id: "record".into(),
+            current_version: Some("v1".into()),
+            residency: crate::model::Residency::Partial { resident_bytes: 1 },
+            transfer: crate::model::ProjectedTransfer {
+                phase: crate::model::TransferPhase::Idle,
+                progress: None,
+                last_error: None,
+                last_error_at_ms: None,
+                error_truncated: false,
+            },
+            policy: crate::model::AvailabilityPolicy::Automatic,
+            policy_inherited: false,
+            replicas: crate::model::ReplicaEvidence::Unknown,
+            freshness: crate::model::AvailabilityFreshness::default(),
+        });
+        let mut w = FileExplorerWidget::new();
+        w.current_path = d.path().to_path_buf();
+        w.entries = vec![entry];
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let resource = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.label == "shared.txt")
+            .expect("the projected entry is a resource");
+        for action in [
+            "availability",
+            "keep-offline",
+            "free-local-space",
+            "retry-download",
+        ] {
+            assert!(
+                resource.actions.iter().any(|spec| spec.id == action),
+                "availability projection must expose {action}"
+            );
+        }
+        let payload = vec![
+            "availability".to_string(),
+            path.to_string_lossy().into_owned(),
+        ];
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                OperationKind::View,
+                "files.entry-command",
+                &serde_json::to_vec(&payload).unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(w.collab_panel.is_some(), "availability route opens details");
+    }
+
+    #[test]
     fn trash_actions_require_an_explicit_irrevocable_confirmation() {
         let Some(trash) = crate::fileops::trash_dir() else {
             return;
@@ -7516,6 +8620,121 @@ mod command_path_tests {
         );
         assert!(d.path().join("Agent Created").is_dir());
         assert!(!w.is_renaming());
+    }
+
+    #[test]
+    fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("transient.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let doc = automerge::AutoCommit::new();
+        let payload = serde_json::to_vec(file.to_string_lossy().as_ref()).unwrap();
+
+        std::fs::remove_file(&file).unwrap();
+        w.refresh();
+        let error = Widget::invoke_resource_operation(
+            &mut w,
+            OperationKind::View,
+            "files.open",
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .expect_err("a stale entry action must be refused");
+        assert!(error.contains("no longer available"));
+    }
+
+    #[test]
+    fn every_exported_local_file_handler_is_declared_for_the_broker() {
+        let handlers = Widget::local_resource_operation_handlers(&FileExplorerWidget::new());
+        for handler in [
+            "files.refresh",
+            "files.new-folder",
+            "files.paste",
+            "files.new-from-template",
+            "files.navigate",
+            "files.open",
+            "files.reveal-record",
+            "files.folder-command",
+            "files.entry-command",
+            "files.rename",
+            "files.share-link",
+            "files.remote-account",
+            "files.remote-dav",
+        ] {
+            assert!(handlers.contains(&handler), "missing handler {handler}");
+        }
+    }
+
+    #[test]
+    fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
+        use ui::qos_actions::{ActionAddress, door};
+
+        let d = tempfile::tempdir().unwrap();
+        // A control separator is a legal Unix filename byte but must not leak
+        // into the resource/action wire address.
+        let old = d.path().join("old\u{1f}.txt");
+        std::fs::write(&old, b"x").unwrap();
+        let record_id = uuid::Uuid::from_u128(0xfeed);
+        let mut w = FileExplorerWidget::new();
+        w.workspace_roots = vec![d.path().to_path_buf()];
+        w.current_path = d.path().to_path_buf();
+        let mut entry = ent("old\u{1f}.txt", false, "text/plain");
+        entry.path = old.clone();
+        entry.record_id = Some(*record_id.as_bytes());
+        w.entries = vec![entry];
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let entry = resources[0]
+            .children
+            .iter()
+            .find(|resource| {
+                resource.id.as_str() == crate::search_provider::record_resource_id(record_id)
+            })
+            .expect("a collaborative file uses its record UUID as the resource identity");
+        assert_eq!(entry.kind, "files.record");
+        let address = ActionAddress::new(entry.id.as_str(), "rename");
+        assert_eq!(
+            ActionAddress::parse(&address.encode()),
+            Some(address.clone())
+        );
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("value".into(), serde_json::Value::String("new.txt".into()));
+        let encoded = door::encode_json(&resources, &address, &arguments)
+            .expect("the entry's prompted rename action encodes");
+        assert!(
+            !door::resolve(&resources, &address)
+                .expect("rename action is exported")
+                .contract
+                .reversible,
+            "an external filesystem rename has no qOS action-history inverse"
+        );
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert!(!old.exists());
+        let renamed = d.path().join("new.txt");
+        assert!(renamed.exists());
+        // A mount refresh presents a new path but the same daemon-provided
+        // record identity, so the old action address resolves against it.
+        w.entries[0].path = renamed;
+        w.entries[0].name = "new.txt".into();
+        w.entries[0].record_id = Some(*record_id.as_bytes());
+        let refreshed = Widget::resources(&w, &doc);
+        assert!(
+            door::resolve(&refreshed, &address).is_some(),
+            "the record action address survives a path rename and resolves its fresh path"
+        );
     }
 
     #[test]
@@ -8004,6 +9223,16 @@ mod command_path_tests {
     }
 
     #[test]
+    fn disappearing_templates_do_not_leave_an_empty_flyout() {
+        let (mut w, _cfg) = hermetic();
+        // A catalogue can be emptied after the parent menu opens. The flyout
+        // must close instead of painting an empty, focusable surface.
+        w.open_templates_submenu(Point::new(80.0, 80.0));
+        assert!(!w.submenu.is_open());
+        assert!(w.submenu_commands.is_empty());
+    }
+
+    #[test]
     fn collaborative_selection_offers_and_applies_keep_offline() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("shared.txt");
@@ -8342,6 +9571,15 @@ mod command_path_tests {
         );
     }
 
+    fn assert_history_detail_panel(widget: &FileExplorerWidget) {
+        let panel = widget.collab_panel.as_ref().unwrap();
+        assert!(panel.title.contains("Version History"));
+        let history = panel.history.as_ref().expect("dedicated version timeline");
+        assert_eq!(history.versions.len(), 1);
+        assert_eq!(history.selected, 0);
+        assert_eq!(t(history.versions[0].provenance_key()), "Created");
+    }
+
     #[test]
     fn authority_sharing_and_history_open_real_detail_panels() {
         let mut entry = ent("shared.txt", false, "text/plain");
@@ -8413,7 +9651,6 @@ mod command_path_tests {
         assert!(spec.iter().any(|(label, command)| {
             label == "Properties…" && *command == Some(FileCommand::ShowProperties)
         }));
-
         w.apply_command(FileCommand::ShowProperties);
         let panel = w.collab_panel.as_ref().unwrap();
         assert!(panel.title.contains("Properties"));
@@ -8438,12 +9675,7 @@ mod command_path_tests {
         assert!(panel.title.contains("Sharing"));
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
-        let panel = w.collab_panel.as_ref().unwrap();
-        assert!(panel.title.contains("Version History"));
-        let history = panel.history.as_ref().expect("dedicated version timeline");
-        assert_eq!(history.versions.len(), 1);
-        assert_eq!(history.selected, 0);
-        assert_eq!(t(history.versions[0].provenance_key()), "Created");
+        assert_history_detail_panel(&w);
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
     }
@@ -8780,13 +10012,37 @@ mod command_path_tests {
         widget.workspace_roots = vec![dir.path().to_path_buf()];
 
         let providers = widget.search_providers();
-        assert_eq!(providers.len(), 2, "Places remains a separate provider");
-        let hit = providers[1]
-            .search("renamed")
-            .pop()
+        // Places and remote-account discovery remain separate providers; find
+        // the collaborative hit by its stable record action rather than by a
+        // brittle provider position or a developer's local account settings.
+        let hit = providers
+            .iter()
+            .flat_map(|provider| provider.search("renamed"))
+            .find(|result| {
+                result.action_address()
+                    == Some(crate::search_provider::record_reveal_address(record_id))
+            })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        widget.activate_search_result(&hit.action_id, &mut doc, &automerge::ROOT);
+        let doc = automerge::AutoCommit::new();
+        let address = hit.action_address().expect("canonical reveal action");
+        let resources = Widget::resources(&widget, &doc);
+        let spec = ui::qos_actions::door::resolve(&resources, &address)
+            .expect("search reveal action is exported");
+        let kind = spec.kind;
+        let encoded =
+            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+                .expect("reveal action encodes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
@@ -9400,6 +10656,12 @@ mod responsive_body_tests {
             "compact overflow retains history navigation rather than removing it"
         );
 
+        h.lay_out(560.0, 760.0);
+        assert!(
+            h.w.toolbar.is_compact(),
+            "the 560 px tablet width keeps the location readable instead of overlapping it with desktop controls"
+        );
+
         // The width is discovered during layout; one follow-up composition is
         // how the live app promotes wide controls after a real resize.
         h.lay_out(1200.0, 720.0);
@@ -9494,6 +10756,10 @@ mod responsive_body_tests {
             h.w.debug_content_rect(),
             before,
             "the file view must not move or shrink when the drawer opens",
+        );
+        assert!(
+            h.w.status_bubble_is_occluded_by_places_drawer(),
+            "the item/status bubble belongs behind the modal drawer scrim"
         );
     }
 

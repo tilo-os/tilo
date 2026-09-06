@@ -43,6 +43,11 @@ pub enum ExtensionError {
     Io(std::io::Error),
 }
 
+const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_UNPACKED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 4_096;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
 impl std::fmt::Display for ExtensionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -77,10 +82,41 @@ pub fn extensions_dir() -> PathBuf {
 /// responds with an error status, or any error [`install_from_bytes`] can
 /// return for the downloaded package.
 pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
-    let bytes = reqwest::blocking::get(url)
+    let parsed =
+        url::Url::parse(url).map_err(|error| ExtensionError::Download(error.to_string()))?;
+    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ExtensionError::Download(
+            "extension packages require an HTTPS URL without embedded credentials".into(),
+        ));
+    }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|error| ExtensionError::Download(error.to_string()))?;
+    let response = client
+        .get(parsed)
+        .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::bytes)
-        .map_err(|e| ExtensionError::Download(e.to_string()))?;
+        .map_err(|error| ExtensionError::Download(error.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_ARCHIVE_BYTES as u64)
+    {
+        return Err(ExtensionError::Download(
+            "extension package is too large".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take((MAX_ARCHIVE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| ExtensionError::Download(error.to_string()))?;
+    if bytes.len() > MAX_ARCHIVE_BYTES {
+        return Err(ExtensionError::Download(
+            "extension package is too large".into(),
+        ));
+    }
     install_from_bytes(&bytes, &extensions_dir())
 }
 
@@ -92,15 +128,42 @@ pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
 /// package, [`ExtensionError::Manifest`] if it has no valid `manifest.json`,
 /// or [`ExtensionError::Io`] if unpacking it under `root` fails.
 pub fn install_from_bytes(archive: &[u8], root: &Path) -> Result<ExtensionInfo, ExtensionError> {
+    if archive.len() > MAX_ARCHIVE_BYTES {
+        return Err(ExtensionError::Archive(
+            "extension package is too large".into(),
+        ));
+    }
     let zip_bytes = strip_crx_header(archive)?;
     let mut zip = zip::ZipArchive::new(Cursor::new(zip_bytes))
         .map_err(|e| ExtensionError::Archive(e.to_string()))?;
+    if zip.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(ExtensionError::Archive(
+            "extension package has too many files".into(),
+        ));
+    }
+    let mut unpacked = 0u64;
+    for index in 0..zip.len() {
+        let file = zip
+            .by_index(index)
+            .map_err(|error| ExtensionError::Archive(error.to_string()))?;
+        unpacked = unpacked.saturating_add(file.size());
+        if unpacked > MAX_UNPACKED_BYTES {
+            return Err(ExtensionError::Archive(
+                "extension package expands beyond the safety limit".into(),
+            ));
+        }
+    }
 
     // Manifest first, so a broken package never touches the disk.
     let manifest_text = {
         let mut file = zip
             .by_name("manifest.json")
             .map_err(|_| ExtensionError::Manifest("no manifest.json in package".into()))?;
+        if file.size() > MAX_MANIFEST_BYTES {
+            return Err(ExtensionError::Manifest(
+                "manifest.json is too large".into(),
+            ));
+        }
         let mut text = String::new();
         file.read_to_string(&mut text)
             .map_err(|e| ExtensionError::Manifest(e.to_string()))?;
@@ -217,7 +280,15 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
             .and_then(serde_json::Value::as_str)
     };
     let gecko_id = nested_id("browser_specific_settings").or_else(|| nested_id("applications"));
-    let id = gecko_id.map_or_else(|| slug(&name), str::to_string);
+    let id = gecko_id
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 255
+                && id.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "@._-".contains(character)
+                })
+        })
+        .map_or_else(|| slug(&name), str::to_string);
 
     Ok(ExtensionInfo {
         id,
@@ -330,5 +401,27 @@ mod tests {
         let info = parse_manifest(manifest).unwrap();
         assert_eq!(info.id, "my-cool-tool");
         assert_eq!(info.manifest_version, 3);
+    }
+
+    #[test]
+    fn manifest_identifier_cannot_escape_extension_root() {
+        let manifest = r#"{
+            "manifest_version": 3,
+            "name": "Safe Name",
+            "version": "1.0",
+            "browser_specific_settings": {"gecko": {"id": "../../outside"}}
+        }"#;
+        let info = parse_manifest(manifest).unwrap();
+        assert_eq!(info.id, "safe-name");
+        assert!(!info.id.contains('/'));
+    }
+
+    #[test]
+    fn oversized_archive_is_rejected_before_parsing() {
+        let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
+        assert!(matches!(
+            install_from_bytes(&bytes, std::path::Path::new("/unused")),
+            Err(ExtensionError::Archive(_))
+        ));
     }
 }

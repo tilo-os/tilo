@@ -53,10 +53,7 @@ environment inward, so without an explicit choice on both sides the container bu
 reaches the host's server and every compilation misses.
 
 Not needed if the libraries are present natively — a nix/devenv shell removes both
-the routing and the need for the cargo shim. The workspace's `tools/rustc-wrapper`
-still enables sccache automatically when the binary is on `PATH`, and falls through
-to plain rustc when it is not. Native and container builds use separate server ports
-and cache directories so they cannot cross namespaces.
+the routing and the sccache-namespace problem, and the shim with them.
 
 ### Hardware-dependent settings
 
@@ -64,11 +61,9 @@ Two settings are derived from the hardware rather than committed:
 
 - **Job count** — bounded by memory, not cores: rustc peaks around 7 GB on the
   larger crates. The shim exports `CARGO_BUILD_JOBS` as `min(cores, RAM ÷ 7 GB)`.
-  `jobs = 4` in `.cargo/config.toml` is only a fallback for builds that bypass the
+  `jobs = 4` in `.cargo/config.toml` is only a floor for builds that bypass the
   shim, such as CI.
-- **sccache budget** — 20% of the filesystem, floor 64 GB, cap 200 GB.
-- **linker** — native Linux builds use mold when it is on `PATH`; machines without
-  it and explicit cross-target builds retain rustc's normal linker.
+- **sccache ceiling** — 20% of the filesystem, floor 64 GB, cap 200 GB.
 
 Override either with `CARGO_BUILD_JOBS` / `SCCACHE_CACHE_SIZE`. Neither is part
 of sccache's cache key, so varying them does not fragment it.
@@ -85,7 +80,7 @@ Measured on `ui`'s test binary, so nobody spends the day rediscovering it:
 
 | change | effect |
 |---|---|
-| mold instead of GNU ld | none in the measured runs (40 s vs 41 s, and 61 s vs 61 s); still selected opportunistically when installed |
+| mold instead of GNU ld | none (40 s vs 41 s, and 61 s vs 61 s) |
 | `-C split-debuginfo=unpacked` | binary 697 -> 507 MB, build 14% **slower** |
 | `-C debuginfo=0` | binary 665 -> 475 MB, build unchanged |
 | nightly `--jobs-frontend=4` / `=8` | +13% / 0% |

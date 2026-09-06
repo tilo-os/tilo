@@ -118,6 +118,61 @@ impl InvocationUpdate {
     }
 }
 
+/// Durable, deliberately redacted outcome of a consequential effect.
+///
+/// Receipts are suitable for shared workspace activity. They never retain
+/// invocation arguments, streamed items, returned values/resource addresses,
+/// failure messages, or structured failure details. Those values may contain
+/// credentials or document content and remain available only through the
+/// private invocation lifecycle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EffectReceiptStatus {
+    Succeeded,
+    Failed { code: String },
+    Cancelled,
+}
+
+impl EffectReceiptStatus {
+    /// Reduce a terminal lifecycle update to its safe durable representation.
+    /// Non-terminal updates are intentionally not activity records.
+    pub fn from_terminal(update: &InvocationUpdate) -> Option<Self> {
+        match update {
+            InvocationUpdate::Succeeded { .. } => Some(Self::Succeeded),
+            InvocationUpdate::Failed { error, .. } => Some(Self::Failed {
+                code: bounded_identifier(&error.code, "action_failed"),
+            }),
+            InvocationUpdate::Cancelled { .. } => Some(Self::Cancelled),
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. } => None,
+        }
+    }
+
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Succeeded => "Completed",
+            Self::Failed { .. } => "Failed",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+}
+
+fn bounded_identifier(value: &str, fallback: &str) -> String {
+    let safe = value
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
+        })
+        .take(96)
+        .collect::<String>();
+    if safe.is_empty() {
+        fallback.to_string()
+    } else {
+        safe
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +185,29 @@ mod tests {
         assert_eq!(content_resource(""), None);
         assert_eq!(content_resource("two:parts"), None);
         assert_eq!(content_hash("files.entry:/tmp/a"), None);
+    }
+
+    #[test]
+    fn effect_receipt_redacts_terminal_payloads() {
+        let invocation = InvocationId::new();
+        let update = InvocationUpdate::Failed {
+            invocation,
+            error: ActionFailure {
+                code: "smtp.secret\ncode".into(),
+                message: "password=hunter2".into(),
+                details: Some(serde_json::json!({"token": "private"})),
+                retryable: true,
+            },
+        };
+        let receipt = EffectReceiptStatus::from_terminal(&update).expect("terminal receipt");
+        assert_eq!(
+            receipt,
+            EffectReceiptStatus::Failed {
+                code: "smtp.secretcode".into()
+            }
+        );
+        let json = serde_json::to_string(&receipt).expect("encode receipt");
+        assert!(!json.contains("hunter2"));
+        assert!(!json.contains("private"));
     }
 }

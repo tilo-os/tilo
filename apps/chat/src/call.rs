@@ -370,13 +370,16 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "live-media"))]
     #[test]
     fn system_portal_declines_without_a_live_portal() {
-        // The default (non-live-media) build has no desktop portal, so the
-        // production portal grants nothing — the honest-gating contract that
-        // keeps the default build from ever faking a screen share.
+        // The hermetic build has no desktop portal, so the production portal
+        // grants nothing — the honest-gating contract that keeps Chat from
+        // ever faking a screen share. With `live-media`, `request()` opens a
+        // real system picker that may wait for a person for two minutes, so
+        // this hermetic test is deliberately not compiled in that build.
         assert!(
-            SystemPortal.request().is_none() || cfg!(feature = "live-media"),
+            SystemPortal.request().is_none(),
             "the system portal must decline when no live portal is compiled in"
         );
     }
@@ -452,13 +455,16 @@ mod sound {
         }
     }
 
-    #[cfg(feature = "live-media")]
+    #[cfg(all(feature = "live-media", not(test)))]
     fn init_backend() -> bool {
         gstreamer::init().is_ok()
     }
 
-    #[cfg(not(feature = "live-media"))]
+    #[cfg(any(not(feature = "live-media"), test))]
     fn init_backend() -> bool {
+        // Unit tests exercise cue bookkeeping, not the user's audio device.
+        // Keeping this silent avoids a real `autoaudiosink` pipeline waiting
+        // indefinitely for a desktop audio service during hermetic CI.
         false
     }
 

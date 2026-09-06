@@ -1,4 +1,4 @@
-name: Build qos-kernel image (publish on tags + dispatch)
+name: Snapshot / kernel
 
 # Rebuilds Fedora's kernel with our config fragment (statically-in boot
 # drivers + PREEMPT + HZ=1000 + THP=always + trim debuginfo) and publishes
@@ -37,8 +37,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-kernel-${{ github.ref }}
-  cancel-in-progress: false
+  group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
+  cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
 jobs:
   build-and-push-kernel:
@@ -72,6 +72,11 @@ jobs:
       # KBUILD_BUILD_TIMESTAMP to SOURCE_DATE_EPOCH (see os/kernel/Containerfile).
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Set up buildx for registry cache export
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -107,6 +112,12 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
+          cache-from: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:latest
+          # The kernel builder's intermediate source tree is tens of GiB.
+          # Export only final-stage dependencies: mode=max duplicated that
+          # tree during export and exhausted the runner after a successful
+          # compile.
+          cache-to: type=registry,ref=code.podesta.ai/qos/qos-kernel-buildcache:latest,mode=min
           provenance: false
 
       # Same cosign-attach flow as the OS image (offline-friendly, no Rekor

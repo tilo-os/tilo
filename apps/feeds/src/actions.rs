@@ -10,8 +10,9 @@
 //! the add-subscription dialog's commit) dispatch and what the Ctrl+K palette
 //! dispatches — one source of truth, one replay path.
 //!
-//! The resource tree mirrors the data model: the reader owns its folders and its
-//! subscriptions, and each exports the [`ActionSpec`]s Ctrl+K offers.
+//! The resource tree mirrors the data model: the reader owns its folders and
+//! subscriptions, and subscriptions own their articles. Each exports the
+//! [`ActionSpec`]s Ctrl+K, agents and accessibility can invoke.
 //!
 //! ## What is *not* an action
 //!
@@ -38,22 +39,46 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionAddress, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
+    RetryPolicy,
 };
 
 use crate::doc::FeedsDoc;
-use crate::model::{Feed, FeedKind, Folder, Id};
+use crate::model::{Feed, FeedKind, Folder, Id, ReadSettings};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
 pub const FEEDS_OPERATION_TYPE: &str = "feeds.operation";
 
+pub fn feed_resource_id(id: Id) -> String {
+    format!("feeds.subscription:{id}")
+}
+
+pub fn article_resource_id(id: Id) -> String {
+    format!("feeds.article:{id}")
+}
+
+pub fn open_feed_address(id: Id) -> ActionAddress {
+    ActionAddress::new(feed_resource_id(id), "open")
+}
+
+pub fn open_article_address(id: Id) -> ActionAddress {
+    ActionAddress::new(article_resource_id(id), "open")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FeedsOperation {
     RefreshAll,
+    RevealFeed { id: String },
+    RevealArticle { id: String },
 }
 
+/// Decode a Feeds-local view/effect operation, declining foreign type ids.
+///
+/// # Errors
+///
+/// Returns a message when a Feeds operation payload is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<FeedsOperation>, String> {
     if type_id != FEEDS_OPERATION_TYPE {
         return Ok(None);
@@ -76,8 +101,11 @@ pub fn guess_kind(url: &str) -> FeedKind {
 /// Every collaborative operation Feeds exports on its subscription + read-state
 /// store. Each variant is a whole-item create/delete or a single field write,
 /// carrying enough payload to replay deterministically from a shared base state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FeedsAction {
+    /// Persist the reader's shared typography and paper preference. The panel
+    /// itself remains a local view, but this value is durable and replayable.
+    SetReadSettings { settings: ReadSettings },
     /// Create a subscription *record*: a feed row with a pre-minted id, the
     /// typed url, a derived site-url and placeholder title, in `folder` at
     /// `order`. Fetching its real title + articles is external and follows.
@@ -106,6 +134,9 @@ pub enum FeedsAction {
     RenameFolder { id: String, name: String },
     /// Delete a folder; its feeds survive, unparented to uncategorised.
     DeleteFolder { id: String },
+    /// Persist whether a folder's feed rows are collapsed in the shared
+    /// sidebar model.
+    SetFolderCollapsed { id: String, collapsed: bool },
     /// Set one article's `read` flag.
     MarkRead { id: String, read: bool },
     /// Set one article's `starred` flag.
@@ -119,6 +150,9 @@ pub enum FeedsAction {
 impl Action for FeedsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            FeedsAction::SetReadSettings { settings } => {
+                FeedsDoc::write_settings(doc, &settings.clamped());
+            }
             FeedsAction::AddSubscription {
                 id,
                 url,
@@ -126,7 +160,13 @@ impl Action for FeedsAction {
                 order,
                 kind,
             } => {
-                if let Ok(uuid) = id.parse::<Id>() {
+                // Palette prompts and the in-app dialog both trim before
+                // authoring; retain that invariant at the replay boundary so
+                // a malformed/empty remote payload cannot create an unusable
+                // durable subscription resource.
+                if !url.trim().is_empty()
+                    && let Ok(uuid) = id.parse::<Id>()
+                {
                     let feed = Feed {
                         id: uuid,
                         // Placeholder until the fetch fills the real title in —
@@ -175,6 +215,11 @@ impl Action for FeedsAction {
             FeedsAction::DeleteFolder { id } => {
                 if let Ok(uuid) = id.parse::<Id>() {
                     FeedsDoc::remove_folder(doc, uuid);
+                }
+            }
+            FeedsAction::SetFolderCollapsed { id, collapsed } => {
+                if let Ok(uuid) = id.parse::<Id>() {
+                    FeedsDoc::set_folder_collapsed(doc, uuid, *collapsed);
                 }
             }
             FeedsAction::MarkRead { id, read } => {
@@ -286,6 +331,19 @@ pub fn delete_folder_action(id: Id) -> FeedsAction {
     FeedsAction::DeleteFolder { id: id.to_string() }
 }
 
+pub fn set_folder_collapsed_action(id: Id, collapsed: bool) -> FeedsAction {
+    FeedsAction::SetFolderCollapsed {
+        id: id.to_string(),
+        collapsed,
+    }
+}
+
+pub fn set_read_settings_action(settings: ReadSettings) -> FeedsAction {
+    FeedsAction::SetReadSettings {
+        settings: settings.clamped(),
+    }
+}
+
 pub fn mark_read_action(id: Id, read: bool) -> FeedsAction {
     FeedsAction::MarkRead {
         id: id.to_string(),
@@ -319,6 +377,17 @@ pub struct FeedRef {
     pub title: String,
     /// Unread article ids in this feed, resolved at authoring time.
     pub unread: Vec<Id>,
+    /// Searchable articles nested beneath this stable subscription resource.
+    pub articles: Vec<ArticleRef>,
+}
+
+/// One article surfaced as a resource with its current document-backed flags.
+#[derive(Debug, Clone)]
+pub struct ArticleRef {
+    pub id: Id,
+    pub title: String,
+    pub read: bool,
+    pub starred: bool,
 }
 
 /// One folder surfaced as a resource.
@@ -326,6 +395,7 @@ pub struct FeedRef {
 pub struct FolderRef {
     pub id: Id,
     pub name: String,
+    pub collapsed: bool,
 }
 
 /// The presentation context Feeds hands [`provide_resources`]: its folders and
@@ -335,8 +405,14 @@ pub struct FolderRef {
 pub struct FeedsResourceCtx {
     pub folders: Vec<FolderRef>,
     pub feeds: Vec<FeedRef>,
+    /// Unread articles across the whole reader, resolved before the global
+    /// action is authored so replay never depends on a peer's local filter.
+    pub unread: Vec<Id>,
+    /// The order a palette-created, uncategorised subscription takes.
+    pub next_feed_order: u32,
     /// The order a "New folder" created from the palette takes.
     pub next_folder_order: u32,
+    pub settings: ReadSettings,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
@@ -347,6 +423,18 @@ fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
         .unwrap_or_else(|_| {
             ActionSpec::immediate_encoded(id, label.to_string(), action.locus(), encode(action))
         })
+}
+
+fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> Option<ActionSpec> {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::View,
+        FEEDS_OPERATION_TYPE,
+        operation,
+    )
+    .ok()
+    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
 }
 
 /// A one-line label for a feed, defaulting to a placeholder when untitled.
@@ -361,8 +449,13 @@ fn feed_label(f: &FeedRef) -> String {
 
 /// Build the resource tree Feeds currently has open: the reader (with a "New
 /// folder" action), each folder (rename + delete), and each subscription
-/// (rename + move + mark-all-read + unsubscribe). Every document-mutating
-/// operation is exported as the same action the on-screen affordance dispatches.
+/// (open + rename + move + mark-all-read + unsubscribe), and each article
+/// (open + read + star). Every document-mutating operation is exported as the
+/// same action the on-screen affordance dispatches; open is a local View.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete reader/folder/feed/article hierarchy stays together so its bounded canonical action inventory is auditable"
+)]
 pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("feeds.reader", "feeds.reader", "Feeds");
 
@@ -386,8 +479,29 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         });
     }
 
-    // Reader-level: create a folder. The uuid is minted once when the name is
-    // committed, then baked into the envelope, so replay stays deterministic.
+    // Reader-level durable actions. UUIDs are minted once when prompts commit
+    // and then baked into the envelope, so replay stays deterministic.
+    let feed_order = ctx.next_feed_order;
+    root = root.with_action(ActionSpec::prompted(
+        "add-subscription",
+        "Add subscription",
+        "Feed URL",
+        "https://example.com/feed.xml",
+        ExecutionLocus::ClientLocal,
+        move |url: &str| {
+            encode(&add_subscription_action(
+                Uuid::new_v4(),
+                url,
+                None,
+                feed_order,
+            ))
+        },
+    ));
+    root = root.with_action(immediate_spec(
+        "mark-all-read",
+        "Mark all articles as read",
+        &mark_all_read_action(&ctx.unread),
+    ));
     let order = ctx.next_folder_order;
     root = root.with_action(ActionSpec::prompted(
         "new-folder",
@@ -397,6 +511,54 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         ExecutionLocus::ClientLocal,
         move |name: &str| encode(&add_folder_action(Uuid::new_v4(), name, order)),
     ));
+
+    let settings = ctx.settings;
+    let mut settings_resource = Resource::new(
+        "feeds.reader-settings",
+        "feeds.reader-settings",
+        "Reading settings",
+    );
+    for (id, label, next) in [
+        (
+            "font-decrease",
+            "Decrease reader text size",
+            ReadSettings {
+                font_scale: settings.font_scale - 0.1,
+                ..settings
+            }
+            .clamped(),
+        ),
+        (
+            "font-increase",
+            "Increase reader text size",
+            ReadSettings {
+                font_scale: settings.font_scale + 0.1,
+                ..settings
+            }
+            .clamped(),
+        ),
+    ] {
+        settings_resource = settings_resource.with_action(immediate_spec(
+            id,
+            label,
+            &set_read_settings_action(next),
+        ));
+    }
+    for font in crate::model::ReadFont::ALL {
+        settings_resource = settings_resource.with_action(immediate_spec(
+            font.as_str(),
+            &format!("Use {} reader font", font.label()),
+            &set_read_settings_action(ReadSettings { font, ..settings }),
+        ));
+    }
+    for theme in crate::model::ReadTheme::ALL {
+        settings_resource = settings_resource.with_action(immediate_spec(
+            theme.as_str(),
+            &format!("Use {} reader paper", theme.label()),
+            &set_read_settings_action(ReadSettings { theme, ..settings }),
+        ));
+    }
+    root = root.with_child(settings_resource);
 
     // Known folder names → id, so a "Move to folder…" prompt can resolve a typed
     // name to a folder (an unknown name uncategorises the feed).
@@ -425,17 +587,29 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             immediate_spec("delete", "Delete folder", &delete_folder_action(id))
                 .destructive()
                 .reversible(),
-        );
+        )
+        .with_action(immediate_spec(
+            "set-collapsed",
+            if folder.collapsed {
+                "Expand folder"
+            } else {
+                "Collapse folder"
+            },
+            &set_folder_collapsed_action(id, !folder.collapsed),
+        ));
         root = root.with_child(child);
     }
 
     for feed in &ctx.feeds {
         let id = feed.id;
-        let mut child = Resource::new(
-            format!("feeds.subscription:{id}"),
-            "feeds.subscription",
-            feed_label(feed),
-        );
+        let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
+        if let Some(open) = view_spec(
+            "open",
+            "Open feed",
+            &FeedsOperation::RevealFeed { id: id.to_string() },
+        ) {
+            child = child.with_action(open);
+        }
         child = child.with_action(ActionSpec::prompted(
             "rename",
             "Rename feed",
@@ -475,6 +649,41 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             .destructive()
             .reversible(),
         );
+        for article in &feed.articles {
+            let article_id = article.id;
+            let title = if article.title.trim().is_empty() {
+                "Untitled article".to_string()
+            } else {
+                article.title.clone()
+            };
+            let mut article_node =
+                Resource::new(article_resource_id(article_id), "feeds.article", title);
+            if let Some(open) = view_spec(
+                "open",
+                "Open article",
+                &FeedsOperation::RevealArticle {
+                    id: article_id.to_string(),
+                },
+            ) {
+                article_node = article_node.with_action(open);
+            }
+            article_node = article_node
+                .with_action(immediate_spec(
+                    "read",
+                    if article.read {
+                        "Mark unread"
+                    } else {
+                        "Mark read"
+                    },
+                    &mark_read_action(article_id, !article.read),
+                ))
+                .with_action(immediate_spec(
+                    "star",
+                    if article.starred { "Unstar" } else { "Star" },
+                    &set_starred_action(article_id, !article.starred),
+                ));
+            child = child.with_child(article_node);
+        }
         root = root.with_child(child);
     }
 
@@ -527,6 +736,10 @@ mod tests {
     /// `feeds.folder` child per folder (rename + delete), and a
     /// `feeds.subscription` child per feed (rename + mark-read + move +
     /// unsubscribe). Drives the real resource hook.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one contract test deliberately audits the complete nested reader resource tree"
+    )]
     #[test]
     fn ctrl_k_publishes_the_reader_tree() {
         let (app, doc) = seeded();
@@ -535,6 +748,14 @@ mod tests {
         let reader = &resources[0];
         assert_eq!(reader.kind, "feeds.reader");
         let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            reader_actions.contains(&"add-subscription"),
+            "{reader_actions:?}"
+        );
+        assert!(
+            reader_actions.contains(&"mark-all-read"),
+            "{reader_actions:?}"
+        );
         assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
         assert!(
             reader_actions.contains(&"refresh-all"),
@@ -550,6 +771,7 @@ mod tests {
             qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(refresh.kind, OperationKind::Effect);
 
         let folder = reader
             .children
@@ -571,6 +793,22 @@ mod tests {
         assert!(s_actions.contains(&"move"), "{s_actions:?}");
         assert!(s_actions.contains(&"unsubscribe"), "{s_actions:?}");
         assert_eq!(
+            feed.actions.iter().find(|a| a.id == "open").unwrap().kind,
+            OperationKind::View
+        );
+        assert_eq!(
+            feed.actions
+                .iter()
+                .find(|a| a.id == "mark-read")
+                .unwrap()
+                .kind,
+            OperationKind::Document
+        );
+        assert_eq!(
+            feed.actions.iter().find(|a| a.id == "rename").unwrap().kind,
+            OperationKind::Document
+        );
+        assert_eq!(
             feed.actions
                 .iter()
                 .find(|a| a.id == "unsubscribe")
@@ -580,12 +818,47 @@ mod tests {
             qos_actions::RiskLevel::Destructive
         );
 
+        let article = feed
+            .children
+            .iter()
+            .find(|resource| resource.kind == "feeds.article")
+            .expect("articles are first-class nested resources");
+        assert_eq!(
+            article
+                .actions
+                .iter()
+                .find(|a| a.id == "open")
+                .unwrap()
+                .kind,
+            OperationKind::View
+        );
+        assert_eq!(
+            article
+                .actions
+                .iter()
+                .find(|a| a.id == "read")
+                .unwrap()
+                .kind,
+            OperationKind::Document
+        );
+        assert_eq!(
+            article
+                .actions
+                .iter()
+                .find(|a| a.id == "star")
+                .unwrap()
+                .kind,
+            OperationKind::Document
+        );
+
         // The full flattened tree exports every action — the palette's Actions
         // group is display-capped, so reachability is asserted on the flatten.
         let flat: Vec<&str> = qos_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
+        assert!(flat.contains(&"Add subscription"), "{flat:?}");
+        assert!(flat.contains(&"Mark all articles as read"), "{flat:?}");
         assert!(flat.contains(&"New folder"), "{flat:?}");
         assert!(flat.contains(&"Unsubscribe"), "{flat:?}");
         assert!(flat.contains(&"Delete folder"), "{flat:?}");
@@ -598,10 +871,56 @@ mod tests {
             labels.iter().any(|l| l.contains("New folder")),
             "{labels:?}"
         );
+        palette.set_query("Rename folder");
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Rename folder")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn reader_level_add_subscription_uses_the_replayable_action_contract() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let add = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "add-subscription")
+            .expect("reader exports canonical add-subscription");
+        let encoded = prompted_encode(add, "https://example.test/updates.xml");
+        assert_eq!(encoded.type_id, FEEDS_ACTION_TYPE);
+
+        let decoded = registry()
+            .decode(&encoded)
+            .expect("prompt result decodes through the Feeds registry");
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+            .expect("canonical prompt result applies deterministically");
+        assert!(
+            FeedsDoc::load(&doc)
+                .feeds
+                .iter()
+                .any(|feed| feed.url == "https://example.test/updates.xml")
+        );
+    }
+
+    #[test]
+    fn blank_canonical_subscription_prompt_is_a_safe_no_op() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let add = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "add-subscription")
+            .expect("reader exports canonical add-subscription");
+        let encoded = prompted_encode(add, "   ");
+        let decoded = registry().decode(&encoded).expect("prompt still decodes");
+        let before = FeedsDoc::load(&doc).feeds.len();
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+            .expect("blank action is harmless");
+        assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -690,6 +1009,33 @@ mod tests {
             "the star landed on both replicas"
         );
         assert!(FeedsDoc::load(&b).article(article).unwrap().starred);
+    }
+
+    #[test]
+    fn reader_preferences_and_folder_collapse_replay_byte_identically() {
+        let (app, seeded_doc) = seeded();
+        let folder = app.store_folder_ids()[0];
+        let mut a = seeded_doc;
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+
+        let settings = ReadSettings {
+            font_scale: 1.35,
+            font: crate::model::ReadFont::Serif,
+            theme: crate::model::ReadTheme::Sepia,
+        };
+        for action in [
+            set_read_settings_action(settings),
+            set_folder_collapsed_action(folder, true),
+        ] {
+            let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+            qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        }
+
+        assert_eq!(a.get_heads(), b.get_heads(), "shared preferences converge");
+        assert_eq!(FeedsDoc::read_settings(&a), settings);
+        assert!(FeedsDoc::load(&a).folder(folder).unwrap().collapsed);
     }
 
     /// Adding a subscription replays byte-identically too — the create path, not

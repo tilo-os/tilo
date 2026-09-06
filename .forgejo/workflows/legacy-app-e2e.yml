@@ -1,4 +1,4 @@
-name: Legacy Linux application caret E2E
+name: CI / legacy app E2E
 
 # This is a merge gate when compositor/input compatibility changes, plus a
 # daily drift check against the real toolkit/application packages baked into

@@ -34,6 +34,10 @@ OPERATION_HANDLER = re.compile(r"\bfn\s+invoke_resource_operation\s*\(")
 OPERATION_HANDLER_REGISTRY = re.compile(
     r"\bfn\s+local_resource_operation_handlers\s*\("
 )
+ACTION_REGISTRY_DEFINITION = re.compile(
+    r"\bfn\s+register\s*\([^)]*\bActionRegistry\b", re.DOTALL
+)
+LIVE_ACTION_REGISTRY_WIRING = re.compile(r"\bactions\s*::\s*register\s*\(")
 TOOLKIT_ACTION_HOST = re.compile(
     r"\bresource_actions\s*::\s*(?:immediate|background)\s*\("
 )
@@ -50,6 +54,25 @@ LEGACY_ENTRY_POINTS = {
         r"\bstruct\s+(?:Automation|Agent|Mcp|Control)(?:Server|Socket)\b"
     ),
 }
+
+SEARCH_PROVIDER_IMPL = re.compile(
+    r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+# Exception keys are `apps/<app>/src/<file>.rs::ProviderType`. Keep this empty
+# by default: adding one is an explicit, reviewable acknowledgement that the
+# corpus is intrinsically tiny and inheriting the unbounded fallback is safe.
+SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
+
+# Temporary, explicit migration inventory for providers that still discard a
+# durable tail before querying it. New entries are not permitted silently: use
+# ui::search::SearchCatalog and delete the corresponding item when migrated.
+# The value names the retained-model work still required, making this debt
+# visible in review without keeping the repository permanently red.
+TRUNCATING_SEARCH_REMEDIATION: dict[str, str] = {
+}
+TRUNCATING_SEARCH = re.compile(
+    r"\.take\s*\(\s*DEFAULT_SEARCH_INDEX_LIMIT(?:\s*\.\s*saturating_sub\s*\([^)]*\))?\s*\)"
+)
 
 # These do not prove that a callback is wrong. They make the current, reviewed
 # amount of bypass-shaped code a hard ceiling, so new work must use the shared
@@ -70,6 +93,10 @@ RATCHETS = {
     "private_palette_outcome": (
         re.compile(r"\bCommandOutcome\b"),
         "private command-palette outcome; drain the shared ControlInvocation route instead",
+    ),
+    "opaque_search_activation": (
+        re.compile(r"\bfn\s+activate_search_result\s*\("),
+        "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
 }
 
@@ -284,6 +311,42 @@ def reachable_handler_code(text: str) -> str:
     return "\n".join(reached)
 
 
+def live_launch_registration_code(text: str) -> str:
+    """Return production `main` plus named LaunchSpec configuration callbacks.
+
+    Scanning the entire file lets a dead helper or `#[cfg(test)]` regression
+    impersonate production wiring. Inline closures already live in `main`;
+    named `.configure_app(configure)` callbacks are the only extra bodies the
+    launch builder can reach without executing arbitrary app code here.
+    """
+    bodies = function_bodies(text)
+    pending = ["main"]
+    seen: set[str] = set()
+    reached: list[str] = []
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for body in bodies.get(name, []):
+            reached.append(body)
+            code = rust_code_only(body)
+            pending.extend(
+                callback
+                for callback in re.findall(
+                    r"\.(?:configure_app|live_handler)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+                    code,
+                )
+                if callback in bodies and callback not in seen
+            )
+            pending.extend(
+                called
+                for called in re.findall(r"\b([a-z_][A-Za-z0-9_]*)\s*\(", code)
+                if called in bodies and called not in seen
+            )
+    return "\n".join(reached)
+
+
 def unattached_handler_entries(text: str) -> list[str]:
     """Registry claims with no evidence on the reachable dispatch path."""
     registry = OPERATION_HANDLER_REGISTRY.search(text)
@@ -306,6 +369,74 @@ def unattached_handler_entries(text: str) -> list[str]:
         if not present:
             missing.append(value)
     return sorted(set(missing))
+
+
+def audit_search_provider_limits(
+    root: Path, sources: list[tuple[Path, str]], violations: list[Violation]
+) -> set[str]:
+    """Require every app provider to own its query/materialisation budget."""
+    found: set[str] = set()
+    truncating_paths: set[str] = set()
+    for source, raw in sources:
+        code = rust_code_only(raw)
+        relative = source.relative_to(root).as_posix()
+        if TRUNCATING_SEARCH.search(code):
+            truncating_paths.add(relative)
+            if relative not in TRUNCATING_SEARCH_REMEDIATION:
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, TRUNCATING_SEARCH.search(code).start()),
+                        "durable SearchProvider truncates its corpus before querying; "
+                        "use the shared incremental SearchCatalog so late resources remain findable",
+                    )
+                )
+        for match in SEARCH_PROVIDER_IMPL.finditer(code):
+            provider = match.group(1)
+            key = f"{relative}::{provider}"
+            found.add(key)
+            body = brace_body(code, match.start()) or ""
+            limited = re.search(r"\bfn\s+search_limited\s*\(", body)
+            if limited:
+                limited_body = brace_body(body, limited.start()) or ""
+                if re.search(r"\bself\s*\.\s*search\s*\(", limited_body):
+                    violations.append(
+                        Violation(
+                            source,
+                            line_number(raw, match.start() + limited.start()),
+                            "search_limited calls unbounded search() before applying its budget",
+                        )
+                    )
+                continue
+            if key in SEARCH_LIMIT_EXEMPTIONS:
+                continue
+            violations.append(
+                Violation(
+                    source,
+                    line_number(raw, match.start()),
+                    "app SearchProvider inherits the unbounded search_limited fallback; "
+                    "override it and stop scanning/materialising at the caller budget",
+                )
+            )
+    if root.resolve() == ROOT.resolve():
+        app_prefixes = {
+            "/".join(source.relative_to(root).as_posix().split("/")[:2]) + "/"
+            for source, _ in sources
+        }
+        scoped_remediation = {
+            relative
+            for relative in TRUNCATING_SEARCH_REMEDIATION
+            if any(relative.startswith(prefix) for prefix in app_prefixes)
+        }
+        for relative in sorted(scoped_remediation - truncating_paths):
+            violations.append(
+                Violation(
+                    root / relative,
+                    1,
+                    f"stale truncating-search remediation `{relative}`; remove the inventory entry",
+                )
+            )
+    return found
 
 
 def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
@@ -367,7 +498,20 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             sources.append((source, source.read_text(encoding="utf-8")))
         combined_raw = "\n".join(text for _, text in sources)
         combined = rust_code_only(combined_raw)
+        main_path = manifest_path.parent / "src" / "main.rs"
+        main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
+        main_code = rust_code_only(live_launch_registration_code(main_raw))
         audit_ratchets(root, sources, ratchet_baseline, violations)
+        found_providers = audit_search_provider_limits(root, sources, violations)
+        for key in SEARCH_LIMIT_EXEMPTIONS:
+            if key.startswith(f"apps/{manifest_path.parent.name}/") and key not in found_providers:
+                violations.append(
+                    Violation(
+                        manifest_path,
+                        1,
+                        f"stale SearchProvider limit exemption `{key}`",
+                    )
+                )
         app_name = manifest_path.parent.name
         if app_name == "agent":
             if not RESOURCE_PROVIDER.search(combined) or not RESOURCE_CONSUMER.search(combined):
@@ -462,6 +606,22 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                             f"declared operation handler `{entry}` is not reachable from the canonical handler",
                         )
                     )
+            # A document ActionSpec is only valid at runtime when its decoder
+            # is installed into the App's ActionRegistry. Looking for a
+            # register function anywhere in the crate used to let test-only
+            # calls satisfy this gate while the production LaunchSpec silently
+            # withdrew the complete resource catalogue as invalid.
+            if (
+                ACTION_REGISTRY_DEFINITION.search(combined)
+                and not LIVE_ACTION_REGISTRY_WIRING.search(main_code)
+            ):
+                violations.append(
+                    Violation(
+                        main_path if main_path.is_file() else manifest_path,
+                        1,
+                        "document action registry is not wired into the production app launch",
+                    )
+                )
 
         for source, text in sources:
             for reason, pattern in LEGACY_ENTRY_POINTS.items():

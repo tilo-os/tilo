@@ -570,6 +570,11 @@ impl Widget for ToggleGroup {
                 width: Dimension::length(width),
                 height: Dimension::length(36.0),
             },
+            // A segmented strip has an intrinsic label-bearing width. In a
+            // horizontal `Scrollable`, shrinking it to the viewport defeats
+            // scrolling and makes labels collide. Non-scrollable parents can
+            // clip it, which is still more honest than overlapping controls.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

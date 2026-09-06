@@ -1516,6 +1516,7 @@ mod production_path {
         state
             .share_registry
             .insert(OTHER_PEER, SHARED, StreamingShare::new());
+        assert!(state.remote_seats.key_transition(PEER, 42, true));
         establish_cursor(&mut state);
         let before = pointer_at(&state);
 
@@ -1534,6 +1535,12 @@ mod production_path {
             );
         }
         assert_eq!(pointer_at(&state), before);
+        assert!(
+            state.remote_seats.is_empty(),
+            "emergency teardown must release and remove every remote seat"
+        );
+        assert!(state.share_registry.get(PEER, SHARED).is_none());
+        assert!(state.share_registry.get(OTHER_PEER, SHARED).is_none());
 
         // The latch makes this a panic key, not a policy tweak: republishing the screen doesn't undo it.
         state.remote_input_firewall.publish_view(ShellView::new(
@@ -1546,11 +1553,12 @@ mod production_path {
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
             Err(Denial::KillSwitch),
         );
-        // Write access is gone too, so clearing the latch alone doesn't hand control back.
+        // The shares themselves are gone too, so clearing the latch alone
+        // cannot resurrect a session.
         state.remote_input_firewall.clear_kill_switch();
         assert_eq!(
             state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
-            Err(Denial::ReadOnly),
+            Err(Denial::NotShared),
         );
     }
 

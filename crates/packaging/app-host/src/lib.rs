@@ -39,6 +39,7 @@
 
 use std::path::PathBuf;
 
+pub mod client;
 pub mod fetch;
 pub mod gc;
 pub mod install;
@@ -68,6 +69,7 @@ pub mod app_host_capnp {
 }
 
 pub use gc::GcReport;
+pub use pkg::PackageId;
 pub use registry::{Pinning, RegistryEntry};
 pub use store::{Store, StoreError};
 
@@ -85,7 +87,10 @@ pub fn default_store_root() -> PathBuf {
         // fall back to a per-user temp dir.
         std::env::temp_dir()
     });
-    base.join("qos-apps")
+    // Deliberately distinct from qos-install's legacy `qos-apps/registry.toml`:
+    // the two registries have different schemas and sharing the path makes the
+    // daemon fail at boot on any machine that used the old CLI.
+    base.join("qos-app-host")
 }
 
 /// Default socket path: `$XDG_RUNTIME_DIR/qos/services/app-host.sock`.

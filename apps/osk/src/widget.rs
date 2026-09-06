@@ -44,6 +44,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
@@ -1294,6 +1295,132 @@ impl Widget for OskWidget {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<AccessNode> {
+        if !self.visible {
+            return None;
+        }
+        let mut children = Vec::new();
+        for (index, rect) in &self.toolbar_geom {
+            let Some(item) = self.toolbar.get(*index) else {
+                continue;
+            };
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(item.label.clone())
+                    .with_bounds(*rect)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_hashed_key(format!("tool:{}:{}", index, item.label))
+                    .with_action_target(format!("osk:tool:{}:{}", index, item.label)),
+            );
+        }
+        for (index, rect) in &self.suggestion_geom {
+            let Some(suggestion) = self.suggestions.get(*index) else {
+                continue;
+            };
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Insert {}", suggestion.word))
+                    .with_bounds(*rect)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_hashed_key(format!("suggestion:{}:{}", index, suggestion.word))
+                    .with_action_target(format!("osk:suggestion:{}:{}", index, suggestion.word)),
+            );
+        }
+        let shift = self.shift;
+        let layout = self.current_layout();
+        for (id, rect) in &self.key_geom {
+            let Some(key) = layout.key(*id) else {
+                continue;
+            };
+            let label = key.display_label(shift);
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(label.clone())
+                    .with_bounds(*rect)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_hashed_key(format!("key:{}:{}:{}", layout.name, id.row, id.col))
+                    .with_action_target(format!(
+                        "osk:key:{}:{}:{}:{}",
+                        layout.name, id.row, id.col, label
+                    )),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("On-screen keyboard")
+                .with_description("Keyboard keys, suggestions, and input controls")
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &AccessibilityAction,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !self.visible || !matches!(action, AccessibilityAction::Activate) {
+            return false;
+        }
+        if let Some(rest) = target.strip_prefix("osk:key:") {
+            let mut parts = rest.splitn(4, ':');
+            let (Some(layout), Some(row), Some(col), Some(label)) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return false;
+            };
+            let (Ok(row), Ok(col)) = (row.parse::<usize>(), col.parse::<usize>()) else {
+                return false;
+            };
+            let id = KeyId::new(row, col);
+            let current = self.current_layout();
+            if current.name != layout
+                || current
+                    .key(id)
+                    .is_none_or(|key| key.display_label(self.shift) != label)
+            {
+                return false;
+            }
+            self.activate_key(id);
+            return true;
+        }
+        if let Some(rest) = target.strip_prefix("osk:suggestion:") {
+            let Some((index, word)) = rest.split_once(':') else {
+                return false;
+            };
+            let Ok(index) = index.parse::<usize>() else {
+                return false;
+            };
+            if self
+                .suggestions
+                .get(index)
+                .is_none_or(|suggestion| suggestion.word != word)
+            {
+                return false;
+            }
+            return self.activate_suggestion(index);
+        }
+        if let Some(rest) = target.strip_prefix("osk:tool:") {
+            let Some((index, label)) = rest.split_once(':') else {
+                return false;
+            };
+            let Ok(index) = index.parse::<usize>() else {
+                return false;
+            };
+            if self
+                .toolbar
+                .get(index)
+                .is_none_or(|item| item.label != label)
+            {
+                return false;
+            }
+            self.activate_tool(index);
+            return true;
+        }
+        false
+    }
+
     /// A layer/layout switch changes the displayed row set (and, for custom
     /// layouts, the row count → the intrinsic height), so the host must
     /// rebuild the taffy node. Rising-edge: reading clears the flag.
@@ -1407,6 +1534,35 @@ mod tests {
         assert!(osk.activate_label("h"));
         assert!(osk.activate_label("i"));
         assert_eq!(osk.pending_text(), "hi");
+    }
+
+    #[test]
+    fn accessibility_exposes_and_operates_each_painted_key() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 800.0, 360.0);
+        let semantics = osk.accessibility().expect("visible keyboard semantics");
+        let q = semantics
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("q"))
+            .expect("q key semantic node");
+        assert_eq!(q.role, Role::Button);
+        assert!(q.bounds.is_some());
+        let target = q.action_target.as_deref().expect("stable action target");
+        assert!(osk.control_action_bindings().iter().any(|binding| {
+            binding.control_id == target
+                && matches!(
+                    binding.kind,
+                    ui::widget::ControlBindingKind::SemanticAction(_)
+                )
+        }));
+        assert!(osk.perform_semantic_action(
+            target,
+            &AccessibilityAction::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(osk.pending_text(), "q");
     }
 
     #[test]

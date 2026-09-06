@@ -26,6 +26,10 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 qos-actions = { path = "../../crates/collab/actions" }
+accounts = { path = "../../crates/system/accounts" }
+reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+roxmltree = "0.20"
+zeroize.workspace = true
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
@@ -35,6 +39,7 @@ ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 uuid.workspace = true
+sha2.workspace = true
 # The one shared thumbnail generator + cache. `pdf` on (real first-page PDF
 # previews; pure-Rust to build — pdfium loads dynamically at runtime, falling
 # back to a badge when absent). Video stays a badge here so the hermetic build
