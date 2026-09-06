@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, channel, sync_channel};
+use std::sync::{Arc, Mutex};
 
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd};
 use smithay::backend::input::{
@@ -210,6 +211,11 @@ pub struct DrmDispatchState {
     /// source list owns the session; installer-seeded XKB environment remains
     /// only the default before a preference exists.
     pub keyboard: Option<KeyboardXkb>,
+    /// Serialises KMS access between the render thread and session ownership
+    /// changes. A pause command is queued first, but the render thread may
+    /// already be inside a page flip when the libseat callback returns; the
+    /// callback must not drop DRM master until that presentation has retired.
+    pub present_gate: Option<Arc<Mutex<()>>>,
 }
 
 /// One output the backend is currently driving, from the loop thread's view — the scanout itself lives on the render thread; this is the identity, geometry and crtc needed to reconcile a hotplug.
@@ -292,6 +298,7 @@ impl DrmDispatchState {
             output_size: (0, 0),
             hw_cursor: CursorPlanes::default(),
             keyboard,
+            present_gate: Some(Arc::new(Mutex::new(()))),
         }
     }
 
@@ -636,12 +643,26 @@ impl DrmDispatchState {
     }
 
     /// Perform one step of the pause/resume sequence the session state machine asked for.
+    fn with_presentations_quiesced<T>(gate: Option<&Arc<Mutex<()>>>, f: impl FnOnce() -> T) -> T {
+        let _present_guard = gate.map(|gate| {
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        f()
+    }
+
     fn perform(&mut self, action: SessionAction) {
         match action {
             SessionAction::PauseScanout => self.command(ScanoutCommand::Pause),
             SessionAction::DropMaster => {
                 if let Some(card) = self.card.as_ref() {
-                    card.drop_master();
+                    // The Pause command is asynchronous once the scanouts
+                    // live on the presenter thread. Holding this gate until
+                    // the release completes closes the window in which a
+                    // page flip could race the loss of DRM master.
+                    Self::with_presentations_quiesced(self.present_gate.as_ref(), || {
+                        card.drop_master();
+                    });
                 }
             }
             SessionAction::AcquireMaster => {
@@ -2938,6 +2959,37 @@ mod tests {
             "the scanout buffers hold the other session's pixels; the \
              compositor has to be told to repaint"
         );
+    }
+
+    #[test]
+    fn dropping_master_waits_for_an_in_flight_present_to_retire() {
+        // The presenter and the libseat callback run on different threads in
+        // production. A queued Pause alone is insufficient: the callback
+        // must wait for a frame that already entered KMS before releasing
+        // DRM master, or the kernel can reject that flip with EACCES.
+        let gate = Arc::new(Mutex::new(()));
+        let in_flight = gate.lock().expect("hold a present in flight");
+        let (released_tx, released_rx) = channel();
+        let callback_gate = Arc::clone(&gate);
+        let callback = std::thread::spawn(move || {
+            DrmDispatchState::with_presentations_quiesced(Some(&callback_gate), || {
+                released_tx
+                    .send(())
+                    .expect("callback receiver remains alive");
+            });
+        });
+
+        assert!(
+            released_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "master release must not run while a present still owns the gate"
+        );
+        drop(in_flight);
+        released_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("master release proceeds once the present retires");
+        callback.join().expect("callback must finish");
     }
 
     #[test]
