@@ -16,7 +16,8 @@ use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::sources::{
-    flathub_placeholder_to_item, flathub_record_to_item, merge, qos_to_store_item,
+    flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
+    installed_qos_to_store_item, merge, qos_to_store_item,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -678,11 +679,29 @@ fn collect_items(
             Err(error) => tracing::warn!("registry {} refresh failed: {error}", registry.name),
         }
     }
+    // The Store's action surface is also the recovery path for software that
+    // is already here. Never make installed qOS apps vanish merely because a
+    // configured registry is offline or no longer carries an older package.
+    // Catalogue rows win whenever present because they carry the signed
+    // download/update metadata; these local rows intentionally cannot update.
+    for installed in &installed_qos {
+        if !qos_items.iter().any(|item| item.id == installed.id) {
+            qos_items.push(installed_qos_to_store_item(installed));
+        }
+    }
     let mut flatpak_items = crate::flathub_client::fetch_popular(200)
         .unwrap_or_default()
         .iter()
         .map(|entry| flathub_placeholder_to_item(entry, installed))
         .collect::<Vec<_>>();
+    // Popular is a discovery feed, not an installed-app inventory. Preserve
+    // every locally reported Flatpak so launch/remove remain possible during
+    // an API outage and for apps that were never popular.
+    for (app_id, version) in installed {
+        if !flatpak_items.iter().any(|item| item.id == *app_id) {
+            flatpak_items.push(installed_flatpak_to_item(app_id, version));
+        }
+    }
     if let Some(reference) = opened_ref
         && !flatpak_items.iter().any(|item| item.id == reference.app_id)
     {
