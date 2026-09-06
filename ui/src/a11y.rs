@@ -83,6 +83,10 @@ pub enum Role {
     Paragraph,
     /// E.g. the block editor.
     Document,
+    /// A terminal transcript and input surface. Unlike a text input, its
+    /// exposed value is not replaced by [`Action::SetValue`]; input is a
+    /// stream owned by the terminal's resource/action contract.
+    Terminal,
     Canvas,
     Unknown,
 }
