@@ -5132,7 +5132,11 @@ pub fn run() -> ! {
                     verifying: lock.is_verifying(),
                 };
                 native_accessibility.update_if_active(|| {
-                    lock_screen::build_accessibility_tree(&lock_outputs, &view)
+                    lock_screen::build_accessibility_tree(
+                        &lock_outputs,
+                        frame_builder.theme(),
+                        &view,
+                    )
                 });
             } else {
                 native_accessibility.update_if_active(|| {
