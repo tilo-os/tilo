@@ -454,7 +454,12 @@ pub fn request_body_for(
 ) -> serde_json::Value {
     if selection.protocol == agent_provider_config::ProviderProtocol::Anthropic {
         let mut body = request_body(rest, blocks);
-        body["model"] = Value::String(selection.model.id.clone());
+        if let Some(object) = body.as_object_mut() {
+            object.insert(
+                "model".to_string(),
+                Value::String(selection.model.id.clone()),
+            );
+        }
         return body;
     }
     serde_json::json!({
@@ -581,6 +586,11 @@ pub fn parse_answer(body: &str) -> Result<Answer, String> {
 
 /// Parse the provider's decision envelope into the same untrusted [`Answer`]
 /// checked against the app catalogue by the caller.
+///
+/// # Errors
+///
+/// Returns a descriptive error when the provider body is malformed or omits
+/// the expected decision fields.
 pub fn parse_answer_for(
     protocol: agent_provider_config::ProviderProtocol,
     body: &str,

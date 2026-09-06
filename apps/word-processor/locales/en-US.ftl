@@ -205,3 +205,4 @@ canvas-embedded-content = ⟦ embedded content ⟧
 canvas-empty-placeholder = Start writing…
 toolbar-history = History
 a11y-version-history = Version history
+panel-close = Close

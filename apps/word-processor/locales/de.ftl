@@ -186,3 +186,4 @@ canvas-embedded-content = ⟦ eingebetteter Inhalt ⟧
 canvas-empty-placeholder = Beginne zu schreiben…
 toolbar-history = Verlauf
 a11y-version-history = Versionsverlauf
+panel-close = Schließen
