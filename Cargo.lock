@@ -16432,6 +16432,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tracing",
  "vello",
