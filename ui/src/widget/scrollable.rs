@@ -166,6 +166,11 @@ pub struct Scrollable {
     /// Reserved right-edge lane (logical px) for the vertical overlay bar;
     /// `0` keeps the classic floating overlay.
     content_gutter: f32,
+    /// Reserved bottom lane that is excluded from both painting and scroll
+    /// metrics. Sticky-footer dialogs use this to end overflowing prose on a
+    /// clean boundary instead of clipping half a text baseline against the
+    /// footer.
+    bottom_content_inset: f32,
 }
 
 impl Scrollable {
@@ -206,6 +211,7 @@ impl Scrollable {
             reduce_motion_active: false,
             persisted_offset: None,
             content_gutter: 0.0,
+            bottom_content_inset: 0.0,
         }
     }
     pub fn new_vertical() -> Self {
@@ -284,6 +290,39 @@ impl Scrollable {
         self
     }
 
+    /// Reserve a clean bottom edge inside the viewport for a sticky-footer
+    /// separation. Content is clipped above this lane and the effective
+    /// viewport used by scrolling shrinks by the same amount, so the final
+    /// content remains reachable.
+    #[must_use]
+    pub fn with_bottom_content_inset(mut self, px: f32) -> Self {
+        self.bottom_content_inset = px.max(0.0);
+        self
+    }
+
+    fn active_bottom_content_inset(&self) -> f32 {
+        if self.content_h > self.viewport_h + FIT_EPS {
+            self.bottom_content_inset
+        } else {
+            0.0
+        }
+    }
+
+    fn effective_viewport_h(&self) -> f32 {
+        (self.viewport_h - self.active_bottom_content_inset()).max(0.0)
+    }
+
+    /// The actual interactive/paint viewport after any active sticky-footer
+    /// separation has been reserved.
+    pub fn content_viewport_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            (self.rect.y1 - f64::from(self.active_bottom_content_inset())).max(self.rect.y0),
+        )
+    }
+
     pub fn set_content_size(&mut self, w: f32, h: f32) {
         self.content_w = w;
         self.content_h = h;
@@ -303,6 +342,10 @@ impl Scrollable {
         self.offset_y
     }
 
+    pub fn max_offset_y(&self) -> f32 {
+        (self.content_h - self.effective_viewport_h()).max(0.0)
+    }
+
     pub fn set_offset_y(&mut self, y: f32) {
         self.offset_y = y;
         self.clamp();
@@ -310,7 +353,7 @@ impl Scrollable {
     }
 
     pub fn vertical_overflows(&self) -> bool {
-        self.content_h > self.viewport_h + FIT_EPS
+        self.content_h > self.effective_viewport_h() + FIT_EPS
     }
 
     /// For a manually-driven (child-less) Scrollable, when the caller paints
@@ -384,8 +427,8 @@ impl Scrollable {
         let (ox, oy) = (self.offset_x, self.offset_y);
         if y < self.offset_y {
             self.offset_y = y;
-        } else if y + h > self.offset_y + self.viewport_h {
-            self.offset_y = (y + h - self.viewport_h).max(0.0);
+        } else if y + h > self.offset_y + self.effective_viewport_h() {
+            self.offset_y = (y + h - self.effective_viewport_h()).max(0.0);
         }
         if x < self.offset_x {
             self.offset_x = x;
@@ -400,7 +443,7 @@ impl Scrollable {
     }
     fn clamp(&mut self) {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
-        let max_y = (self.content_h - self.viewport_h).max(0.0);
+        let max_y = self.max_offset_y();
         self.offset_x = self.offset_x.clamp(0.0, max_x);
         self.offset_y = self.offset_y.clamp(0.0, max_y);
         // Single write-back point: every offset mutation funnels through here.
@@ -419,8 +462,8 @@ impl Scrollable {
     fn vbar_active(&self) -> bool {
         self.show_scrollbar
             && self.axis_has_vertical()
-            && self.viewport_h > 0.0
-            && self.content_h > self.viewport_h + FIT_EPS
+            && self.effective_viewport_h() > 0.0
+            && self.content_h > self.effective_viewport_h() + FIT_EPS
     }
     fn hbar_active(&self) -> bool {
         self.show_scrollbar
@@ -438,7 +481,7 @@ impl Scrollable {
         let x1 = self.rect.x1 - BAR_MARGIN;
         let x0 = x1 - BAR_THICKNESS;
         let y0 = self.rect.y0 + BAR_MARGIN;
-        let mut y1 = self.rect.y1 - BAR_MARGIN;
+        let mut y1 = self.content_viewport_rect().y1 - BAR_MARGIN;
         if self.hbar_active() {
             y1 -= BAR_THICKNESS + BAR_MARGIN;
         }
@@ -468,7 +511,7 @@ impl Scrollable {
     fn v_metrics(&self) -> ScrollMetrics {
         ScrollMetrics::new(
             f64::from(self.content_h),
-            f64::from(self.viewport_h),
+            f64::from(self.effective_viewport_h()),
             f64::from(self.offset_y),
         )
     }
@@ -581,7 +624,7 @@ impl Scrollable {
             h.next_at = deadline_after(now, HOLD_REPEAT_MS);
         }
         let page = if hold.vertical {
-            self.viewport_h * PAGE_FRACTION
+            self.effective_viewport_h() * PAGE_FRACTION
         } else {
             self.viewport_w * PAGE_FRACTION
         };
@@ -792,7 +835,7 @@ impl Scrollable {
     /// Page/Home/End/Arrow navigation while focused. Returns `true` when
     /// the key moved the view; a non-nav key falls through to the child.
     fn on_navigation_key(&mut self, key: &Key) -> bool {
-        let page_v = self.viewport_h * PAGE_FRACTION;
+        let page_v = self.effective_viewport_h() * PAGE_FRACTION;
         let page_h = self.viewport_w * PAGE_FRACTION;
         // A step big enough that `clamp` caps it at the content edge.
         let full = self.content_h.max(self.content_w);
@@ -981,7 +1024,7 @@ impl Widget for Scrollable {
             BlendMode::default(),
             1.0,
             transform,
-            &self.rect,
+            &self.content_viewport_rect(),
         );
         if let Some(c) = &mut self.child {
             c.draw(scene, transform, tr, theme, presence);
@@ -1011,9 +1054,9 @@ impl Widget for Scrollable {
             BlendMode::default(),
             1.0,
             transform,
-            &self.rect,
+            &self.content_viewport_rect(),
         );
-        let prev_vp = presence.push_viewport(self.rect);
+        let prev_vp = presence.push_viewport(self.content_viewport_rect());
         if let Some(c) = &mut self.child {
             c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
         }
@@ -1053,7 +1096,7 @@ impl Widget for Scrollable {
                 let cur = self.last_cursor;
                 // A child that consumes the press overwrites `focus_target`
                 // afterward, so focus still lands on the deepest target.
-                if self.rect.contains(cur) {
+                if self.content_viewport_rect().contains(cur) {
                     *focus_target = Some(node_id);
                 }
                 // Thumb press → drag; track press → page + hold.
@@ -1087,9 +1130,45 @@ impl Widget for Scrollable {
             _ => {}
         }
         if let WindowEvent::MouseWheel { delta, .. } = event {
+            if !self.content_viewport_rect().contains(self.last_cursor) {
+                return;
+            }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
             *handled = self.on_wheel(delta, mods.state().shift_key());
+            return;
+        }
+
+        // Clipping is an interaction boundary as well as a paint boundary.
+        // In particular, a control translated beneath a sticky footer must
+        // not retain hover or receive a press merely because its un-clipped
+        // layout rect still contains the pointer. A child that already owns
+        // pointer capture continues receiving motion/release so drag and
+        // pressed-state cleanup remain correct.
+        let child_has_capture = self
+            .child
+            .as_ref()
+            .is_some_and(|child| child.wants_pointer_capture());
+        let pointer_in_content = match event {
+            WindowEvent::CursorMoved { position, .. } => self.content_viewport_rect().contains(
+                Point::new(position.x / scale_factor, position.y / scale_factor),
+            ),
+            WindowEvent::MouseInput { .. } => {
+                self.content_viewport_rect().contains(self.last_cursor)
+            }
+            _ => true,
+        };
+        let child_pointer_allowed = pointer_in_content
+            || (child_has_capture
+                && matches!(
+                    event,
+                    WindowEvent::CursorMoved { .. }
+                        | WindowEvent::MouseInput {
+                            state: ElementState::Released,
+                            ..
+                        }
+                ));
+        if !child_pointer_allowed {
             return;
         }
         if let Some(child) = &mut self.child
@@ -1232,6 +1311,10 @@ impl Widget for Scrollable {
         self.rect
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     /// The meaningful label belongs to whatever it wraps.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
@@ -1290,6 +1373,194 @@ mod tests {
             &tree,
         );
         handled
+    }
+
+    struct EventSpy {
+        rect: Rect,
+        pointer_events: Rc<Cell<u32>>,
+        activations: Rc<Cell<u32>>,
+    }
+
+    impl Widget for EventSpy {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(500.0),
+                },
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).copied().unwrap_or_default();
+            self.rect = Rect::new(
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+                origin.x + f64::from(layout.location.x + layout.size.width),
+                origin.y + f64::from(layout.location.y + layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            focus_target: &mut Option<NodeId>,
+            node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+            ) {
+                self.pointer_events
+                    .set(self.pointer_events.get().saturating_add(1));
+            }
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                self.activations
+                    .set(self.activations.get().saturating_add(1));
+                *focus_target = Some(node_id);
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            "EventSpy"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    fn bottom_content_inset_blocks_pointer_and_focus_from_invisible_content() {
+        let pointer_events = Rc::new(Cell::new(0));
+        let activations = Rc::new(Cell::new(0));
+        let mut scroll = Scrollable::new_vertical()
+            .with_child(Box::new(EventSpy {
+                rect: Rect::ZERO,
+                pointer_events: Rc::clone(&pointer_events),
+                activations: Rc::clone(&activations),
+            }))
+            .with_height(100.0)
+            .with_bottom_content_inset(20.0);
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
+        let parent = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::length(200.0),
+                    height: Dimension::length(100.0),
+                },
+                ..Default::default()
+            },
+            &[node],
+        );
+        taffy
+            .compute_layout_with_measure(
+                parent,
+                Size {
+                    width: taffy::AvailableSpace::Definite(200.0),
+                    height: taffy::AvailableSpace::Definite(100.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        scroll.apply_layout(&taffy, node, Point::ZERO);
+
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut focus_target = None;
+        for event in [cursor_moved(40.0, 90.0), mouse(ElementState::Pressed)] {
+            let mut handled = false;
+            scroll.handle_event(
+                &event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus_target,
+                node,
+                &taffy,
+            );
+        }
+        assert_eq!(
+            pointer_events.get(),
+            0,
+            "the clipped child sees no pointer event"
+        );
+        assert_eq!(
+            activations.get(),
+            0,
+            "an invisible child action cannot activate"
+        );
+        assert_eq!(
+            focus_target, None,
+            "the footer lane cannot focus the scroll view"
+        );
+
+        for event in [cursor_moved(40.0, 70.0), mouse(ElementState::Pressed)] {
+            let mut handled = false;
+            scroll.handle_event(
+                &event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus_target,
+                node,
+                &taffy,
+            );
+        }
+        assert_eq!(
+            pointer_events.get(),
+            2,
+            "visible content still receives pointer input"
+        );
+        assert_eq!(activations.get(), 1, "visible child action still activates");
+        assert!(focus_target.is_some(), "visible content remains focusable");
     }
 
     #[test]
@@ -1599,6 +1870,45 @@ mod tests {
             "a long document must stop at the cap: {tall}"
         );
         assert!(scrolled, "a capped long document must remain scrollable");
+    }
+
+    #[test]
+    fn bottom_content_inset_keeps_overflow_out_of_a_sticky_footer_lane() {
+        const INSET: f32 = 12.0;
+        let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(INSET);
+        scroll.set_viewport_rect(Rect::new(20.0, 30.0, 420.0, 330.0));
+        scroll.set_content_size(400.0, 500.0);
+
+        let clip = scroll.content_viewport_rect();
+        assert_eq!(clip, Rect::new(20.0, 30.0, 420.0, 318.0));
+        assert_eq!(scroll.effective_viewport_h(), 288.0);
+        assert_eq!(
+            scroll.vertical_track().expect("content overflows").y1,
+            clip.y1 - BAR_MARGIN,
+            "the scrollbar and content clip both stop above the footer lane",
+        );
+
+        scroll.set_offset_y(f32::MAX);
+        assert_eq!(scroll.offset_y(), 212.0);
+        assert_eq!(
+            scroll.offset_y() + scroll.effective_viewport_h(),
+            scroll.content_h,
+            "reserving the paint-free lane must not make the final content unreachable",
+        );
+    }
+
+    #[test]
+    fn bottom_content_inset_does_not_create_overflow_when_content_already_fits() {
+        let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(12.0);
+        scroll.set_viewport_rect(Rect::new(20.0, 30.0, 420.0, 330.0));
+        scroll.set_content_size(400.0, 300.0);
+
+        assert_eq!(scroll.content_viewport_rect(), scroll.rect);
+        assert_eq!(scroll.effective_viewport_h(), 300.0);
+        assert!(!scroll.vertical_overflows());
+        assert!(scroll.vertical_track().is_none());
+        scroll.set_offset_y(f32::MAX);
+        assert_eq!(scroll.offset_y(), 0.0, "fitting content has no max scroll");
     }
 
     #[test]
