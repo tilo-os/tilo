@@ -3926,8 +3926,11 @@ mod tests {
 
     #[test]
     fn fetch_scrollback_returns_batch_event() {
+        let payload = collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
+            .encode()
+            .unwrap();
         let mut op = SignedOp::new_unsigned(
-            b"old-payload".to_vec(),
+            payload,
             collab_types::ArtifactId::new(),
             collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
             collab_types::AttestationId::new(),
@@ -3975,7 +3978,10 @@ mod tests {
             })
             .expect("must receive a ScrollbackBatch event");
         assert_eq!(batch.0.len(), 1);
-        assert_eq!(batch.0[0].payload, b"old-payload");
+        assert_eq!(
+            collab_types::DocumentMutation::decode(&batch.0[0].payload).unwrap(),
+            collab_types::DocumentMutation::Incremental(b"old-payload".to_vec())
+        );
         assert!(batch.1, "seeded broker reports exhausted");
         assert_eq!(
             captures.lock().unwrap().scrollback_requests,
