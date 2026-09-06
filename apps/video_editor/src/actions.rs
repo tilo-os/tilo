@@ -962,6 +962,7 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
 #[allow(
     clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::too_many_lines,
     reason = "the resource builder serializes only its local serde enums and indexes the first partner only after proving the candidate list non-empty"
 )]
 pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
