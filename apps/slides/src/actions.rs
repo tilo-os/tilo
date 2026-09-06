@@ -1012,6 +1012,13 @@ pub struct SlidesResourceCtx {
     pub slides: Vec<SlideResource>,
 }
 
+/// The palette receives a compact contextual tree on every frame.  The full
+/// durable deck remains addressable through [`resolve_resource`], so a large
+/// presentation cannot turn an ordinary frame into an unbounded resource
+/// snapshot merely because it has many slides or objects.
+pub const MAX_EAGER_SLIDES: usize = 16;
+const MAX_EAGER_ELEMENTS_PER_SLIDE: usize = 24;
+
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
 // on JSON serialization, which `SlidesAction`'s primitive fields never trigger.
 #[allow(
@@ -1053,7 +1060,7 @@ fn element_label(kind: ElementKind, text: &str) -> String {
 /// slide one `slides.element:<id>` per element (delete / bring-front /
 /// send-back). Every operation is the same action the on-screen affordance
 /// dispatches.
-pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     let title = ctx.deck_title.trim();
     let deck_label = if title.is_empty() { "Deck" } else { title };
     let mut deck = Resource::new("slides.deck", "slides.deck", deck_label);
@@ -1109,139 +1116,203 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         ));
     }
 
-    for sr in &ctx.slides {
-        let idx = sr.idx;
-        let mut slide = Resource::new(
-            slide_resource_id(&sr.data.id),
-            "slides.slide",
-            format!(
-                "Slide {} · {}",
-                idx + 1,
-                Layout::from_str(&sr.data.layout).label()
-            ),
-        );
+    deck
+}
 
-        slide = slide.with_action(operation(
-            "open",
-            "Open slide",
-            OperationKind::View,
-            SlidesOperation::RevealSlide {
-                slide: sr.data.id.clone(),
-            },
-        ));
+fn slide_resource(sr: &SlideResource, eager_children: bool) -> Resource {
+    let idx = sr.idx;
+    let mut slide = Resource::new(
+        slide_resource_id(&sr.data.id),
+        "slides.slide",
+        format!(
+            "Slide {} · {}",
+            idx + 1,
+            Layout::from_str(&sr.data.layout).label()
+        ),
+    )
+    .with_action(operation(
+        "open",
+        "Open slide",
+        OperationKind::View,
+        SlidesOperation::RevealSlide {
+            slide: sr.data.id.clone(),
+        },
+    ))
+    .with_action(immediate_spec(
+        "duplicate",
+        "Duplicate slide",
+        &SlidesAction::InsertSlide {
+            at: idx + 1,
+            slide: sr.data.reminted(),
+        },
+    ))
+    .with_action(immediate_spec(
+        "delete",
+        "Delete slide",
+        &delete_slide_action(idx, sr.data.id.clone()),
+    ));
 
-        // Duplicate this slide immediately after it. Its ids are reminted at
-        // authoring, baked into the payload, so the action replays identically.
+    for layout in Layout::ALL {
         slide = slide.with_action(immediate_spec(
-            "duplicate",
-            "Duplicate slide",
-            &SlidesAction::InsertSlide {
-                at: idx + 1,
-                slide: sr.data.reminted(),
-            },
+            &format!("layout-{}", layout.as_str()),
+            &format!("Layout: {}", layout.label()),
+            &set_slide_layout_action(idx, sr.data.id.clone(), layout),
         ));
-
-        slide = slide.with_action(immediate_spec(
-            "delete",
-            "Delete slide",
-            &delete_slide_action(idx, sr.data.id.clone()),
-        ));
-
-        for layout in Layout::ALL {
-            slide = slide.with_action(immediate_spec(
-                &format!("layout-{}", layout.as_str()),
-                &format!("Layout: {}", layout.label()),
-                &set_slide_layout_action(idx, sr.data.id.clone(), layout),
-            ));
-        }
-        for bg in Background::ALL {
-            slide = slide.with_action(immediate_spec(
-                &format!("background-{}", bg.as_str()),
-                &format!("Background: {}", bg.label()),
-                &set_slide_background_action(idx, sr.data.id.clone(), bg),
-            ));
-        }
-
-        for er in &sr.elements {
-            let mut child = Resource::new(
-                element_resource_id(&er.id),
-                "slides.element",
-                element_label(er.kind, &er.text),
-            )
-            .with_action(operation(
-                "open",
-                "Reveal element",
-                OperationKind::View,
-                SlidesOperation::RevealElement {
-                    slide: sr.data.id.clone(),
-                    element: er.id.clone(),
-                    edit_text: false,
-                },
-            ))
-            .with_action(immediate_spec(
-                "delete",
-                "Delete element",
-                &delete_element_action(idx, er.id.clone()),
-            ))
-            .with_action(immediate_spec(
-                "bring-front",
-                "Bring to front",
-                &raise_element_action(idx, er.id.clone()),
-            ))
-            .with_action(immediate_spec(
-                "send-back",
-                "Send to back",
-                &lower_element_action(idx, er.id.clone()),
-            ));
-            if er.kind == ElementKind::Text && !er.text.trim().is_empty() {
-                child = child.with_child(
-                    Resource::new(
-                        text_resource_id(&er.id),
-                        "slides.text",
-                        element_label(ElementKind::Text, &er.text),
-                    )
-                    .with_action(operation(
-                        "open",
-                        "Edit text",
-                        OperationKind::View,
-                        SlidesOperation::RevealElement {
-                            slide: sr.data.id.clone(),
-                            element: er.id.clone(),
-                            edit_text: true,
-                        },
-                    )),
-                );
-            }
-            slide = slide.with_child(child);
-        }
-
-        if !sr.data.notes.trim().is_empty() {
-            slide = slide.with_child(
-                Resource::new(
-                    notes_resource_id(&sr.data.id),
-                    "slides.notes",
-                    element_label(ElementKind::Text, &sr.data.notes),
-                )
-                .with_action(operation(
-                    "open",
-                    "Open speaker notes",
-                    OperationKind::View,
-                    SlidesOperation::RevealNotes {
-                        slide: sr.data.id.clone(),
-                    },
-                )),
-            );
-        }
-
-        deck = deck.with_child(slide);
     }
+    for bg in Background::ALL {
+        slide = slide.with_action(immediate_spec(
+            &format!("background-{}", bg.as_str()),
+            &format!("Background: {}", bg.label()),
+            &set_slide_background_action(idx, sr.data.id.clone(), bg),
+        ));
+    }
+    if eager_children {
+        for er in sr.elements.iter().take(MAX_EAGER_ELEMENTS_PER_SLIDE) {
+            slide = slide.with_child(element_resource(sr, er, true));
+        }
+        if !sr.data.notes.trim().is_empty() {
+            slide = slide.with_child(notes_resource(sr));
+        }
+    }
+    slide
+}
 
+fn element_resource(sr: &SlideResource, er: &ElementResource, eager_text: bool) -> Resource {
+    let mut resource = Resource::new(
+        element_resource_id(&er.id),
+        "slides.element",
+        element_label(er.kind, &er.text),
+    )
+    .with_action(operation(
+        "open",
+        "Reveal element",
+        OperationKind::View,
+        SlidesOperation::RevealElement {
+            slide: sr.data.id.clone(),
+            element: er.id.clone(),
+            edit_text: false,
+        },
+    ))
+    .with_action(immediate_spec(
+        "delete",
+        "Delete element",
+        &delete_element_action(sr.idx, er.id.clone()),
+    ))
+    .with_action(immediate_spec(
+        "bring-front",
+        "Bring to front",
+        &raise_element_action(sr.idx, er.id.clone()),
+    ))
+    .with_action(immediate_spec(
+        "send-back",
+        "Send to back",
+        &lower_element_action(sr.idx, er.id.clone()),
+    ));
+    if eager_text && er.kind == ElementKind::Text && !er.text.trim().is_empty() {
+        resource = resource.with_child(text_resource(sr, er));
+    }
+    resource
+}
+
+fn text_resource(sr: &SlideResource, er: &ElementResource) -> Resource {
+    Resource::new(
+        text_resource_id(&er.id),
+        "slides.text",
+        element_label(ElementKind::Text, &er.text),
+    )
+    .with_action(operation(
+        "open",
+        "Edit text",
+        OperationKind::View,
+        SlidesOperation::RevealElement {
+            slide: sr.data.id.clone(),
+            element: er.id.clone(),
+            edit_text: true,
+        },
+    ))
+}
+
+fn notes_resource(sr: &SlideResource) -> Resource {
+    Resource::new(
+        notes_resource_id(&sr.data.id),
+        "slides.notes",
+        element_label(ElementKind::Text, &sr.data.notes),
+    )
+    .with_action(operation(
+        "open",
+        "Open speaker notes",
+        OperationKind::View,
+        SlidesOperation::RevealNotes {
+            slide: sr.data.id.clone(),
+        },
+    ))
+}
+
+/// Build the bounded contextual resource tree shown by the palette. Search and
+/// agents resolve everything beyond this window by stable id through
+/// [`resolve_resource`], which always rebuilds from the current deck mirror.
+pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut deck = deck_resource(ctx);
+    for slide in ctx.slides.iter().take(MAX_EAGER_SLIDES) {
+        deck = deck.with_child(slide_resource(slide, true));
+    }
     vec![deck]
+}
+
+/// Resolve exactly one current durable deck resource without growing the
+/// eager snapshot.  A deleted or replaced id returns `None`, so stale search,
+/// agent and collaboration requests are refused instead of being rebound by
+/// position.
+pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+    if id == "slides.deck" {
+        let mut deck = deck_resource(ctx);
+        for slide in ctx.slides.iter().take(MAX_EAGER_SLIDES) {
+            deck = deck.with_child(slide_resource(slide, true));
+        }
+        return Some(deck);
+    }
+    if let Some(slide_id) = id.strip_prefix("slides.slide:") {
+        return ctx
+            .slides
+            .iter()
+            .find(|slide| slide.data.id == slide_id)
+            .map(|slide| slide_resource(slide, false));
+    }
+    if let Some(element_id) = id.strip_prefix("slides.element:") {
+        return ctx.slides.iter().find_map(|slide| {
+            slide
+                .elements
+                .iter()
+                .find(|element| element.id == element_id)
+                .map(|element| element_resource(slide, element, false))
+        });
+    }
+    if let Some(element_id) = id.strip_prefix("slides.text:") {
+        return ctx.slides.iter().find_map(|slide| {
+            slide
+                .elements
+                .iter()
+                .find(|element| element.id == element_id && element.kind == ElementKind::Text)
+                .map(|element| text_resource(slide, element))
+        });
+    }
+    if let Some(slide_id) = id.strip_prefix("slides.notes:") {
+        return ctx
+            .slides
+            .iter()
+            .find(|slide| slide.data.id == slide_id && !slide.data.notes.trim().is_empty())
+            .map(notes_resource);
+    }
+    None
 }
 
 impl ResourceProvider for crate::app::SlidesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.slides_resource_ctx(), doc)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resolve_resource(&self.slides_resource_ctx(), id)
     }
 }
 
@@ -1530,7 +1601,7 @@ mod tests {
             },
             SlidesAction::RestyleElement {
                 slide: 0,
-                id: element.clone(),
+                id: element,
                 patch: StylePatch::default(),
             },
         ] {

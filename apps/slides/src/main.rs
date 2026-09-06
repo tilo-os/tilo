@@ -42,7 +42,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     let legacy = std::env::var("SLIDES_SHOT").ok();
     match args.scenario.as_deref().or(legacy.as_deref()) {
-        Some("narrow" | "narrow_closed") => NARROW_VIEWPORT,
+        Some("narrow" | "narrow_closed" | "inspector" | "many_rail") => NARROW_VIEWPORT,
         _ => ui::launch::DEFAULT_VIEWPORT,
     }
 }
@@ -61,6 +61,7 @@ pub fn main() {
                 "present_notes",
                 "presenter",
                 "present_white",
+                "empty",
                 "help",
                 "rename",
                 "notes_edit",
@@ -71,6 +72,8 @@ pub fn main() {
                 "overview_end",
                 "picker",
                 "image",
+                "image_loading",
+                "open_error",
                 "narrow",
                 "narrow_closed",
                 "inspector",
