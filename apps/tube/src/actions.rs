@@ -39,6 +39,7 @@ use crate::model::{Route, TubeModel};
 
 const MAX_RESOURCE_ENTITIES: usize = 100;
 const MAX_RESOURCE_COMMENTS: usize = 50;
+const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 /// Registry `type_id` for every Tube action.
 pub const TUBE_ACTION_TYPE: &str = "tube.action";
@@ -77,45 +78,29 @@ pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
 /// parameters, so agents can drive the operation while hosts redact the value
 /// from logs, history, and confirmation copy. Private key material is absent.
 pub fn provide_device_resources(view: &crate::sync::SyncView) -> Resource {
+    let unavailable = matches!(view.status, crate::sync::SyncStatus::Unavailable);
+    let unavailable_reason = if view.summary.trim().is_empty() {
+        crate::sync::capability().summary.to_string()
+    } else {
+        view.summary.clone()
+    };
     let mut root = Resource::new(
         "tube.device-sync",
         "tube.device-sync",
-        "Grayjay device sync",
+        if unavailable {
+            "Grayjay device sync (unavailable)"
+        } else {
+            "Grayjay device sync"
+        },
     );
-    // Runtime broker failure is availability, not merely explanatory text.
-    // Withholding the operation here makes visible controls, Ctrl+K, agents,
-    // and replay all fail through the same fresh resource resolution.
-    if matches!(view.status, crate::sync::SyncStatus::Unavailable) {
-        return root;
+    // Runtime/built-in capability failure is availability, not merely
+    // explanatory text. Keep stable operations in the resource tree so agents
+    // and history can report *why* they cannot run instead of mistaking a
+    // missing action for a missing integration.
+    if unavailable {
+        return unavailable_device_resource_actions(root, &unavailable_reason);
     }
-    root = root.with_action(
-        ActionSpec::typed_operation(
-            "pair",
-            "Pair using invite",
-            "Paste a Grayjay pairing invite",
-            OperationKind::Effect,
-            TUBE_OPERATION_TYPE,
-            vec![
-                ActionParam::required(
-                    "invite",
-                    ParamType::Secret,
-                    "Grayjay pairing invite; redacted from logs and history",
-                )
-                .with_schema(serde_json::json!({ "minLength": 1, "maxLength": 16384 })),
-            ],
-            |args| {
-                let operation = TubeOperation::PairDevice {
-                    invite: args.text("invite").unwrap_or_default().to_string(),
-                };
-                EncodedAction {
-                    type_id: TUBE_OPERATION_TYPE.into(),
-                    payload: serde_json::to_vec(&operation).unwrap_or_default(),
-                }
-            },
-        )
-        .privileged()
-        .retry_policy(RetryPolicy::AtMostOnce),
-    );
+    root = root.with_action(device_pair_action());
 
     let has_active_peer = view.peers.iter().any(crate::sync::PeerRecord::is_active);
     let mut root_actions = Vec::new();
@@ -167,6 +152,50 @@ pub fn provide_device_resources(view: &crate::sync::SyncView) -> Resource {
                 resource.with_action(spec.destructive().retry_policy(RetryPolicy::Idempotent));
         }
         root = root.with_child(resource);
+    }
+    root
+}
+
+fn device_pair_action() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "pair",
+        "Pair using invite",
+        "Paste a Grayjay pairing invite",
+        OperationKind::Effect,
+        TUBE_OPERATION_TYPE,
+        vec![
+            ActionParam::required(
+                "invite",
+                ParamType::Secret,
+                "Grayjay pairing invite; redacted from logs and history",
+            )
+            .with_schema(serde_json::json!({ "minLength": 1, "maxLength": 16384 })),
+        ],
+        |args| {
+            let operation = TubeOperation::PairDevice {
+                invite: args.text("invite").unwrap_or_default().to_string(),
+            };
+            EncodedAction {
+                type_id: TUBE_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&operation).unwrap_or_default(),
+            }
+        },
+    )
+    .privileged()
+    .retry_policy(RetryPolicy::AtMostOnce)
+}
+
+fn unavailable_device_resource_actions(mut root: Resource, reason: &str) -> Resource {
+    root = root.with_action(device_pair_action().unavailable("grayjay_sync_unavailable", reason));
+    if let Some(sync) = view_spec(
+        "sync",
+        "Sync approved devices now",
+        &TubeOperation::SyncDevices,
+    ) {
+        root = root.with_action(
+            sync.retry_policy(RetryPolicy::Idempotent)
+                .unavailable("grayjay_sync_unavailable", reason),
+        );
     }
     root
 }
@@ -228,6 +257,18 @@ pub enum TubeAction {
     SetSetting {
         setting: SettingFlag,
         enabled: bool,
+    },
+    /// Advance the preferred playback quality through Tube's visible quality
+    /// selector. Keeping this as one document action means the settings row,
+    /// Ctrl+K and an agent all use the same deterministic transition.
+    CyclePreferredQuality,
+    /// Set one `SponsorBlock` category's handling mode. The target mode is
+    /// embedded instead of inferred from the document so the visible control,
+    /// a replay and an agent all make the same transition (including Filler,
+    /// whose default is Off rather than Auto-skip).
+    SetSponsorCategory {
+        category: crate::model::Category,
+        mode: crate::model::SkipMode,
     },
     /// Like a comment (addressed by its video + ordered index).
     LikeComment {
@@ -313,6 +354,10 @@ impl Action for TubeAction {
                 };
                 doc.put(&settings, key, ScalarValue::Boolean(*enabled))?;
             }
+            TubeAction::CyclePreferredQuality => apply_cycle_preferred_quality(doc, &tube)?,
+            TubeAction::SetSponsorCategory { category, mode } => {
+                apply_sponsor_category(doc, &tube, *category, *mode)?;
+            }
             TubeAction::LikeComment {
                 video_id,
                 index,
@@ -356,9 +401,54 @@ impl Action for TubeAction {
             TubeAction::LikeVideo { .. }
             | TubeAction::LikeComment { .. }
             | TubeAction::ToggleSubscription { .. }
-            | TubeAction::SetSetting { .. } => ExecutionLocus::ClientLocal,
+            | TubeAction::SetSetting { .. }
+            | TubeAction::CyclePreferredQuality
+            | TubeAction::SetSponsorCategory { .. } => ExecutionLocus::ClientLocal,
         }
     }
+}
+
+fn apply_cycle_preferred_quality(doc: &mut Doc, tube: &ObjId) -> Result<(), ActionError> {
+    let settings = child_map(doc, tube, "settings")?;
+    let current = doc
+        .get(&settings, "preferred_quality")?
+        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+        .unwrap_or_else(|| "1080p".to_string());
+    let index = QUALITY_OPTIONS
+        .iter()
+        .position(|quality| *quality == current)
+        .unwrap_or(0);
+    let next = QUALITY_OPTIONS
+        .get((index + 1) % QUALITY_OPTIONS.len())
+        .copied()
+        .unwrap_or("1080p");
+    doc.put(
+        &settings,
+        "preferred_quality",
+        ScalarValue::Str(next.into()),
+    )?;
+    Ok(())
+}
+
+fn apply_sponsor_category(
+    doc: &mut Doc,
+    tube: &ObjId,
+    category: crate::model::Category,
+    mode: crate::model::SkipMode,
+) -> Result<(), ActionError> {
+    let settings = child_map(doc, tube, "settings")?;
+    let categories = child_map(doc, &settings, "sponsor_categories")?;
+    let stored = match mode {
+        crate::model::SkipMode::Skip => "skip",
+        crate::model::SkipMode::Show => "show",
+        crate::model::SkipMode::Disabled => "disabled",
+    };
+    doc.put(
+        &categories,
+        category.api_key(),
+        ScalarValue::Str(stored.into()),
+    )?;
+    Ok(())
 }
 
 /// Register Tube's action decoder so the palette (and remote replay) can
@@ -677,16 +767,57 @@ fn settings_resource(model: &TubeModel) -> Resource {
             .reversible(),
         );
     }
+    let quality = Resource::new(
+        "tube.setting:preferred-quality",
+        "tube.setting",
+        format!("Preferred quality: {}", model.settings.preferred_quality),
+    )
+    .with_action(
+        immediate_spec(
+            "cycle",
+            "Cycle preferred quality",
+            &TubeAction::CyclePreferredQuality,
+        )
+        .reversible(),
+    );
+    settings = settings.with_child(quality);
+    for category in crate::model::Category::ALL {
+        let stored = model
+            .settings
+            .categories
+            .get(category.api_key())
+            .copied()
+            .unwrap_or(crate::model::SkipMode::Skip);
+        let resource = Resource::new(
+            format!("tube.setting:sponsor-category:{}", category.api_key()),
+            "tube.setting",
+            format!("SponsorBlock {}: {}", category.label(), stored.label()),
+        )
+        .with_action(
+            immediate_spec(
+                "cycle",
+                format!("Cycle {} handling", category.label()).as_str(),
+                &TubeAction::SetSponsorCategory {
+                    category,
+                    mode: stored.next(),
+                },
+            )
+            .reversible(),
+        );
+        settings = settings.with_child(resource);
+    }
     settings
 }
 
 impl ResourceProvider for crate::app::TubeApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut resources = provide_resources(self.model_ref());
-        #[cfg(feature = "grayjay-sync")]
         if let Some(app) = resources.first_mut() {
-            app.children
-                .push(provide_device_resources(self.device_sync_view()));
+            #[cfg(feature = "grayjay-sync")]
+            let device = provide_device_resources(self.device_sync_view());
+            #[cfg(not(feature = "grayjay-sync"))]
+            let device = provide_device_resources(&crate::sync::SyncView::default());
+            app.children.push(device);
         }
         resources
     }
@@ -856,6 +987,19 @@ mod tests {
         v.to_bool()
     }
 
+    fn read_str(doc: &AutoCommit, map: &str, key: &str) -> Option<String> {
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::Map), sub) = doc.get(&tube, map).ok()?? else {
+            return None;
+        };
+        doc.get(&sub, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+    }
+
     /// Select a palette row by a substring of its label, then activate it (the
     /// same path Enter takes) and dispatch — returns the dispatch outcome.
     fn run_row(
@@ -898,6 +1042,98 @@ mod tests {
             "like written to CRDT"
         );
         assert_eq!(tx.replicated.len(), 1, "replicated once");
+    }
+
+    #[test]
+    fn playback_setting_resources_write_the_same_document_state_as_visible_controls() {
+        let app = TubeApp::new();
+        let mut doc = AutoCommit::new();
+        let resources = Widget::resources(&app, &doc);
+        let settings = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.settings")
+            .expect("settings resource");
+        assert!(settings.children.iter().any(|resource| {
+            resource.id.0 == "tube.setting:preferred-quality"
+                && resource.actions.iter().any(|action| action.id == "cycle")
+        }));
+        assert!(settings.children.iter().any(|resource| {
+            resource.id.0 == "tube.setting:sponsor-category:sponsor"
+                && resource.actions.iter().any(|action| action.id == "cycle")
+        }));
+
+        let mut palette = ui::ActionPalette::new();
+        palette.load_open_resources(&resources);
+        palette.open();
+        palette.set_query("cycle preferred quality");
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|label| label.contains("Cycle preferred quality")),
+            "settings action appears in Ctrl+K: {:?}",
+            palette.result_labels()
+        );
+        let mut tx = LocalTransport::new();
+        let quality = run_row(
+            &mut palette,
+            &mut doc,
+            &registry(),
+            &mut tx,
+            "Cycle preferred quality",
+        );
+        assert!(matches!(quality, qos_actions::Dispatched::AppliedLocal(_)));
+        assert_eq!(
+            read_str(&doc, "settings", "preferred_quality").as_deref(),
+            Some("720p")
+        );
+
+        palette.open();
+        palette.set_query("cycle sponsor handling");
+        let category = run_row(
+            &mut palette,
+            &mut doc,
+            &registry(),
+            &mut tx,
+            "Cycle Sponsor handling",
+        );
+        assert!(matches!(category, qos_actions::Dispatched::AppliedLocal(_)));
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
+            panic!("tube root exists");
+        };
+        let (Value::Object(ObjType::Map), settings) = doc.get(&tube, "settings").unwrap().unwrap()
+        else {
+            panic!("settings map exists");
+        };
+        let (Value::Object(ObjType::Map), categories) =
+            doc.get(&settings, "sponsor_categories").unwrap().unwrap()
+        else {
+            panic!("category map exists");
+        };
+        assert_eq!(
+            doc.get(&categories, "sponsor").unwrap().unwrap().0.to_str(),
+            Some("show"),
+        );
+    }
+
+    #[test]
+    fn unavailable_sync_keeps_discoverable_unavailable_effects() {
+        let app = TubeApp::new();
+        let doc = AutoCommit::new();
+        let resources = Widget::resources(&app, &doc);
+        let device = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.device-sync")
+            .expect("sync capability is discoverable to agents in every build");
+        assert!(device.label.contains("unavailable"));
+        assert!(
+            device
+                .actions
+                .iter()
+                .all(|action| !action.contract.availability.is_available())
+        );
     }
 
     /// The host-authoritative "Add to queue" action fails closed when no host
@@ -976,11 +1212,19 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_device_backend_exports_no_effects() {
+    fn unavailable_device_backend_keeps_stable_unavailable_effects() {
         let resource = provide_device_resources(&crate::sync::SyncView::default());
+        let pair = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "pair")
+            .expect("pair remains discoverable to agents");
+        assert!(!pair.contract.availability.is_available());
         assert!(
-            resource.actions.is_empty(),
-            "an unavailable secret broker or non-live build must not advertise effects that can only fail"
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "sync" && !action.contract.availability.is_available())
         );
         assert!(resource.children.is_empty());
     }

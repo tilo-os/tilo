@@ -423,7 +423,7 @@ impl TubeApp {
     /// stay fully offline and deterministic. When online, the first `sync`
     /// spawns the fetch worker and requests the home/trending feed; if the
     /// network is unreachable (or the `live` feature is off) the worker reports
-    /// "offline — sample data" and the bundled catalogue stays on screen.
+    /// an offline state and Home explains that no live catalogue is available.
     #[must_use]
     pub fn online(mut self) -> Self {
         self.online = true;
@@ -1788,6 +1788,10 @@ impl TubeApp {
     /// Fold the structured collaborative action subtree back into the visible
     /// model. External/agent actions therefore update the same switches and
     /// badges as local controls instead of living in a disconnected ledger.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the CRDT maps are deliberately reconciled together so one authoritative read pass updates the visible model atomically"
+    )]
     fn reconcile_collaborative_actions(&mut self, state: &AutoCommit) -> bool {
         let Ok(Some((Value::Object(ObjType::Map), tube))) = state.get(&automerge::ROOT, "tube")
         else {
@@ -1864,6 +1868,44 @@ impl TubeApp {
                 {
                     *slot = enabled;
                     changed = true;
+                }
+            }
+            if let Some(quality) = state
+                .get(&settings, "preferred_quality")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                && QUALITIES.contains(&quality.as_str())
+                && self.model.settings.preferred_quality != quality
+            {
+                self.model.settings.preferred_quality = quality;
+                changed = true;
+            }
+            if let Ok(Some((Value::Object(ObjType::Map), categories))) =
+                state.get(&settings, "sponsor_categories")
+            {
+                for category in crate::model::Category::ALL {
+                    let Some(mode) = state
+                        .get(&categories, category.api_key())
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+                        .and_then(|value| match value.as_str() {
+                            "skip" => Some(crate::model::SkipMode::Skip),
+                            "show" => Some(crate::model::SkipMode::Show),
+                            "disabled" => Some(crate::model::SkipMode::Disabled),
+                            _ => None,
+                        })
+                    else {
+                        continue;
+                    };
+                    if self.model.settings.categories.get(category.api_key()) != Some(&mode) {
+                        self.model
+                            .settings
+                            .categories
+                            .insert(category.api_key().to_string(), mode);
+                        changed = true;
+                    }
                 }
             }
         }
@@ -2304,6 +2346,13 @@ impl Widget for TubeApp {
                     Some(crate::actions::TubeAction::SetSetting {
                         setting: *setting,
                         enabled,
+                    })
+                }
+                Action::SetQuality(_) => Some(crate::actions::TubeAction::CyclePreferredQuality),
+                Action::ToggleCategory(category) => {
+                    Some(crate::actions::TubeAction::SetSponsorCategory {
+                        category: *category,
+                        mode: self.model.settings.mode_of(*category).next(),
                     })
                 }
                 _ => None,
