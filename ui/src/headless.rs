@@ -2061,6 +2061,7 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::Heading { .. } => "heading",
         Role::Paragraph => "paragraph",
         Role::Document => "document",
+        Role::Terminal => "terminal",
         Role::Canvas => "canvas",
         Role::Unknown => "unknown",
     }
