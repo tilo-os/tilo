@@ -446,6 +446,7 @@ fn a_wipe_reaches_the_encoded_file_as_geometry() {
         c.out_point = 21.0;
         c.transition = kind;
         c.effects = vec![ClipEffect {
+            id: uuid::Uuid::new_v4(),
             kind: EffectKind::Invert,
             amount: 1.0,
         }];
@@ -1535,6 +1536,7 @@ fn plate_stack(name: &str) -> (Project, uuid::Uuid) {
     // through" a visible fact rather than an inference: green inverts to
     // magenta, which no part of the upper layer is.
     p.clip_mut(under).expect("clip").effects = vec![ClipEffect {
+        id: uuid::Uuid::new_v4(),
         kind: EffectKind::Invert,
         amount: 1.0,
     }];

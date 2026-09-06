@@ -69,6 +69,11 @@ impl Filters {
 /// effect's intensity in 0..1 (1 = full).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClipEffect {
+    /// Immutable instance identity. Unlike the kind, this distinguishes two
+    /// copies of the same effect and survives reordering, so a resource/action
+    /// can target the exact durable stack entry rather than a mutable index.
+    #[serde(default)]
+    pub id: Uuid,
     pub kind: EffectKind,
     pub amount: f64,
 }
@@ -76,10 +81,30 @@ pub struct ClipEffect {
 impl ClipEffect {
     pub fn new(kind: EffectKind) -> Self {
         Self {
+            id: Uuid::new_v4(),
             kind,
             amount: kind.default_amount(),
         }
     }
+}
+
+/// Stable compatibility id for an effect written before effect instances had
+/// ids. The mapping is deliberately local and pure: a legacy document loaded
+/// by two collaborators projects to the same resources without either peer
+/// authoring a random migration change. New effects always use [`Uuid::new_v4`]
+/// through [`ClipEffect::new`].
+fn legacy_effect_id(clip: Uuid, index: usize, salt: u64) -> Uuid {
+    let ordinal = index as u128;
+    let salt = u128::from(salt);
+    // Two distinct odd mixes make normal stack positions injective for a
+    // clip. The high bit marks this as a derived compatibility id, keeping it
+    // visibly separate from a conventional v4 id without changing its UUID
+    // representation for storage or action addresses.
+    let mixed = ordinal
+        .wrapping_add(1)
+        .wrapping_mul(0x9e37_79b9_7f4a_7c15_d1b5_4a32_d192_ed03_u128)
+        ^ salt.wrapping_mul(0x94d0_49bb_1331_11eb_2545_f491_4f6c_dd1d_u128);
+    Uuid::from_u128(clip.as_u128() ^ mixed ^ (1_u128 << 127))
 }
 
 /// The kinds of stackable effect a clip can carry. Each transforms the graded
@@ -1352,6 +1377,62 @@ impl Clip {
     pub fn add_effect(&mut self, kind: EffectKind) {
         self.effects.push(ClipEffect::new(kind));
     }
+
+    /// Upgrade effects saved before they carried an instance id. The derived
+    /// id is deterministic from the clip and its original stack slot, so two
+    /// peers loading the same legacy document agree without a hidden write or
+    /// random value during replay. Once an edit writes the clip back, those
+    /// ids become part of the durable document just like new effects' v4 ids.
+    pub fn ensure_effect_ids(&mut self) {
+        let mut used = std::collections::HashSet::new();
+        for (index, effect) in self.effects.iter_mut().enumerate() {
+            if effect.id.is_nil() || !used.insert(effect.id) {
+                let mut salt = 0_u64;
+                loop {
+                    let candidate = legacy_effect_id(self.id, index, salt);
+                    if used.insert(candidate) {
+                        effect.id = candidate;
+                        break;
+                    }
+                    salt = salt.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    /// The current index of one immutable effect instance.
+    pub fn effect_index(&self, id: Uuid) -> Option<usize> {
+        self.effects.iter().position(|effect| effect.id == id)
+    }
+
+    /// Remove the named effect instance. A stale id is a no-op rather than a
+    /// chance to remove whichever row slid into its old position.
+    pub fn remove_effect_id(&mut self, id: Uuid) -> bool {
+        let Some(index) = self.effect_index(id) else {
+            return false;
+        };
+        self.effects.remove(index);
+        true
+    }
+
+    /// Move the named effect instance one slot toward the beginning/end of
+    /// the stack. The identity moves with the effect; animation remains
+    /// positional for compatibility with existing projects.
+    pub fn move_effect_id(&mut self, id: Uuid, up: bool) -> bool {
+        let Some(index) = self.effect_index(id) else {
+            return false;
+        };
+        let target = if up {
+            index.checked_sub(1)
+        } else {
+            (index + 1 < self.effects.len()).then_some(index + 1)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        self.effects.swap(index, target);
+        true
+    }
     /// Remove the effect at `idx` (no-op if out of range).
     pub fn remove_effect(&mut self, idx: usize) {
         if idx < self.effects.len() {
@@ -1681,6 +1762,7 @@ impl Clip {
             .iter()
             .enumerate()
             .map(|(i, e)| ClipEffect {
+                id: e.id,
                 kind: e.kind,
                 amount: self.param_at(Param::EffectAmount(i as u32), playhead),
             })
@@ -3926,6 +4008,46 @@ mod tests {
         c.move_effect_down(1);
         c.remove_effect(9);
         assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
+    }
+
+    #[test]
+    fn legacy_effect_ids_are_stable_unique_and_move_with_the_instance() {
+        let (mut project, _media, _track, clip_id) = project_with_clip();
+        let clip = project.clip_mut(clip_id).expect("fixture clip");
+        clip.effects = vec![
+            ClipEffect {
+                id: Uuid::nil(),
+                kind: EffectKind::Sepia,
+                amount: 0.6,
+            },
+            ClipEffect {
+                id: Uuid::nil(),
+                kind: EffectKind::Sepia,
+                amount: 0.8,
+            },
+        ];
+        let before = clip.clone();
+        clip.ensure_effect_ids();
+        let ids: Vec<_> = clip.effects.iter().map(|effect| effect.id).collect();
+        assert!(ids.iter().all(|id| !id.is_nil()));
+        assert_ne!(ids[0], ids[1], "duplicate kinds still name two instances");
+
+        let mut peer = before;
+        peer.ensure_effect_ids();
+        assert_eq!(
+            peer.effects
+                .iter()
+                .map(|effect| effect.id)
+                .collect::<Vec<_>>(),
+            ids,
+            "legacy projections agree without a random migration write",
+        );
+
+        assert!(clip.move_effect_id(ids[1], true));
+        assert_eq!(clip.effects[0].id, ids[1]);
+        assert!(clip.remove_effect_id(ids[0]));
+        assert_eq!(clip.effects.len(), 1);
+        assert_eq!(clip.effects[0].id, ids[1]);
     }
 
     #[test]
