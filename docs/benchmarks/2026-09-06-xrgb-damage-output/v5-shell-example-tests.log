@@ -1,0 +1,69 @@
+   Compiling shell v0.1.0 (/home/user/qos/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+     Running unittests examples/redraw_bench.rs (target/debug/examples/redraw_bench-591dddf465a25152)
+
+running 43 tests
+test tests::aggregation_uses_all_samples_and_nearest_rank_p99 ... ok
+test tests::benchmark_actions_alternate_quick_settings_open_and_outside_dismissal ... redraw_bench action 0 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 1 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 2 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 3 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 4 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 5 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 6 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 7 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 8 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 9 target=topbar_overview_button: quick_settings=false overview=false
+redraw_bench action 10 target=topbar_tray_pill: quick_settings=true overview=false
+redraw_bench action 11 target=topbar_overview_button: quick_settings=false overview=false
+ok
+test tests::benchmark_actions_produce_bounded_damage ... redraw_bench retained classification: sparse_frames=11/12 covered_pixels=4257792 full_pixels/frame=8294400
+ok
+test tests::clip_telemetry_tracks_nested_depth_empty_groups_and_end_clip_bits ... ok
+test tests::diagnostic_phase_aggregation_keeps_every_phase_and_byte ... ok
+test tests::diagnostic_runs_cannot_pass_acceptance ... ok
+test tests::direct_path_workgroup_override_requires_explicit_diagnostic_mode ... ok
+test tests::dispatch_timestamp_aggregation_requires_exact_submission_match ... ok
+test tests::dispatch_timestamp_mismatch_and_unavailable_states_are_never_zero_time ... ok
+test tests::dispatch_timestamp_missing_sample_reads_post_take_invalid_status ... ok
+test tests::empty_zero_and_missing_samples_are_rejected ... ok
+test tests::fine_command_distribution_counts_blur_fixture_with_shader_widths ... ok
+test tests::gates_check_exact_mean_and_p99_boundaries ... ok
+test tests::native_4k_benchmark_actions_use_one_and_two_target_xrgb_history ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+ok
+test tests::native_4k_dense_oracle_is_repeatable_within_and_across_contexts ... ignored, explicit native-4K dense repeatability diagnostic
+test tests::native_4k_fixed_quick_settings_pose_225_dense_is_repeatable ... ignored, explicit native-4K fixed-pose dense repeatability diagnostic
+test tests::native_4k_fixed_quick_settings_pose_225_segment_order_is_causal ... ignored, explicit native-4K causal fixed-order Area replay diagnostic
+test tests::native_4k_fixed_quick_settings_pose_225_shared_geometry_is_repeatable ... ignored, explicit native-4K fixed-pose shared-coarse geometry diagnostic
+test tests::native_4k_fixed_quick_settings_poses_match_shared_coarse_and_dense ... ignored, explicit native-4K fixed quick-settings pose diagnostic
+test tests::native_4k_shared_coarse_damage_pixels_are_exact ... ignored, explicit native-4K shared-coarse fine diagnostic
+test tests::native_4k_shared_coarse_fine_command_distribution_is_representative ... ignored, explicit native-4K representative shared-coarse fine-command distribution diagnostic
+test tests::native_fine_tile_union_clips_boundaries_and_deduplicates_damage ... ok
+test tests::native_ptcl_parser_rejects_jump_cycles_bounds_and_truncated_segments ... ok
+test tests::native_ptcl_parser_uses_shader_word_widths_and_excludes_segment_padding ... ok
+test tests::opaque_prune_prediction_respects_clip_anchors_alpha_and_depth ... ok
+test tests::parsed_fine_tile_comparison_detects_changed_meaningful_segment ... ok
+test tests::parsed_fine_tile_comparison_detects_command_count_and_type_mismatches ... ok
+test tests::parsed_fine_tile_comparison_detects_fill_metadata_and_other_args ... ok
+test tests::parsed_fine_tile_comparison_reports_order_only_fill_changes ... ok
+test tests::scene_reuse_empty_oversized_invalid_and_recovery_observations_clear_history ... ok
+test tests::scene_reuse_exact_a_b_a_is_a_rank_two_hit_without_a_payload_copy ... ok
+test tests::scene_reuse_hit_promotes_recency_before_future_eviction ... ok
+test tests::scene_reuse_metadata_changes_count_only_for_matching_payloads ... ok
+test tests::scene_reuse_payload_and_entry_caps_are_bounded_before_snapshot_copy ... ok
+test tests::scene_reuse_requires_exact_bytes_even_at_equal_length ... ok
+test tests::scene_reuse_requires_profile_and_defaults_to_no_telemetry ... ok
+test tests::scene_reuse_retains_four_snapshots_and_evicts_the_fifth ... ok
+test tests::segment_row_mask_cpu_model_covers_boundaries_and_conservative_fallbacks ... ok
+test tests::solid_successor_telemetry_distinguishes_fusable_tags ... ok
+test tests::sparse_coarse_aggregation_uses_returned_submission_stats ... ok
+test tests::timestamp_flags_require_explicit_diagnostic_mode ... ok
+test tests::xrgb_damage_flag_is_exact_opt_in ... ok
+test tests::xrgb_write_accounting_reports_actual_modes_and_bytes ... ok
+
+test result: ok. 36 passed; 0 failed; 7 ignored; 0 measured; 1 filtered out; finished in 6.52s
+
+

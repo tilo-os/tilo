@@ -1,0 +1,53 @@
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+DRM bridge adapter: name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+sparse path tile bounds: env_requested=true renderer_requested=true available=true (profile counts only submissions where returned stats report applied bounds; tile area is not an allocation or memory-saving claim)
+sparse fine quad skip: env_requested=false renderer_requested=false available=false (counts are actual Area fine invocation groups, not GPU memory or copy savings)
+sparse opaque prune: env_requested=false renderer_requested=false available=false (counts report only returned coarse shader selection, not tiles or commands pruned, GPU memory, or copy savings)
+sparse solid fuse: env_requested=false renderer_requested=false available=false (counts report only returned matched producer/consumer shader selection)
+sparse segment row mask: env_requested=false renderer_requested=false available=false (counts report only returned paired shader selection, not rows skipped or resource savings)
+canonical segment order: env_requested=false renderer_requested=false available=false (selected attempts report only an actual recorded pass, not completion or speed)
+area PPT8: env_requested=true renderer_requested=true available=true (selected attempts report only an actual recorded Area shader pass, not completion or speed)
+clip single group: env_requested=false renderer_requested=false available=false (selected attempts report only an actual recorded clip shader pass, not completion or speed)
+CPU XRGB damage history: requested=true available=true targets=1 (opt-in candidate; actual measured writes are reported after the action loop)
+DRM render/readback at 3840x2160: samples=1000 mean=21170us p99=55394us min=11870us max=361507us
+DRM timing total: total_us=21170063 samples=1000
+gates: mean<=25000us p99<=50000us (Fail)
+Vello render attempts: total=1000 sparse=999 full=1 recovery=0
+CPU XRGB writes: full=1 partial=999 total=1000 bytes=808636416
+sparse path tile bounds actual submissions: total=999 active=999 applied=999 native_bbox_tiles=807864 (counted only from returned applied stats; bbox tile area is not an allocation or memory-saving claim)
+sparse fine quad skip actual submissions: applied=0 total_invocation_groups=0 active_invocation_groups=0 skipped_invocation_groups=0 (counted only from returned applied stats; not GPU memory or copy savings)
+sparse opaque prune shader-selected submissions: 0 (counted only from returned stats; not tiles or commands pruned, GPU memory, or copy savings)
+sparse solid fuse shader-selected submissions: 0
+sparse segment row mask shader-selected submissions: 0
+canonical segment order shader-selected attempts: full=0 sparse=0 total=0
+area PPT8 shader-selected attempts: full=1 sparse=999 total=1000
+clip single group shader-selected attempts: full=0 sparse=0 total=0
+presentation: unavailable in this harness (no DRM/KMS device, dumb-buffer page flip, or display scanout timed)
+Error: "redraw gate failed (mean<=25000us p99<=50000us): total=21170063us / 1000 samples, p99=55394us"
+Command exited with non-zero status 1
+	Command being timed: "/home/user/qos/target/ui-perf-comparison/shell-redraw-clip-single-20260906"
+	User time (seconds): 59.24
+	System time (seconds): 18.57
+	Percent of CPU this job got: 351%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:22.14
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 574792
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 4
+	Minor (reclaiming a frame) page faults: 584829
+	Voluntary context switches: 187339
+	Involuntary context switches: 44318
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 6176
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

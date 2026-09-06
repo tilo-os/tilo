@@ -1,0 +1,40 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE cargo test -p shell --example redraw_bench native_4k_shared_coarse_damage_pixels_are_exact --locked -- --ignored --nocapture --test-threads=1
+Exit code: 101
+
+   Compiling vello v0.9.0 (/home/user/qos/vendor/vello)
+   Compiling ui v0.1.0 (/home/user/qos/ui)
+   Compiling qos-app v0.1.0 (/home/user/qos/crates/app/qos-app)
+   Compiling greeter v0.1.0 (/home/user/qos/crates/session/greeter)
+   Compiling terminal v0.2.1 (/home/user/qos/apps/terminal)
+   Compiling word-processor v0.1.0 (/home/user/qos/apps/word-processor)
+   Compiling file-explorer v0.2.0 (/home/user/qos/apps/file-explorer)
+   Compiling shell v0.1.0 (/home/user/qos/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 42s
+     Running unittests examples/redraw_bench.rs (target/debug/examples/redraw_bench-591dddf465a25152)
+
+running 1 test
+test tests::native_4k_shared_coarse_damage_pixels_are_exact ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+
+thread 'tests::native_4k_shared_coarse_damage_pixels_are_exact' (517304) panicked at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:2262:22:
+wgpu error: Validation Error
+
+Caused by:
+  In Buffer::buffer_unmap
+    Buffer is not mapped
+
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    tests::native_4k_shared_coarse_damage_pixels_are_exact
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.99s
+
+error: test failed, to rerun pass `-p shell --example redraw_bench`
+

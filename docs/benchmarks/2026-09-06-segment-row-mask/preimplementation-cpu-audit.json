@@ -1,0 +1,9 @@
+{
+  "kind": "independent JS stepwise f32 model of proposed conservative mask; not implementation or GPU proof",
+  "mask_interval": "[floor(minY)-1, ceil(maxY)+1), clamped [0,16); edge suffix floor(edge)-1",
+  "segments_checked": 213924,
+  "clear_bits_checked": 702024,
+  "false_negative_rows": 0,
+  "first_failure": null,
+  "retains_uncertain": true
+}

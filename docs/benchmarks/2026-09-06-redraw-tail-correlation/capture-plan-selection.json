@@ -1,0 +1,11 @@
+{
+  "active_plan": "capture-plan-v2.json",
+  "supersedes": "capture-plan.json",
+  "before_any_execution": true,
+  "only_changes": [
+    "Clear the new diagnostic output-path environment variable",
+    "Set a unique no-overwrite post-loop record artifact for each of the same four attempts"
+  ],
+  "workload_and_order_unchanged": true,
+  "status": "implementation/review pending; not authorised to execute"
+}

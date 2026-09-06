@@ -334,6 +334,11 @@ struct BenchRun {
     allocations: Option<crate::AllocationSnapshot>,
     allocation_breakdown: Option<AllocationBreakdown>,
     render_timings: Option<Vec<OffscreenRenderTiming>>,
+    sparse_submission_accounting: ui::offscreen::SparseSubmissionAccounting,
+    canonical_segment_order_attempt_accounting:
+        ui::offscreen::CanonicalSegmentOrderAttemptAccounting,
+    area_ppt8_attempt_accounting: ui::offscreen::AreaPpt8AttemptAccounting,
+    clip_single_group_attempt_accounting: ui::offscreen::ClipSingleGroupAttemptAccounting,
     resources_before: ResourceSnapshot,
     resources_after: ResourceSnapshot,
 }
@@ -471,7 +476,8 @@ mod damage_verifier_tests {
         gpu_timestamp_sample_label, has_complete_gpu_dispatch_timestamp,
         has_complete_gpu_timestamp, has_gpu_dispatch_timestamp_stage, mean_frame_budget_passes,
         native_pixel_coordinates, p99_values, parse_mean_frame_budget, pixel_differs_beyond_aa,
-        redraw_frame_totals, traffic_byte_redraw_budget_passes, unaccounted_render_us,
+        redraw_frame_totals, sparse_coarse_profile_totals, traffic_byte_redraw_budget_passes,
+        unaccounted_render_us,
     };
 
     #[test]
@@ -525,6 +531,26 @@ mod damage_verifier_tests {
             sparse_fine_tiles: 12,
             sparse_written_pixels: 384,
             coarse_prefix_pixels: 768,
+            sparse_coarse_adaptive_submissions: 2,
+            sparse_coarse_adaptive_dense_submissions: 1,
+            sparse_coarse_active_bins_submissions: 1,
+            sparse_coarse_native_bins: 85,
+            sparse_coarse_selected_native_bins: 7,
+            sparse_path_tile_bounds_submissions: 1,
+            sparse_path_tile_bounds_tiles: 48,
+            sparse_coarse_opaque_prune_submissions: 1,
+            sparse_solid_fuse_submissions: 1,
+            sparse_segment_row_mask_submissions: 1,
+            canonical_segment_order_sparse_selected_attempts: 1,
+            canonical_segment_order_full_selected_attempts: 1,
+            area_ppt8_sparse_selected_attempts: 1,
+            area_ppt8_full_selected_attempts: 1,
+            clip_single_group_sparse_selected_attempts: 1,
+            clip_single_group_full_selected_attempts: 1,
+            sparse_fine_quad_skip_submissions: 1,
+            sparse_fine_quad_total_quads: 64,
+            sparse_fine_quad_active_quads: 20,
+            sparse_fine_quad_skipped_quads: 44,
             gpu_timestamp_expected_submissions: 1,
             gpu_timestamp_sampled_submissions: 1,
             ..timing
@@ -591,6 +617,31 @@ mod damage_verifier_tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(complete_sparse_accounting, vec![(2, 12, 384, 768)]);
+        assert_eq!(
+            sparse_coarse_profile_totals([&complete, &partial]),
+            super::SparseCoarseProfileTotals {
+                adaptive_submissions: 2,
+                adaptive_dense_submissions: 1,
+                active_bins_submissions: 1,
+                native_bins: 85,
+                selected_native_bins: 7,
+                path_tile_bounds_submissions: 1,
+                path_tile_bounds_tiles: 48,
+                opaque_prune_selected_submissions: 1,
+                solid_fuse_selected_submissions: 1,
+                segment_row_mask_selected_submissions: 1,
+                canonical_segment_order_sparse_selected_attempts: 1,
+                canonical_segment_order_full_selected_attempts: 1,
+                area_ppt8_sparse_selected_attempts: 1,
+                area_ppt8_full_selected_attempts: 1,
+                clip_single_group_sparse_selected_attempts: 1,
+                clip_single_group_full_selected_attempts: 1,
+                fine_quad_skip_submissions: 1,
+                fine_quad_total: 64,
+                fine_quad_active: 20,
+                fine_quad_skipped: 44,
+            }
+        );
         assert_eq!(gpu_timestamp_sample_label(&complete, false), "off");
         assert!(gpu_timestamp_sample_label(&complete, true).starts_with("span=100ns"));
         assert!(gpu_timestamp_sample_label(&partial, true).starts_with("incomplete"));
@@ -614,6 +665,55 @@ mod damage_verifier_tests {
             complete_dispatch_unknown_totals([complete_dispatch, missing_dispatch].iter()),
             (7, 2),
             "unknown stage totals must not include incomplete dispatch samples"
+        );
+    }
+
+    #[test]
+    fn sparse_path_tile_bounds_totals_distinguish_default_applied_and_fallback() {
+        let default = OffscreenRenderTiming::default();
+        let applied = OffscreenRenderTiming {
+            sparse_path_tile_bounds_submissions: 1,
+            sparse_path_tile_bounds_tiles: 24,
+            sparse_coarse_opaque_prune_submissions: 1,
+            sparse_solid_fuse_submissions: 1,
+            sparse_segment_row_mask_submissions: 1,
+            canonical_segment_order_sparse_selected_attempts: 1,
+            canonical_segment_order_full_selected_attempts: 1,
+            area_ppt8_sparse_selected_attempts: 1,
+            area_ppt8_full_selected_attempts: 1,
+            clip_single_group_sparse_selected_attempts: 1,
+            clip_single_group_full_selected_attempts: 1,
+            sparse_fine_quad_skip_submissions: 1,
+            sparse_fine_quad_total_quads: 64,
+            sparse_fine_quad_active_quads: 16,
+            sparse_fine_quad_skipped_quads: 48,
+            ..OffscreenRenderTiming::default()
+        };
+        // A sparse fallback contributes no bound coverage because returned stats did not apply it.
+        let fallback = OffscreenRenderTiming {
+            sparse_submissions: 1,
+            ..OffscreenRenderTiming::default()
+        };
+        assert_eq!(
+            sparse_coarse_profile_totals([&default, &applied, &fallback]),
+            super::SparseCoarseProfileTotals {
+                path_tile_bounds_submissions: 1,
+                path_tile_bounds_tiles: 24,
+                opaque_prune_selected_submissions: 1,
+                solid_fuse_selected_submissions: 1,
+                segment_row_mask_selected_submissions: 1,
+                canonical_segment_order_sparse_selected_attempts: 1,
+                canonical_segment_order_full_selected_attempts: 1,
+                area_ppt8_sparse_selected_attempts: 1,
+                area_ppt8_full_selected_attempts: 1,
+                clip_single_group_sparse_selected_attempts: 1,
+                clip_single_group_full_selected_attempts: 1,
+                fine_quad_skip_submissions: 1,
+                fine_quad_total: 64,
+                fine_quad_active: 16,
+                fine_quad_skipped: 48,
+                ..super::SparseCoarseProfileTotals::default()
+            }
         );
     }
 
@@ -1175,6 +1275,12 @@ fn run_bench_loop(
     let mut render_timings = options
         .profile_render_timing
         .then(|| vec![OffscreenRenderTiming::default(); iters]);
+    state.renderer.reset_sparse_submission_accounting();
+    state
+        .renderer
+        .reset_canonical_segment_order_attempt_accounting();
+    state.renderer.reset_area_ppt8_attempt_accounting();
+    state.renderer.reset_clip_single_group_attempt_accounting();
     let resources_before = resource_snapshot(state.renderer);
     if options.profile_allocations {
         // The timing histogram is harness storage, not framework work.
@@ -1243,6 +1349,12 @@ fn run_bench_loop(
         .profile_allocations
         .then(crate::end_allocation_profile);
     let resources_after = resource_snapshot(state.renderer);
+    let sparse_submission_accounting = state.renderer.sparse_submission_accounting();
+    let canonical_segment_order_attempt_accounting =
+        state.renderer.canonical_segment_order_attempt_accounting();
+    let area_ppt8_attempt_accounting = state.renderer.area_ppt8_attempt_accounting();
+    let clip_single_group_attempt_accounting =
+        state.renderer.clip_single_group_attempt_accounting();
     BenchRun {
         histo,
         total_redraws,
@@ -1250,6 +1362,10 @@ fn run_bench_loop(
         allocations,
         allocation_breakdown,
         render_timings,
+        sparse_submission_accounting,
+        canonical_segment_order_attempt_accounting,
+        area_ppt8_attempt_accounting,
+        clip_single_group_attempt_accounting,
         resources_before,
         resources_after,
     }
@@ -1481,6 +1597,133 @@ fn dispatch_timestamp_configuration_is_valid(
 
 type RenderTimingSample<'a> = (usize, (&'a Phase, &'a OffscreenRenderTiming));
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct SparseCoarseProfileTotals {
+    adaptive_submissions: u128,
+    adaptive_dense_submissions: u128,
+    active_bins_submissions: u128,
+    native_bins: u128,
+    selected_native_bins: u128,
+    path_tile_bounds_submissions: u128,
+    path_tile_bounds_tiles: u128,
+    opaque_prune_selected_submissions: u128,
+    solid_fuse_selected_submissions: u128,
+    segment_row_mask_selected_submissions: u128,
+    canonical_segment_order_sparse_selected_attempts: u128,
+    canonical_segment_order_full_selected_attempts: u128,
+    area_ppt8_sparse_selected_attempts: u128,
+    area_ppt8_full_selected_attempts: u128,
+    clip_single_group_sparse_selected_attempts: u128,
+    clip_single_group_full_selected_attempts: u128,
+    fine_quad_skip_submissions: u128,
+    fine_quad_total: u128,
+    fine_quad_active: u128,
+    fine_quad_skipped: u128,
+}
+
+fn sparse_coarse_profile_totals<'a>(
+    timings: impl IntoIterator<Item = &'a OffscreenRenderTiming>,
+) -> SparseCoarseProfileTotals {
+    timings.into_iter().fold(
+        SparseCoarseProfileTotals::default(),
+        |mut totals, timing| {
+            totals.adaptive_submissions = totals
+                .adaptive_submissions
+                .saturating_add(u128::from(timing.sparse_coarse_adaptive_submissions));
+            totals.adaptive_dense_submissions = totals
+                .adaptive_dense_submissions
+                .saturating_add(u128::from(timing.sparse_coarse_adaptive_dense_submissions));
+            totals.active_bins_submissions = totals
+                .active_bins_submissions
+                .saturating_add(u128::from(timing.sparse_coarse_active_bins_submissions));
+            totals.native_bins = totals
+                .native_bins
+                .saturating_add(u128::from(timing.sparse_coarse_native_bins));
+            totals.selected_native_bins = totals
+                .selected_native_bins
+                .saturating_add(u128::from(timing.sparse_coarse_selected_native_bins));
+            totals.path_tile_bounds_submissions = totals
+                .path_tile_bounds_submissions
+                .saturating_add(u128::from(timing.sparse_path_tile_bounds_submissions));
+            totals.path_tile_bounds_tiles = totals
+                .path_tile_bounds_tiles
+                .saturating_add(u128::from(timing.sparse_path_tile_bounds_tiles));
+            totals.opaque_prune_selected_submissions = totals
+                .opaque_prune_selected_submissions
+                .saturating_add(u128::from(timing.sparse_coarse_opaque_prune_submissions));
+            totals.solid_fuse_selected_submissions = totals
+                .solid_fuse_selected_submissions
+                .saturating_add(u128::from(timing.sparse_solid_fuse_submissions));
+            totals.segment_row_mask_selected_submissions = totals
+                .segment_row_mask_selected_submissions
+                .saturating_add(u128::from(timing.sparse_segment_row_mask_submissions));
+            totals.canonical_segment_order_sparse_selected_attempts = totals
+                .canonical_segment_order_sparse_selected_attempts
+                .saturating_add(u128::from(
+                    timing.canonical_segment_order_sparse_selected_attempts,
+                ));
+            totals.canonical_segment_order_full_selected_attempts = totals
+                .canonical_segment_order_full_selected_attempts
+                .saturating_add(u128::from(
+                    timing.canonical_segment_order_full_selected_attempts,
+                ));
+            totals.area_ppt8_sparse_selected_attempts = totals
+                .area_ppt8_sparse_selected_attempts
+                .saturating_add(u128::from(timing.area_ppt8_sparse_selected_attempts));
+            totals.area_ppt8_full_selected_attempts = totals
+                .area_ppt8_full_selected_attempts
+                .saturating_add(u128::from(timing.area_ppt8_full_selected_attempts));
+            totals.clip_single_group_sparse_selected_attempts = totals
+                .clip_single_group_sparse_selected_attempts
+                .saturating_add(u128::from(
+                    timing.clip_single_group_sparse_selected_attempts,
+                ));
+            totals.clip_single_group_full_selected_attempts = totals
+                .clip_single_group_full_selected_attempts
+                .saturating_add(u128::from(timing.clip_single_group_full_selected_attempts));
+            totals.fine_quad_skip_submissions = totals
+                .fine_quad_skip_submissions
+                .saturating_add(u128::from(timing.sparse_fine_quad_skip_submissions));
+            totals.fine_quad_total = totals
+                .fine_quad_total
+                .saturating_add(u128::from(timing.sparse_fine_quad_total_quads));
+            totals.fine_quad_active = totals
+                .fine_quad_active
+                .saturating_add(u128::from(timing.sparse_fine_quad_active_quads));
+            totals.fine_quad_skipped = totals
+                .fine_quad_skipped
+                .saturating_add(u128::from(timing.sparse_fine_quad_skipped_quads));
+            totals
+        },
+    )
+}
+
+fn print_sparse_path_accounting(totals: &SparseCoarseProfileTotals) {
+    println!(
+        "  sparse path accounting (all sparse attempts): adaptive_submissions={} adaptive_dense_submissions={} active_bin_submissions={} native_bins={} selected_native_bins={} path_tile_bounds_applied_submissions={} path_tile_bounds_native_bbox_tiles={} opaque_prune_shader_selected_submissions={} solid_fuse_shader_selected_submissions={} segment_row_mask_shader_selected={} canonical_segment_order_shader_selected_sparse_attempts={} canonical_segment_order_shader_selected_full_attempts={} area_ppt8_shader_selected_sparse_attempts={} area_ppt8_shader_selected_full_attempts={} clip_single_group_shader_selected_sparse_attempts={} clip_single_group_shader_selected_full_attempts={} fine_quad_skip_applied_submissions={} fine_quad_total_invocation_groups={} fine_quad_active_invocation_groups={} fine_quad_skipped_invocation_groups={} (opaque prune, solid fuse, segment row mask, canonical segment order, Area PPT8, and clip single group are shader selections only; bbox/quad counts are coverage and invocation-group diagnostics, not tiles or commands pruned, fused, row-skipped, allocated tiles, GPU memory, copy savings, completion, or speed)",
+        totals.adaptive_submissions,
+        totals.adaptive_dense_submissions,
+        totals.active_bins_submissions,
+        totals.native_bins,
+        totals.selected_native_bins,
+        totals.path_tile_bounds_submissions,
+        totals.path_tile_bounds_tiles,
+        totals.opaque_prune_selected_submissions,
+        totals.solid_fuse_selected_submissions,
+        totals.segment_row_mask_selected_submissions,
+        totals.canonical_segment_order_sparse_selected_attempts,
+        totals.canonical_segment_order_full_selected_attempts,
+        totals.area_ppt8_sparse_selected_attempts,
+        totals.area_ppt8_full_selected_attempts,
+        totals.clip_single_group_sparse_selected_attempts,
+        totals.clip_single_group_full_selected_attempts,
+        totals.fine_quad_skip_submissions,
+        totals.fine_quad_total,
+        totals.fine_quad_active,
+        totals.fine_quad_skipped,
+    );
+}
+
 fn report_timing_values(label: &str, values: &mut [u128], unit: &str) {
     if values.is_empty() {
         println!("  {label:<14} no samples");
@@ -1644,9 +1887,11 @@ fn print_sparse_fine_profile(samples: &[RenderTimingSample<'_>]) {
     let sparse_fine_tiles = total(|timing| u128::from(timing.sparse_fine_tiles));
     let sparse_written_pixels = total(|timing| u128::from(timing.sparse_written_pixels));
     let coarse_prefix_pixels = total(|timing| u128::from(timing.coarse_prefix_pixels));
+    let adaptive = sparse_coarse_profile_totals(samples.iter().map(|(_, (_, timing))| *timing));
     println!(
         "  sparse fine accounting (all render attempts): submissions={sparse_submissions} fine_tiles={sparse_fine_tiles} written_pixels={sparse_written_pixels} coarse_prefix_pixels={coarse_prefix_pixels}"
     );
+    print_sparse_path_accounting(&adaptive);
     let mut sparse_submission_values = values(|timing| u128::from(timing.sparse_submissions));
     report_timing_values("sparse-submits", &mut sparse_submission_values, "count");
     let mut sparse_tile_values = values(|timing| u128::from(timing.sparse_fine_tiles));
@@ -1655,6 +1900,59 @@ fn print_sparse_fine_profile(samples: &[RenderTimingSample<'_>]) {
     report_timing_values("sparse-written", &mut sparse_written_values, "px");
     let mut coarse_prefix_values = values(|timing| u128::from(timing.coarse_prefix_pixels));
     report_timing_values("coarse-prefix", &mut coarse_prefix_values, "px");
+    let mut adaptive_values =
+        values(|timing| u128::from(timing.sparse_coarse_adaptive_submissions));
+    report_timing_values("adaptive-coarse", &mut adaptive_values, "count");
+    let mut adaptive_dense_values =
+        values(|timing| u128::from(timing.sparse_coarse_adaptive_dense_submissions));
+    report_timing_values("adaptive-dense-coarse", &mut adaptive_dense_values, "count");
+    let mut native_bin_values = values(|timing| u128::from(timing.sparse_coarse_native_bins));
+    report_timing_values("native-coarse-bins", &mut native_bin_values, "count");
+    let mut selected_bin_values =
+        values(|timing| u128::from(timing.sparse_coarse_selected_native_bins));
+    report_timing_values("selected-coarse-bins", &mut selected_bin_values, "count");
+    let mut path_tile_bounds_values =
+        values(|timing| u128::from(timing.sparse_path_tile_bounds_submissions));
+    report_timing_values(
+        "path-tile-bounds-applied",
+        &mut path_tile_bounds_values,
+        "count",
+    );
+    let mut path_tile_area_values =
+        values(|timing| u128::from(timing.sparse_path_tile_bounds_tiles));
+    report_timing_values(
+        "path-tile-bounds-native-bbox",
+        &mut path_tile_area_values,
+        "tiles",
+    );
+    let mut opaque_prune_values =
+        values(|timing| u128::from(timing.sparse_coarse_opaque_prune_submissions));
+    report_timing_values("opaque-prune-selected", &mut opaque_prune_values, "count");
+    let mut solid_fuse_values = values(|timing| u128::from(timing.sparse_solid_fuse_submissions));
+    report_timing_values("solid-fuse-selected", &mut solid_fuse_values, "count");
+    let mut segment_row_mask_values =
+        values(|timing| u128::from(timing.sparse_segment_row_mask_submissions));
+    report_timing_values(
+        "segment-row-mask-selected",
+        &mut segment_row_mask_values,
+        "count",
+    );
+    let mut fine_quad_skip_values =
+        values(|timing| u128::from(timing.sparse_fine_quad_skip_submissions));
+    report_timing_values(
+        "fine-quad-skip-applied",
+        &mut fine_quad_skip_values,
+        "count",
+    );
+    let mut fine_quad_total_values =
+        values(|timing| u128::from(timing.sparse_fine_quad_total_quads));
+    report_timing_values("fine-quad-total", &mut fine_quad_total_values, "groups");
+    let mut fine_quad_active_values =
+        values(|timing| u128::from(timing.sparse_fine_quad_active_quads));
+    report_timing_values("fine-quad-active", &mut fine_quad_active_values, "groups");
+    let mut fine_quad_skipped_values =
+        values(|timing| u128::from(timing.sparse_fine_quad_skipped_quads));
+    report_timing_values("fine-quad-skipped", &mut fine_quad_skipped_values, "groups");
 }
 
 fn print_render_timing_profile(
@@ -2196,6 +2494,23 @@ pub fn run(_args: &[String]) {
     let compute_batch_configured = env_enabled_by_default("VELLO_COMPUTE_BATCH");
     let sparse_coarse_configured =
         std::env::var("VELLO_SPARSE_COARSE").is_ok_and(|value| value == "1");
+    let sparse_coarse_auto_configured =
+        std::env::var("VELLO_SPARSE_COARSE_AUTO").is_ok_and(|value| value == "1");
+    let sparse_tile_bounds_requested =
+        std::env::var("VELLO_SPARSE_TILE_BOUNDS").is_ok_and(|value| value == "1");
+    let sparse_fine_quad_skip_requested =
+        std::env::var("VELLO_SPARSE_FINE_QUAD_SKIP").is_ok_and(|value| value == "1");
+    let sparse_opaque_prune_requested =
+        std::env::var("VELLO_SPARSE_OPAQUE_PRUNE").is_ok_and(|value| value == "1");
+    let sparse_solid_fuse_requested =
+        std::env::var("VELLO_SPARSE_SOLID_FUSE").is_ok_and(|value| value == "1");
+    let sparse_segment_row_mask_requested =
+        std::env::var("VELLO_SPARSE_SEGMENT_ROW_MASK").is_ok_and(|value| value == "1");
+    let canonical_segment_order_requested =
+        std::env::var("VELLO_CANONICAL_SEGMENT_ORDER").is_ok_and(|value| value == "1");
+    let area_ppt8_requested = std::env::var("VELLO_AREA_PPT8").is_ok_and(|value| value == "1");
+    let clip_single_group_requested =
+        std::env::var("VELLO_CLIP_SINGLE_GROUP").is_ok_and(|value| value == "1");
     let cpu_pathtag_configured = env_enabled_by_default("VELLO_CPU_PATHTAG");
     let cpu_pathtag_reuse_configured = env_enabled_by_default("VELLO_CPU_PATHTAG_REUSE");
     let cpu_metadata_configured = env_enabled_by_default("VELLO_CPU_METADATA");
@@ -2255,6 +2570,15 @@ pub fn run(_args: &[String]) {
 
     println!("output target: {canvas_w}x{canvas_h} (native; 1:1 damage raster, no upscale)");
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
+    match renderer.adapter_info() {
+        Some(adapter) => println!(
+            "UI renderer adapter: name={:?} backend={:?} device_type={:?} driver={:?}",
+            adapter.name, adapter.backend, adapter.device_type, adapter.driver
+        ),
+        None => println!(
+            "UI renderer adapter: unavailable (selected shared render context is inaccessible)"
+        ),
+    }
     let gpu_dispatch_timestamp_status = renderer.gpu_dispatch_timestamp_status();
     println!(
         "sparse fine: configured={} supported={} (raster metric is actual fine-shaded native pixels; profile retains coarse-prefix accounting)",
@@ -2266,8 +2590,50 @@ pub fn run(_args: &[String]) {
         renderer.compute_pass_batching_enabled(),
     );
     println!(
-        "sparse coarse: configured={sparse_coarse_configured} supported={} (only coarse selection changes; path-count, backdrop, and earlier prefix stages remain dense; coarse-prefix coverage remains accounted)",
+        "sparse coarse: forced={sparse_coarse_configured} auto={sparse_coarse_auto_configured} supported={} adaptive_active={} active_bin_available={} (AUTO requires no forced coarse flag and selects active native bins only when coverage saves at least half and 32 bins; otherwise coarse remains dense)",
         renderer.sparse_coarse_supported(),
+        renderer.sparse_coarse_adaptive_enabled(),
+        renderer.sparse_coarse_active_bins_available(),
+    );
+    println!(
+        "sparse path tile bounds: env_requested={sparse_tile_bounds_requested} renderer_requested={} available={} (reported bbox tile area is only actual applied coverage; it is not allocated per-path tiles or physical memory saved)",
+        renderer.sparse_tile_bounds_requested(),
+        renderer.sparse_tile_bounds_available(),
+    );
+    println!(
+        "sparse fine quad skip: env_requested={sparse_fine_quad_skip_requested} renderer_requested={} available={} (reported groups are actual Area fine invocations, not GPU memory or copy savings)",
+        renderer.sparse_fine_quad_skip_requested(),
+        renderer.sparse_fine_quad_skip_available(),
+    );
+    println!(
+        "sparse opaque prune: env_requested={sparse_opaque_prune_requested} renderer_requested={} available={} (reported selections mean only that the coarse shader was selected; they do not count tiles or commands pruned, GPU memory, or copy savings)",
+        renderer.sparse_opaque_prune_requested(),
+        renderer.sparse_opaque_prune_available(),
+    );
+    println!(
+        "sparse solid fuse: env_requested={sparse_solid_fuse_requested} renderer_requested={} available={} (reported selections mean only that the matched producer/consumer shader path was selected; they do not count fused commands, GPU memory, or copy savings)",
+        renderer.sparse_solid_fuse_requested(),
+        renderer.sparse_solid_fuse_available(),
+    );
+    println!(
+        "sparse segment row mask: env_requested={sparse_segment_row_mask_requested} renderer_requested={} available={} (reported selections mean only that the paired sparse shader path was selected; they do not count skipped rows, GPU memory, or copy savings)",
+        renderer.sparse_segment_row_mask_requested(),
+        renderer.sparse_segment_row_mask_available(),
+    );
+    println!(
+        "canonical segment order: env_requested={canonical_segment_order_requested} renderer_requested={} available={} (selected attempts report only an actual recorded pass, not completion or speed)",
+        renderer.canonical_segment_order_requested(),
+        renderer.canonical_segment_order_available(),
+    );
+    println!(
+        "area PPT8: env_requested={area_ppt8_requested} renderer_requested={} available={} (selected attempts report only an actual recorded Area shader pass, not completion or speed)",
+        renderer.area_ppt8_requested(),
+        renderer.area_ppt8_available(),
+    );
+    println!(
+        "clip single group: env_requested={clip_single_group_requested} renderer_requested={} available={} (selected attempts report only an actual recorded clip shader pass, not completion or speed)",
+        renderer.clip_single_group_requested(),
+        renderer.clip_single_group_available(),
     );
     println!(
         "CPU path tags: configured={cpu_pathtag_configured} active={} (only path-tag reduce/scan use CPU; flatten and later stages remain GPU, with CPU tag-monoid upload retained)",
@@ -2409,6 +2775,64 @@ pub fn run(_args: &[String]) {
         run.total_skipped,
         run.resources_before,
         run.resources_after,
+    );
+    println!(
+        "sparse submission accounting (measured workload): total={} active={} path_tile_bounds_applied={} path_tile_bounds_native_bbox_tiles={} opaque_prune_shader_selected={} solid_fuse_shader_selected={} segment_row_mask_shader_selected={} canonical_segment_order_shader_selected_sparse_attempts={} area_ppt8_shader_selected={} clip_single_group_shader_selected={} fine_quad_skip_applied={} fine_quad_total_invocation_groups={} fine_quad_active_invocation_groups={} fine_quad_skipped_invocation_groups={} (opaque prune, solid fuse, segment row mask, canonical segment order, Area PPT8, and clip single group are shader selections only; bbox tile area and fine quad groups are diagnostics, not tiles or commands pruned, fused, row-skipped, allocated tiles, GPU memory, copy savings, completion, or speed)",
+        run.sparse_submission_accounting.sparse_submissions,
+        run.sparse_submission_accounting.active_sparse_submissions,
+        run.sparse_submission_accounting
+            .path_tile_bounds_submissions,
+        run.sparse_submission_accounting.path_tile_bounds_tiles,
+        run.sparse_submission_accounting
+            .coarse_opaque_prune_selected_submissions,
+        run.sparse_submission_accounting
+            .solid_fuse_selected_submissions,
+        run.sparse_submission_accounting
+            .segment_row_mask_selected_submissions,
+        run.sparse_submission_accounting
+            .canonical_segment_order_selected_sparse_attempts,
+        run.sparse_submission_accounting
+            .area_ppt8_selected_sparse_attempts,
+        run.sparse_submission_accounting
+            .clip_single_group_shader_selected,
+        run.sparse_submission_accounting.fine_quad_skip_submissions,
+        run.sparse_submission_accounting.fine_quad_total_quads,
+        run.sparse_submission_accounting.fine_quad_active_quads,
+        run.sparse_submission_accounting.fine_quad_skipped_quads,
+    );
+    println!(
+        "canonical segment order shader-selected attempts: full={} sparse={} total={}",
+        run.canonical_segment_order_attempt_accounting
+            .full_selected_attempts,
+        run.canonical_segment_order_attempt_accounting
+            .sparse_selected_attempts,
+        run.canonical_segment_order_attempt_accounting
+            .full_selected_attempts
+            .saturating_add(
+                run.canonical_segment_order_attempt_accounting
+                    .sparse_selected_attempts,
+            ),
+    );
+    println!(
+        "area PPT8 shader-selected attempts: full={} sparse={} total={}",
+        run.area_ppt8_attempt_accounting.full_selected_attempts,
+        run.area_ppt8_attempt_accounting.sparse_selected_attempts,
+        run.area_ppt8_attempt_accounting
+            .full_selected_attempts
+            .saturating_add(run.area_ppt8_attempt_accounting.sparse_selected_attempts),
+    );
+    println!(
+        "clip single group shader-selected attempts: full={} sparse={} total={}",
+        run.clip_single_group_attempt_accounting
+            .full_selected_attempts,
+        run.clip_single_group_attempt_accounting
+            .sparse_selected_attempts,
+        run.clip_single_group_attempt_accounting
+            .full_selected_attempts
+            .saturating_add(
+                run.clip_single_group_attempt_accounting
+                    .sparse_selected_attempts
+            ),
     );
     if frame_breakdown {
         let full_pixels = u64::from(canvas_w).saturating_mul(u64::from(canvas_h));

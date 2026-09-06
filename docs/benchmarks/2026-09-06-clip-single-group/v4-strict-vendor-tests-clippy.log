@@ -1,0 +1,114 @@
+   Compiling vello_shaders v0.9.0 (/home/user/qos/vendor/vello_shaders)
+    Checking vello v0.9.0 (/home/user/qos/vendor/vello)
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7338:17
+     |
+7338 |                 crate::recording::Command::Dispatch(shader, _, bindings)
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+     |
+7338 -                 crate::recording::Command::Dispatch(shader, _, bindings)
+7338 +                 recording::Command::Dispatch(shader, _, bindings)
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7351:38
+     |
+7351 |         let resource_id = |resource: crate::recording::ResourceProxy| match resource {
+     |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7351 -         let resource_id = |resource: crate::recording::ResourceProxy| match resource {
+7351 +         let resource_id = |resource: recording::ResourceProxy| match resource {
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7352:13
+     |
+7352 |             crate::recording::ResourceProxy::Buffer(proxy)
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7352 -             crate::recording::ResourceProxy::Buffer(proxy)
+7352 +             recording::ResourceProxy::Buffer(proxy)
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7353:15
+     |
+7353 |             | crate::recording::ResourceProxy::BufferRange { proxy, .. } => proxy.id,
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7353 -             | crate::recording::ResourceProxy::BufferRange { proxy, .. } => proxy.id,
+7353 +             | recording::ResourceProxy::BufferRange { proxy, .. } => proxy.id,
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7354:13
+     |
+7354 |             crate::recording::ResourceProxy::Image(proxy) => proxy.id,
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7354 -             crate::recording::ResourceProxy::Image(proxy) => proxy.id,
+7354 +             recording::ResourceProxy::Image(proxy) => proxy.id,
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7377:34
+     |
+7377 |         let read = |engine: &mut crate::wgpu_engine::WgpuEngine,
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7377 -         let read = |engine: &mut crate::wgpu_engine::WgpuEngine,
+7377 +         let read = |engine: &mut WgpuEngine,
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7378:28
+     |
+7378 |                     proxy: crate::recording::BufferProxy| {
+     |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7378 -                     proxy: crate::recording::BufferProxy| {
+7378 +                     proxy: recording::BufferProxy| {
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7511:34
+     |
+7511 |         let read = |engine: &mut crate::wgpu_engine::WgpuEngine,
+     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7511 -         let read = |engine: &mut crate::wgpu_engine::WgpuEngine,
+7511 +         let read = |engine: &mut WgpuEngine,
+     |
+
+warning: unnecessary qualification
+    --> vendor/vello/src/lib.rs:7512:28
+     |
+7512 |                     proxy: crate::recording::BufferProxy| {
+     |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+7512 -                     proxy: crate::recording::BufferProxy| {
+7512 +                     proxy: recording::BufferProxy| {
+     |
+
+warning: `vello` (lib test) generated 9 warnings (run `cargo clippy --fix --lib -p vello --tests -- --no-deps -D warnings` to apply 9 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.65s
+

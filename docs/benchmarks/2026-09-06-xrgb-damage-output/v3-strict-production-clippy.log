@@ -1,0 +1,109 @@
+    Checking shell v0.1.0 (/home/user/qos/shell)
+error: unused variable: `result`
+    --> shell/src/compositor/backend/drm/scanout.rs:1092:13
+     |
+1092 |         let result = match write_result {
+     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_result`
+     |
+     = note: `-D unused-variables` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(unused_variables)]`
+
+error: this function has too many lines (124/100)
+    --> shell/src/compositor/backend/drm/paint.rs:1202:5
+     |
+1202 | /     fn paint_damage_into_xrgb8888_core(
+1203 | |         &mut self,
+1204 | |         scene: &Scene,
+1205 | |         damage: SceneDamage<'_>,
+...    |
+1209 | |         require_complete_destination: bool,
+1210 | |     ) -> Result<XrgbWriteResult, BridgeError> {
+     | |_____________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+     = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+error: docs for function returning `Result` missing `# Errors` section
+   --> shell/src/compositor/backend/drm/scanout.rs:988:5
+    |
+988 | /     pub fn present_scene_damage(
+989 | |         &mut self,
+990 | |         cursor: Option<(f64, f64)>,
+991 | |         bridge: &mut VelloDrmBridge,
+992 | |         scene: &Scene,
+993 | |         damage: SceneDamage<'_>,
+994 | |     ) -> Result<(), BridgeError> {
+    | |________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+    = note: `-D clippy::missing-errors-doc` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+error: this function has too many lines (115/100)
+   --> shell/src/compositor/backend/drm/scanout.rs:988:5
+    |
+988 | /     pub fn present_scene_damage(
+989 | |         &mut self,
+990 | |         cursor: Option<(f64, f64)>,
+991 | |         bridge: &mut VelloDrmBridge,
+992 | |         scene: &Scene,
+993 | |         damage: SceneDamage<'_>,
+994 | |     ) -> Result<(), BridgeError> {
+    | |________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+
+error: unnecessary boolean `not` operation
+   --> shell/src/compositor/backend/drm/xrgb_history.rs:180:9
+    |
+180 | /         if !preserve_other_targets {
+181 | |             self.invalidate();
+182 | |             self.identity = Some(identity);
+183 | |         } else {
+...   |
+198 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#if_not_else
+    = note: `-D clippy::if-not-else` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::if_not_else)]`
+help: try
+    |
+180 ~         if preserve_other_targets {
+181 +             for (index, target) in self
+182 +                 .targets
+183 +                 .iter_mut()
+184 +                 .enumerate()
+185 +                 .take(self.active_targets)
+186 +             {
+187 +                 if index != target_index
+188 +                     && target.valid
+189 +                     && !Self::append_rects(&mut target.pending, &self.pending_delta, identity)
+190 +                 {
+191 +                     target.valid = false;
+192 +                     target.pending.clear();
+193 +                 }
+194 +             }
+195 +         } else {
+196 +             self.invalidate();
+197 +             self.identity = Some(identity);
+198 +         }
+    |
+
+error: this function has too many lines (103/100)
+   --> shell/src/compositor/backend/drm/mod.rs:266:1
+    |
+266 | / fn paint_scanouts(
+267 | |     scanouts: &mut [ScanoutEntry],
+268 | |     outputs: &[Output],
+269 | |     paint: &mut Option<paint::VelloDrmBridge>,
+...   |
+272 | |     damage: Option<SceneDamage<'_>>,
+273 | | ) {
+    | |_^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+
+error: could not compile `shell` (lib) due to 6 previous errors
+

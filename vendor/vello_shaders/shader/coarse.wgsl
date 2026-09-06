@@ -84,6 +84,13 @@ var<workgroup> sh_tile_base: array<u32, WG_SIZE>;
 
 var<private> cmd_offset: u32;
 var<private> cmd_limit: u32;
+#ifdef opaque_prune
+// The per-tile fixed allocation is preserved as a command-list header plus
+// the initial command block. Pruning only makes any prior dynamic chain
+// unreachable; it never gives an allocation back to the global bump counter.
+var<private> cmd_initial_offset: u32;
+var<private> cmd_initial_limit: u32;
+#endif
 
 // Make sure there is space for a command of given size, plus a jump if needed
 fn alloc_cmd(size: u32) {
@@ -106,7 +113,11 @@ fn alloc_cmd(size: u32) {
     }
 }
 
+#ifdef solid_fuse
+fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) -> bool {
+#else
 fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) {
+#endif
     // We overload the "segments" field to store both count (written by
     // path_count stage) and segment allocation (used by path_tiling and
     // fine).
@@ -123,31 +134,65 @@ fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) {
         ptcl[cmd_offset + 2u] = fill.seg_data;
         ptcl[cmd_offset + 3u] = u32(fill.backdrop);
         cmd_offset += 4u;
+#ifdef solid_fuse
+        return false;
+#endif
     } else {
+#ifdef solid_fuse
+        // The immediate successor owns the ordinary SOLID area assignments.
+        // It may follow a dynamic jump, so mark that command rather than the
+        // current cursor.
+        return true;
+#else
         alloc_cmd(1u);
         ptcl[cmd_offset] = CMD_SOLID;
         cmd_offset += 1u;
+#endif
     }
 }
 
+#ifdef solid_fuse
+fn write_color(color: CmdColor, fused_solid: bool) {
+#else
 fn write_color(color: CmdColor) {
+#endif
     alloc_cmd(2u);
+#ifdef solid_fuse
+    ptcl[cmd_offset] = CMD_COLOR | select(0u, CMD_SOLID_FUSED, fused_solid);
+#else
     ptcl[cmd_offset] = CMD_COLOR;
+#endif
     ptcl[cmd_offset + 1u] = color.rgba_color;
     cmd_offset += 2u;
 }
 
+#ifdef solid_fuse
+fn write_grad(ty: u32, index: u32, info_offset: u32, fused_solid: bool) {
+#else
 fn write_grad(ty: u32, index: u32, info_offset: u32) {
+#endif
     alloc_cmd(3u);
+#ifdef solid_fuse
+    ptcl[cmd_offset] = ty | select(0u, CMD_SOLID_FUSED, fused_solid);
+#else
     ptcl[cmd_offset] = ty;
+#endif
     ptcl[cmd_offset + 1u] = index;
     ptcl[cmd_offset + 2u] = info_offset;
     cmd_offset += 3u;
 }
 
+#ifdef solid_fuse
+fn write_image(info_offset: u32, fused_solid: bool) {
+#else
 fn write_image(info_offset: u32) {
+#endif
     alloc_cmd(2u);
+#ifdef solid_fuse
+    ptcl[cmd_offset] = CMD_IMAGE | select(0u, CMD_SOLID_FUSED, fused_solid);
+#else
     ptcl[cmd_offset] = CMD_IMAGE;
+#endif
     ptcl[cmd_offset + 1u] = info_offset;
     cmd_offset += 2u;
 }
@@ -158,17 +203,33 @@ fn write_begin_clip() {
     cmd_offset += 1u;
 }
 
+#ifdef solid_fuse
+fn write_end_clip(end_clip: CmdEndClip, fused_solid: bool) {
+#else
 fn write_end_clip(end_clip: CmdEndClip) {
+#endif
     alloc_cmd(3u);
+#ifdef solid_fuse
+    ptcl[cmd_offset] = CMD_END_CLIP | select(0u, CMD_SOLID_FUSED, fused_solid);
+#else
     ptcl[cmd_offset] = CMD_END_CLIP;
+#endif
     ptcl[cmd_offset + 1u] = end_clip.blend;
     ptcl[cmd_offset + 2u] = bitcast<u32>(end_clip.alpha);
     cmd_offset += 3u;
 }
 
+#ifdef solid_fuse
+fn write_blurred_rounded_rect(color: CmdColor, info_offset: u32, fused_solid: bool) {
+#else
 fn write_blurred_rounded_rect(color: CmdColor, info_offset: u32) {
+#endif
     alloc_cmd(3u);
+#ifdef solid_fuse
+    ptcl[cmd_offset] = CMD_BLUR_RECT | select(0u, CMD_SOLID_FUSED, fused_solid);
+#else
     ptcl[cmd_offset] = CMD_BLUR_RECT;
+#endif
     ptcl[cmd_offset + 1u] = info_offset;
     ptcl[cmd_offset + 2u] = color.rgba_color;
     cmd_offset += 3u;
@@ -247,6 +308,10 @@ fn main(
 #endif
     cmd_offset = this_tile_ix * PTCL_INITIAL_ALLOC;
     cmd_limit = cmd_offset + (PTCL_INITIAL_ALLOC - PTCL_HEADROOM);
+#ifdef opaque_prune
+    cmd_initial_offset = cmd_offset + 1u;
+    cmd_initial_limit = cmd_limit;
+#endif
 
     // clip state
     var clip_zero_depth = 0u;
@@ -442,37 +507,85 @@ fn main(
                 let tile = tiles[tile_ix];
                 switch drawtag {
                     case DRAWTAG_FILL_COLOR: {
-                        write_path(tile, tile_ix, draw_flags);
                         let rgba_color = scene[dd];
+#ifdef opaque_prune
+                        let even_odd = (draw_flags & DRAW_INFO_FLAGS_FILL_RULE_BIT) != 0u;
+                        let backdrop_clear = select(tile.backdrop, abs(tile.backdrop) & 1, even_odd) == 0;
+                        // Only a completely un-clipped, unsegmented, opaque
+                        // fill over a non-clear backdrop can replace the
+                        // earlier list. Keep historical blend accounting and
+                        // every prior bump allocation intact.
+                        if clip_zero_depth == 0u
+                            && clip_depth == 0u
+                            && render_blend_depth == 0u
+                            && tile.segment_count_or_ix == 0u
+                            && !backdrop_clear
+                            && (rgba_color >> 24u) == 255u
+                        {
+                            cmd_offset = cmd_initial_offset;
+                            cmd_limit = cmd_initial_limit;
+                        }
+#endif
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_color(CmdColor(rgba_color), fused_solid);
+#else
+                        write_path(tile, tile_ix, draw_flags);
                         write_color(CmdColor(rgba_color));
+#endif
                     }
                     case DRAWTAG_BLURRED_ROUNDED_RECT: {
-                        write_path(tile, tile_ix, draw_flags);
                         let rgba_color = scene[dd];
                         let info_offset = di + 1u;
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_blurred_rounded_rect(CmdColor(rgba_color), info_offset, fused_solid);
+#else
+                        write_path(tile, tile_ix, draw_flags);
                         write_blurred_rounded_rect(CmdColor(rgba_color), info_offset);
+#endif
                     }
                     case DRAWTAG_FILL_LIN_GRADIENT: {
-                        write_path(tile, tile_ix, draw_flags);
                         let index = scene[dd];
                         let info_offset = di + 1u;
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_grad(CMD_LIN_GRAD, index, info_offset, fused_solid);
+#else
+                        write_path(tile, tile_ix, draw_flags);
                         write_grad(CMD_LIN_GRAD, index, info_offset);
+#endif
                     }
                     case DRAWTAG_FILL_RAD_GRADIENT: {
-                        write_path(tile, tile_ix, draw_flags);
                         let index = scene[dd];
                         let info_offset = di + 1u;
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_grad(CMD_RAD_GRAD, index, info_offset, fused_solid);
+#else
+                        write_path(tile, tile_ix, draw_flags);
                         write_grad(CMD_RAD_GRAD, index, info_offset);
+#endif
                     }
                     case DRAWTAG_FILL_SWEEP_GRADIENT: {
-                        write_path(tile, tile_ix, draw_flags);
                         let index = scene[dd];
                         let info_offset = di + 1u;
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_grad(CMD_SWEEP_GRAD, index, info_offset, fused_solid);
+#else
+                        write_path(tile, tile_ix, draw_flags);
                         write_grad(CMD_SWEEP_GRAD, index, info_offset);
+#endif
                     }
                     case DRAWTAG_FILL_IMAGE: {
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_image(di + 1u, fused_solid);
+#else
                         write_path(tile, tile_ix, draw_flags);
                         write_image(di + 1u);
+#endif
                     }
                     case DRAWTAG_BEGIN_CLIP: {
                         let even_odd = (draw_flags & DRAW_INFO_FLAGS_FILL_RULE_BIT) != 0u;
@@ -488,10 +601,15 @@ fn main(
                     }
                     case DRAWTAG_END_CLIP: {
                         clip_depth -= 1u;
-                        write_path(tile, tile_ix, draw_flags);
                         let blend = scene[dd];
                         let alpha = bitcast<f32>(scene[dd + 1u]);
+#ifdef solid_fuse
+                        let fused_solid = write_path(tile, tile_ix, draw_flags);
+                        write_end_clip(CmdEndClip(blend, alpha), fused_solid);
+#else
+                        write_path(tile, tile_ix, draw_flags);
                         write_end_clip(CmdEndClip(blend, alpha));
+#endif
                         render_blend_depth -= 1u;
                     }
                     default: {}

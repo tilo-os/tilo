@@ -1,0 +1,83 @@
+{
+  "v2": {
+    "complete": false,
+    "compileExit": 101,
+    "log": "shell-example-tests-v2.log"
+  },
+  "v3": {
+    "tests": {
+      "passed": 26,
+      "failed": 0,
+      "ignored": 6
+    },
+    "strictClippyExit": 0,
+    "testInclusiveClippyExit": 0,
+    "changedLineCompilerDiagnostics": 0,
+    "formatExit": 0,
+    "diffCheckExit": 0,
+    "preCaptureSourceMatch": true,
+    "diagnosticExit": 0,
+    "captures": 11,
+    "exactPixelPairs": 11,
+    "diagnosticSeconds": 19.33,
+    "geometryBytesPerCapture": 55987288
+  },
+  "selection": "paired solid-command fusion next; off default; no measured latency improvement yet",
+  "sparsePredictions": [
+    {
+      "label": "framework_click_2_topbar_overview_button",
+      "commands": 31973,
+      "solid": 9410,
+      "fusionCommandReductionPercent": 29.431082475838988,
+      "rootPruneRemoved": 0,
+      "clipLocalRemoved": 4027,
+      "clipLocalReductionPercent": 12.595002032965315,
+      "potentialClearRowPercent": 60.768122252633326,
+      "maxClipDepth": 2
+    },
+    {
+      "label": "framework_click_3_topbar_tray_pill",
+      "commands": 31643,
+      "solid": 9302,
+      "fusionCommandReductionPercent": 29.396707012609426,
+      "rootPruneRemoved": 0,
+      "clipLocalRemoved": 3911,
+      "clipLocalReductionPercent": 12.35976361280536,
+      "potentialClearRowPercent": 59.71815059887763,
+      "maxClipDepth": 2
+    },
+    {
+      "label": "framework_click_4_topbar_overview_button",
+      "commands": 32131,
+      "solid": 9427,
+      "fusionCommandReductionPercent": 29.33926737418692,
+      "rootPruneRemoved": 0,
+      "clipLocalRemoved": 3947,
+      "clipLocalReductionPercent": 12.284087018766924,
+      "potentialClearRowPercent": 60.51785272532366,
+      "maxClipDepth": 2
+    },
+    {
+      "label": "framework_click_5_topbar_tray_pill",
+      "commands": 31643,
+      "solid": 9302,
+      "fusionCommandReductionPercent": 29.396707012609426,
+      "rootPruneRemoved": 0,
+      "clipLocalRemoved": 3911,
+      "clipLocalReductionPercent": 12.35976361280536,
+      "potentialClearRowPercent": 59.715823421008544,
+      "maxClipDepth": 2
+    },
+    {
+      "label": "framework_click_6_topbar_overview_button",
+      "commands": 32131,
+      "solid": 9427,
+      "fusionCommandReductionPercent": 29.33926737418692,
+      "rootPruneRemoved": 0,
+      "clipLocalRemoved": 3947,
+      "clipLocalReductionPercent": 12.284087018766924,
+      "potentialClearRowPercent": 60.51562757710704,
+      "maxClipDepth": 2
+    }
+  ]
+}

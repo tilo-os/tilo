@@ -1,0 +1,41 @@
+{
+  "initial_check": {
+    "chunk_id": "7420f5",
+    "wall_time_seconds": 0.112772164,
+    "exit_code": 1,
+    "original_token_count": 335,
+    "output": "[{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-format-diff.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false},{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-strict-production-clippy.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false},{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-test-inclusive-changed-line-clippy.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false},{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-example-tests.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false},{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-default-native-oracle.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false},{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-bounds-native-oracle.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false},{\"path\":\"/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-profile-bounds-xrgb-example-tests.log\",\"contains_complete_output\":true,\"contains_command\":false,\"contains_exit\":false}]\n"
+  },
+  "initial_check_explanation": "Auditor initially assumed command/exit wrappers in raw validation logs. Validation logs deliberately contain raw output only; commands are preserved separately in the plan, exits in the summary. All complete output strings already matched. Corrected check compares every raw log exactly after trailing-newline normalization.",
+  "corrected_check": [
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-format-diff.log",
+      "exact_output": true
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-strict-production-clippy.log",
+      "exact_output": true
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-test-inclusive-changed-line-clippy.log",
+      "exact_output": true
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-example-tests.log",
+      "exact_output": true
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-default-native-oracle.log",
+      "exact_output": true
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-bounds-native-oracle.log",
+      "exact_output": true
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-profile-bounds-xrgb-example-tests.log",
+      "exact_output": true
+    }
+  ],
+  "passed": true
+}

@@ -1,0 +1,14 @@
+{
+  "version": "v3",
+  "status": "runtime fixture failure",
+  "lint_checks_passed": 4,
+  "changed_line_diagnostics": 0,
+  "vendor_tests": {
+    "passed": 101,
+    "failed": 2,
+    "cause": "Test mapped pooled download capacity, not requested copy payload:13 uploaded/copied words versus16 mapped words. Explicit uploaded tail must remain checked."
+  },
+  "native_oracles_executed": 0,
+  "performance_runs_executed": 0,
+  "logs_preserved": true
+}

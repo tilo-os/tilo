@@ -1,0 +1,119 @@
+$ timeout --signal=TERM --kill-after=30s 15m env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK -u QOS_REDRAW_BENCH_SCENE_REUSE cargo clippy -p ui -p shell -p vello --lib --example ui-perf --example redraw_bench --locked --no-deps -- -D warnings
+    Checking atomic-file v0.1.0 (/home/user/qos/crates/system/atomic-file)
+    Checking runtime-portal v0.1.0 (/home/user/qos/crates/runtime/runtime-portal)
+    Checking collab-types v0.1.0 (/home/user/qos/crates/collab/collab-types)
+    Checking qdoc v0.1.0 (/home/user/qos/crates/doc/qdoc)
+   Compiling runtime-fs v0.1.0 (/home/user/qos/crates/runtime/runtime-fs)
+    Checking runtime-identity v0.1.0 (/home/user/qos/crates/runtime/runtime-identity)
+    Checking settings-store v0.1.0 (/home/user/qos/crates/system/settings-store)
+   Compiling runtime-collab v0.1.0 (/home/user/qos/crates/runtime/runtime-collab)
+    Checking threshold-identity v0.1.0 (/home/user/qos/crates/collab/threshold-identity)
+    Checking cli v0.1.0 (/home/user/qos/crates/runtime/cli)
+   Compiling ui v0.1.0 (/home/user/qos/ui)
+    Checking vello v0.9.0 (/home/user/qos/vendor/vello)
+    Checking app-state v0.1.0 (/home/user/qos/crates/system/app-state)
+    Checking tts v0.1.0 (/home/user/qos/crates/system/tts)
+    Checking qos-actions v0.1.0 (/home/user/qos/crates/collab/actions)
+    Checking media v0.1.0 (/home/user/qos/crates/media)
+    Checking qos-headless-schema v0.1.0 (/home/user/qos/crates/dev/headless-schema)
+    Checking qos-startup-metrics v0.1.0 (/home/user/qos/crates/system/qos-startup-metrics)
+    Checking qos-ui-graph v0.1.0 (/home/user/qos/crates/dev/ui-graph)
+    Checking spellcheck v0.1.0 (/home/user/qos/crates/text/spellcheck)
+   Compiling launcher v0.1.0 (/home/user/qos/crates/packaging/launcher)
+    Checking thumbnail v0.1.0 (/home/user/qos/crates/thumbnail)
+    Checking pkg v0.1.0 (/home/user/qos/crates/packaging/pkg)
+    Checking runtime-bundle v0.1.0 (/home/user/qos/crates/packaging/runtime-bundle)
+    Checking qos-power-mgmt v0.1.0 (/home/user/qos/crates/system/power)
+    Checking qos-user-identity v0.1.0 (/home/user/qos/crates/identity/qos-user-identity)
+    Checking qos-desktop-entry v0.1.0 (/home/user/qos/crates/system/desktop-entry)
+    Checking qdoc-html v0.1.0 (/home/user/qos/crates/doc/qdoc-html)
+    Checking qdoc-epub v0.1.0 (/home/user/qos/crates/doc/qdoc-epub)
+    Checking fs v0.1.0 (/home/user/qos/fs)
+    Checking windows-vm v0.1.0 (/home/user/qos/crates/system/windows-vm)
+    Checking ush v0.1.0 (/home/user/qos/crates/runtime/ush)
+    Checking qdoc-rtf v0.1.0 (/home/user/qos/crates/doc/qdoc-rtf)
+    Checking qdoc-pdf v0.1.0 (/home/user/qos/crates/doc/qdoc-pdf)
+    Checking qos-bluez v0.1.0 (/home/user/qos/crates/system/qos-bluez)
+    Checking compat-catalogue v0.1.0 (/home/user/qos/crates/windows/compat-catalogue)
+    Checking compat-service v0.1.0 (/home/user/qos/crates/windows/compat-service)
+    Checking os-actions v0.1.0 (/home/user/qos/crates/system/os-actions)
+    Checking qos-relay v0.1.0 (/home/user/qos/crates/hosting/qos-relay)
+    Checking qos-projector v0.1.0 (/home/user/qos/crates/system/projector)
+    Checking qos-callstream v0.1.0 (/home/user/qos/crates/collab/qos-callstream)
+    Checking desktop-policy v0.1.0 (/home/user/qos/crates/system/desktop-policy)
+    Checking channel-crypto v0.1.0 (/home/user/qos/crates/collab/channel-crypto)
+    Checking collab-fixtures v0.1.0 (/home/user/qos/crates/collab/collab-fixtures)
+    Checking qos-app v0.1.0 (/home/user/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/user/qos/crates/session/greeter)
+    Checking word-processor v0.1.0 (/home/user/qos/apps/word-processor)
+    Checking file-explorer v0.2.0 (/home/user/qos/apps/file-explorer)
+    Checking terminal v0.2.1 (/home/user/qos/apps/terminal)
+    Checking shell v0.1.0 (/home/user/qos/shell)
+error: indexing may panic
+   --> shell/src/compositor/backend/drm/paint.rs:689:25
+    |
+689 |                 bytes: &mapped[0],
+    |                         ^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+    = note: requested on the command line with `-D clippy::indexing-slicing`
+
+error: indexing may panic
+   --> shell/src/compositor/backend/drm/paint.rs:695:25
+    |
+695 |                 bytes: &mapped[1],
+    |                         ^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: indexing may panic
+   --> shell/src/compositor/backend/drm/paint.rs:702:32
+    |
+702 |             let left_witness = mapped[2]
+    |                                ^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: used `expect()` on a `Result` value
+   --> shell/src/compositor/backend/drm/paint.rs:704:48
+    |
+704 |                 .map(|word| u32::from_le_bytes(word.try_into().expect("u32 witness")))
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+    = note: requested on the command line with `-D clippy::expect-used`
+
+error: indexing may panic
+   --> shell/src/compositor/backend/drm/paint.rs:706:33
+    |
+706 |             let right_witness = mapped[3]
+    |                                 ^^^^^^^^^
+    |
+    = help: consider using `.get(n)` or `.get_mut(n)` instead
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#indexing_slicing
+
+error: used `expect()` on a `Result` value
+   --> shell/src/compositor/backend/drm/paint.rs:708:48
+    |
+708 |                 .map(|word| u32::from_le_bytes(word.try_into().expect("u32 witness")))
+    |                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#expect_used
+
+error: arithmetic operation that can potentially result in unexpected side-effects
+    --> shell/src/compositor/backend/drm/paint.rs:1706:24
+     |
+1706 |         let deadline = Instant::now() + std::time::Duration::from_secs(1);
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#arithmetic_side_effects
+     = note: requested on the command line with `-D clippy::arithmetic-side-effects`
+
+error: could not compile `shell` (lib) due to 7 previous errors
+
+EXIT_CODE=101

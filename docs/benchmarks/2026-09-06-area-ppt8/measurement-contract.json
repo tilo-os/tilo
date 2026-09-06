@@ -1,0 +1,28 @@
+{
+  "active_plan": "comparison-plan-v2.json",
+  "superseded_plan": "comparison-plan.json",
+  "correction": "Restored the required dashboard_perf_bench UI subcommand omitted from initial draft; no runtime or build started for this candidate.",
+  "comparisons": 30,
+  "shell_attempts": 18,
+  "ui_attempts": 12,
+  "rounds": 3,
+  "complete_1000_samples_per_attempt": true,
+  "native_extent": [
+    3840,
+    2160
+  ],
+  "default_release_options": true,
+  "profiling_and_timestamp_env_cleared": true,
+  "source_and_binary_hashes_required": true,
+  "per_attempt_artifacts": "raw .log plus unique .result.json metadata written after the process completes; no timed-loop I/O added",
+  "selection_counters_required": true,
+  "run_serially_after_validation_and_release": true,
+  "timeout": "15 minutes plus 30 seconds TERM grace",
+  "preserve_all_attempts_and_outliers": true,
+  "do_not_replace_failed_attempts": true,
+  "mean": "shell exact total / sample count",
+  "p99": "nearest rank",
+  "gate_failure_results_retained_in_statistics": true,
+  "timeout_or_crash_retained_in_attempt_denominator": true,
+  "success_requires_ordinary_default_confirmation_after_promotion": true
+}

@@ -1,0 +1,76 @@
+Command: set -o pipefail
+cargo clippy -p ui -p shell -p vello --lib --tests --example ui-perf --example redraw_bench --locked --no-deps --message-format=json -- --cap-lints warn | python3 -c 'import json,sys
+ranges=json.loads("{\"shell/examples/redraw_bench.rs\":[[34,35],[111,137],[631,633],[702,709],[732,733],[788,789],[794,796],[804,805],[809,811],[813,813],[831,831],[839,839],[845,845],[931,970],[1230,1250],[1275,2127],[2148,2466],[2468,2470]],\"shell/src/compositor/backend/drm/paint.rs\":[[113,136],[141,156],[187,190],[260,260],[349,355],[510,895],[936,936],[951,954],[957,957],[1096,1120],[1152,1152],[1340,1372],[1451,1451],[1489,1489],[1491,1491],[1538,1575],[1633,1638],[2180,2210]],\"shell/src/shell/overlay_host.rs\":[[5565,5575]],\"ui/examples/dashboard_perf_bench.rs\":[[474,475],[529,533],[600,609],[1500,1534],[1698,1698],[1702,1709],[1718,1728],[2270,2271],[2342,2342],[2344,2345]],\"ui/src/animation/animated.rs\":[[255,265],[554,593]],\"ui/src/offscreen.rs\":[[165,172],[585,590],[1293,1307],[1621,1624],[2340,2368],[2397,2447],[2502,2672]],\"vendor/vello/src/lib.rs\":[[260,267],[506,568],[760,762],[799,819],[823,824],[830,830],[843,843],[881,920],[1095,1115],[1139,1143],[1424,1677],[1724,1755],[1766,1768],[1772,1772],[2247,2261],[2832,2835],[2866,2869],[2891,2932]],\"vendor/vello/src/render.rs\":[[250,254],[1034,1119],[1138,1145],[1182,1182],[1188,1188],[1191,1191],[1255,1255],[1285,1285],[1289,1293],[1299,1301],[1320,1320],[1323,1323],[1340,1340],[1343,1343],[1352,1560]],\"vendor/vello/src/wgpu_engine.rs\":[[81,81],[137,163],[1134,1145],[1189,1189],[1446,1449],[2553,2556],[3467,3496]]}")
+count=0
+for line in sys.stdin:
+ try: r=json.loads(line)
+ except json.JSONDecodeError: continue
+ if r.get("reason")!="compiler-message": continue
+ m=r["message"]
+ rendered=m.get("rendered") or m.get("message","")
+ relevant=m.get("level")=="error" or "native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions" in rendered
+ for s in m.get("spans",[]):
+  if not s.get("is_primary"): continue
+  p=s.get("file_name","").removeprefix("/home/user/qos/")
+  relevant=relevant or any(s.get("line_start",0)<=hi and s.get("line_end",0)>=lo for lo,hi in ranges.get(p,[]))
+ if relevant:
+  count+=1
+  print(rendered,flush=True)
+print("Changed-line/compiler diagnostics:",count,flush=True)
+sys.exit(1 if count else 0)
+'
+Exit code: 0
+
+    Checking atomic-file v0.1.0 (/home/user/qos/crates/system/atomic-file)
+    Checking runtime-portal v0.1.0 (/home/user/qos/crates/runtime/runtime-portal)
+    Checking collab-types v0.1.0 (/home/user/qos/crates/collab/collab-types)
+    Checking qdoc v0.1.0 (/home/user/qos/crates/doc/qdoc)
+   Compiling runtime-fs v0.1.0 (/home/user/qos/crates/runtime/runtime-fs)
+    Checking runtime-identity v0.1.0 (/home/user/qos/crates/runtime/runtime-identity)
+    Checking settings-store v0.1.0 (/home/user/qos/crates/system/settings-store)
+    Checking threshold-identity v0.1.0 (/home/user/qos/crates/collab/threshold-identity)
+   Compiling runtime-collab v0.1.0 (/home/user/qos/crates/runtime/runtime-collab)
+    Checking cli v0.1.0 (/home/user/qos/crates/runtime/cli)
+   Compiling ui v0.1.0 (/home/user/qos/ui)
+    Checking app-state v0.1.0 (/home/user/qos/crates/system/app-state)
+    Checking tts v0.1.0 (/home/user/qos/crates/system/tts)
+    Checking qos-actions v0.1.0 (/home/user/qos/crates/collab/actions)
+    Checking media v0.1.0 (/home/user/qos/crates/media)
+    Checking qos-startup-metrics v0.1.0 (/home/user/qos/crates/system/qos-startup-metrics)
+    Checking qos-ui-graph v0.1.0 (/home/user/qos/crates/dev/ui-graph)
+    Checking qos-headless-schema v0.1.0 (/home/user/qos/crates/dev/headless-schema)
+    Checking spellcheck v0.1.0 (/home/user/qos/crates/text/spellcheck)
+   Compiling launcher v0.1.0 (/home/user/qos/crates/packaging/launcher)
+    Checking pkg v0.1.0 (/home/user/qos/crates/packaging/pkg)
+    Checking thumbnail v0.1.0 (/home/user/qos/crates/thumbnail)
+    Checking runtime-bundle v0.1.0 (/home/user/qos/crates/packaging/runtime-bundle)
+    Checking qos-user-identity v0.1.0 (/home/user/qos/crates/identity/qos-user-identity)
+    Checking qos-power-mgmt v0.1.0 (/home/user/qos/crates/system/power)
+    Checking qos-desktop-entry v0.1.0 (/home/user/qos/crates/system/desktop-entry)
+    Checking qdoc-html v0.1.0 (/home/user/qos/crates/doc/qdoc-html)
+    Checking qdoc-epub v0.1.0 (/home/user/qos/crates/doc/qdoc-epub)
+    Checking fs v0.1.0 (/home/user/qos/fs)
+    Checking windows-vm v0.1.0 (/home/user/qos/crates/system/windows-vm)
+    Checking ush v0.1.0 (/home/user/qos/crates/runtime/ush)
+    Checking qdoc-pdf v0.1.0 (/home/user/qos/crates/doc/qdoc-pdf)
+    Checking qdoc-rtf v0.1.0 (/home/user/qos/crates/doc/qdoc-rtf)
+    Checking qos-bluez v0.1.0 (/home/user/qos/crates/system/qos-bluez)
+    Checking compat-catalogue v0.1.0 (/home/user/qos/crates/windows/compat-catalogue)
+    Checking compat-service v0.1.0 (/home/user/qos/crates/windows/compat-service)
+    Checking qos-relay v0.1.0 (/home/user/qos/crates/hosting/qos-relay)
+    Checking os-actions v0.1.0 (/home/user/qos/crates/system/os-actions)
+    Checking qos-projector v0.1.0 (/home/user/qos/crates/system/projector)
+    Checking qos-callstream v0.1.0 (/home/user/qos/crates/collab/qos-callstream)
+    Checking desktop-policy v0.1.0 (/home/user/qos/crates/system/desktop-policy)
+    Checking channel-crypto v0.1.0 (/home/user/qos/crates/collab/channel-crypto)
+    Checking collab-fixtures v0.1.0 (/home/user/qos/crates/collab/collab-fixtures)
+    Checking vello v0.9.0 (/home/user/qos/vendor/vello)
+    Checking qos-app v0.1.0 (/home/user/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/user/qos/crates/session/greeter)
+    Checking word-processor v0.1.0 (/home/user/qos/apps/word-processor)
+    Checking file-explorer v0.2.0 (/home/user/qos/apps/file-explorer)
+    Checking terminal v0.2.1 (/home/user/qos/apps/terminal)
+    Checking shell v0.1.0 (/home/user/qos/shell)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 09s
+Changed-line/compiler diagnostics: 0
+

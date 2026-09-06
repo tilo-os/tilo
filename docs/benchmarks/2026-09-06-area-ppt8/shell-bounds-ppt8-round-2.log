@@ -1,0 +1,55 @@
+$ timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK -u QOS_REDRAW_BENCH_SCENE_REUSE -u VELLO_CANONICAL_SEGMENT_ORDER -u QOS_DRM_XRGB_DAMAGE -u QOS_REDRAW_BENCH_PROFILE_OUTPUT -u VELLO_AREA_PPT8 VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_AREA_PPT8=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-area-ppt8-20260906
+
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+DRM bridge adapter: name="llvmpipe (LLVM 22.1.8, 128 bits)" backend=Vulkan device_type=Cpu driver="llvmpipe"
+sparse path tile bounds: env_requested=true renderer_requested=true available=true (profile counts only submissions where returned stats report applied bounds; tile area is not an allocation or memory-saving claim)
+sparse fine quad skip: env_requested=false renderer_requested=false available=false (counts are actual Area fine invocation groups, not GPU memory or copy savings)
+sparse opaque prune: env_requested=false renderer_requested=false available=false (counts report only returned coarse shader selection, not tiles or commands pruned, GPU memory, or copy savings)
+sparse solid fuse: env_requested=false renderer_requested=false available=false (counts report only returned matched producer/consumer shader selection)
+sparse segment row mask: env_requested=false renderer_requested=false available=false (counts report only returned paired shader selection, not rows skipped or resource savings)
+canonical segment order: env_requested=false renderer_requested=false available=false (selected attempts report only an actual recorded pass, not completion or speed)
+area PPT8: env_requested=true renderer_requested=true available=true (selected attempts report only an actual recorded Area shader pass, not completion or speed)
+CPU XRGB damage history: requested=false available=false targets=1 (opt-in candidate; actual measured writes are reported after the action loop)
+DRM render/readback at 3840x2160: samples=1000 mean=22355us p99=59254us min=12154us max=420371us
+DRM timing total: total_us=22355544 samples=1000
+gates: mean<=25000us p99<=50000us (Fail)
+Vello render attempts: total=1000 sparse=999 full=1 recovery=0
+CPU XRGB writes: full=1000 partial=0 total=1000 bytes=33177600000
+sparse path tile bounds actual submissions: total=999 active=999 applied=999 native_bbox_tiles=799536 (counted only from returned applied stats; bbox tile area is not an allocation or memory-saving claim)
+sparse fine quad skip actual submissions: applied=0 total_invocation_groups=0 active_invocation_groups=0 skipped_invocation_groups=0 (counted only from returned applied stats; not GPU memory or copy savings)
+sparse opaque prune shader-selected submissions: 0 (counted only from returned stats; not tiles or commands pruned, GPU memory, or copy savings)
+sparse solid fuse shader-selected submissions: 0
+sparse segment row mask shader-selected submissions: 0
+canonical segment order shader-selected attempts: full=0 sparse=0 total=0
+area PPT8 shader-selected attempts: full=1 sparse=999 total=1000
+presentation: unavailable in this harness (no DRM/KMS device, dumb-buffer page flip, or display scanout timed)
+Error: "redraw gate failed (mean<=25000us p99<=50000us): total=22355544us / 1000 samples, p99=59254us"
+Command exited with non-zero status 1
+	Command being timed: "env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK -u QOS_REDRAW_BENCH_SCENE_REUSE -u VELLO_CANONICAL_SEGMENT_ORDER -u QOS_DRM_XRGB_DAMAGE -u QOS_REDRAW_BENCH_PROFILE_OUTPUT -u VELLO_AREA_PPT8 VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_AREA_PPT8=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-area-ppt8-20260906"
+	User time (seconds): 57.38
+	System time (seconds): 17.81
+	Percent of CPU this job got: 317%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:23.69
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 611592
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 10
+	Minor (reclaiming a frame) page faults: 643203
+	Voluntary context switches: 187848
+	Involuntary context switches: 45836
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 23736
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1
+
+Recorded process exit: 1

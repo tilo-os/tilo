@@ -1,0 +1,57 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE RUST_BACKTRACE=1 cargo test -p shell --example redraw_bench native_4k_shared_coarse_damage_pixels_are_exact --locked -- --ignored --nocapture --test-threads=1
+Build completed in 0.95s before this captured terminal output.
+Exit code: 101
+
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+
+thread 'tests::native_4k_shared_coarse_damage_pixels_are_exact' (521206) panicked at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:2262:22:
+wgpu error: Validation Error
+
+Caused by:
+  In Buffer::buffer_unmap
+    Buffer is not mapped
+
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/std/src/panicking.rs:689:5
+   1: core::panicking::panic_fmt
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:80:14
+   2: default_error_handler
+             at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:687:5
+   3: <wgpu::backend::wgpu_core::ErrorSinkRaw>::handle_error_or_return_handler
+             at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:671:21
+   4: handle_error_inner
+             at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:299:18
+   5: handle_error_nolabel<wgpu_core::resource::BufferAccessError>
+             at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:332:14
+   6: <wgpu::backend::wgpu_core::CoreBuffer as wgpu::dispatch::BufferInterface>::unmap
+             at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/backend/wgpu_core.rs:2262:22
+   7: <wgpu::api::buffer::Buffer>::unmap
+             at /home/user/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-29.0.3/src/api/buffer.rs:328:20
+   8: <shell::compositor::backend::drm::paint::VelloDrmBridge>::shared_coarse_fine_diagnostic_into_xrgb8888
+             at ./src/compositor/backend/drm/paint.rs:521:27
+   9: redraw_bench::tests::render_shared_coarse_diagnostic
+             at ./examples/redraw_bench.rs:1523:14
+  10: redraw_bench::tests::native_4k_shared_coarse_damage_pixels_are_exact
+             at ./examples/redraw_bench.rs:1316:37
+  11: redraw_bench::tests::native_4k_shared_coarse_damage_pixels_are_exact::{closure#0}
+             at ./examples/redraw_bench.rs:1275:57
+  12: <redraw_bench::tests::native_4k_shared_coarse_damage_pixels_are_exact::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+             at /home/user/.rustup/toolchains/1.97.1-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+  13: <fn() -> core::result::Result<(), alloc::string::String> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+FAILED
+
+failures:
+
+failures:
+    tests::native_4k_shared_coarse_damage_pixels_are_exact
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 14 filtered out; finished in 1.31s
+
+error: test failed, to rerun pass `-p shell --example redraw_bench`

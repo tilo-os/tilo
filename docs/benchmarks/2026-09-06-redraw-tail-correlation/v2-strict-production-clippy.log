@@ -1,0 +1,13 @@
+    Checking shell v0.1.0 (/home/user/qos/shell)
+error: this argument (560 byte) is passed by value, but might be more efficient if passed by reference (limit: 256 byte)
+   --> shell/examples/redraw_bench.rs:264:34
+    |
+264 |     fn record(&mut self, record: ActionCorrelationRecord) -> Result<(), String> {
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^ help: consider passing by reference instead: `&ActionCorrelationRecord`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#large_types_passed_by_value
+    = note: `-D clippy::large-types-passed-by-value` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::large_types_passed_by_value)]`
+
+error: could not compile `shell` (example "redraw_bench") due to 1 previous error
+

@@ -1,0 +1,844 @@
+[
+  {
+    "name": "shell-default-round-1",
+    "workload": "shell",
+    "variant": "default",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-default-round-1.log",
+    "exit_code": 1,
+    "opaque_prune_selected": null,
+    "stats": null,
+    "peak_rss_kib": 551952,
+    "known_gpu_bytes": null,
+    "sparse": null,
+    "quad": null,
+    "attempts": null
+  },
+  {
+    "name": "shell-bounds-round-1",
+    "workload": "shell",
+    "variant": "bounds",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-round-1.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 24054,
+      "p99_us": 59170,
+      "min_us": 12817,
+      "max_us": 513602,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 603072,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 799536
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-prune-round-1",
+    "workload": "shell",
+    "variant": "prune",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_OPAQUE_PRUNE=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-prune-round-1.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 999,
+    "stats": {
+      "count": 1000,
+      "mean_us": 39200,
+      "p99_us": 103681,
+      "min_us": 21514,
+      "max_us": 444193,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 609960,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-bounds-prune-round-1",
+    "workload": "shell",
+    "variant": "bounds-prune",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-prune-round-1.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 999,
+    "stats": {
+      "count": 1000,
+      "mean_us": 24161,
+      "p99_us": 70913,
+      "min_us": 12615,
+      "max_us": 499727,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 618936,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 799536
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "ui-default-round-1",
+    "workload": "ui",
+    "variant": "default",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-default-round-1.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7864,
+      "p99_us": 33407,
+      "max_us": 83732,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 378908,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-bounds-round-1",
+    "workload": "ui",
+    "variant": "bounds",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-bounds-round-1.log",
+    "exit_code": 0,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7777,
+      "p99_us": 28801,
+      "max_us": 136503,
+      "gate": "PASS"
+    },
+    "peak_rss_kib": 385824,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 83,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-prune-round-1",
+    "workload": "ui",
+    "variant": "prune",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_OPAQUE_PRUNE=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-prune-round-1.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 1000,
+    "stats": {
+      "count": 1000,
+      "mean_us": 8056,
+      "p99_us": 32989,
+      "max_us": 153609,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 381940,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-bounds-prune-round-1",
+    "workload": "ui",
+    "variant": "bounds-prune",
+    "round": 1,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-bounds-prune-round-1.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 1000,
+    "stats": {
+      "count": 1000,
+      "mean_us": 8159,
+      "p99_us": 32337,
+      "max_us": 71185,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 393336,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 70,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-bounds-prune-round-2",
+    "workload": "ui",
+    "variant": "bounds-prune",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-bounds-prune-round-2.log",
+    "exit_code": 0,
+    "opaque_prune_selected": 1000,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7753,
+      "p99_us": 26813,
+      "max_us": 150608,
+      "gate": "PASS"
+    },
+    "peak_rss_kib": 393980,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 81,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-prune-round-2",
+    "workload": "ui",
+    "variant": "prune",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_OPAQUE_PRUNE=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-prune-round-2.log",
+    "exit_code": 0,
+    "opaque_prune_selected": 1000,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7675,
+      "p99_us": 25595,
+      "max_us": 65420,
+      "gate": "PASS"
+    },
+    "peak_rss_kib": 381872,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-bounds-round-2",
+    "workload": "ui",
+    "variant": "bounds",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-bounds-round-2.log",
+    "exit_code": 0,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7690,
+      "p99_us": 26686,
+      "max_us": 116626,
+      "gate": "PASS"
+    },
+    "peak_rss_kib": 386508,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 82,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-default-round-2",
+    "workload": "ui",
+    "variant": "default",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-default-round-2.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7820,
+      "p99_us": 33264,
+      "max_us": 70424,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 377560,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "shell-bounds-prune-round-2",
+    "workload": "shell",
+    "variant": "bounds-prune",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-prune-round-2.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 999,
+    "stats": {
+      "count": 1000,
+      "mean_us": 23316,
+      "p99_us": 56434,
+      "min_us": 13432,
+      "max_us": 466054,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 572660,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 799536
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-prune-round-2",
+    "workload": "shell",
+    "variant": "prune",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_OPAQUE_PRUNE=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-prune-round-2.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 999,
+    "stats": {
+      "count": 1000,
+      "mean_us": 37064,
+      "p99_us": 92010,
+      "min_us": 21144,
+      "max_us": 588257,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 554860,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-bounds-round-2",
+    "workload": "shell",
+    "variant": "bounds",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-round-2.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 23830,
+      "p99_us": 60057,
+      "min_us": 13751,
+      "max_us": 557076,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 562504,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 799536
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-default-round-2",
+    "workload": "shell",
+    "variant": "default",
+    "round": 2,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-default-round-2.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 36399,
+      "p99_us": 94514,
+      "min_us": 21577,
+      "max_us": 438755,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 561068,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-bounds-round-3",
+    "workload": "shell",
+    "variant": "bounds",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-round-3.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 23168,
+      "p99_us": 60772,
+      "min_us": 13404,
+      "max_us": 510982,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 565208,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 799536
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-default-round-3",
+    "workload": "shell",
+    "variant": "default",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-default-round-3.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 39161,
+      "p99_us": 89589,
+      "min_us": 22923,
+      "max_us": 554261,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 559844,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-bounds-prune-round-3",
+    "workload": "shell",
+    "variant": "bounds-prune",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-prune-round-3.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 999,
+    "stats": {
+      "count": 1000,
+      "mean_us": 23985,
+      "p99_us": 64042,
+      "min_us": 13149,
+      "max_us": 598517,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 571212,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 799536
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "shell-prune-round-3",
+    "workload": "shell",
+    "variant": "prune",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_OPAQUE_PRUNE=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-prune-round-3.log",
+    "exit_code": 1,
+    "opaque_prune_selected": 999,
+    "stats": {
+      "count": 1000,
+      "mean_us": 38887,
+      "p99_us": 98058,
+      "min_us": 20612,
+      "max_us": 628573,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 563984,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    }
+  },
+  {
+    "name": "ui-bounds-round-3",
+    "workload": "ui",
+    "variant": "bounds",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-bounds-round-3.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7949,
+      "p99_us": 35583,
+      "max_us": 71758,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 386064,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 72,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-default-round-3",
+    "workload": "ui",
+    "variant": "default",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-default-round-3.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7878,
+      "p99_us": 32604,
+      "max_us": 49322,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 378168,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-bounds-prune-round-3",
+    "workload": "ui",
+    "variant": "bounds-prune",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-bounds-prune-round-3.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 1000,
+    "stats": {
+      "count": 1000,
+      "mean_us": 7882,
+      "p99_us": 31245,
+      "max_us": 65358,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 394164,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 76,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  },
+  {
+    "name": "ui-prune-round-3",
+    "workload": "ui",
+    "variant": "prune",
+    "round": 3,
+    "kind": "unprofiled",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_OPAQUE_PRUNE=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-opaque-tile-prune-20260906 dashboard_perf_bench",
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/ui-prune-round-3.log",
+    "exit_code": 2,
+    "opaque_prune_selected": 1000,
+    "stats": {
+      "count": 1000,
+      "mean_us": 8592,
+      "p99_us": 40081,
+      "max_us": 135435,
+      "gate": "FAIL"
+    },
+    "peak_rss_kib": 381156,
+    "known_gpu_bytes": 62282124,
+    "sparse": {
+      "total": 1000,
+      "active": 0,
+      "applied": 0,
+      "bbox_tiles": 0
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": null
+  }
+]

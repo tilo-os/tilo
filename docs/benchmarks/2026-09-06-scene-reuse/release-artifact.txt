@@ -1,0 +1,3 @@
+96eb7aa30554a2c4f5a0676aa2402e722a5e44dacccb57b503f4b6486e01e49b  /home/user/qos/target/release/examples/redraw_bench
+96eb7aa30554a2c4f5a0676aa2402e722a5e44dacccb57b503f4b6486e01e49b  /home/user/qos/target/ui-perf-comparison/shell-redraw-scene-reuse-20260906
+/home/user/qos/target/ui-perf-comparison/shell-redraw-scene-reuse-20260906 33545216 bytes

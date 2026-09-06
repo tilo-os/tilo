@@ -1,0 +1,162 @@
+{
+  "root": "/tmp/qos-ppt8-cache-20260906.BaHsy5/ppt8-1",
+  "files": 31,
+  "bytes": 2260677,
+  "entries": [
+    {
+      "path": "mesa_shader_cache/00/06b795078f193a710065af46b5bbfa87045a8ad74f57a4e213863812edef8d",
+      "bytes": 516,
+      "sha256": "8c095ab8ba7157164b8b78b098e25dc798ab3dbf79adf69fc00831bc8e676d90"
+    },
+    {
+      "path": "mesa_shader_cache/04/4ec57c2d643a7bb6e68fe9b62e7de97b1658d61494090cb7f078b782d3d1cb",
+      "bytes": 510,
+      "sha256": "5f05cdcfaf39d79ba9a158c51f85d8343ded5887304f6584f3823981941d8e21"
+    },
+    {
+      "path": "mesa_shader_cache/1a/e4a0b4fc6a1a05093c7545e1416c9bf9bc1f25ac60c2ffec8a613950ff24b6",
+      "bytes": 469,
+      "sha256": "646f84905dd526c5fb1abdce6f9e1e2bda9ba2cae502259da8df68ed983832bd"
+    },
+    {
+      "path": "mesa_shader_cache/1d/240affae95a7e02536a16ef3f80d3be1f2cd15f550c87792c6615d9d2332b4",
+      "bytes": 7346,
+      "sha256": "dc5519c91fd185f5029caa5f3c191fea9523173bb5bf900c4e99048f60d77059"
+    },
+    {
+      "path": "mesa_shader_cache/24/4fa44b99a5c21d00610f6dc89306e2bd15e94d3446b1d9d049276e4248f323",
+      "bytes": 517,
+      "sha256": "9dcd14c4e05476474ecca538ff43e9060e75bda71551535f6ff37d8e4156ddcf"
+    },
+    {
+      "path": "mesa_shader_cache/37/6eb531c23e2dbd46c760cb42f2e331c62cfed4de03c765ea6c422a8e8a9622",
+      "bytes": 511,
+      "sha256": "988421f8b17588f47d8ea2c4a9efa848594b4a28af3bf746736ec3f3a85d26b0"
+    },
+    {
+      "path": "mesa_shader_cache/3f/bfe6b288d6730033f97f23bdc8c4f72924ab78081fa2b6d505d9cae9c02f62",
+      "bytes": 516,
+      "sha256": "80ebd5d7ad4a6832a3df788b3f151bc4a5c3368c568ab7b835351fa830d6421f"
+    },
+    {
+      "path": "mesa_shader_cache/42/993ee79d6eb8f815b7d4b80b708a3736ebede078cd91e5617174bb971aad93",
+      "bytes": 46214,
+      "sha256": "9386ee30d83874d91eb1d628c812d23bc1311ff0313e269cceea0731b09619e8"
+    },
+    {
+      "path": "mesa_shader_cache/64/07b22c2c30a8aa717bb2c238c38557c3ba42b56d1480d457f3e108931d95cc",
+      "bytes": 511,
+      "sha256": "7a36f4931bfcef38636010d58c73b94dd65e4a1b5e0e4dfeab24a3d42bd607e2"
+    },
+    {
+      "path": "mesa_shader_cache/74/f8b0b619c6850a926d2680e7c2e41a53c5db7206c2c425a8f92ab3aef46db4",
+      "bytes": 5936,
+      "sha256": "3da447b0bed09707102a002db7a906d3b033da718448036a2f1880fee4bce9a3"
+    },
+    {
+      "path": "mesa_shader_cache/77/7d565131b143b0a6b38703d410852cf4745db3abe2debdacf3ccaf2f2ff1da",
+      "bytes": 452,
+      "sha256": "5aa8524eede38544ade3b0b10d846eb3d27ac6cdd12c4879f097c5d77eb98c20"
+    },
+    {
+      "path": "mesa_shader_cache/78/bad90f9136950ef894e501950dbf5edff3d0daaa5bd7f209af0f398a15e157",
+      "bytes": 517,
+      "sha256": "721d4c9d26a2d09af4529eafa133bfa0d7c7a4b9931b8f70c068cf87c7b3bbcf"
+    },
+    {
+      "path": "mesa_shader_cache/92/d6162e05f6c0327721a369436ba13bbfe347d52f1e596d63464409e0b9fdb4",
+      "bytes": 21369,
+      "sha256": "1cae7acbf55ce1876694f59c896e0c1f30cf52c393fc014a4f5e65321230acf2"
+    },
+    {
+      "path": "mesa_shader_cache/9d/eccb4e1a9f14d09ce968a331c579a8211f960a0cac107cfd5f65e211779ac8",
+      "bytes": 37530,
+      "sha256": "61c4ac5fa1254fd8929bd1eecd0d605e4bdf99afb2e25a03b37dd1bf2b0d4e27"
+    },
+    {
+      "path": "mesa_shader_cache/9e/6522030d51f713e6e503c779c2751bf6e531ef01ece6d942b842f2cf66539b",
+      "bytes": 517,
+      "sha256": "23e74eddc4194e6c497f8d6f59e9aa84d54e58f7a246afa2f5d3f5748c53ae84"
+    },
+    {
+      "path": "mesa_shader_cache/b7/7856649e58fc54418a13312ea6a7c7e3416ca7ce470ef04bce3ebb08e2f26a",
+      "bytes": 517,
+      "sha256": "da5fc2806fd6387a47425a80865f23229051ff8c763f40d0ee24f57f9eb4a28b"
+    },
+    {
+      "path": "mesa_shader_cache/b9/59cda06c0cea1d4ed9d49fa0c80caca5c5796868751baed6015ce88aabb32e",
+      "bytes": 392,
+      "sha256": "f1f4ddc824a967757adc798cceb8c8f286f002ae5f345eefa4c811b45d286b92"
+    },
+    {
+      "path": "mesa_shader_cache/b9/9075af3c618a4ba09c9e33c5c48100b15275f7c9339672ff13190025acfaf6",
+      "bytes": 14473,
+      "sha256": "67fe6c9797979435bf7f32ea78bc0eb68f499f557cc3bb7f063ea215ac1aff37"
+    },
+    {
+      "path": "mesa_shader_cache/bb/d15c08000cdf80412ef2017d0bc0788c68e21e89462780885860ae516619f3",
+      "bytes": 5469,
+      "sha256": "45be5d76ad6ec43e041a9efb3a2e8ed4469ff054cedd8b06e4a1b30d594e05cf"
+    },
+    {
+      "path": "mesa_shader_cache/c0/c2dad84e57b598a80de71f21dc6d5dfa2b7a0d2509c8794082438666ae35b6",
+      "bytes": 733,
+      "sha256": "9f0c83f48e70fddc9b981d9c0761abb721d46e6e3fc33078b0a9384eff07f150"
+    },
+    {
+      "path": "mesa_shader_cache/c8/6019f467cc349a530b0e430ffbfc2ac5714b0d9a77d0c519cb47a0dda5babc",
+      "bytes": 517,
+      "sha256": "e077c3b41f8a6aab7c4b5c0ef37a2d7a7cc2995361e94109368f5806af4bebf1"
+    },
+    {
+      "path": "mesa_shader_cache/c9/8319007d4a65d330ebfe049575f135f443051b3cb968fd457535ed57f857ec",
+      "bytes": 3968,
+      "sha256": "512fd4a6a132400acfbf287109230272e61f1b5ea82ebd425d84ca009574419f"
+    },
+    {
+      "path": "mesa_shader_cache/d3/0d4b0e80570a3f0916753dbe296ea354f65f4ad63dd29f61ccf077f82e1a89",
+      "bytes": 3551,
+      "sha256": "b948312f8080cf92d0698542856ebbbd06ff896f996b4baf2ef2e0280816e070"
+    },
+    {
+      "path": "mesa_shader_cache/d4/024cbbfd9af22d61183ee6830a9a37afe90b143bfbef27c3024ec0baf9e986",
+      "bytes": 6836,
+      "sha256": "e99fa1229e77b4175ccf07c3f56b5e0cc458f427877e6d9ae309bf9e4bf61293"
+    },
+    {
+      "path": "mesa_shader_cache/d9/92be8b937a63a8efabc89a1ce6d2f270d4ca0188ad52ffa585a0f339b0a300",
+      "bytes": 517,
+      "sha256": "03d0851ddde02d0810301da6c1ef0456fcacb7e9666edde02b6e347220061e06"
+    },
+    {
+      "path": "mesa_shader_cache/dc/85f090bcceafeda094fe994ba6e9efb806202f9e8e6f47764098a571a5d894",
+      "bytes": 881,
+      "sha256": "028a7b259cdab493c6d54195e7913c0d5b3c8b96da79247912f7f7e5aecc3a4f"
+    },
+    {
+      "path": "mesa_shader_cache/df/059003eb2ddcfc1115e4a5b09c44fb967f77a4a85f91a3f470ede7a70d5936",
+      "bytes": 510,
+      "sha256": "9b68572f87d44352fdb1eb261eb229f02dae8baaadd790a997895f53d412a883"
+    },
+    {
+      "path": "mesa_shader_cache/e0/1d1586d42e5dd5f1ec2d8abc9b9a92a1544faff357e44b21722ec49a86cdd7",
+      "bytes": 469,
+      "sha256": "5ba764495888d85062af8c344e24d0afbbad93c841cf9b81203c4cd94f948bb5"
+    },
+    {
+      "path": "mesa_shader_cache/f8/7b052d7a93a28010d9e5b9e0d096e1c5c9328f6876a71aa80746a6e7e4a083",
+      "bytes": 801,
+      "sha256": "6cb69c5126a90d8fd47ab97b04247a906a0624be0de261b41e44b92b1dc231a4"
+    },
+    {
+      "path": "mesa_shader_cache/ff/cc4639701c02c129c0c77ea593f2e22fe213e794ab299033f5db20da524ca9",
+      "bytes": 452,
+      "sha256": "d833b4180a5f69ccbb1ba61560268e352b18e7998e65980febde3ea690ac6093"
+    },
+    {
+      "path": "mesa_shader_cache/index",
+      "bytes": 2097160,
+      "sha256": "3201449239e3f7ee61a9f2f33c0ae5709de066a88a2b183d6fdf04164ee773cd"
+    }
+  ]
+}
