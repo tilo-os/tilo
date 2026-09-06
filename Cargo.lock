@@ -13601,6 +13601,7 @@ dependencies = [
  "serde_json",
  "settings-store",
  "taffy",
+ "uuid",
  "vello",
  "winit",
  "zip 4.6.1",
