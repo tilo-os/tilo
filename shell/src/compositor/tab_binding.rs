@@ -360,7 +360,7 @@ pub fn relocate_foreign_toplevel(
             })
     {
         return rename_tab_for_app_id(tree, surface_id, app_id)
-            && set_foreign_tab_title(tree, surface_id, title);
+            && rename_tab_for_title(tree, surface_id, title.to_string());
     }
     if !close_tab_for_destroyed_surface(tree, surface_id) {
         return false;
@@ -379,7 +379,10 @@ pub fn relocate_foreign_toplevel(
     false
 }
 
-fn set_foreign_tab_title(tree: &mut WorkspaceTree, surface_id: u64, title: &str) -> bool {
+/// Rewrite only a foreign tab's client-provided visible title.  App identity
+/// remains stable for launch matching and grouping; an empty title clears
+/// stale document metadata exactly as `xdg_toplevel.set_title("")` requests.
+pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: String) -> bool {
     for workspace in &mut tree.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
@@ -389,7 +392,7 @@ fn set_foreign_tab_title(tree: &mut WorkspaceTree, surface_id: u64, title: &str)
                         TileContent::Foreign { surface_id: id, .. } if *id == surface_id
                     )
                 }) {
-                    tab.title = title.to_string();
+                    tab.title = title;
                     return true;
                 }
             }
@@ -1653,5 +1656,28 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn title_change_rewrites_visible_label_without_changing_app_identity() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 99, Some("org.example.Editor".into()));
+
+        assert!(rename_tab_for_title(
+            &mut tree,
+            99,
+            "draft.md — qOS Writer".into()
+        ));
+        let tab = tab_of(&tree, 99);
+        assert_eq!(tab.title, "draft.md — qOS Writer");
+        match &tab.tile {
+            TileContent::Foreign { app_id, .. } => assert_eq!(app_id, "org.example.Editor"),
+            other => panic!("expected Foreign tile, got {other:?}"),
+        }
+
+        assert!(rename_tab_for_title(&mut tree, 99, String::new()));
+        assert!(tab_of(&tree, 99).title.is_empty());
+        assert!(!rename_tab_for_title(&mut tree, 12345, "gone".into()));
     }
 }
