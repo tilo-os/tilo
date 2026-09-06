@@ -70,6 +70,11 @@ pub struct InstallExpectation {
 
 /// Verify a registry download against every signed catalogue identity before
 /// ingesting it into the host store.
+///
+/// # Errors
+///
+/// Returns an error when the bytes do not match the expected catalogue identity
+/// or cannot be installed into the host store.
 pub fn install_verified_qpkg(
     store: &Store,
     bytes: &[u8],
