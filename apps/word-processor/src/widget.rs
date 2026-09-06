@@ -8192,7 +8192,7 @@ impl Widget for WordProcessorWidget {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    Color::from_rgba8(0, 0, 0, 90),
+                    theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
                     None,
                     &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
                 );
