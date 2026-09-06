@@ -9,7 +9,8 @@
 # gone at the next reboot. Good for "does the session entry show up in the
 # login screen", not a way to run qOS day to day.
 #
-#   sudo dist/rpm/usroverlay-install.sh
+#   sudo dist/rpm/usroverlay-install.sh             # runtime package only
+#   sudo dist/rpm/usroverlay-install.sh --devel     # runtime + developer entry
 #
 # Everything this writes lives under /usr (transient) except the PAM stack in
 # /etc, which is a genuinely writable directory on an ostree host and so
@@ -20,21 +21,33 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 rpm_arch=$(rpm --eval '%{_arch}')
 rpms_dir=$repo_root/dist/rpm/build/RPMS/$rpm_arch
 
-files=(
+runtime_files=(
     /usr/bin/qos-shell
     /usr/bin/qos-launcher
     /usr/libexec/qos-session
-    /usr/libexec/qos-session-dev
     /usr/libexec/qos-unlock-helper
     /usr/lib/systemd/user/qos-graphical-session.target
     /usr/share/wayland-sessions/qos.desktop
-    /usr/share/wayland-sessions/qos-dev.desktop
     /usr/share/xdg-desktop-portal/nirios-portals.conf
     /usr/share/xdg-desktop-portal/portals/qos.portal
     /etc/pam.d/qos-unlock
 )
+devel_files=(
+    /usr/libexec/qos-session-dev
+    /usr/share/wayland-sessions/qos-dev.desktop
+)
+
+files=("${runtime_files[@]}" "${devel_files[@]}")
+
+if [[ ${1:-} == --devel ]]; then
+    include_devel=1
+    shift
+else
+    include_devel=0
+fi
 
 if [[ ${1:-} == --uninstall ]]; then
+    [[ $(id -u) -eq 0 ]] || { echo "run me with sudo" >&2; exit 1; }
     for f in "${files[@]}"; do
         [[ -e $f ]] && rm -f -- "$f" && echo "removed $f"
     done
@@ -44,8 +57,21 @@ fi
 
 [[ $(id -u) -eq 0 ]] || { echo "run me with sudo" >&2; exit 1; }
 
-mapfile -t rpms < <(find "$rpms_dir" -name 'qos-session*.rpm' 2>/dev/null | sort)
-(( ${#rpms[@]} )) || { echo "no RPMs in $rpms_dir — run dist/rpm/build-rpm.sh first" >&2; exit 1; }
+# A normal host trial must not silently install the optional developer session.
+# The devel package is included only in the explicit --devel mode; the runtime
+# pattern also prevents an older devel package from being unpacked by accident.
+if (( include_devel )); then
+    mapfile -t rpms < <(find "$rpms_dir" -maxdepth 1 -type f \
+        \( -name 'qos-session-[0-9]*.rpm' -o -name 'qos-session-devel-[0-9]*.rpm' \) \
+        -print | sort)
+else
+    mapfile -t rpms < <(find "$rpms_dir" -maxdepth 1 -type f \
+        -name 'qos-session-[0-9]*.rpm' -print | sort)
+fi
+(( ${#rpms[@]} )) || { echo "no runtime RPMs in $rpms_dir — run dist/rpm/build-rpm.sh first" >&2; exit 1; }
+if (( ! include_devel )); then
+    files=("${runtime_files[@]}")
+fi
 
 # Refuse to clobber anything that is not ours. On a host that runs some other
 # desktop the rest of the time, quietly replacing a file under /usr is exactly
