@@ -38,6 +38,7 @@ use ui::widget::{
     Scrollbar, Suggestion, Widget,
 };
 
+use crate::actions::WeatherAction;
 use crate::api;
 use crate::chart;
 use crate::icon;
@@ -189,6 +190,11 @@ pub struct Core {
     // --- shell intent (consumed by the root widget) ---
     nav_request: Option<NavIntent>,
 
+    /// User-owned CRDT changes awaiting root-level `ActionHost` dispatch. Network
+    /// snapshots use `pending_doc_write` instead because they are external
+    /// cache effects, not replayable user decisions.
+    durable_actions: Vec<WeatherAction>,
+
     pub pending_doc_write: bool,
 }
 
@@ -234,6 +240,7 @@ impl Core {
             overview_collapsible: false,
             collapse_toggle: false,
             nav_request: None,
+            durable_actions: Vec::new(),
             pending_doc_write: false,
         }
     }
@@ -248,6 +255,14 @@ impl Core {
     /// Take a pending shell navigation intent, if any.
     pub fn take_nav_request(&mut self) -> Option<NavIntent> {
         self.nav_request.take()
+    }
+
+    pub fn take_durable_actions(&mut self) -> Vec<WeatherAction> {
+        std::mem::take(&mut self.durable_actions)
+    }
+
+    fn queue_durable_action(&mut self, action: WeatherAction) {
+        self.durable_actions.push(action);
     }
 
     /// Set whether the collapse affordance is offered (side-by-side only).
@@ -353,6 +368,11 @@ impl Core {
         if moved {
             self.scroll = 0.0;
             self.refresh_selected();
+            if let Some(location) = self.model.selected_location() {
+                self.queue_durable_action(WeatherAction::SelectLocation {
+                    id: location.id.to_string(),
+                });
+            }
         }
         moved
     }
@@ -538,11 +558,11 @@ impl Core {
             .cloned()
             .or_else(|| self.search_results.first().cloned());
         if let Some(loc) = picked {
-            self.model.add_location(loc);
+            self.model.add_location(loc.clone());
+            self.queue_durable_action(WeatherAction::AddLocation { location: loc });
             self.scroll = 0.0;
             self.refresh_selected();
             self.nav_request = Some(NavIntent::ShowDetail);
-            self.pending_doc_write = true;
             return true;
         }
         // Enter while still loading: arm an immediate geocode so the field
@@ -565,14 +585,28 @@ impl Core {
     fn apply_entry_action(&mut self, index: usize, action: EntryAction) -> bool {
         match action {
             EntryAction::Delete => {
-                if index < self.model.locations.len() {
+                if let Some(id) = self.model.locations.get(index).map(|location| location.id) {
                     self.model.remove_location(index);
+                    self.queue_durable_action(WeatherAction::RemoveLocation { id: id.to_string() });
                     true
                 } else {
                     false
                 }
             }
-            EntryAction::MoveToTop => self.model.move_location(index, 0),
+            EntryAction::MoveToTop => {
+                let changed = self.model.move_location(index, 0);
+                if changed {
+                    self.queue_durable_action(WeatherAction::SetLocationOrder {
+                        ids: self
+                            .model
+                            .locations
+                            .iter()
+                            .map(|location| location.id.to_string())
+                            .collect(),
+                    });
+                }
+                changed
+            }
             EntryAction::Refresh => {
                 self.refresh_location(index);
                 false
@@ -1405,6 +1439,11 @@ impl Core {
         match action {
             OverAction::SelectLocation(i) => {
                 self.model.select(i);
+                if let Some(location) = self.model.selected_location() {
+                    self.queue_durable_action(WeatherAction::SelectLocation {
+                        id: location.id.to_string(),
+                    });
+                }
                 self.scroll = 0.0;
                 self.refresh_selected();
                 self.nav_request = Some(NavIntent::ShowDetail);
@@ -1456,10 +1495,7 @@ impl Core {
             return consumed;
         }
 
-        let (handled, changed) = self.dispatch_overview_event(event, scale_factor);
-        if changed {
-            self.pending_doc_write = true;
-        }
+        let (handled, _changed) = self.dispatch_overview_event(event, scale_factor);
         handled
     }
 
@@ -1705,6 +1741,16 @@ impl Core {
             } else if let Some((from, to)) = self.reorder.commit() {
                 // Commit the live insertion the controller tracked.
                 changed = self.model.move_location(from, to);
+                if changed {
+                    self.queue_durable_action(WeatherAction::SetLocationOrder {
+                        ids: self
+                            .model
+                            .locations
+                            .iter()
+                            .map(|location| location.id.to_string())
+                            .collect(),
+                    });
+                }
             } else {
                 // Dropped in place (or never activated): no change.
                 self.reorder.cancel();
