@@ -9,7 +9,7 @@
 //! Inode numbers are a local `NodeId`<->`u64` index; renames keep the node id,
 //! so the inode stays stable across renames.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, UNIX_EPOCH};
 
 use automerge::sync::SyncDoc;
@@ -141,6 +141,20 @@ pub struct Entry {
     pub author: String,
 }
 
+/// One authoritative, path-current row in the namespace-owned record index.
+///
+/// The record UUID is the durable identity. `path` is deliberately projection
+/// metadata: it is replaced on a rename/move and is never accepted as an
+/// authority token by a caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedRecord {
+    pub record_id: FileRecordId,
+    pub node_id: String,
+    pub parent_id: String,
+    pub path: String,
+    pub is_dir: bool,
+}
+
 #[derive(Clone)]
 pub struct Namespace {
     doc: AutoCommit,
@@ -152,6 +166,22 @@ pub struct Namespace {
     next_id: u64,
     content_authority: ContentAuthority,
     verified_records: HashMap<FileRecordId, VerifiedRecordProjection>,
+    /// Stable-record catalogue used by the mount's paged record projection.
+    /// It is updated with structural mutations rather than being reconstructed
+    /// by every xattr manifest/page request.
+    record_index: BTreeMap<FileRecordId, IndexedRecord>,
+    record_index_order: Vec<FileRecordId>,
+    record_index_revision: String,
+    record_index_by_node: HashMap<String, FileRecordId>,
+    record_index_children: HashMap<String, BTreeSet<String>>,
+    /// Stable record identities that are currently multiply bound.  They are
+    /// deliberately absent from the public index until a full reconciliation
+    /// proves the ambiguity gone.
+    record_index_ambiguous: HashSet<FileRecordId>,
+    #[cfg(test)]
+    record_index_rebuilds: u64,
+    #[cfg(test)]
+    record_index_page_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -233,6 +263,16 @@ impl Namespace {
             next_id: 0,
             content_authority: ContentAuthority::LegacyNamespace,
             verified_records: HashMap::new(),
+            record_index: BTreeMap::new(),
+            record_index_order: Vec::new(),
+            record_index_revision: String::new(),
+            record_index_by_node: HashMap::new(),
+            record_index_children: HashMap::new(),
+            record_index_ambiguous: HashSet::new(),
+            #[cfg(test)]
+            record_index_rebuilds: 0,
+            #[cfg(test)]
+            record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -240,6 +280,7 @@ impl Namespace {
         let _ = ns
             .doc
             .put(&ROOT, ROOT_RECORD_ID_KEY, root_record_id.0.to_string());
+        ns.rebuild_record_index();
         Ok(ns)
     }
 
@@ -276,10 +317,21 @@ impl Namespace {
             next_id: max_local,
             content_authority: ContentAuthority::LegacyNamespace,
             verified_records: HashMap::new(),
+            record_index: BTreeMap::new(),
+            record_index_order: Vec::new(),
+            record_index_revision: String::new(),
+            record_index_by_node: HashMap::new(),
+            record_index_children: HashMap::new(),
+            record_index_ambiguous: HashSet::new(),
+            #[cfg(test)]
+            record_index_rebuilds: 0,
+            #[cfg(test)]
+            record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
         ns.ensure_record_ids();
+        ns.rebuild_record_index();
         Ok(ns)
     }
 
@@ -370,6 +422,7 @@ impl Namespace {
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         self.doc.load_incremental(data)?;
         self.ensure_record_ids();
+        self.rebuild_record_index();
         Ok(())
     }
     pub fn prime_baseline(&mut self) {
@@ -382,6 +435,7 @@ impl Namespace {
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
         self.doc.merge(&mut other.doc)?;
         self.ensure_record_ids();
+        self.rebuild_record_index();
         Ok(())
     }
 
@@ -398,6 +452,7 @@ impl Namespace {
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
+        self.rebuild_record_index();
         Ok(self.doc.save_incremental())
     }
 
@@ -413,6 +468,7 @@ impl Namespace {
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
+        self.rebuild_record_index();
         Ok(self.doc.save_incremental())
     }
 
@@ -434,6 +490,7 @@ impl Namespace {
         let msg = automerge::sync::Message::decode(data)?;
         self.doc.sync().receive_sync_message(state, msg)?;
         self.ensure_record_ids();
+        self.rebuild_record_index();
         Ok(())
     }
 
@@ -441,6 +498,7 @@ impl Namespace {
     pub fn post_sync_resolve(&mut self) -> Vec<u8> {
         let _ = self.doc.save_incremental();
         self.resolve();
+        self.rebuild_record_index();
         self.doc.save_incremental()
     }
 
@@ -449,6 +507,238 @@ impl Namespace {
             Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
             _ => None,
         }
+    }
+
+    /// Reconstruct the index once while loading or after an opaque remote
+    /// Automerge merge.  Serving a record-index page never calls this: page
+    /// work is a slice of `record_index`, not a document traversal.
+    fn rebuild_record_index(&mut self) {
+        #[derive(Clone)]
+        struct Raw {
+            record_id: Option<FileRecordId>,
+            parent_id: String,
+            name: FileNameV1,
+            is_dir: bool,
+        }
+
+        let mut raw = HashMap::<String, Raw>::new();
+        let mut occurrences = HashMap::<FileRecordId, usize>::new();
+        for id in self.doc.keys(&self.nodes) {
+            let Some(node) = self.node(&id) else {
+                continue;
+            };
+            let record_id = self.record_id_for_id(&id);
+            if let Some(record_id) = record_id {
+                let count = occurrences
+                    .get(&record_id)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(1);
+                occurrences.insert(record_id, count);
+            }
+            let is_dir = self.kind_of(&id) == NodeKind::Dir;
+            raw.insert(
+                id,
+                Raw {
+                    record_id,
+                    parent_id: read_str(&self.doc, &node, "parent").unwrap_or_default(),
+                    name: read_name(&self.doc, &node, "name").unwrap_or_default(),
+                    is_dir,
+                },
+            );
+        }
+        let mut children = HashMap::<String, BTreeSet<String>>::new();
+        for (id, item) in &raw {
+            children
+                .entry(item.parent_id.clone())
+                .or_default()
+                .insert(id.clone());
+        }
+        let mut record_index = BTreeMap::new();
+        let mut by_node = HashMap::new();
+        let mut queue = VecDeque::from([(ROOT_ID.to_string(), String::from("/"))]);
+        let mut visited = HashSet::from([ROOT_ID.to_string()]);
+        while let Some((parent, parent_path)) = queue.pop_front() {
+            for id in children.get(&parent).into_iter().flatten() {
+                if !visited.insert(id.clone()) {
+                    continue;
+                }
+                let Some(item) = raw.get(id) else { continue };
+                let path = if parent_path == "/" {
+                    format!("/{}", escape_path_name(item.name.as_bytes()))
+                } else {
+                    format!("{parent_path}/{}", escape_path_name(item.name.as_bytes()))
+                };
+                // Traverse all structurally reachable nodes, even a legacy
+                // duplicate-ID node.  Only the unique stable record itself is
+                // eligible for the public index.
+                queue.push_back((id.clone(), path.clone()));
+                let Some(record_id) = item.record_id else {
+                    continue;
+                };
+                if occurrences.get(&record_id) != Some(&1) {
+                    continue;
+                }
+                by_node.insert(id.clone(), record_id);
+                record_index.insert(
+                    record_id,
+                    IndexedRecord {
+                        record_id,
+                        node_id: id.clone(),
+                        parent_id: item.parent_id.clone(),
+                        path,
+                        is_dir: item.is_dir,
+                    },
+                );
+            }
+        }
+        self.record_index = record_index;
+        self.record_index_order = self.record_index.keys().copied().collect();
+        self.record_index_by_node = by_node;
+        self.record_index_children = children;
+        self.record_index_ambiguous = occurrences
+            .into_iter()
+            .filter_map(|(record_id, count)| (count > 1).then_some(record_id))
+            .collect();
+        self.update_record_index_revision();
+        #[cfg(test)]
+        {
+            self.record_index_rebuilds = self.record_index_rebuilds.saturating_add(1);
+        }
+    }
+
+    /// Snapshot one bounded canonical page.  The returned rows are ordered by
+    /// stable record UUID and clone at most `limit` entries.
+    pub fn indexed_record_page(&self, offset: usize, limit: usize) -> Vec<IndexedRecord> {
+        #[cfg(test)]
+        self.record_index_page_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let end = offset
+            .saturating_add(limit)
+            .min(self.record_index_order.len());
+        self.record_index_order
+            .get(offset..end)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|record_id| self.record_index.get(record_id))
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn indexed_record_count(&self) -> usize {
+        self.record_index_order.len()
+    }
+
+    #[must_use]
+    pub fn indexed_record(&self, record_id: FileRecordId) -> Option<IndexedRecord> {
+        self.record_index.get(&record_id).cloned()
+    }
+
+    /// Opaque generation captured when the index changed. Reading it is O(1):
+    /// manifest/page serving must never enumerate an adversarially large set
+    /// of Automerge heads merely to validate a cursor.
+    #[must_use]
+    pub fn indexed_record_revision(&self) -> &str {
+        &self.record_index_revision
+    }
+
+    fn update_record_index_revision(&mut self) {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"qos.fs.namespace-record-index.v1\\0");
+        hasher.update(&(self.record_index_order.len() as u64).to_be_bytes());
+        for record_id in &self.record_index_order {
+            let Some(record) = self.record_index.get(record_id) else {
+                continue;
+            };
+            hasher.update(record.record_id.0.as_bytes());
+            for field in [&record.parent_id, &record.node_id, &record.path] {
+                hasher.update(&(field.len() as u64).to_be_bytes());
+                hasher.update(field.as_bytes());
+            }
+            hasher.update(&[u8::from(record.is_dir)]);
+        }
+        self.record_index_revision = hasher.finalize().to_hex().to_string();
+    }
+
+    /// Incrementally admit a freshly created node. Creation is the hot path
+    /// for imports, so it must not turn N creates into N full document walks.
+    /// More complex remote/reparent operations deliberately use the one-shot
+    /// reconciler above, outside xattr serving.
+    fn index_insert_node(&mut self, id: &str) {
+        let Some(node) = self.node(id) else { return };
+        let Some(record_id) = self.record_id_for_id(id) else {
+            return;
+        };
+        if self.record_index_ambiguous.contains(&record_id) {
+            return;
+        }
+        if let Some(previous) = self.record_index.remove(&record_id) {
+            // A duplicate durable identity is withheld until a full
+            // reconciliation can represent the ambiguity fail-closed.
+            self.record_index_by_node.remove(&previous.node_id);
+            if let Some(children) = self.record_index_children.get_mut(&previous.parent_id) {
+                children.remove(&previous.node_id);
+            }
+            if let Ok(position) = self.record_index_order.binary_search(&record_id) {
+                self.record_index_order.remove(position);
+            }
+            self.record_index_ambiguous.insert(record_id);
+            self.update_record_index_revision();
+            return;
+        }
+        let parent_id = read_str(&self.doc, &node, "parent").unwrap_or_default();
+        let parent_path = if parent_id == ROOT_ID {
+            Some(String::from("/"))
+        } else {
+            self.record_index_by_node
+                .get(&parent_id)
+                .and_then(|record_id| self.record_index.get(record_id))
+                .map(|parent| parent.path.clone())
+        };
+        let Some(parent_path) = parent_path else {
+            return;
+        };
+        let name = read_name(&self.doc, &node, "name").unwrap_or_default();
+        let path = if parent_path == "/" {
+            format!("/{}", escape_path_name(name.as_bytes()))
+        } else {
+            format!("{parent_path}/{}", escape_path_name(name.as_bytes()))
+        };
+        self.record_index_children
+            .entry(parent_id.clone())
+            .or_default()
+            .insert(id.to_string());
+        self.record_index_by_node.insert(id.to_string(), record_id);
+        self.record_index.insert(
+            record_id,
+            IndexedRecord {
+                record_id,
+                node_id: id.to_string(),
+                parent_id,
+                path,
+                is_dir: self.kind_of(id) == NodeKind::Dir,
+            },
+        );
+        let position = self
+            .record_index_order
+            .binary_search(&record_id)
+            .unwrap_or_else(|position| position);
+        self.record_index_order.insert(position, record_id);
+        self.update_record_index_revision();
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn record_index_rebuild_count(&self) -> u64 {
+        self.record_index_rebuilds
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn record_index_page_read_count(&self) -> u64 {
+        self.record_index_page_reads
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn deterministic_record_id(&self, id: &str) -> FileRecordId {
@@ -810,6 +1100,7 @@ impl Namespace {
         let mut candidate = self.clone();
         let delta = candidate.apply_replacement_transaction_in_place(transaction)?;
         if delta.is_some() {
+            candidate.rebuild_record_index();
             *self = candidate;
         }
         Ok(delta)
@@ -834,6 +1125,7 @@ impl Namespace {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_keep_both_transaction_in_place(transaction)?;
                 if delta.is_some() {
+                    candidate.rebuild_record_index();
                     *self = candidate;
                 }
                 Ok(delta)
@@ -842,6 +1134,7 @@ impl Namespace {
                 let mut candidate = self.clone();
                 let delta = candidate.apply_merge_transaction_in_place(transaction)?;
                 if delta.is_some() {
+                    candidate.rebuild_record_index();
                     *self = candidate;
                 }
                 Ok(delta)
@@ -1626,7 +1919,9 @@ impl Namespace {
     ) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let id = self.create_node(&parent_id, name, NodeKind::File, hash, size, mtime)?;
-        Some(self.ino_for_id(&id))
+        let ino = self.ino_for_id(&id);
+        self.index_insert_node(&id);
+        Some(ino)
     }
 
     /// Create a projected file for an already-authoritative stable record.
@@ -1658,7 +1953,9 @@ impl Namespace {
         self.doc
             .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
             .ok()?;
-        Some(self.ino_for_id(&id))
+        let ino = self.ino_for_id(&id);
+        self.index_insert_node(&id);
+        Some(ino)
     }
 
     pub fn create_dir(
@@ -1669,7 +1966,9 @@ impl Namespace {
     ) -> Option<u64> {
         let parent_id = self.ino_to_id.get(&parent_ino)?.clone();
         let id = self.create_node(&parent_id, name, NodeKind::Dir, None, 0, mtime)?;
-        Some(self.ino_for_id(&id))
+        let ino = self.ino_for_id(&id);
+        self.index_insert_node(&id);
+        Some(ino)
     }
 
     /// Create a directory whose stable identity has already been signed.
@@ -1697,7 +1996,9 @@ impl Namespace {
         self.doc
             .put(&obj, RECORD_ID_KEY, record_id.0.to_string())
             .ok()?;
-        Some(self.ino_for_id(&id))
+        let ino = self.ino_for_id(&id);
+        self.index_insert_node(&id);
+        Some(ino)
     }
 
     // Document files: content lives as a CRDT, not opaque bytes.
@@ -1717,7 +2018,9 @@ impl Namespace {
         let node = self.node(&id)?;
         let root = self.doc.put_object(&node, "doc", ObjType::Map).ok()?;
         qdoc::model::init(&mut self.doc, &root);
-        Some(self.ino_for_id(&id))
+        let ino = self.ino_for_id(&id);
+        self.index_insert_node(&id);
+        Some(ino)
     }
 
     pub fn document_codec(&self, ino: u64) -> Option<String> {
@@ -2044,6 +2347,7 @@ impl Namespace {
         let cur = self.parent_of(&id).unwrap_or_else(|| ROOT_ID.to_string());
         self.set_field(&id, "prev_parent", cur);
         self.set_field(&id, "parent", TRASH_ID);
+        self.rebuild_record_index();
         true
     }
 
@@ -2107,6 +2411,7 @@ impl Namespace {
         self.set_field(&id, "parent", &*new_parent_id);
         self.set_field(&id, "name", new_name.to_vec());
         self.set_field(&id, "mtime", mtime);
+        self.rebuild_record_index();
         true
     }
 
@@ -2165,6 +2470,9 @@ impl Namespace {
             };
             self.set_field(&loser, "parent", &*target);
             changed = true;
+        }
+        if changed {
+            self.rebuild_record_index();
         }
         changed
     }
@@ -2691,6 +2999,11 @@ mod tests {
         ns.doc
             .put(&duplicate_obj, RECORD_ID_KEY, record_id.0.to_string())
             .unwrap();
+        ns.rebuild_record_index();
+        assert!(
+            ns.indexed_record(record_id).is_none(),
+            "an ambiguous durable record identity must be withheld, not routed to an arbitrary node"
+        );
         ns.enable_signed_content_authority();
         let revision = ContentRevisionV1 {
             schema_version: collab_types::CONTENT_REVISION_VERSION,
@@ -2703,6 +3016,24 @@ mod tests {
         assert!(!ns.install_verified_content_revision(revision));
         assert_eq!(ns.hash_for(first), None);
         assert_eq!(ns.hash_for(duplicate), None);
+    }
+
+    #[test]
+    fn malformed_parent_cycle_cannot_loop_record_index_rebuild() {
+        let mut ns = Namespace::new("owner").unwrap();
+        let a = ns.create_dir(ROOT_INO, "a", 1).unwrap();
+        let b = ns.create_dir(ROOT_INO, "b", 1).unwrap();
+        let a_id = ns.id_for_ino(a).unwrap().to_string();
+        let b_id = ns.id_for_ino(b).unwrap().to_string();
+        ns.set_field(&a_id, "parent", b_id.clone());
+        ns.set_field(&b_id, "parent", a_id);
+
+        ns.rebuild_record_index();
+        assert_eq!(
+            ns.indexed_record_count(),
+            0,
+            "unreachable cyclic nodes must be withheld rather than making a rebuild non-terminating"
+        );
     }
 
     #[test]
@@ -3206,6 +3537,32 @@ mod tests {
             text.contains("(B)"),
             "B's edit must survive (text-level merge): {text}"
         );
+    }
+
+    #[test]
+    fn indexed_record_tail_page_is_direct_and_does_not_rebuild_the_namespace() {
+        let mut ns = Namespace::new("a").unwrap();
+        ns.record_index.clear();
+        ns.record_index_order.clear();
+        for value in 1..=100_001_u128 {
+            let record_id = FileRecordId(Uuid::from_u128(value));
+            ns.record_index.insert(
+                record_id,
+                IndexedRecord {
+                    record_id,
+                    node_id: format!("synthetic/{value}"),
+                    parent_id: ROOT_ID.into(),
+                    path: format!("/synthetic-{value}"),
+                    is_dir: false,
+                },
+            );
+            ns.record_index_order.push(record_id);
+        }
+        let before = ns.record_index_rebuild_count();
+        let page = ns.indexed_record_page(100_000, 128);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].path, "/synthetic-100001");
+        assert_eq!(ns.record_index_rebuild_count(), before);
     }
 
     // test-only helper to merge using a fresh loaded copy

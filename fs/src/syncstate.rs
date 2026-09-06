@@ -70,6 +70,182 @@ pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
 /// Stay below Linux's usual 64 KiB xattr ceiling, including filesystem framing.
 pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
 
+/// Revisioned, pageable successor to [`RECORD_INDEX_XATTR`]. The manifest is
+/// deliberately tiny; pages are requested as
+/// `user.qos.record-index.v2.<revision>.<offset>`.  A stale revision is absent
+/// rather than silently serving a different ordering.
+pub const RECORD_INDEX_V2_XATTR: &str = "user.qos.record-index.v2";
+pub const RECORD_INDEX_V3_XATTR: &str = "user.qos.record-index.v3";
+/// Exact record resolution is separate from pagination so a late resource can
+/// be reopened without materialising a mount catalogue.
+pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.qos.record-index.by-id.";
+pub const RECORD_INDEX_V2_VERSION: u16 = 2;
+pub const RECORD_INDEX_PAGE_ENTRIES: usize = 128;
+pub const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordIndexManifestV2 {
+    pub schema_version: u16,
+    /// Opaque content revision, derived from the namespace heads. It contains
+    /// no host path or authority material.
+    pub revision: String,
+    pub records: usize,
+    pub page_entries: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordIndexPageV2 {
+    pub schema_version: u16,
+    pub revision: String,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub records: Vec<RecordIndexEntryV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordIndexExactV2 {
+    pub schema_version: u16,
+    pub revision: String,
+    pub record: RecordIndexEntryV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordIndexManifestV3 {
+    pub schema_version: u16,
+    pub revision: String,
+    /// Fixed, opaque capability for exactly one bounded source window.
+    pub initial_cursor: String,
+    pub page_entries: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordIndexPageV3 {
+    pub schema_version: u16,
+    pub revision: String,
+    pub next_cursor: Option<String>,
+    pub records: Vec<RecordIndexEntryV1>,
+}
+
+impl RecordIndexManifestV3 {
+    /// # Errors
+    ///
+    /// Returns an error when an opaque authority manifest is malformed.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != 3
+            || self.revision.len() != 64
+            || !self.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || self.initial_cursor.len() != 36
+            || self.page_entries != RECORD_INDEX_PAGE_ENTRIES
+        {
+            return Err("invalid opaque record-index manifest");
+        }
+        Ok(())
+    }
+}
+
+impl RecordIndexPageV3 {
+    /// # Errors
+    ///
+    /// Returns an error when an opaque authority page is malformed.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != 3
+            || self.revision.len() != 64
+            || !self.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || self.records.len() > RECORD_INDEX_PAGE_ENTRIES
+            || self
+                .next_cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.len() != 36)
+        {
+            return Err("invalid opaque record-index page");
+        }
+        let mut previous = None;
+        for record in &self.records {
+            if !record.path.starts_with('/')
+                || record.path.contains('\0')
+                || previous.is_some_and(|value| value >= record.record_id)
+            {
+                return Err("invalid opaque record-index entry");
+            }
+            previous = Some(record.record_id);
+        }
+        Ok(())
+    }
+}
+
+impl RecordIndexExactV2 {
+    /// # Errors
+    ///
+    /// Returns an error when an exact authority projection is malformed.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != RECORD_INDEX_V2_VERSION
+            || self.revision.len() != 64
+            || !self.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !self.record.path.starts_with('/')
+            || self.record.path.contains('\0')
+        {
+            return Err("invalid exact record-index projection");
+        }
+        Ok(())
+    }
+}
+
+impl RecordIndexManifestV2 {
+    /// # Errors
+    ///
+    /// Returns an error when a peer-supplied manifest violates the bounded
+    /// page protocol or contains a non-canonical revision.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != RECORD_INDEX_V2_VERSION
+            || self.revision.len() != 64
+            || !self.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || self.page_entries == 0
+            || self.page_entries > RECORD_INDEX_PAGE_ENTRIES
+        {
+            return Err("invalid record-index manifest");
+        }
+        Ok(())
+    }
+}
+
+impl RecordIndexPageV2 {
+    /// # Errors
+    ///
+    /// Returns an error when a peer-supplied page exceeds its bounds or could
+    /// mix non-canonical identities/paths into an authority generation.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.schema_version != RECORD_INDEX_V2_VERSION
+            || self.revision.len() != 64
+            || !self.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || self.records.len() > RECORD_INDEX_PAGE_ENTRIES
+            || !self.offset.is_multiple_of(RECORD_INDEX_PAGE_ENTRIES)
+        {
+            return Err("invalid record-index page");
+        }
+        let mut previous = None;
+        for record in &self.records {
+            if !record.path.starts_with('/') || record.path.contains('\0') {
+                return Err("record-index path is not an absolute mount path");
+            }
+            if previous.is_some_and(|value| value >= record.record_id) {
+                return Err("record-index identities are not canonical and unique");
+            }
+            previous = Some(record.record_id);
+        }
+        if self.next_offset.is_some_and(|next| {
+            next <= self.offset || !next.is_multiple_of(RECORD_INDEX_PAGE_ENTRIES)
+        }) {
+            return Err("record-index page continuation is invalid");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordIndexProjectionV1 {
