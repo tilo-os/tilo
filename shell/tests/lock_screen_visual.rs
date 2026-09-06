@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! QOS_LOCK_SHOT_DIR=/tmp/qos-lock-shots \
-//!   cargo test -p shell --test lock_screen_visual -- --ignored --nocapture
+//!   cargo test -p shell --test it lock_screen_visual::render_lock_screen_matrix -- --ignored --nocapture
 //! ```
 
 #![allow(
@@ -81,11 +81,19 @@ fn render_lock_screen_matrix() {
     std::fs::create_dir_all(&root).expect("create lock screenshot directory");
     let theme = Theme::dark();
 
-    for (width, height) in [(1600, 900), (1366, 768), (1280, 720)] {
+    for (width, height, scale, label) in [
+        (1600, 900, 1.0, ""),
+        (1366, 768, 1.0, ""),
+        (1280, 720, 1.0, ""),
+        // Scale is presentation density, not a second layout multiplier.
+        (1600, 900, 2.0, "-hidpi"),
+        // Compact but supported laptop/tablet viewport.
+        (960, 540, 1.0, "-compact"),
+    ] {
         let output = [LockOutput {
             origin: (0.0, 0.0),
             size: (f64::from(width), f64::from(height)),
-            scale: 1.0,
+            scale,
         }];
         let mut renderer = OffscreenRenderer::new(width, height);
         let mut text = TextRenderer::new();
@@ -94,13 +102,15 @@ fn render_lock_screen_matrix() {
             renderer.render_png(
                 &scene,
                 Color::BLACK,
-                root.join(format!("{width}x{height}-{state}.png")),
+                root.join(format!("{width}x{height}{label}-{state}.png")),
             );
         }
     }
 
-    // Production uses one combined scene and stamps a usable lock UI on
-    // every output. This asymmetric matrix catches anchoring across a bezel.
+    // One combined scene, one credential surface on the designated primary
+    // output, and an intentionally non-interactive secondary indication.
+    // This asymmetric matrix catches both bezel anchoring and accidental
+    // duplicate password cards.
     let outputs = [
         LockOutput {
             origin: (0.0, 0.0),
