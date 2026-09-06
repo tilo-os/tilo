@@ -366,13 +366,14 @@ impl Widget for SettingsApp {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
         use automerge::{ReadDoc, Value, transaction::Transactable};
 
-        // Category selection: each sidebar row writes `settings.select.<slug>`
+        // Category selection: each sidebar row writes the local
+        // `settings.select.<slug>.edit` presentation latch.
         // = true on click. Reading it true here switches the active category
         // (via `select`, which swaps the shell's nav + content and flags a
         // rebuild). The first key seen wins; we clear it so the selection is a
         // one-shot edge, not a sticky state.
         for category in Category::ALL {
-            let key = format!("settings.select.{}", category.slug());
+            let key = format!("settings.select.{}.edit", category.slug());
             let pressed = matches!(
                 state.get(path, key.as_str()),
                 Ok(Some((Value::Scalar(s), _)))
@@ -388,15 +389,11 @@ impl Widget for SettingsApp {
         // so typed characters actually persist (a `TextInput` only writes
         // through an existing Text object).
         let search_obj = crate::ensure_text_object(state, path, sidebar::SEARCH_KEY);
-        // In `--shots` there is no event loop to type into the field, so a
-        // pre-seeded query (via `with_search_shot`) is spliced into the object
-        // once so the field visibly shows the query it filtered by.
-        if !self.search_query.is_empty()
-            && let Ok(existing) = state.text(&search_obj)
-            && existing.is_empty()
-        {
-            let _ = state.splice_text(&search_obj, 0, 0, &self.search_query);
-        }
+        // `with_search_shot` keeps its filter in local presentation state.
+        // Do not manufacture an Automerge text edit for a screenshot: that
+        // would look like a collaborative user change and used to exercise a
+        // shaping edge case before the text input had an editing event.
+        let _ = search_obj;
 
         // Search query: the header's search field writes `settings.search`.
         // A changed value updates the filter and swaps the shell's (filtered)
