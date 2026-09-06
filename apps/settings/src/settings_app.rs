@@ -64,6 +64,15 @@ pub struct SettingsApp {
     /// from [`crate::sidebar::SEARCH_KEY`]). When non-empty the sidebar shows
     /// a filtered results list instead of the sectioned category list.
     search_query: String,
+    /// A deterministic search fixture for headless acceptance captures. The
+    /// normal editor starts as an empty local text object, so retain this seed
+    /// until a real non-empty document edit arrives instead of immediately
+    /// replacing the requested filtered state with that empty buffer.
+    search_shot_seed: Option<String>,
+    /// Retained, revision-aware catalogue behind Ctrl+K. Cloning its provider
+    /// for the host is O(1), so a palette continuation always talks to the
+    /// same generation instead of rebuilding an index on every frame.
+    search_provider: crate::search_provider::SettingsSearchProvider,
     /// Secret-free snapshot for resource enumeration. Refreshes at account
     /// mutation boundaries, never during the per-frame resource query.
     account_resources: Vec<accounts::Account>,
@@ -103,6 +112,8 @@ impl SettingsApp {
             narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
+            search_shot_seed: None,
+            search_provider: crate::search_provider::SettingsSearchProvider::new(),
             account_resources: accounts::AccountStore::load().all().to_vec(),
             account_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
@@ -235,6 +246,7 @@ impl SettingsApp {
     #[must_use]
     pub fn with_search_shot(mut self, query: &str) -> Self {
         self.search_query = query.to_string();
+        self.search_shot_seed = Some(query.to_string());
         self
     }
 
@@ -389,22 +401,33 @@ impl Widget for SettingsApp {
         // so typed characters actually persist (a `TextInput` only writes
         // through an existing Text object).
         let search_obj = crate::ensure_text_object(state, path, sidebar::SEARCH_KEY);
-        // `with_search_shot` keeps its filter in local presentation state.
-        // Do not manufacture an Automerge text edit for a screenshot: that
-        // would look like a collaborative user change and used to exercise a
-        // shaping edge case before the text input had an editing event.
-        let _ = search_obj;
+        // A shot state belongs to a throwaway offscreen document, so seed the
+        // actual editor as well as the filtered list. This keeps the visible
+        // query honest (rather than showing a blank field above Results) and
+        // never creates a replicated user change in a live session.
+        if let Some(seed) = self.search_shot_seed.as_deref()
+            && !seed.is_empty()
+            && read_search(state, path).is_some_and(|query| query.is_empty())
+        {
+            let _ = state.splice_text(&search_obj, 0, 0, seed);
+        }
 
         // Search query: the header's search field writes `settings.search`.
         // A changed value updates the filter and swaps the shell's (filtered)
         // nav list, then flags a rebuild. The field re-reads the same key on
         // its own `sync`, so the query text survives the rebuild.
-        if let Some(q) = read_search(state, path)
-            && q != self.search_query
-        {
-            self.search_query = q;
-            self.structure_dirty = true;
-            self.refresh_shell_children();
+        if let Some(q) = read_search(state, path) {
+            // A headless capture has no input event to populate the search
+            // text object. Its first sync therefore observes the just-seeded
+            // empty object; that is not a user clearing the supplied fixture.
+            // A real typed value remains authoritative immediately.
+            let retain_shot_seed = self.search_shot_seed.is_some() && q.is_empty();
+            if !retain_shot_seed && q != self.search_query {
+                self.search_shot_seed = None;
+                self.search_query = q;
+                self.structure_dirty = true;
+                self.refresh_shell_children();
+            }
         }
 
         if let Some(shell) = &mut self.shell {
@@ -604,6 +627,15 @@ impl Widget for SettingsApp {
     /// shared document.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Resolve canonical Settings resources at activation time as well as
+    /// publishing the eager palette snapshot above.  Search results retain
+    /// only stable action addresses, so this is the authoritative path that
+    /// re-checks an address against the current resource surface before the
+    /// action door opens it.
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn invoke_resource_operation(
@@ -856,7 +888,7 @@ impl Widget for SettingsApp {
     /// addresses the pane resource's exported `open` View operation, alongside
     /// the collaborative setting-change actions those resources own.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::SettingsSearchProvider)]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     /// Bubble an on-screen control's dispatched-action undo bracket up from
@@ -1129,7 +1161,7 @@ mod tests {
 
     #[test]
     fn seeded_search_shot_query_reaches_the_field() {
-        use automerge::ReadDoc;
+        use automerge::{ReadDoc, Value};
         let mut app = SettingsApp::with_selected(Category::Displays).with_search_shot("light");
         assert_eq!(app.search_query(), "light");
         let mut doc = automerge::AutoCommit::new();
@@ -1137,8 +1169,18 @@ mod tests {
         app.sync(&mut doc, &root);
         assert!(
             doc.get(&root, sidebar::SEARCH_KEY).unwrap().is_some(),
-            "the seeded query is written to the field key"
+            "the search field has an editable backing object"
         );
+        assert_eq!(
+            app.search_query(),
+            "light",
+            "the empty backing object must not erase the requested capture filter"
+        );
+        let text = match doc.get(&root, sidebar::SEARCH_KEY).unwrap() {
+            Some((Value::Object(automerge::ObjType::Text), object)) => doc.text(&object).unwrap(),
+            _ => String::new(),
+        };
+        assert_eq!(text, "light", "the visible search field shows its filter");
         layout_at(&mut app, 1200.0, 760.0);
     }
 

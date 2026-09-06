@@ -256,7 +256,13 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // `…search.png` proves the sidebar search filters the category list to the
     // matching panes. Seeded with a query that spans two categories.
     if fname.contains("search") {
-        let app = SettingsApp::with_selected(Category::Displays)
+        // Keep this visual acceptance path independent from a live display
+        // connector snapshot. Display hardware is intentionally discovered
+        // at runtime and may include a transient compositor hand-off while a
+        // headless renderer is starting; Appearance still gives this capture
+        // a rich, deterministic content pane while the sidebar proves the
+        // filtered navigation state.
+        let app = SettingsApp::with_selected(Category::Appearance)
             .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
             .with_search_shot("light");
         return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
