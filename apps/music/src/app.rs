@@ -337,6 +337,11 @@ pub struct MusicApp {
     /// (persisted out to the doc on each event) so the smoothly-advancing
     /// playhead isn't clobbered by re-reading the doc each frame.
     playback_loaded: bool,
+    /// The last playback value observed in the shared document. Unlike the
+    /// continuously advancing local playhead, this is only updated on an
+    /// explicit document write/read and lets us identify a peer's transport
+    /// edit without clobbering smooth local progress every frame.
+    document_playback: Option<Playback>,
     /// Track id the playhead is currently bound to (detects track changes
     /// across a doc reload so the live playhead isn't reset spuriously).
     bound_track: Option<String>,
@@ -610,6 +615,7 @@ impl MusicApp {
             seeded: false,
             seed_samples: false,
             playback_loaded: false,
+            document_playback: None,
             bound_track: None,
             playhead_ms: 0.0,
             last_tick: Instant::now(),
@@ -887,8 +893,11 @@ impl MusicApp {
         }
         for id in done {
             self.downloads.remove(&id);
-            doc::set_cache(state, &id, CacheState::Cached);
-            self.lib.cache.insert(id.clone(), CacheState::Cached);
+            self.perform_action(
+                state,
+                &crate::actions::set_offline_action(std::slice::from_ref(&id), true),
+            );
+            self.reload_library(state);
             let label = self
                 .lib
                 .track(&id)
@@ -918,6 +927,7 @@ impl MusicApp {
         self.lib = doc::load_library(state);
         self.sync_playlist_covers();
         self.pb = doc::load_playback(state);
+        self.document_playback = Some(self.pb.clone());
         self.bound_track = self.pb.current.clone();
         self.playhead_ms = self.pb.position_ms as f64;
     }
@@ -928,7 +938,60 @@ impl MusicApp {
             state,
             &crate::actions::MusicAction::SetPlayback(self.pb.clone()),
         );
+        self.document_playback = Some(self.pb.clone());
         self.bound_track = self.pb.current.clone();
+    }
+
+    /// Adopt a playback edit that arrived through the shared Automerge
+    /// document. This intentionally compares against the last *document*
+    /// snapshot rather than `self.pb`: the latter's position advances locally
+    /// every frame and would otherwise make an unchanged peer snapshot look
+    /// like a conflicting update. A remote play/pause, seek, queue, volume or
+    /// track selection consequently reaches this device promptly and controls
+    /// its local audio engine too.
+    fn reconcile_document_playback(&mut self, state: &AutoCommit) {
+        let remote = doc::load_playback(state);
+        if self.document_playback.as_ref() == Some(&remote) {
+            return;
+        }
+
+        let old = self.pb.clone();
+        let changed_track = old.current != remote.current;
+        let changed_position = old.position_ms != remote.position_ms;
+        self.pb = remote.clone();
+        self.playhead_ms = remote.position_ms as f64;
+        self.bound_track.clone_from(&remote.current);
+        self.shuffle_order.clear();
+        self.audio.set_volume(f32::from(remote.volume) / 100.0);
+
+        if changed_track {
+            self.audio.stop();
+            if remote.playing
+                && let Some(id) = remote.current.as_deref()
+            {
+                self.start_stream(id);
+            }
+        } else if remote.playing != old.playing {
+            if remote.playing {
+                // A peer can resume a track this device previously adopted in
+                // a paused state. In that case there is no local pipeline to
+                // unpause yet, so resolve/load the source instead of reporting
+                // a resumed transport with no audio behind it.
+                if self.audio.current_uri().is_some() {
+                    self.audio.play();
+                } else if let Some(id) = remote.current.as_deref() {
+                    self.start_stream(id);
+                }
+            } else {
+                self.audio.pause();
+            }
+        }
+        if changed_position && !changed_track {
+            self.audio.seek_ms(remote.position_ms);
+        }
+
+        self.document_playback = Some(remote);
+        self.dirty = true;
     }
 
     // ---- action dispatch --------------------------------------------------
@@ -984,6 +1047,7 @@ impl MusicApp {
                 .map(|track| crate::actions::CatalogResource {
                     id: track.id.clone(),
                     label: self.track_label(&track.id),
+                    offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
                 })
                 .collect(),
             albums: self
@@ -993,6 +1057,7 @@ impl MusicApp {
                 .map(|album| crate::actions::CatalogResource {
                     id: album.id.clone(),
                     label: album.title.clone(),
+                    offline: false,
                 })
                 .collect(),
             artists: self
@@ -1002,6 +1067,7 @@ impl MusicApp {
                 .map(|artist| crate::actions::CatalogResource {
                     id: artist.id.clone(),
                     label: artist.name.clone(),
+                    offline: false,
                 })
                 .collect(),
             playback: self.pb.clone(),
@@ -1908,15 +1974,21 @@ impl MusicApp {
             CacheState::Cached => {
                 // Already offline → drop it.
                 self.downloads.remove(id);
-                doc::set_cache(state, id, CacheState::Streamed);
-                self.lib = doc::load_library(state);
+                self.perform_action(
+                    state,
+                    &crate::actions::set_offline_action(&[id.to_string()], false),
+                );
+                self.reload_library(state);
                 format!("Removed \u{201c}{label}\u{201d} from offline")
             }
             CacheState::Downloading(_) => {
                 // Tapping an in-flight download cancels it.
                 self.downloads.remove(id);
-                doc::set_cache(state, id, CacheState::Streamed);
-                self.lib = doc::load_library(state);
+                self.perform_action(
+                    state,
+                    &crate::actions::set_offline_action(&[id.to_string()], false),
+                );
+                self.reload_library(state);
                 format!("Stopped downloading \u{201c}{label}\u{201d}")
             }
             CacheState::Streamed => {
@@ -1938,13 +2010,17 @@ impl MusicApp {
         // Keep every not-yet-cached track offline in one gesture. Tracks
         // already cached stay as-is (idempotent).
         let mut added = 0usize;
+        let mut to_keep = Vec::new();
         for id in ids {
             if self.lib.cache_state(id) != CacheState::Cached {
-                doc::set_cache(state, id, CacheState::Cached);
+                to_keep.push(id.clone());
                 added += 1;
             }
         }
-        self.lib = doc::load_library(state);
+        if !to_keep.is_empty() {
+            self.perform_action(state, &crate::actions::set_offline_action(&to_keep, true));
+            self.reload_library(state);
+        }
         self.toast = Some((
             if added == 0 {
                 "Already saved for offline".to_string()
@@ -3834,6 +3910,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn remote_playback_action_is_adopted_without_resetting_the_library() {
+        let (mut app, mut doc) = app_with_doc();
+        app.sync(&mut doc, &automerge::ROOT);
+        let remote = Playback {
+            current: Some("tk_g2".into()),
+            queue: vec!["tk_g2".into(), "tk_r1".into()],
+            queue_index: 0,
+            playing: false,
+            position_ms: 12_345,
+            shuffle: true,
+            repeat: RepeatMode::All,
+            volume: 37,
+        };
+        let action = crate::actions::MusicAction::SetPlayback(remote.clone());
+        qos_actions::apply_local(&mut doc, &action, crate::actions::encode(&action))
+            .expect("peer playback action applies");
+
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.pb, remote, "the remote transport snapshot is adopted");
+        assert_eq!(app.playhead_ms, 12_345.0);
+        assert_eq!(app.audio.volume(), 0.37);
+        assert!(
+            app.lib.track("tk_g2").is_some(),
+            "library remains available"
+        );
+    }
+
     // ---- synthetic winit events (drive `handle_event` like the real loop) --
     use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
     use winit::keyboard::NamedKey;
@@ -4750,30 +4855,25 @@ mod tests {
             .expect("song search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("play effect queued");
-        assert_eq!(operation.kind, qos_actions::OperationKind::Effect);
+        let operation = palette.take_operation().expect("play action queued");
+        assert_eq!(operation.kind, qos_actions::OperationKind::Document);
         assert!(palette.take_navigation().is_none());
         let heads = doc.get_heads();
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
-                &doc,
-                &automerge::ROOT,
-            )
-            .unwrap()
-        );
+        let action: crate::actions::MusicAction =
+            serde_json::from_slice(&operation.encoded.payload)
+                .expect("palette emitted MusicAction");
+        qos_actions::apply_local(&mut doc, &action, operation.encoded).expect("playback writes");
+        app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
             "the brokered effect plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
-        assert_eq!(doc.get_heads(), heads, "playback is a transient effect");
+        assert_ne!(doc.get_heads(), heads, "playback is shared with peers");
 
         // Navigation follows the same path but is explicitly a View operation.
+        let heads = doc.get_heads();
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);

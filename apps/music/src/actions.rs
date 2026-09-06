@@ -16,15 +16,11 @@
 //!
 //! ## What is *not* an action
 //!
-//! Presentation and live-session state stays out of the document and never
-//! becomes an action: the current view / selection / scroll, the search text and
-//! filter tab, and the whole **playback** surface — now-playing, playhead,
-//! play/pause, volume, shuffle/repeat, and the queue. Playback does round-trip
-//! through the CRDT (so a session hands off between devices), but as a
-//! continuously-overwritten live-state map, not as replayable, undoable actions.
-//! Offline **download / cache** state and external **streaming / artwork
-//! fetches** are likewise non-deterministic background work written directly,
-//! never actions.
+//! Presentation stays local: the current view / selection / scroll, search text
+//! and filter tab. Stream resolution, audio output, artwork fetching and the
+//! native cover picker are device effects too. Their durable results — playback,
+//! cache choices and a selected cover — are instead written through the action
+//! types below, so the state users see remains replayable and syncable.
 //!
 //! ## Determinism contract
 //!
@@ -110,6 +106,14 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MusicOpe
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicAction {
     SetPlayback(crate::model::Playback),
+    /// Record whether one or more tracks should be retained by the offline
+    /// cache. Keeping this as one deterministic action makes a "Download all"
+    /// gesture one collaborative/history entry instead of a set of ad-hoc
+    /// document writes.
+    SetOffline {
+        tracks: Vec<String>,
+        keep: bool,
+    },
     /// Create a new empty playlist. `id` is minted at authoring time and carried
     /// here so replay reproduces the byte-identical row; `apply` never mints one.
     CreatePlaylist {
@@ -169,6 +173,24 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
     let mut context = qos_actions::ActionContext::for_action("org.qos.Music", "Music", action);
     let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
         MusicAction::SetPlayback(_) => ("Change playback", "player", "music.player", "Player"),
+        MusicAction::SetOffline { tracks, keep } => (
+            if *keep {
+                "Keep songs offline"
+            } else {
+                "Remove songs from offline cache"
+            },
+            tracks.first().map_or("library", String::as_str),
+            if tracks.len() == 1 {
+                "music.track"
+            } else {
+                "music.library"
+            },
+            if tracks.len() == 1 {
+                "Track"
+            } else {
+                "Library"
+            },
+        ),
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
@@ -214,6 +236,16 @@ impl Action for MusicAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             MusicAction::SetPlayback(playback) => mdoc::write_playback(doc, playback),
+            MusicAction::SetOffline { tracks, keep } => {
+                let state = if *keep {
+                    crate::model::CacheState::Cached
+                } else {
+                    crate::model::CacheState::Streamed
+                };
+                for track in tracks {
+                    mdoc::set_cache(doc, track, state);
+                }
+            }
             MusicAction::CreatePlaylist { id, name } => {
                 // An empty id is never produced by our own builder; no-op rather
                 // than fabricate one (which would break replay determinism).
@@ -355,6 +387,16 @@ pub fn toggle_followed_artist_action(artist: &str) -> MusicAction {
     }
 }
 
+/// Persist a batch offline-cache decision through the shared action executor.
+/// An empty list is harmless and is useful to callers that derive their targets
+/// from a filtered view.
+pub fn set_offline_action(tracks: &[String], keep: bool) -> MusicAction {
+    MusicAction::SetOffline {
+        tracks: tracks.to_vec(),
+        keep,
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -378,6 +420,7 @@ pub struct PlaylistResource {
 pub struct CatalogResource {
     pub id: String,
     pub label: String,
+    pub offline: bool,
 }
 
 /// The presentation context Music hands [`provide_resources`]: the user's
@@ -621,19 +664,36 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     }
 
     for track in &ctx.tracks {
+        let mut playback = ctx.playback.clone();
+        playback.queue = vec![track.id.clone()];
+        playback.queue_index = 0;
+        playback.current = Some(track.id.clone());
+        playback.position_ms = 0;
+        playback.playing = true;
+        let offline = set_offline_action(std::slice::from_ref(&track.id), !track.offline);
         root = root.with_child(
             Resource::new(
                 track_resource_id(&track.id),
                 "music.track",
                 track.label.clone(),
             )
-            .with_action(operation_spec(
+            .with_action(immediate_spec(
                 "play",
                 "Play track",
-                OperationKind::Effect,
-                &MusicOperation::PlayTrack {
-                    id: track.id.clone(),
+                &MusicAction::SetPlayback(playback),
+            ))
+            .with_action(immediate_spec(
+                if track.offline {
+                    "remove-offline"
+                } else {
+                    "keep-offline"
                 },
+                if track.offline {
+                    "Remove from offline cache"
+                } else {
+                    "Keep offline"
+                },
+                &offline,
             )),
         );
     }
