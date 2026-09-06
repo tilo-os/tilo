@@ -31,3 +31,26 @@ surface. A host package must start native mode from a display-manager session.
 Package checks should assert that the installed wrapper contains both
 `--host-desktop-session` and `--firstboot`, and that the Wayland desktop entry
 executes that wrapper rather than the shell binary directly.
+
+## Switching back to another desktop
+
+The wrapper owns `qos-graphical-session.target` only while the compositor is
+alive. It starts the target after publishing `XDG_CURRENT_DESKTOP=nirios` and
+`XDG_SESSION_TYPE=wayland` to both the systemd user manager and D-Bus
+activation environment. This gives xdg-desktop-portal the qOS backend
+selection and prevents a classic D-Bus helper from retaining GNOME's desktop
+identity.
+
+On exit it stops the qOS target (which releases the standard graphical
+targets), removes qOS's values from the user manager, and writes empty values
+to D-Bus activation. D-Bus has no unset operation; the next GNOME login's
+normal activation-environment update supplies its `GNOME` values before its
+portal backends are activated. No portal service, Flatpak configuration, or
+host application is replaced by this package.
+
+`org.gnome.keyring.SystemPrompter` is supplied by GCR (`gcr-prompter`), not by
+`gnome-keyring-daemon` and not by qOS. qOS must not start a second keyring or
+prompter unit: that would race the host's Secret Service and change existing
+application credential behaviour. The handoff fixes its desktop-routing
+environment only. A missing, locked, or failing host GCR/keyring remains a
+host-session issue and requires a live password-prompt check after login.
