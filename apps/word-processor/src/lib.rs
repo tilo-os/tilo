@@ -38,7 +38,6 @@
 )]
 
 pub mod actions;
-mod document_status;
 mod find_bar;
 pub mod history_panel;
 pub mod i18n;
