@@ -1,0 +1,7 @@
+Command: cargo check -p vello --lib --no-default-features --locked
+Exit code: 101
+
+error: cannot specify features for packages outside of workspace
+
+help: a workspace member with a similar name exists: `hello`
+

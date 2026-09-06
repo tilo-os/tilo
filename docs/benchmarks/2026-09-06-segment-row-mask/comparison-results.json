@@ -1,0 +1,1326 @@
+{
+  "summary": {
+    "classification": "exploratory; unresolved native pixel discrepancy",
+    "acceptance_eligible": false,
+    "groups": [
+      {
+        "workload": "shell",
+        "variant": "default",
+        "attempted": 3,
+        "completed": 3,
+        "latency_budget_passes": 0,
+        "acceptance_eligible": false,
+        "median_mean_us": 38007,
+        "median_p99_us": 90912,
+        "worst_us": 436331,
+        "median_peak_rss_kib": 569372,
+        "known_gpu_bytes": [],
+        "row_mask_selected": [
+          0,
+          0,
+          0
+        ],
+        "adapters": [
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          }
+        ],
+        "fusion_selected": [
+          0,
+          0,
+          0
+        ],
+        "bounds_applied": [
+          0,
+          0,
+          0
+        ],
+        "recoveries": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "workload": "shell",
+        "variant": "bounds",
+        "attempted": 3,
+        "completed": 3,
+        "latency_budget_passes": 0,
+        "acceptance_eligible": false,
+        "median_mean_us": 25074,
+        "median_p99_us": 72712,
+        "worst_us": 492601,
+        "median_peak_rss_kib": 570304,
+        "known_gpu_bytes": [],
+        "row_mask_selected": [
+          0,
+          0,
+          0
+        ],
+        "adapters": [
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          }
+        ],
+        "fusion_selected": [
+          0,
+          0,
+          0
+        ],
+        "bounds_applied": [
+          999,
+          999,
+          999
+        ],
+        "recoveries": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "workload": "shell",
+        "variant": "bounds-row-mask",
+        "attempted": 3,
+        "completed": 3,
+        "latency_budget_passes": 0,
+        "acceptance_eligible": false,
+        "median_mean_us": 25700,
+        "median_p99_us": 70334,
+        "worst_us": 976797,
+        "median_peak_rss_kib": 583564,
+        "known_gpu_bytes": [],
+        "row_mask_selected": [
+          999,
+          999,
+          999
+        ],
+        "adapters": [
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          }
+        ],
+        "fusion_selected": [
+          0,
+          0,
+          0
+        ],
+        "bounds_applied": [
+          999,
+          999,
+          999
+        ],
+        "recoveries": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "workload": "ui",
+        "variant": "default",
+        "attempted": 3,
+        "completed": 3,
+        "latency_budget_passes": 0,
+        "acceptance_eligible": false,
+        "median_mean_us": 8190,
+        "median_p99_us": 34406,
+        "worst_us": 80031,
+        "median_peak_rss_kib": 377864,
+        "known_gpu_bytes": [
+          62282124
+        ],
+        "row_mask_selected": [
+          0,
+          0,
+          0
+        ],
+        "adapters": [
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          }
+        ],
+        "fusion_selected": [
+          0,
+          0,
+          0
+        ],
+        "bounds_applied": [
+          0,
+          0,
+          0
+        ],
+        "recoveries": [
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "workload": "ui",
+        "variant": "bounds",
+        "attempted": 3,
+        "completed": 3,
+        "latency_budget_passes": 0,
+        "acceptance_eligible": false,
+        "median_mean_us": 8216,
+        "median_p99_us": 36177,
+        "worst_us": 78728,
+        "median_peak_rss_kib": 386836,
+        "known_gpu_bytes": [
+          62282124
+        ],
+        "row_mask_selected": [
+          0,
+          0,
+          0
+        ],
+        "adapters": [
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          }
+        ],
+        "fusion_selected": [
+          0,
+          0,
+          0
+        ],
+        "bounds_applied": [
+          0,
+          0,
+          0
+        ],
+        "recoveries": [
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "workload": "ui",
+        "variant": "bounds-row-mask",
+        "attempted": 3,
+        "completed": 3,
+        "latency_budget_passes": 1,
+        "acceptance_eligible": false,
+        "median_mean_us": 8239,
+        "median_p99_us": 32894,
+        "worst_us": 141716,
+        "median_peak_rss_kib": 395992,
+        "known_gpu_bytes": [
+          62282124
+        ],
+        "row_mask_selected": [
+          0,
+          0,
+          0
+        ],
+        "adapters": [
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          }
+        ],
+        "fusion_selected": [
+          0,
+          0,
+          0
+        ],
+        "bounds_applied": [
+          0,
+          0,
+          0
+        ],
+        "recoveries": [
+          null,
+          null,
+          null
+        ]
+      }
+    ],
+    "relative": [
+      {
+        "workload": "shell",
+        "comparison": "bounds-row-mask/bounds",
+        "completed_candidate": 3,
+        "completed_baseline": 3,
+        "mean_change_pct": 2.4966100342984854,
+        "p99_change_pct": -3.270436791726261,
+        "peak_rss_change_pct": 2.325075749074168
+      },
+      {
+        "workload": "shell",
+        "comparison": "bounds-row-mask/default",
+        "completed_candidate": 3,
+        "completed_baseline": 3,
+        "mean_change_pct": -32.38087720683032,
+        "p99_change_pct": -22.63507567757832,
+        "peak_rss_change_pct": 2.492570762173063
+      },
+      {
+        "workload": "ui",
+        "comparison": "bounds-row-mask/bounds",
+        "completed_candidate": 3,
+        "completed_baseline": 3,
+        "mean_change_pct": 0.27994157740993675,
+        "p99_change_pct": -9.074826547253778,
+        "peak_rss_change_pct": 2.3668944979267748
+      },
+      {
+        "workload": "ui",
+        "comparison": "bounds-row-mask/default",
+        "completed_candidate": 3,
+        "completed_baseline": 3,
+        "mean_change_pct": 0.5982905982905962,
+        "p99_change_pct": -4.394582340289488,
+        "peak_rss_change_pct": 4.797493278004783
+      }
+    ]
+  },
+  "runs": [
+    {
+      "name": "shell-default-round-1",
+      "workload": "shell",
+      "variant": "default",
+      "round": 1,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-default-round-1.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 37375,
+          "p99_us": 79743,
+          "min_us": 23048,
+          "max_us": 343871,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 564416,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-bounds-round-1",
+      "workload": "shell",
+      "variant": "bounds",
+      "round": 1,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-bounds-round-1.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 25127,
+          "p99_us": 72712,
+          "min_us": 13508,
+          "max_us": 492601,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 564528,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-bounds-row-mask-round-1",
+      "workload": "shell",
+      "variant": "bounds-row-mask",
+      "round": 1,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_SEGMENT_ROW_MASK=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-bounds-row-mask-round-1.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 26450,
+          "p99_us": 70334,
+          "min_us": 14249,
+          "max_us": 976797,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 639124,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 807864
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 999,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-default-round-1",
+      "workload": "ui",
+      "variant": "default",
+      "round": 1,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-default-round-1.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8190,
+          "p99_us": 34406,
+          "max_us": 76450,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 378172,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-bounds-round-1",
+      "workload": "ui",
+      "variant": "bounds",
+      "round": 1,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-bounds-round-1.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8149,
+          "p99_us": 32853,
+          "max_us": 73681,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386836,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 89,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-bounds-row-mask-round-1",
+      "workload": "ui",
+      "variant": "bounds-row-mask",
+      "round": 1,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_SEGMENT_ROW_MASK=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-bounds-row-mask-round-1.log",
+      "exit_code": 0,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 7637,
+          "p99_us": 22956,
+          "max_us": 54016,
+          "gate": "PASS"
+        },
+        "peak_rss_kib": 396092,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 101,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-bounds-row-mask-round-2",
+      "workload": "ui",
+      "variant": "bounds-row-mask",
+      "round": 2,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_SEGMENT_ROW_MASK=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-bounds-row-mask-round-2.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8239,
+          "p99_us": 32894,
+          "max_us": 111350,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 395772,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 99,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-default-round-2",
+      "workload": "ui",
+      "variant": "default",
+      "round": 2,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-default-round-2.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 7990,
+          "p99_us": 30992,
+          "max_us": 62569,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 377396,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-bounds-round-2",
+      "workload": "ui",
+      "variant": "bounds",
+      "round": 2,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-bounds-round-2.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8216,
+          "p99_us": 36177,
+          "max_us": 78728,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386928,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 96,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-bounds-row-mask-round-2",
+      "workload": "shell",
+      "variant": "bounds-row-mask",
+      "round": 2,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_SEGMENT_ROW_MASK=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-bounds-row-mask-round-2.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 24639,
+          "p99_us": 59132,
+          "min_us": 13016,
+          "max_us": 563829,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 582632,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 999,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-default-round-2",
+      "workload": "shell",
+      "variant": "default",
+      "round": 2,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-default-round-2.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 38007,
+          "p99_us": 102281,
+          "min_us": 22433,
+          "max_us": 436331,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 569372,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-bounds-round-2",
+      "workload": "shell",
+      "variant": "bounds",
+      "round": 2,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-bounds-round-2.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 24940,
+          "p99_us": 69178,
+          "min_us": 14628,
+          "max_us": 435213,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 570304,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-bounds-round-3",
+      "workload": "shell",
+      "variant": "bounds",
+      "round": 3,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-bounds-round-3.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 25074,
+          "p99_us": 76958,
+          "min_us": 13070,
+          "max_us": 477529,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 573360,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 807864
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-bounds-row-mask-round-3",
+      "workload": "shell",
+      "variant": "bounds-row-mask",
+      "round": 3,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_SEGMENT_ROW_MASK=1 /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-bounds-row-mask-round-3.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 25700,
+          "p99_us": 74799,
+          "min_us": 14293,
+          "max_us": 491345,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 583564,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 999,
+          "applied": 999,
+          "bbox_tiles": 799536
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 999,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "shell-default-round-3",
+      "workload": "shell",
+      "variant": "default",
+      "round": 3,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK /home/user/qos/target/ui-perf-comparison/shell-redraw-segment-row-mask-20260906",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/shell-default-round-3.log",
+      "exit_code": 1,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 38510,
+          "p99_us": 90912,
+          "min_us": 22726,
+          "max_us": 422067,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 573824,
+        "known_gpu_bytes": null,
+        "sparse": {
+          "total": 999,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": {
+          "total": 1000,
+          "sparse": 999,
+          "full": 1,
+          "recovery": 0
+        },
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": null,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-bounds-round-3",
+      "workload": "ui",
+      "variant": "bounds",
+      "round": 3,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-bounds-round-3.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8897,
+          "p99_us": 43915,
+          "max_us": 77541,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 386796,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 89,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-bounds-row-mask-round-3",
+      "workload": "ui",
+      "variant": "bounds-row-mask",
+      "round": 3,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_SEGMENT_ROW_MASK=1 QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-bounds-row-mask-round-3.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8303,
+          "p99_us": 36154,
+          "max_us": 141716,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 395992,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 76,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    },
+    {
+      "name": "ui-default-round-3",
+      "workload": "ui",
+      "variant": "default",
+      "round": 3,
+      "kind": "unprofiled-exploratory",
+      "acceptance_eligible": false,
+      "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE -u VELLO_SPARSE_SOLID_FUSE -u VELLO_SPARSE_SEGMENT_ROW_MASK QUICK_UI_DASH_ITERS=1000 QUICK_UI_DASH_WIDTH=3840 QUICK_UI_DASH_HEIGHT=2160 QUICK_UI_DASH_FRAME_BUDGET_US=30000 /home/user/qos/target/ui-perf-comparison/ui-perf-segment-row-mask-20260906 dashboard_perf_bench",
+      "log": "/home/user/qos/docs/benchmarks/2026-09-06-segment-row-mask/ui-default-round-3.log",
+      "exit_code": 2,
+      "parsed": {
+        "solid_fuse_selected": 0,
+        "opaque_prune_selected": 0,
+        "stats": {
+          "count": 1000,
+          "mean_us": 8782,
+          "p99_us": 46701,
+          "max_us": 80031,
+          "gate": "FAIL"
+        },
+        "peak_rss_kib": 377864,
+        "known_gpu_bytes": 62282124,
+        "sparse": {
+          "total": 1000,
+          "active": 0,
+          "applied": 0,
+          "bbox_tiles": 0
+        },
+        "quad": {
+          "applied": 0,
+          "total": 0,
+          "active": 0,
+          "skipped": 0
+        },
+        "attempts": null,
+        "native_extent": [
+          3840,
+          2160
+        ],
+        "cpu_readback_bytes": 0,
+        "segment_row_mask_selected": 0,
+        "adapter": {
+          "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+          "backend": "Vulkan",
+          "device_type": "Cpu",
+          "driver": "llvmpipe"
+        },
+        "adapter_headers": 1
+      }
+    }
+  ]
+}

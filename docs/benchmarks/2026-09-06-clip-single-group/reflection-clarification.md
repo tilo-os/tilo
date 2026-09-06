@@ -1,0 +1,3 @@
+# Precompile binding-reflection clarification
+
+Root read ShaderInfo::new (vendor/vello_shaders/src/compile/mod.rs around 107–110): unused entry-point globals are excluded from generated reflected bindings. Eliminating the prefix removes all shader reads of reduced/clip_els, although their WGSL declarations and seven-entry host binding layout/resources remain unchanged. Therefore the new candidate must reflect [0,1,2,5,6], not the original [0,1,2,3,4,5,6]. The initial audit incorrectly expected identical candidate reflected binding metadata; it was corrected before any build/runtime. All old shader token/metadata invariants remain unchanged. No dummy reads, new uploads or buffer allocation changes are authorized, and this does not establish memory savings.

@@ -1,0 +1,7 @@
+Command: cargo check --manifest-path vendor/vello/Cargo.toml --lib --no-default-features --locked
+Exit code: 101
+
+    Updating crates.io index
+error: cannot update the lock file /home/user/qos/vendor/vello/Cargo.lock because --locked was passed to prevent this
+help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.
+

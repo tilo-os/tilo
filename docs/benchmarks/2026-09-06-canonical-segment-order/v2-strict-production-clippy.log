@@ -1,0 +1,45 @@
+   Compiling vello_shaders v0.9.0 (/home/user/qos/vendor/vello_shaders)
+    Checking spellcheck v0.1.0 (/home/user/qos/crates/text/spellcheck)
+   Compiling launcher v0.1.0 (/home/user/qos/crates/packaging/launcher)
+    Checking thumbnail v0.1.0 (/home/user/qos/crates/thumbnail)
+    Checking pkg v0.1.0 (/home/user/qos/crates/packaging/pkg)
+    Checking runtime-bundle v0.1.0 (/home/user/qos/crates/packaging/runtime-bundle)
+    Checking qos-user-identity v0.1.0 (/home/user/qos/crates/identity/qos-user-identity)
+    Checking qos-power-mgmt v0.1.0 (/home/user/qos/crates/system/power)
+    Checking vello v0.9.0 (/home/user/qos/vendor/vello)
+    Checking qos-desktop-entry v0.1.0 (/home/user/qos/crates/system/desktop-entry)
+    Checking qdoc-html v0.1.0 (/home/user/qos/crates/doc/qdoc-html)
+    Checking qdoc-epub v0.1.0 (/home/user/qos/crates/doc/qdoc-epub)
+    Checking fs v0.1.0 (/home/user/qos/fs)
+    Checking ui v0.1.0 (/home/user/qos/ui)
+    Checking windows-vm v0.1.0 (/home/user/qos/crates/system/windows-vm)
+    Checking ush v0.1.0 (/home/user/qos/crates/runtime/ush)
+    Checking qdoc-pdf v0.1.0 (/home/user/qos/crates/doc/qdoc-pdf)
+    Checking qdoc-rtf v0.1.0 (/home/user/qos/crates/doc/qdoc-rtf)
+    Checking qos-bluez v0.1.0 (/home/user/qos/crates/system/qos-bluez)
+    Checking compat-catalogue v0.1.0 (/home/user/qos/crates/windows/compat-catalogue)
+    Checking compat-service v0.1.0 (/home/user/qos/crates/windows/compat-service)
+    Checking os-actions v0.1.0 (/home/user/qos/crates/system/os-actions)
+    Checking qos-relay v0.1.0 (/home/user/qos/crates/hosting/qos-relay)
+    Checking qos-projector v0.1.0 (/home/user/qos/crates/system/projector)
+    Checking qos-callstream v0.1.0 (/home/user/qos/crates/collab/qos-callstream)
+    Checking desktop-policy v0.1.0 (/home/user/qos/crates/system/desktop-policy)
+    Checking channel-crypto v0.1.0 (/home/user/qos/crates/collab/channel-crypto)
+    Checking collab-fixtures v0.1.0 (/home/user/qos/crates/collab/collab-fixtures)
+error: this function has too many lines (102/100)
+    --> ui/src/offscreen.rs:1239:5
+     |
+1239 | /     fn render_gpu_wait_count(
+1240 | |         &mut self,
+1241 | |         scene: &Scene,
+1242 | |         bg: Color,
+1243 | |         timing: &mut Option<OffscreenRenderTiming>,
+1244 | |     ) -> u64 {
+     | |____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+     = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+     = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+error: could not compile `ui` (lib) due to 1 previous error
+

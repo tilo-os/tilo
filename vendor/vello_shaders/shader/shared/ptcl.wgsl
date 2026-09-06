@@ -24,6 +24,13 @@ const CMD_END_CLIP = 11u;
 const CMD_JUMP = 12u;
 const CMD_BLUR_RECT = 13u;
 
+// Private marker used only by the paired sparse SOLID-fuse permutations.
+// Keep it outside the ordinary tag range so the ordinary PTCL opcode ABI is
+// unchanged.
+#ifdef solid_fuse
+const CMD_SOLID_FUSED = 0x80000000u;
+#endif
+
 // The individual PTCL structs are written here, but read/write is by
 // hand in the relevant shaders
 

@@ -1,0 +1,71 @@
+   Compiling vello v0.9.0 (/home/user/qos/vendor/vello)
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:2166:9
+     |
+2166 | /         assert_eq!(
+2167 | |             fine[0].1[1].as_buf().unwrap().id,
+2168 | |             fine[1].1[1].as_buf().unwrap().id
+2169 | |         );
+     | |_________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:2170:9
+     |
+2170 | /         assert_eq!(
+2171 | |             fine[0].1[2].as_buf().unwrap().id,
+2172 | |             fine[1].1[2].as_buf().unwrap().id
+2173 | |         );
+     | |_________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:2174:9
+     |
+2174 | /         assert_ne!(
+2175 | |             fine[0].1[4].as_buf().unwrap().id,
+2176 | |             fine[1].1[4].as_buf().unwrap().id
+2177 | |         );
+     | |_________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+error[E0277]: `ResourceId` doesn't implement `std::fmt::Debug`
+    --> vendor/vello/src/render.rs:2178:9
+     |
+2178 | /         assert_ne!(
+2179 | |             fine[0].1[5].as_image().unwrap().id,
+2180 | |             fine[1].1[5].as_image().unwrap().id
+2181 | |         );
+     | |_________^ the trait `std::fmt::Debug` is not implemented for `ResourceId`
+     |
+     = note: add `#[derive(Debug)]` to `ResourceId` or manually `impl std::fmt::Debug for ResourceId`
+help: consider annotating `ResourceId` with `#[derive(Debug)]`
+    -->  vendor/vello/src/recording.rs:16:1
+     |
+  16 + #[derive(Debug)]
+  17 | pub struct ResourceId(pub NonZeroU64);
+     |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `vello` (lib test) due to 8 previous errors

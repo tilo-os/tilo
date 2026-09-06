@@ -1,0 +1,71 @@
+Command: cargo clippy -p ui -p shell -p vello --lib --example ui-perf --example redraw_bench --example retained_scene_probe --locked --no-deps -- -D warnings
+Exit code: 101
+
+    Checking atomic-file v0.1.0 (/home/user/qos/crates/system/atomic-file)
+    Checking runtime-portal v0.1.0 (/home/user/qos/crates/runtime/runtime-portal)
+    Checking collab-types v0.1.0 (/home/user/qos/crates/collab/collab-types)
+    Checking qdoc v0.1.0 (/home/user/qos/crates/doc/qdoc)
+   Compiling runtime-fs v0.1.0 (/home/user/qos/crates/runtime/runtime-fs)
+    Checking runtime-identity v0.1.0 (/home/user/qos/crates/runtime/runtime-identity)
+    Checking settings-store v0.1.0 (/home/user/qos/crates/system/settings-store)
+   Compiling runtime-collab v0.1.0 (/home/user/qos/crates/runtime/runtime-collab)
+    Checking threshold-identity v0.1.0 (/home/user/qos/crates/collab/threshold-identity)
+    Checking cli v0.1.0 (/home/user/qos/crates/runtime/cli)
+   Compiling ui v0.1.0 (/home/user/qos/ui)
+    Checking vello v0.9.0 (/home/user/qos/vendor/vello)
+    Checking app-state v0.1.0 (/home/user/qos/crates/system/app-state)
+    Checking tts v0.1.0 (/home/user/qos/crates/system/tts)
+    Checking qos-actions v0.1.0 (/home/user/qos/crates/collab/actions)
+    Checking media v0.1.0 (/home/user/qos/crates/media)
+    Checking qos-startup-metrics v0.1.0 (/home/user/qos/crates/system/qos-startup-metrics)
+    Checking qos-ui-graph v0.1.0 (/home/user/qos/crates/dev/ui-graph)
+    Checking qos-headless-schema v0.1.0 (/home/user/qos/crates/dev/headless-schema)
+    Checking spellcheck v0.1.0 (/home/user/qos/crates/text/spellcheck)
+   Compiling launcher v0.1.0 (/home/user/qos/crates/packaging/launcher)
+    Checking thumbnail v0.1.0 (/home/user/qos/crates/thumbnail)
+    Checking pkg v0.1.0 (/home/user/qos/crates/packaging/pkg)
+    Checking runtime-bundle v0.1.0 (/home/user/qos/crates/packaging/runtime-bundle)
+    Checking qos-power-mgmt v0.1.0 (/home/user/qos/crates/system/power)
+    Checking qos-user-identity v0.1.0 (/home/user/qos/crates/identity/qos-user-identity)
+    Checking qos-desktop-entry v0.1.0 (/home/user/qos/crates/system/desktop-entry)
+    Checking qdoc-html v0.1.0 (/home/user/qos/crates/doc/qdoc-html)
+    Checking qdoc-epub v0.1.0 (/home/user/qos/crates/doc/qdoc-epub)
+    Checking fs v0.1.0 (/home/user/qos/fs)
+    Checking windows-vm v0.1.0 (/home/user/qos/crates/system/windows-vm)
+    Checking ush v0.1.0 (/home/user/qos/crates/runtime/ush)
+    Checking qdoc-pdf v0.1.0 (/home/user/qos/crates/doc/qdoc-pdf)
+    Checking qdoc-rtf v0.1.0 (/home/user/qos/crates/doc/qdoc-rtf)
+    Checking qos-bluez v0.1.0 (/home/user/qos/crates/system/qos-bluez)
+    Checking compat-catalogue v0.1.0 (/home/user/qos/crates/windows/compat-catalogue)
+    Checking compat-service v0.1.0 (/home/user/qos/crates/windows/compat-service)
+    Checking qos-relay v0.1.0 (/home/user/qos/crates/hosting/qos-relay)
+    Checking os-actions v0.1.0 (/home/user/qos/crates/system/os-actions)
+    Checking qos-projector v0.1.0 (/home/user/qos/crates/system/projector)
+    Checking qos-callstream v0.1.0 (/home/user/qos/crates/collab/qos-callstream)
+    Checking desktop-policy v0.1.0 (/home/user/qos/crates/system/desktop-policy)
+    Checking channel-crypto v0.1.0 (/home/user/qos/crates/collab/channel-crypto)
+    Checking collab-fixtures v0.1.0 (/home/user/qos/crates/collab/collab-fixtures)
+    Checking qos-app v0.1.0 (/home/user/qos/crates/app/qos-app)
+    Checking greeter v0.1.0 (/home/user/qos/crates/session/greeter)
+    Checking word-processor v0.1.0 (/home/user/qos/apps/word-processor)
+    Checking file-explorer v0.2.0 (/home/user/qos/apps/file-explorer)
+    Checking terminal v0.2.1 (/home/user/qos/apps/terminal)
+    Checking shell v0.1.0 (/home/user/qos/shell)
+error: this function has too many lines (111/100)
+   --> shell/src/compositor/backend/drm/paint.rs:483:5
+    |
+483 | /     pub fn paint_damage_into_xrgb8888(
+484 | |         &mut self,
+485 | |         scene: &Scene,
+486 | |         damage: SceneDamage<'_>,
+487 | |         dst: &mut [u8],
+488 | |         dst_pitch: usize,
+489 | |     ) -> Result<(), BridgeError> {
+    | |________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#too_many_lines
+    = note: `-D clippy::too-many-lines` implied by `-D clippy::pedantic`
+    = help: to override `-D clippy::pedantic` add `#[allow(clippy::too_many_lines)]`
+
+error: could not compile `shell` (lib) due to 1 previous error
+

@@ -1,0 +1,46 @@
+{
+  "all_33_source_hashes_unchanged": true,
+  "all4_raw_stdout_logs_exact": true,
+  "all4_records_parsed": true,
+  "all4000_wall_samples_crosschecked": true,
+  "all4000_gpu_exact_matches": true,
+  "no_retries": true,
+  "no_missing_or_stale": true,
+  "all_attempts_retained": true,
+  "no_acceptance_claim": true,
+  "binary": {
+    "path": "/home/user/qos/target/ui-perf-comparison/shell-redraw-tail-correlation-20260906",
+    "sha256": "a748a6aa0fdc418ef58fb9bd2452e372798974eeaf3b57389618bc70cbea9a7a",
+    "unchanged": true
+  },
+  "logs": [
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-xrgb-diagnostic-round-1.log",
+      "raw_output_exact": true,
+      "sha256": "e4dbeef25f920f2776c823e1bff033c31a93d6c2b9ec6579ce003930fd594ccf",
+      "record": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-xrgb-diagnostic-round-1.actions.log",
+      "record_sha256": "b42c87570329413cc66fb4c0b1e9fcad78c7ba34aacc1be64cd350cef7660cb7"
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-diagnostic-round-1.log",
+      "raw_output_exact": true,
+      "sha256": "61717babe0ac59ef6948388fba4e6b2dfae06bd79e4ae9aeb8d4a172b6793d10",
+      "record": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-diagnostic-round-1.actions.log",
+      "record_sha256": "e2dad23f95cc6d63c497aa1c2c090103ee8e29dd864018129458bd733e08a949"
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-diagnostic-round-2.log",
+      "raw_output_exact": true,
+      "sha256": "87612017a88e0dc9f68aaafadb67e460deb37b1d97d60d6594fced77dfa0e7a8",
+      "record": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-diagnostic-round-2.actions.log",
+      "record_sha256": "8a211216c0329de151303c8fd7ad2ec7e9e636e7c769422348f84858ea9e09b0"
+    },
+    {
+      "path": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-xrgb-diagnostic-round-2.log",
+      "raw_output_exact": true,
+      "sha256": "05ed350429f35534bc201c01e4fceeb4b01281b8b0a5203d87d67812ff378ef9",
+      "record": "/home/user/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/bounds-xrgb-diagnostic-round-2.actions.log",
+      "record_sha256": "43cc0f857d878ad66d7eb2e4bd6ee4e3e23347b939eaa38e3b01834205b9195d"
+    }
+  ]
+}

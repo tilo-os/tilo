@@ -1,0 +1,29 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE cargo test -p shell --example redraw_bench native_4k_fixed_quick_settings_pose_225_dense_is_repeatable --locked -- --ignored --nocapture --test-threads=1
+Exit code: 101
+
+   Compiling shell v0.1.0 (/home/user/qos/shell)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.57s
+     Running unittests examples/redraw_bench.rs (target/debug/examples/redraw_bench-591dddf465a25152)
+
+running 1 test
+test tests::native_4k_fixed_quick_settings_pose_225_dense_is_repeatable ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+redraw_bench packed scene same_context_second: left_len=187976 right_len=187976 equal=true first_offset=None
+
+thread 'tests::native_4k_fixed_quick_settings_pose_225_dense_is_repeatable' (539355) panicked at shell/examples/redraw_bench.rs:1900:9:
+assertion `left == right` failed: dense repeatability mismatch: comparison=same_context_second subject=fixed_quick_settings_pose=225 repetition=1 mismatches=1 max_delta=1 first=Some((3770, 95, 0, 48, 49))
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    tests::native_4k_fixed_quick_settings_pose_225_dense_is_repeatable
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 4.50s
+
+error: test failed, to rerun pass `-p shell --example redraw_bench`

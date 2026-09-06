@@ -1,0 +1,55 @@
+{
+  "version": "v4",
+  "checks_attempted": 22,
+  "checks_passed": 21,
+  "test_totals": {
+    "passed": 160,
+    "failed": 1
+  },
+  "changed_line_diagnostics": 0,
+  "frozen_source_inputs": 28,
+  "source_integrity": "matched after validation",
+  "known_baseline_failure": {
+    "name": "shell-default-native-oracle",
+    "exit_code": 101,
+    "log": "/home/user/qos/docs/benchmarks/2026-09-06-canonical-segment-order/v4-shell-default-native-oracle.log",
+    "details": "Default canonical-off native oracle at candidate4:3 bytes,delta1,first(1894,14,ch2,234vs233),outside damage. Same clock-location failure class was preserved in the earlier solid-command-fusion iteration. This failure was not rerun, discarded, or changed into a pass."
+  },
+  "candidate_oracle_selection": [
+    {
+      "name": "shell-canonical-native-oracle",
+      "sparse": 11,
+      "full": 2
+    },
+    {
+      "name": "shell-bounds-canonical-native-oracle",
+      "sparse": 11,
+      "full": 2
+    },
+    {
+      "name": "shell-fused-canonical-native-oracle",
+      "sparse": 11,
+      "full": 2
+    },
+    {
+      "name": "shell-row-mask-canonical-native-oracle",
+      "sparse": 11,
+      "full": 2
+    },
+    {
+      "name": "shell-quad-opaque-canonical-native-oracle",
+      "sparse": 11,
+      "full": 2
+    }
+  ],
+  "repeatability": {
+    "scene_snapshots": 14,
+    "repetitions_per_context": 8,
+    "contexts": 2,
+    "result": "all reported exact;13 action snapshots plus fixed QS225 snapshot"
+  },
+  "causal_replay": "AA0;AB2;BA2 reversed;outside0;all attempt1,unchanged diagnostic under canonical flag",
+  "performance_runs": 0,
+  "acceptance_eligible": false,
+  "goal_met": false
+}

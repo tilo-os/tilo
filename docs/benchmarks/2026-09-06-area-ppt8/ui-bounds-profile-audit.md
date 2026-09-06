@@ -1,0 +1,11 @@
+# UI bounds and existing profile audit
+
+Read-only audit of frozen Area-PPT8 v5; no code, workload, tolerance, gate or default changed.
+
+The six UI bounds-requested comparisons have full 1,000-event reports and positive AUTO-active coarse counts, but zero actual path-bounds selections. They remain ineligible for the predeclared positive-bounds comparison, with all descriptive numbers retained.
+
+The two eligibility decisions differ. ui/src/offscreen.rs (around 1570–1610) gives sparse Vello rendering the damage-prefix width/height while preserving native damage coordinates. vendor/vello/src/lib.rs sparse_coarse_active_coverage permits selected coarse bins covering at most half of the prefix bin grid, saving at least 32 bins. Only an actually active dispatch calls sparse_path_tile_bounds (around 2732–2762). That function takes one bounding rectangle over every sparse native tile (around 1229–1258), not the union's exact area. render::path_tile_bounds_are_valid (around 114–136) requires this rectangle cover at most half the prefix native-tile grid, with nonempty/in-range/overflow/65,536-tile checks.
+
+Thus scattered active bins can meet AUTO profitability but their bounding rectangle fail bounds profitability. The zero applied counts are consistent with this intended fallback, not evidence of a missing environment-variable connection. Current stdout does not expose each rejected rectangle/reason, so it cannot independently prove the per-frame rejection cause. Enabling bounds alone should not be described as a UI bounds speedup. A non-rectangular allocator would be a new candidate, requiring design/parity/measurement.
+
+Existing QUICK_UI_DASH_RENDER_PROFILE=1 reports draw/scene vs render totals and joins the ten slowest render sample indices to Vello submit, dirty-copy encoding, setup, settle, unaccounted and sparse coverage. VELLO_GPU_TIMESTAMPS=1 adds matched submission span/last-compute/other-compute labels. VELLO_GPU_DISPATCH_TIMESTAMPS=1 (with GPU timestamps) adds aggregate stage distributions, not per-stage arrays in every slow-frame line. See dashboard_perf_bench.rs print_render_timing_profile (around 1933–2019). GPU diagnostics reject acceptance budgets. Existing output is sufficient for a first UI tail attribution; an exact coarse/fine per-tail-frame join may need diagnostic reporting later, not a timer change.

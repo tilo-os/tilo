@@ -1,0 +1,305 @@
+{
+  "attempted": 24,
+  "planned": 24,
+  "complete": 24,
+  "groups": [
+    {
+      "workload": "shell",
+      "variant": "default",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 38.240802,
+      "median_p99_ms": 96.059,
+      "worst_sample_ms": 653.168,
+      "median_peak_rss_kib": 579536,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "median_cpu_xrgb_write_reduction_percent": 0,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "xrgb",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 36.020055,
+      "median_p99_ms": 95.45,
+      "worst_sample_ms": 598.33,
+      "median_peak_rss_kib": 576100,
+      "median_cpu_xrgb_bytes": 808636416,
+      "median_cpu_xrgb_write_reduction_percent": 97.5627037037037,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 25.130306,
+      "median_p99_ms": 68.981,
+      "worst_sample_ms": 676.379,
+      "median_peak_rss_kib": 583928,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "median_cpu_xrgb_write_reduction_percent": 0,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-xrgb",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 22.165605,
+      "median_p99_ms": 68.852,
+      "worst_sample_ms": 579.892,
+      "median_peak_rss_kib": 584604,
+      "median_cpu_xrgb_bytes": 808636416,
+      "median_cpu_xrgb_write_reduction_percent": 97.5627037037037,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-canonical",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 27.393169,
+      "median_p99_ms": 75.26,
+      "worst_sample_ms": 727.216,
+      "median_peak_rss_kib": 591548,
+      "median_cpu_xrgb_bytes": 33177600000,
+      "median_cpu_xrgb_write_reduction_percent": 0,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "shell",
+      "variant": "bounds-canonical-xrgb",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 25.190625,
+      "median_p99_ms": 72.345,
+      "worst_sample_ms": 684.592,
+      "median_peak_rss_kib": 591632,
+      "median_cpu_xrgb_bytes": 808636416,
+      "median_cpu_xrgb_write_reduction_percent": 97.5627037037037,
+      "known_gpu_bytes": [],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "ui",
+      "variant": "default",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 0,
+      "median_mean_ms": 8.052,
+      "median_p99_ms": 37.309,
+      "worst_sample_ms": 115.514,
+      "median_peak_rss_kib": 377180,
+      "median_cpu_xrgb_bytes": null,
+      "median_cpu_xrgb_write_reduction_percent": null,
+      "known_gpu_bytes": [
+        62282124
+      ],
+      "issues": [],
+      "acceptance_eligible": false
+    },
+    {
+      "workload": "ui",
+      "variant": "xrgb",
+      "attempts": 3,
+      "planned": 3,
+      "complete": 3,
+      "numeric_passes": 1,
+      "median_mean_ms": 7.903,
+      "median_p99_ms": 34.712,
+      "worst_sample_ms": 112.344,
+      "median_peak_rss_kib": 377500,
+      "median_cpu_xrgb_bytes": null,
+      "median_cpu_xrgb_write_reduction_percent": null,
+      "known_gpu_bytes": [
+        62282124
+      ],
+      "issues": [],
+      "acceptance_eligible": false
+    }
+  ],
+  "pairs": [
+    {
+      "workload": "shell",
+      "base": "default",
+      "candidate": "xrgb",
+      "paired": [
+        {
+          "round": 1,
+          "complete": true,
+          "mean_change_percent": -1.8399557152263157,
+          "p99_change_percent": 30.042304184821166,
+          "rss_change_percent": -0.9669804809364746,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -9.76372907732358,
+          "p99_change_percent": -12.137332264545753,
+          "rss_change_percent": -0.10334734418133706,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -4.754424344970598,
+          "p99_change_percent": -1.5969236796255615,
+          "rss_change_percent": 0.3657644476956934,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -5.807270987674373,
+        "p99_change_percent": -0.633985363162215,
+        "rss_change_percent": -0.5928881035863198
+      },
+      "causal_ui_gain_claim_allowed": false
+    },
+    {
+      "workload": "shell",
+      "base": "bounds",
+      "candidate": "bounds-xrgb",
+      "paired": [
+        {
+          "round": 1,
+          "complete": true,
+          "mean_change_percent": -7.28403426962958,
+          "p99_change_percent": 13.650276782806902,
+          "rss_change_percent": -0.4849913002972994,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -13.074353937892402,
+          "p99_change_percent": -13.91867287072628,
+          "rss_change_percent": 0.7356063615566955,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -7.699420771080145,
+          "p99_change_percent": -0.1870080167002519,
+          "rss_change_percent": 0.39981039919214645,
+          "cpu_xrgb_byte_change_percent": -97.56585185185185
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -11.797313570316259,
+        "p99_change_percent": -0.1870080167002408,
+        "rss_change_percent": 0.11576769738734782
+      },
+      "causal_ui_gain_claim_allowed": false
+    },
+    {
+      "workload": "shell",
+      "base": "bounds-canonical",
+      "candidate": "bounds-canonical-xrgb",
+      "paired": [
+        {
+          "round": 1,
+          "complete": true,
+          "mean_change_percent": -13.39577031047412,
+          "p99_change_percent": -20.547651582134343,
+          "rss_change_percent": 0.845446859573995,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": -7.070796241119892,
+          "p99_change_percent": -1.618910276506369,
+          "rss_change_percent": -0.9865640658070052,
+          "cpu_xrgb_byte_change_percent": -97.5627037037037
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -2.533203246257887,
+          "p99_change_percent": -3.873239436619713,
+          "rss_change_percent": 0.06523025607918509,
+          "cpu_xrgb_byte_change_percent": -97.56585185185185
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -8.040486297879589,
+        "p99_change_percent": -3.8732394366197243,
+        "rss_change_percent": 0.014200031104838473
+      },
+      "causal_ui_gain_claim_allowed": false
+    },
+    {
+      "workload": "ui",
+      "base": "default",
+      "candidate": "xrgb",
+      "paired": [
+        {
+          "round": 1,
+          "complete": true,
+          "mean_change_percent": -2.6004436775942774,
+          "p99_change_percent": -13.962077085140667,
+          "rss_change_percent": 0.00636557497055712,
+          "cpu_xrgb_byte_change_percent": null
+        },
+        {
+          "round": 2,
+          "complete": true,
+          "mean_change_percent": 1.9775790401813875,
+          "p99_change_percent": 10.380811227730558,
+          "rss_change_percent": 0.18134577655231077,
+          "cpu_xrgb_byte_change_percent": null
+        },
+        {
+          "round": 3,
+          "complete": true,
+          "mean_change_percent": -3.5394932935916557,
+          "p99_change_percent": -23.0212549250851,
+          "rss_change_percent": 0.02225660809291874,
+          "cpu_xrgb_byte_change_percent": null
+        }
+      ],
+      "ratio_of_medians": {
+        "mean_change_percent": -1.850471932439146,
+        "p99_change_percent": -6.960786941488639,
+        "rss_change_percent": 0.08484012938119179
+      },
+      "causal_ui_gain_claim_allowed": false
+    }
+  ],
+  "acceptance_eligible": false,
+  "notes": [
+    "Repeated matched runs; all attempts retained. Negative change means less time/RSS/CPU output, not guaranteed causation.",
+    "XRGB affects shell CPU destination writes, not GPU readback, physical bus transfer or peak VRAM. UI X is a no-path regression control.",
+    "Known GPU bytes are reported accounting endpoints, not hardware peak memory. Peak RSS is whole-process resident memory.",
+    "Exact shell mean uses timing total/sample count; UI mean uses ordinary reported integer microseconds.",
+    "Current machine is aarch64 with Vulkan llvmpipe; no physical 2010 laptop, KMS presentation, or constant-60FPS proof."
+  ]
+}

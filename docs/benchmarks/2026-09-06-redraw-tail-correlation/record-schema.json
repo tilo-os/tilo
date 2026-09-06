@@ -1,0 +1,74 @@
+{
+  "fields": {
+    "numbers": [
+      "index",
+      "wall_us",
+      "input_us",
+      "registry_us",
+      "layout_us",
+      "scene_us",
+      "submit_us",
+      "gpu_completion_map_us",
+      "settle_us",
+      "cpu_copy_swizzle_us",
+      "readback_bytes",
+      "cpu_output_bytes",
+      "attempts",
+      "sparse_attempts",
+      "full_attempts",
+      "recovery_attempts",
+      "sparse_fine_tiles",
+      "sparse_fine_pixels",
+      "sparse_written_pixels",
+      "sparse_coarse_pixels",
+      "sparse_coarse_native_bins",
+      "sparse_coarse_selected_native_bins",
+      "sparse_path_tile_bounds_tiles",
+      "sparse_fine_quad_total_quads",
+      "sparse_fine_quad_active_quads"
+    ],
+    "booleans": [
+      "sparse_present",
+      "sparse_coarse_active_bins",
+      "sparse_coarse_adaptive",
+      "sparse_path_tile_bounds_applied",
+      "sparse_fine_quad_skip_applied",
+      "sparse_opaque_prune_selected",
+      "sparse_solid_fuse_selected",
+      "sparse_segment_row_mask_selected",
+      "sparse_canonical_segment_order_selected",
+      "timestamp_exact_match",
+      "timestamp_missing",
+      "timestamp_stale"
+    ],
+    "optional_numbers": [
+      "timestamp_status_submission_id",
+      "timestamp_expected_submission_id",
+      "timestamp_observed_submission_id",
+      "gpu_total_timed_stage_ns",
+      "gpu_coarse_ns",
+      "gpu_fine_ns",
+      "gpu_other_stage_ns",
+      "gpu_unknown_stage_ns",
+      "gpu_coarse_dispatches",
+      "gpu_fine_dispatches"
+    ],
+    "strings": [
+      "target",
+      "timestamp_status"
+    ]
+  },
+  "format": "key=value per action line; Rust None or Some(integer) for optional fields; all integers must be safely parsed or rejected without rounding",
+  "actions": [
+    "topbar_tray_pill",
+    "topbar_overview_button"
+  ],
+  "index_range": [
+    0,
+    999
+  ],
+  "expected_target_rule": "actions[index % 2]",
+  "p99_definition": "nearest rank: sorted wall sample at zero-based index 989 for 1000 records",
+  "stage_partition": "total_timed_stage_ns = coarse_ns + fine_ns + other_stage_ns + unknown_stage_ns; unknown is part of total, not part of other",
+  "ordinary_mode": "no joined records or report artifact"
+}

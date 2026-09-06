@@ -26,6 +26,14 @@ var<storage, read_write> paths: array<Path>;
 @group(0) @binding(5)
 var<storage, read_write> tiles: array<Tile>;
 
+#ifdef sparse_bounds
+// Integer native-tile bounds for the selected sparse-coarse recording. This
+// is intentionally separate from Config so the ordinary tile allocator keeps
+// its existing uniform layout and native viewport semantics.
+@group(0) @binding(6)
+var<uniform> sparse_tile_bounds: vec4<u32>;
+#endif
+
 const WG_SIZE = 256u;
 
 var<workgroup> sh_tile_count: array<u32, WG_SIZE>;
@@ -74,10 +82,22 @@ fn main(
             y1 = i32(ceil(bbox.w * SY));
         }
     }
-    let ux0 = u32(clamp(x0, 0, i32(config.width_in_tiles)));
-    let uy0 = u32(clamp(y0, 0, i32(config.height_in_tiles)));
-    let ux1 = u32(clamp(x1, 0, i32(config.width_in_tiles)));
-    let uy1 = u32(clamp(y1, 0, i32(config.height_in_tiles)));
+    var ux0 = u32(clamp(x0, 0, i32(config.width_in_tiles)));
+    var uy0 = u32(clamp(y0, 0, i32(config.height_in_tiles)));
+    var ux1 = u32(clamp(x1, 0, i32(config.width_in_tiles)));
+    var uy1 = u32(clamp(y1, 0, i32(config.height_in_tiles)));
+#ifdef sparse_bounds
+    // Clamp both endpoints to ordered intervals. This preserves zero-area
+    // paths and prevents unsigned extent underflow for offscreen geometry.
+    let bounds_x0 = min(sparse_tile_bounds.x, config.width_in_tiles);
+    let bounds_y0 = min(sparse_tile_bounds.y, config.height_in_tiles);
+    let bounds_x1 = clamp(sparse_tile_bounds.z, bounds_x0, config.width_in_tiles);
+    let bounds_y1 = clamp(sparse_tile_bounds.w, bounds_y0, config.height_in_tiles);
+    ux0 = clamp(ux0, bounds_x0, bounds_x1);
+    uy0 = clamp(uy0, bounds_y0, bounds_y1);
+    ux1 = clamp(ux1, bounds_x0, bounds_x1);
+    uy1 = clamp(uy1, bounds_y0, bounds_y1);
+#endif
     let tile_count = (ux1 - ux0) * (uy1 - uy0);
     var total_tile_count = tile_count;
     sh_tile_count[local_id.x] = tile_count;

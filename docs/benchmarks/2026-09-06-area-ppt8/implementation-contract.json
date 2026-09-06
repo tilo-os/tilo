@@ -1,0 +1,35 @@
+{
+  "status": "implementation_authorized_not_runtime",
+  "source_baseline": "../2026-09-06-redraw-tail-correlation/v3-source.sha256",
+  "author": "existing Terra geometry/vendor agent",
+  "flag": "VELLO_AREA_PPT8=1",
+  "default_enabled": false,
+  "files": [
+    "vendor/vello_shaders/shader/fine.wgsl",
+    "vendor/vello_shaders/shader/permutations",
+    "vendor/vello/src/shaders.rs",
+    "vendor/vello/src/render.rs",
+    "vendor/vello/src/wgpu_engine.rs",
+    "vendor/vello/src/lib.rs",
+    "shell/src/compositor/backend/drm/mod.rs",
+    "shell/src/compositor/backend/drm/paint.rs",
+    "shell/examples/redraw_bench.rs",
+    "ui/src/offscreen.rs",
+    "ui/examples/dashboard_perf_bench.rs"
+  ],
+  "scope": "Area full/sparse synchronous GPU candidate with exact original four-pixel subgroups; private shared-coarse proof fixtures; actual-selection telemetry and focused tests only.",
+  "forbidden": [
+    "AA or scalar-order changes",
+    "CPU/MSAA/async/replay/shared-diagnostic behavioral changes",
+    "workload/gate/warm-up/timer changes",
+    "defaults promotion",
+    "new buffers, GPU copies, queries, barriers",
+    "other opt-in fine permutation combinations",
+    "source edits during build/runtime",
+    "author compilation/tests/benchmarks",
+    "editing unrelated dirty files",
+    "new subagents"
+  ],
+  "review_required_before_runtime": true,
+  "ordinary_release_required_before_benchmark": true
+}

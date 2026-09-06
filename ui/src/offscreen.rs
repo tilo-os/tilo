@@ -162,6 +162,54 @@ pub struct OffscreenRenderTiming {
     /// Sparse submissions that actually selected the opt-in native active-bin coarse shader.
     /// Capability alone is not counted because oversized selectors fall back to legacy coarse.
     pub sparse_coarse_active_bins_submissions: u32,
+    /// Sparse submissions made while Vello's opt-in adaptive coarse policy was active.
+    pub sparse_coarse_adaptive_submissions: u32,
+    /// Adaptive sparse submissions which deliberately retained dense coarse work.
+    pub sparse_coarse_adaptive_dense_submissions: u32,
+    /// Sum of representable native coarse bins across adaptive sparse submissions.
+    pub sparse_coarse_native_bins: u64,
+    /// Sum of selected native coarse bins across adaptive sparse submissions.
+    pub sparse_coarse_selected_native_bins: u64,
+    /// Sparse submissions where Vello actually applied path-level native tile bounds.
+    pub sparse_path_tile_bounds_submissions: u32,
+    /// Sum of native bounding-box tile areas from actually bounded sparse submissions.
+    /// This is diagnostic coverage accounting, not an allocation or memory-saving metric.
+    pub sparse_path_tile_bounds_tiles: u64,
+    /// Sparse submissions where the coarse opaque-prune shader was actually selected.
+    /// This does not claim a number of tiles or commands pruned, or any resource savings.
+    pub sparse_coarse_opaque_prune_submissions: u32,
+    /// Sparse submissions where the solid-fuse producer/consumer shader path was selected.
+    /// This does not claim command fusion counts or any resource savings.
+    pub sparse_solid_fuse_submissions: u32,
+    /// Sparse submissions where the segment-row-mask shader path was actually selected.
+    /// This does not claim a number of rows skipped or any resource savings.
+    pub sparse_segment_row_mask_submissions: u32,
+    /// Sparse submissions where canonical segment ordering was actually recorded.
+    /// This is route-attempt telemetry, not a completion or speed claim.
+    pub canonical_segment_order_sparse_selected_attempts: u32,
+    /// Full submissions where canonical segment ordering was actually recorded.
+    /// This is route-attempt telemetry, not a completion or speed claim.
+    pub canonical_segment_order_full_selected_attempts: u32,
+    /// Sparse submissions where the Area PPT8 shader was actually selected.
+    /// This is route-attempt telemetry, not a completion or speed claim.
+    pub area_ppt8_sparse_selected_attempts: u32,
+    /// Full submissions where the Area PPT8 shader was actually selected.
+    /// This is route-attempt telemetry, not a completion or speed claim.
+    pub area_ppt8_full_selected_attempts: u32,
+    /// Sparse submissions where the single-workgroup clip leaf shader was selected.
+    /// This is route-attempt telemetry, not a completion or speed claim.
+    pub clip_single_group_sparse_selected_attempts: u32,
+    /// Full submissions where the single-workgroup clip leaf shader was selected.
+    /// This is route-attempt telemetry, not a completion or speed claim.
+    pub clip_single_group_full_selected_attempts: u32,
+    /// Sparse submissions where the Area fine shader actually skipped zero-mask quad invocations.
+    pub sparse_fine_quad_skip_submissions: u32,
+    /// Total fine invocation groups considered by the applied quad-skip path.
+    pub sparse_fine_quad_total_quads: u64,
+    /// Non-zero-mask fine invocation groups evaluated by the applied quad-skip path.
+    pub sparse_fine_quad_active_quads: u64,
+    /// Zero-mask fine invocation groups skipped by the applied quad-skip path.
+    pub sparse_fine_quad_skipped_quads: u64,
     pub sparse_fine_tiles: u64,
     pub sparse_written_pixels: u64,
     pub coarse_prefix_pixels: u64,
@@ -191,6 +239,162 @@ pub struct OffscreenRenderTiming {
     pub gpu_dispatch_timestamp_stage_dispatch_count: [u32; 32],
     pub gpu_dispatch_timestamp_unknown_duration_ns: u128,
     pub gpu_dispatch_timestamp_unknown_dispatch_count: u32,
+}
+
+/// Lightweight accounting for actual sparse submissions. Unlike [`OffscreenRenderTiming`], this
+/// is updated for every sparse attempt, including one that later overflows into dense recovery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SparseSubmissionAccounting {
+    pub sparse_submissions: u64,
+    pub active_sparse_submissions: u64,
+    pub path_tile_bounds_submissions: u64,
+    pub path_tile_bounds_tiles: u64,
+    pub coarse_opaque_prune_selected_submissions: u64,
+    pub solid_fuse_selected_submissions: u64,
+    pub segment_row_mask_selected_submissions: u64,
+    pub canonical_segment_order_selected_sparse_attempts: u64,
+    pub area_ppt8_selected_sparse_attempts: u64,
+    pub clip_single_group_shader_selected: u64,
+    pub fine_quad_skip_submissions: u64,
+    pub fine_quad_total_quads: u64,
+    pub fine_quad_active_quads: u64,
+    pub fine_quad_skipped_quads: u64,
+}
+
+impl SparseSubmissionAccounting {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record(&mut self, stats: vello::SparseRenderStats) {
+        self.sparse_submissions = self.sparse_submissions.saturating_add(1);
+        if stats.coarse_active_bins {
+            self.active_sparse_submissions = self.active_sparse_submissions.saturating_add(1);
+        }
+        if stats.path_tile_bounds_applied {
+            self.path_tile_bounds_submissions = self.path_tile_bounds_submissions.saturating_add(1);
+            self.path_tile_bounds_tiles = self
+                .path_tile_bounds_tiles
+                .saturating_add(u64::from(stats.path_tile_bounds_tiles));
+        }
+        if stats.coarse_opaque_prune_selected {
+            self.coarse_opaque_prune_selected_submissions = self
+                .coarse_opaque_prune_selected_submissions
+                .saturating_add(1);
+        }
+        if stats.solid_fuse_selected {
+            self.solid_fuse_selected_submissions =
+                self.solid_fuse_selected_submissions.saturating_add(1);
+        }
+        if stats.segment_row_mask_selected {
+            self.segment_row_mask_selected_submissions =
+                self.segment_row_mask_selected_submissions.saturating_add(1);
+        }
+        if stats.canonical_segment_order_shader_selected {
+            self.canonical_segment_order_selected_sparse_attempts = self
+                .canonical_segment_order_selected_sparse_attempts
+                .saturating_add(1);
+        }
+        if stats.area_ppt8_shader_selected {
+            self.area_ppt8_selected_sparse_attempts =
+                self.area_ppt8_selected_sparse_attempts.saturating_add(1);
+        }
+        if stats.clip_single_group_shader_selected {
+            self.clip_single_group_shader_selected =
+                self.clip_single_group_shader_selected.saturating_add(1);
+        }
+        if stats.fine_quad_skip_applied {
+            self.fine_quad_skip_submissions = self.fine_quad_skip_submissions.saturating_add(1);
+            self.fine_quad_total_quads = self
+                .fine_quad_total_quads
+                .saturating_add(u64::from(stats.fine_quad_total_quads));
+            self.fine_quad_active_quads = self
+                .fine_quad_active_quads
+                .saturating_add(u64::from(stats.fine_quad_active_quads));
+            self.fine_quad_skipped_quads = self.fine_quad_skipped_quads.saturating_add(u64::from(
+                stats
+                    .fine_quad_total_quads
+                    .saturating_sub(stats.fine_quad_active_quads),
+            ));
+        }
+    }
+}
+
+/// Actual canonical-segment-order passes recorded since an explicit measured-workload reset.
+/// Counters describe synchronous route attempts only, including retries, not completion or speed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CanonicalSegmentOrderAttemptAccounting {
+    pub full_selected_attempts: u64,
+    pub sparse_selected_attempts: u64,
+}
+
+/// Actual Area PPT8 passes recorded since an explicit measured-workload reset.
+/// Counters describe synchronous route attempts only, including retries, not completion or speed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AreaPpt8AttemptAccounting {
+    pub full_selected_attempts: u64,
+    pub sparse_selected_attempts: u64,
+}
+
+/// Actual single-workgroup clip leaf passes recorded since an explicit measured-workload reset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClipSingleGroupAttemptAccounting {
+    pub full_selected_attempts: u64,
+    pub sparse_selected_attempts: u64,
+}
+
+impl ClipSingleGroupAttemptAccounting {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record_full(&mut self, selected: bool) {
+        if selected {
+            self.full_selected_attempts = self.full_selected_attempts.saturating_add(1);
+        }
+    }
+
+    fn record_sparse(&mut self, selected: bool) {
+        if selected {
+            self.sparse_selected_attempts = self.sparse_selected_attempts.saturating_add(1);
+        }
+    }
+}
+
+impl AreaPpt8AttemptAccounting {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record_full(&mut self, selected: bool) {
+        if selected {
+            self.full_selected_attempts = self.full_selected_attempts.saturating_add(1);
+        }
+    }
+
+    fn record_sparse(&mut self, selected: bool) {
+        if selected {
+            self.sparse_selected_attempts = self.sparse_selected_attempts.saturating_add(1);
+        }
+    }
+}
+
+impl CanonicalSegmentOrderAttemptAccounting {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record_full(&mut self, selected: bool) {
+        if selected {
+            self.full_selected_attempts = self.full_selected_attempts.saturating_add(1);
+        }
+    }
+
+    fn record_sparse(&mut self, selected: bool) {
+        if selected {
+            self.sparse_selected_attempts = self.sparse_selected_attempts.saturating_add(1);
+        }
+    }
 }
 
 #[allow(
@@ -354,6 +558,10 @@ pub struct OffscreenRenderer {
     /// dimensions are deliberately excluded so they cannot flush GPU caches.
     last_damage_region_count: Option<usize>,
     coarse_pool_high_water_pixels: u64,
+    sparse_submission_accounting: SparseSubmissionAccounting,
+    canonical_segment_order_attempt_accounting: CanonicalSegmentOrderAttemptAccounting,
+    area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting,
+    clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting,
     target_valid: bool,
 }
 
@@ -574,6 +782,158 @@ impl OffscreenRenderer {
         self.renderer.sparse_coarse_active_bins_available()
     }
 
+    /// Whether the opt-in adaptive sparse-coarse policy is both requested and available.
+    #[doc(hidden)]
+    pub fn sparse_coarse_adaptive_enabled(&self) -> bool {
+        self.renderer.sparse_coarse_adaptive_enabled()
+    }
+
+    /// Whether Vello was configured to request sparse path-level tile bounds.
+    #[doc(hidden)]
+    pub fn sparse_tile_bounds_requested(&self) -> bool {
+        self.renderer.sparse_tile_bounds_requested()
+    }
+
+    /// Whether Vello can apply sparse path-level tile bounds for this renderer.
+    #[doc(hidden)]
+    pub fn sparse_tile_bounds_available(&self) -> bool {
+        self.renderer.sparse_tile_bounds_available()
+    }
+
+    /// Whether sparse Area fine quad skipping was requested.
+    #[doc(hidden)]
+    pub fn sparse_fine_quad_skip_requested(&self) -> bool {
+        self.renderer.sparse_fine_quad_skip_requested()
+    }
+
+    /// Whether sparse Area fine quad skipping is available.
+    #[doc(hidden)]
+    pub fn sparse_fine_quad_skip_available(&self) -> bool {
+        self.renderer.sparse_fine_quad_skip_available()
+    }
+
+    /// Whether sparse coarse opaque pruning was requested.
+    #[doc(hidden)]
+    pub fn sparse_opaque_prune_requested(&self) -> bool {
+        self.renderer.sparse_opaque_prune_requested()
+    }
+
+    /// Whether sparse coarse opaque pruning can select its shader.
+    #[doc(hidden)]
+    pub fn sparse_opaque_prune_available(&self) -> bool {
+        self.renderer.sparse_opaque_prune_available()
+    }
+
+    /// Whether sparse solid-fuse selection was requested.
+    #[doc(hidden)]
+    pub fn sparse_solid_fuse_requested(&self) -> bool {
+        self.renderer.sparse_solid_fuse_requested()
+    }
+
+    /// Whether sparse solid-fuse selection can be used by this renderer.
+    #[doc(hidden)]
+    pub fn sparse_solid_fuse_available(&self) -> bool {
+        self.renderer.sparse_solid_fuse_available()
+    }
+
+    /// Whether sparse segment-row masking was requested.
+    #[doc(hidden)]
+    pub fn sparse_segment_row_mask_requested(&self) -> bool {
+        self.renderer.sparse_segment_row_mask_requested()
+    }
+
+    /// Whether sparse segment-row masking can be selected by this renderer.
+    #[doc(hidden)]
+    pub fn sparse_segment_row_mask_available(&self) -> bool {
+        self.renderer.sparse_segment_row_mask_available()
+    }
+
+    /// Whether canonical segment ordering was requested.
+    #[doc(hidden)]
+    pub fn canonical_segment_order_requested(&self) -> bool {
+        self.renderer.canonical_segment_order_requested()
+    }
+
+    /// Whether this renderer has canonical segment ordering available.
+    #[doc(hidden)]
+    pub fn canonical_segment_order_available(&self) -> bool {
+        self.renderer.canonical_segment_order_available()
+    }
+
+    /// Whether Area PPT8 was requested.
+    #[doc(hidden)]
+    pub fn area_ppt8_requested(&self) -> bool {
+        self.renderer.area_ppt8_requested()
+    }
+
+    /// Whether Area PPT8 is available for the ordinary synchronous GPU full route.
+    #[doc(hidden)]
+    pub fn area_ppt8_available(&self) -> bool {
+        self.renderer.area_ppt8_available()
+    }
+
+    /// Whether the single-workgroup clip leaf experiment was requested.
+    #[doc(hidden)]
+    pub fn clip_single_group_requested(&self) -> bool {
+        self.renderer.clip_single_group_requested()
+    }
+
+    /// Whether the single-workgroup clip leaf permutation is available.
+    #[doc(hidden)]
+    pub fn clip_single_group_available(&self) -> bool {
+        self.renderer.clip_single_group_available()
+    }
+
+    /// Reset no-allocation sparse-submission accounting at a measured-workload boundary.
+    #[doc(hidden)]
+    pub fn reset_sparse_submission_accounting(&mut self) {
+        self.sparse_submission_accounting.reset();
+    }
+
+    /// Actual sparse submissions recorded since the latest explicit reset.
+    #[doc(hidden)]
+    pub fn sparse_submission_accounting(&self) -> SparseSubmissionAccounting {
+        self.sparse_submission_accounting
+    }
+
+    /// Reset canonical segment-order route-attempt counters at a measured-workload boundary.
+    #[doc(hidden)]
+    pub fn reset_canonical_segment_order_attempt_accounting(&mut self) {
+        self.canonical_segment_order_attempt_accounting.reset();
+    }
+
+    /// Actual canonical segment-order passes recorded since the latest explicit reset.
+    #[doc(hidden)]
+    pub fn canonical_segment_order_attempt_accounting(
+        &self,
+    ) -> CanonicalSegmentOrderAttemptAccounting {
+        self.canonical_segment_order_attempt_accounting
+    }
+
+    /// Reset Area PPT8 route-attempt counters at a measured-workload boundary.
+    #[doc(hidden)]
+    pub fn reset_area_ppt8_attempt_accounting(&mut self) {
+        self.area_ppt8_attempt_accounting.reset();
+    }
+
+    /// Actual Area PPT8 passes recorded since the latest explicit reset.
+    #[doc(hidden)]
+    pub fn area_ppt8_attempt_accounting(&self) -> AreaPpt8AttemptAccounting {
+        self.area_ppt8_attempt_accounting
+    }
+
+    /// Reset single-workgroup clip leaf route-attempt counters at a workload boundary.
+    #[doc(hidden)]
+    pub fn reset_clip_single_group_attempt_accounting(&mut self) {
+        self.clip_single_group_attempt_accounting.reset();
+    }
+
+    /// Actual single-workgroup clip leaf passes recorded since the latest explicit reset.
+    #[doc(hidden)]
+    pub fn clip_single_group_attempt_accounting(&self) -> ClipSingleGroupAttemptAccounting {
+        self.clip_single_group_attempt_accounting
+    }
+
     /// Overrides sparse fine recording for differential tests and diagnostics.
     #[doc(hidden)]
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
@@ -703,6 +1063,20 @@ impl OffscreenRenderer {
         }
     }
 
+    /// Identity of the adapter actually selected by this renderer's shared context.
+    ///
+    /// Returns `None` if that context is inaccessible or no longer contains this renderer's
+    /// selected device. This only snapshots adapter metadata; it neither changes selection nor
+    /// performs GPU work.
+    #[doc(hidden)]
+    pub fn adapter_info(&self) -> Option<wgpu::AdapterInfo> {
+        let context = self.context.lock().ok()?;
+        context
+            .devices
+            .get(self.dev_id)
+            .map(|handle| handle.adapter.get_info())
+    }
+
     /// For any code path that has to survive a GPU-less machine, since
     /// `catch_unwind` can't (see [`new`](Self::new)). Still asserts on a
     /// zero width or height — that's a caller bug, not an environment one.
@@ -791,6 +1165,11 @@ impl OffscreenRenderer {
             damage_geometric_capacity: damage_geometric_capacity_enabled(),
             last_damage_region_count: None,
             coarse_pool_high_water_pixels: 0,
+            sparse_submission_accounting: SparseSubmissionAccounting::default(),
+            canonical_segment_order_attempt_accounting:
+                CanonicalSegmentOrderAttemptAccounting::default(),
+            area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting::default(),
+            clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting::default(),
             target_valid: false,
         })
     }
@@ -975,6 +1354,53 @@ impl OffscreenRenderer {
         let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
     }
 
+    /// Record canonical segment-order selection immediately after one completed full recording.
+    /// This is an attempt counter: later bump settlement can still overflow and retry.
+    fn record_canonical_segment_order_full_selection(
+        &mut self,
+        timing: &mut Option<OffscreenRenderTiming>,
+    ) {
+        if !self.renderer.last_canonical_segment_order_selected() {
+            return;
+        }
+        self.canonical_segment_order_attempt_accounting
+            .record_full(true);
+        if let Some(profile) = timing.as_mut() {
+            profile.canonical_segment_order_full_selected_attempts = profile
+                .canonical_segment_order_full_selected_attempts
+                .saturating_add(1);
+        }
+    }
+
+    /// Record Area PPT8 selection immediately after one completed full recording.
+    /// This is an attempt counter: later bump settlement can still overflow and retry.
+    fn record_area_ppt8_full_selection(&mut self, timing: &mut Option<OffscreenRenderTiming>) {
+        if !self.renderer.last_area_ppt8_selected() {
+            return;
+        }
+        self.area_ppt8_attempt_accounting.record_full(true);
+        if let Some(profile) = timing.as_mut() {
+            profile.area_ppt8_full_selected_attempts =
+                profile.area_ppt8_full_selected_attempts.saturating_add(1);
+        }
+    }
+
+    /// Record single-workgroup clip leaf selection after a completed full recording.
+    fn record_clip_single_group_full_selection(
+        &mut self,
+        timing: &mut Option<OffscreenRenderTiming>,
+    ) {
+        if !self.renderer.last_clip_single_group_selected() {
+            return;
+        }
+        self.clip_single_group_attempt_accounting.record_full(true);
+        if let Some(profile) = timing.as_mut() {
+            profile.clip_single_group_full_selected_attempts = profile
+                .clip_single_group_full_selected_attempts
+                .saturating_add(1);
+        }
+    }
+
     /// The same completed full render as [`Self::render_gpu_wait`], returning
     /// every full-target pass issued while Vello grows a bump allocation.
     #[allow(
@@ -1042,6 +1468,9 @@ impl OffscreenRenderer {
                     )
                     .expect("render_to_texture");
             }
+            self.record_canonical_segment_order_full_selection(timing);
+            self.record_area_ppt8_full_selection(timing);
+            self.record_clip_single_group_full_selection(timing);
             let timestamp_submission = self.timestamp_submission_id(timing.is_some());
             let dispatch_timestamp_submission =
                 self.dispatch_timestamp_submission_id(timing.is_some());
@@ -1260,6 +1689,13 @@ impl OffscreenRenderer {
                 )
                 .expect("render_to_texture_with_damage")
             {
+                self.sparse_submission_accounting.record(stats);
+                self.canonical_segment_order_attempt_accounting
+                    .record_sparse(stats.canonical_segment_order_shader_selected);
+                self.area_ppt8_attempt_accounting
+                    .record_sparse(stats.area_ppt8_shader_selected);
+                self.clip_single_group_attempt_accounting
+                    .record_sparse(stats.clip_single_group_shader_selected);
                 if let (Some(profile), Some(setup_us)) = (timing.as_mut(), sparse_setup_us) {
                     profile.damage_setup_us = profile.damage_setup_us.saturating_add(setup_us);
                 }
@@ -1275,6 +1711,74 @@ impl OffscreenRenderer {
                         profile.sparse_coarse_active_bins_submissions = profile
                             .sparse_coarse_active_bins_submissions
                             .saturating_add(1);
+                    }
+                    if stats.coarse_adaptive {
+                        profile.sparse_coarse_adaptive_submissions =
+                            profile.sparse_coarse_adaptive_submissions.saturating_add(1);
+                        if !stats.coarse_active_bins {
+                            profile.sparse_coarse_adaptive_dense_submissions = profile
+                                .sparse_coarse_adaptive_dense_submissions
+                                .saturating_add(1);
+                        }
+                        profile.sparse_coarse_native_bins = profile
+                            .sparse_coarse_native_bins
+                            .saturating_add(u64::from(stats.coarse_native_bins));
+                        profile.sparse_coarse_selected_native_bins = profile
+                            .sparse_coarse_selected_native_bins
+                            .saturating_add(u64::from(stats.coarse_selected_native_bins));
+                    }
+                    if stats.path_tile_bounds_applied {
+                        profile.sparse_path_tile_bounds_submissions = profile
+                            .sparse_path_tile_bounds_submissions
+                            .saturating_add(1);
+                        profile.sparse_path_tile_bounds_tiles = profile
+                            .sparse_path_tile_bounds_tiles
+                            .saturating_add(u64::from(stats.path_tile_bounds_tiles));
+                    }
+                    if stats.coarse_opaque_prune_selected {
+                        profile.sparse_coarse_opaque_prune_submissions = profile
+                            .sparse_coarse_opaque_prune_submissions
+                            .saturating_add(1);
+                    }
+                    if stats.solid_fuse_selected {
+                        profile.sparse_solid_fuse_submissions =
+                            profile.sparse_solid_fuse_submissions.saturating_add(1);
+                    }
+                    if stats.segment_row_mask_selected {
+                        profile.sparse_segment_row_mask_submissions = profile
+                            .sparse_segment_row_mask_submissions
+                            .saturating_add(1);
+                    }
+                    if stats.canonical_segment_order_shader_selected {
+                        profile.canonical_segment_order_sparse_selected_attempts = profile
+                            .canonical_segment_order_sparse_selected_attempts
+                            .saturating_add(1);
+                    }
+                    if stats.area_ppt8_shader_selected {
+                        profile.area_ppt8_sparse_selected_attempts =
+                            profile.area_ppt8_sparse_selected_attempts.saturating_add(1);
+                    }
+                    if stats.clip_single_group_shader_selected {
+                        profile.clip_single_group_sparse_selected_attempts = profile
+                            .clip_single_group_sparse_selected_attempts
+                            .saturating_add(1);
+                    }
+                    if stats.fine_quad_skip_applied {
+                        profile.sparse_fine_quad_skip_submissions =
+                            profile.sparse_fine_quad_skip_submissions.saturating_add(1);
+                        profile.sparse_fine_quad_total_quads = profile
+                            .sparse_fine_quad_total_quads
+                            .saturating_add(u64::from(stats.fine_quad_total_quads));
+                        profile.sparse_fine_quad_active_quads = profile
+                            .sparse_fine_quad_active_quads
+                            .saturating_add(u64::from(stats.fine_quad_active_quads));
+                        profile.sparse_fine_quad_skipped_quads = profile
+                            .sparse_fine_quad_skipped_quads
+                            .saturating_add(u64::from(
+                                stats
+                                    .fine_quad_total_quads
+                                    .saturating_sub(stats.fine_quad_active_quads),
+                            ));
                     }
                     profile.sparse_fine_tiles = profile
                         .sparse_fine_tiles
@@ -1441,6 +1945,9 @@ impl OffscreenRenderer {
                 },
             )
             .expect("render_to_texture");
+        self.record_canonical_segment_order_full_selection(timing);
+        self.record_area_ppt8_full_selection(timing);
+        self.record_clip_single_group_full_selection(timing);
         let timestamp_submission = self.timestamp_submission_id(timing.is_some());
         let dispatch_timestamp_submission = self.dispatch_timestamp_submission_id(timing.is_some());
         if let (Some(timing), Some(render_start)) = (timing.as_mut(), render_start) {
@@ -1589,10 +2096,12 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        OffscreenRenderer, damage_texture_extent, damage_texture_geometric_needs_replacement,
-        damage_texture_geometric_width_extent, damage_texture_height_extent,
-        damage_texture_needs_replacement, env_enabled_by_default, shared_gpu,
-        timestamp_last_and_other_pass_ns,
+        AreaPpt8AttemptAccounting, CanonicalSegmentOrderAttemptAccounting,
+        ClipSingleGroupAttemptAccounting, OffscreenRenderTiming, OffscreenRenderer,
+        SparseSubmissionAccounting, damage_texture_extent,
+        damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
+        damage_texture_height_extent, damage_texture_needs_replacement, env_enabled_by_default,
+        shared_gpu, timestamp_last_and_other_pass_ns,
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
@@ -1605,6 +2114,113 @@ mod tests {
     fn offscreen_renderer_stays_send() {
         fn assert_send<T: Send>() {}
         assert_send::<OffscreenRenderer>();
+    }
+
+    #[test]
+    fn sparse_submission_accounting_resets_and_counts_only_applied_optimizations() {
+        let mut accounting = SparseSubmissionAccounting::default();
+        assert_eq!(accounting, SparseSubmissionAccounting::default());
+        assert_eq!(accounting.solid_fuse_selected_submissions, 0);
+        assert_eq!(accounting.segment_row_mask_selected_submissions, 0);
+        assert_eq!(
+            accounting.canonical_segment_order_selected_sparse_attempts,
+            0
+        );
+        assert_eq!(accounting.area_ppt8_selected_sparse_attempts, 0);
+        assert_eq!(accounting.clip_single_group_shader_selected, 0);
+        accounting.record(vello::SparseRenderStats::default());
+        accounting.record(vello::SparseRenderStats {
+            coarse_active_bins: true,
+            path_tile_bounds_applied: true,
+            path_tile_bounds_tiles: 24,
+            coarse_opaque_prune_selected: true,
+            solid_fuse_selected: true,
+            segment_row_mask_selected: true,
+            canonical_segment_order_shader_selected: true,
+            area_ppt8_shader_selected: true,
+            clip_single_group_shader_selected: true,
+            fine_quad_skip_applied: true,
+            fine_quad_total_quads: 64,
+            fine_quad_active_quads: 16,
+            ..vello::SparseRenderStats::default()
+        });
+        // A sparse fallback may report a candidate area but must not be counted as applied.
+        accounting.record(vello::SparseRenderStats {
+            path_tile_bounds_applied: false,
+            path_tile_bounds_tiles: 99,
+            coarse_opaque_prune_selected: false,
+            solid_fuse_selected: false,
+            segment_row_mask_selected: false,
+            canonical_segment_order_shader_selected: false,
+            area_ppt8_shader_selected: false,
+            clip_single_group_shader_selected: false,
+            fine_quad_skip_applied: false,
+            fine_quad_total_quads: 64,
+            fine_quad_active_quads: 1,
+            ..vello::SparseRenderStats::default()
+        });
+        assert_eq!(accounting.sparse_submissions, 3);
+        assert_eq!(accounting.active_sparse_submissions, 1);
+        assert_eq!(accounting.path_tile_bounds_submissions, 1);
+        assert_eq!(accounting.path_tile_bounds_tiles, 24);
+        assert_eq!(accounting.coarse_opaque_prune_selected_submissions, 1);
+        assert_eq!(accounting.solid_fuse_selected_submissions, 1);
+        assert_eq!(accounting.segment_row_mask_selected_submissions, 1);
+        assert_eq!(
+            accounting.canonical_segment_order_selected_sparse_attempts,
+            1
+        );
+        assert_eq!(accounting.area_ppt8_selected_sparse_attempts, 1);
+        assert_eq!(accounting.clip_single_group_shader_selected, 1);
+        assert_eq!(accounting.fine_quad_skip_submissions, 1);
+        assert_eq!(accounting.fine_quad_total_quads, 64);
+        assert_eq!(accounting.fine_quad_active_quads, 16);
+        assert_eq!(accounting.fine_quad_skipped_quads, 48);
+        accounting.reset();
+        assert_eq!(accounting, SparseSubmissionAccounting::default());
+    }
+
+    #[test]
+    fn canonical_segment_order_attempt_accounting_resets_and_separates_routes() {
+        let mut accounting = CanonicalSegmentOrderAttemptAccounting::default();
+        accounting.record_full(true);
+        accounting.record_full(false);
+        accounting.record_sparse(true);
+        accounting.record_sparse(true);
+        assert_eq!(accounting.full_selected_attempts, 1);
+        assert_eq!(accounting.sparse_selected_attempts, 2);
+        accounting.reset();
+        assert_eq!(
+            accounting,
+            CanonicalSegmentOrderAttemptAccounting::default()
+        );
+    }
+
+    #[test]
+    fn area_ppt8_attempt_accounting_resets_and_separates_routes() {
+        let mut accounting = AreaPpt8AttemptAccounting::default();
+        accounting.record_full(true);
+        accounting.record_full(false);
+        accounting.record_sparse(true);
+        accounting.record_sparse(true);
+        assert_eq!(accounting.full_selected_attempts, 1);
+        assert_eq!(accounting.sparse_selected_attempts, 2);
+        accounting.reset();
+        assert_eq!(accounting, AreaPpt8AttemptAccounting::default());
+    }
+
+    #[test]
+    fn clip_single_group_attempt_accounting_resets_and_separates_routes() {
+        let mut accounting = ClipSingleGroupAttemptAccounting::default();
+        accounting.record_full(true);
+        accounting.record_full(false);
+        accounting.record_sparse(true);
+        accounting.record_sparse(false);
+        accounting.record_sparse(true);
+        assert_eq!(accounting.full_selected_attempts, 1);
+        assert_eq!(accounting.sparse_selected_attempts, 2);
+        accounting.reset();
+        assert_eq!(accounting, ClipSingleGroupAttemptAccounting::default());
     }
 
     #[test]
@@ -2308,6 +2924,35 @@ mod tests {
         Some(renderer)
     }
 
+    fn adaptive_sparse_coarse_renderer_or_skip(
+        width: u32,
+        height: u32,
+        test_name: &str,
+    ) -> Option<OffscreenRenderer> {
+        let auto_requested = matches!(
+            std::env::var("VELLO_SPARSE_COARSE_AUTO").as_deref(),
+            Ok("1")
+        );
+        let forced_mode = std::env::var_os("VELLO_SPARSE_COARSE").is_some()
+            || std::env::var_os("VELLO_SPARSE_COARSE_ACTIVE_BINS").is_some();
+        if !auto_requested || forced_mode {
+            eprintln!(
+                "skipping {test_name}: VELLO_SPARSE_COARSE_AUTO=1 with the legacy coarse flags unset is required"
+            );
+            return None;
+        }
+        if shared_gpu().is_err() {
+            eprintln!("skipping {test_name}: no shared GPU");
+            return None;
+        }
+        let renderer = OffscreenRenderer::new(width, height);
+        if !renderer.sparse_coarse_adaptive_enabled() {
+            eprintln!("skipping {test_name}: adaptive sparse coarse is unavailable");
+            return None;
+        }
+        Some(renderer)
+    }
+
     fn dense_sparse_coarse_oracle(width: u32, height: u32) -> OffscreenRenderer {
         let mut oracle = OffscreenRenderer::new(width, height);
         oracle.set_compute_pass_batching(false);
@@ -2334,6 +2979,57 @@ mod tests {
             first_mismatch, None,
             "{fixture} frame {frame} must be byte-identical to its dense oracle"
         );
+    }
+
+    fn assert_adaptive_coarse_timestamp(
+        renderer: &mut OffscreenRenderer,
+        timing: &OffscreenRenderTiming,
+        expected_stage: u32,
+        fixture: &str,
+    ) {
+        if !matches!(
+            std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
+            Ok("1")
+        ) {
+            return;
+        }
+        if renderer.gpu_dispatch_timestamp_buffer_bytes() == 0 {
+            assert!(matches!(
+                renderer.gpu_dispatch_timestamp_status(),
+                vello::GpuDispatchTimestampStatus::Unsupported
+                    | vello::GpuDispatchTimestampStatus::Disabled
+            ));
+            return;
+        }
+        let expected = 1_u32
+            .checked_shl(expected_stage.saturating_sub(1))
+            .expect("coarse stage id must fit the timestamp mask");
+        let legacy = 1_u32.checked_shl(23).expect("stage id 24 fits mask");
+        let dense = 1_u32.checked_shl(16).expect("stage id 17 fits mask");
+        let active = 1_u32.checked_shl(27).expect("stage id 28 fits mask");
+        assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
+        assert_eq!(
+            timing.gpu_dispatch_timestamp_sampled_submissions,
+            timing.gpu_dispatch_timestamp_expected_submissions,
+            "{fixture} must match every dispatch timestamp submission"
+        );
+        assert_ne!(
+            timing.gpu_dispatch_timestamp_present_stages & expected,
+            0,
+            "{fixture} must encode its selected coarse stage"
+        );
+        assert_eq!(
+            timing.gpu_dispatch_timestamp_present_stages & legacy,
+            0,
+            "{fixture} must not select legacy sparse coarse"
+        );
+        if expected_stage == 17 {
+            assert_eq!(timing.gpu_dispatch_timestamp_present_stages & active, 0);
+        } else {
+            assert_eq!(timing.gpu_dispatch_timestamp_present_stages & dense, 0);
+        }
+        assert_eq!(timing.gpu_dispatch_timestamp_missing_submissions, 0);
+        assert_eq!(timing.gpu_dispatch_timestamp_stale_submissions, 0);
     }
 
     fn active_sparse_coarse_257_scene(
@@ -2388,6 +3084,177 @@ mod tests {
         scene.pop_layer();
         scene.pop_layer();
         scene
+    }
+
+    fn adaptive_sparse_coarse_2049_scene(
+        right: Rect,
+        bottom: Rect,
+        crossing: Rect,
+        corner: Rect,
+    ) -> Scene {
+        const W: u32 = 2_049;
+        const H: u32 = 2_049;
+        const OFFSET: f64 = 1_792.0;
+        let mut scene = Scene::new();
+        let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
+        let translate = Affine::translate((OFFSET, OFFSET));
+        let outer_clip = Rect::new(4.0, 5.0, 257.0, 257.0);
+        let inner_clip = Rect::new(9.0, 11.0, 257.0, 257.0);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(17, 27, 43),
+            None,
+            &full,
+        );
+        scene.push_clip_layer(Fill::NonZero, translate, &outer_clip);
+        scene.push_clip_layer(Fill::NonZero, translate, &inner_clip);
+        scene.fill(
+            Fill::NonZero,
+            translate,
+            Color::from_rgba8(240, 78, 54, 178),
+            None,
+            &right,
+        );
+        scene.fill(
+            Fill::NonZero,
+            translate,
+            Color::from_rgba8(52, 184, 244, 151),
+            None,
+            &bottom,
+        );
+        scene.fill(
+            Fill::NonZero,
+            translate,
+            Color::from_rgba8(160, 84, 236, 133),
+            None,
+            &crossing,
+        );
+        scene.fill(
+            Fill::NonZero,
+            translate,
+            Color::from_rgba8(84, 228, 166, 197),
+            None,
+            &corner,
+        );
+        scene.pop_layer();
+        scene.pop_layer();
+        scene
+    }
+
+    fn translated_damage(rect: Rect) -> Rect {
+        Rect::new(
+            rect.x0 + 1_792.0,
+            rect.y0 + 1_792.0,
+            rect.x1 + 1_792.0,
+            rect.y1 + 1_792.0,
+        )
+    }
+
+    #[test]
+    fn adaptive_sparse_coarse_257_uses_dense_coarse_and_matches_dense() {
+        const W: u32 = 257;
+        const H: u32 = 257;
+        let Some(mut retained) =
+            adaptive_sparse_coarse_renderer_or_skip(W, H, "adaptive sparse coarse 257 dense")
+        else {
+            return;
+        };
+        let mut oracle = dense_sparse_coarse_oracle(W, H);
+        let before = (
+            Rect::new(229.25, 17.5, 245.75, 37.25),
+            Rect::new(17.0, 226.5, 43.0, 242.0),
+            Rect::new(111.5, 113.25, 130.75, 130.5),
+            Rect::new(244.0, 244.0, 250.0, 250.0),
+        );
+        retained.render_rgba_resilient(&active_sparse_coarse_257_scene(
+            before.0, before.1, before.2, before.3,
+        ));
+        let after = (
+            Rect::new(242.25, 17.5, 257.0, 41.75),
+            Rect::new(16.5, 241.25, 47.75, 257.0),
+            Rect::new(121.5, 120.5, 139.25, 137.0),
+            Rect::new(252.25, 252.5, 257.0, 257.0),
+        );
+        let next = active_sparse_coarse_257_scene(after.0, after.1, after.2, after.3);
+        let damage = [
+            before.0.inflate(1.0, 1.0),
+            before.1.inflate(1.0, 1.0),
+            before.2.inflate(1.0, 1.0),
+            before.3.inflate(1.0, 1.0),
+            after.0.inflate(1.0, 1.0),
+            after.1.inflate(1.0, 1.0),
+            after.2.inflate(1.0, 1.0),
+            after.3.inflate(1.0, 1.0),
+        ];
+        let (raster_pixels, timing) =
+            retained.render_damage_regions_gpu_wait_profiled(&next, Color::TRANSPARENT, &damage);
+        assert!(raster_pixels < u64::from(W).saturating_mul(u64::from(H)));
+        assert_eq!(timing.sparse_submissions, 1);
+        assert_eq!(timing.full_attempts, 0);
+        assert_eq!(timing.sparse_coarse_adaptive_submissions, 1);
+        assert_eq!(timing.sparse_coarse_adaptive_dense_submissions, 1);
+        assert_eq!(timing.sparse_coarse_active_bins_submissions, 0);
+        assert_eq!(
+            timing.sparse_coarse_native_bins, 0,
+            "small native targets must skip the adaptive selector packing precheck"
+        );
+        assert_eq!(timing.sparse_coarse_selected_native_bins, 0);
+        let partial = retained.readback_current();
+        let dense = oracle.render_rgba_resilient(&next);
+        assert_exact_fixture_pixels(&partial, &dense, "adaptive sparse coarse 257", 0);
+        assert_adaptive_coarse_timestamp(&mut retained, &timing, 17, "adaptive sparse coarse 257");
+    }
+
+    #[test]
+    fn adaptive_sparse_coarse_2049_uses_active_native_bins_and_matches_dense() {
+        const W: u32 = 2_049;
+        const H: u32 = 2_049;
+        let Some(mut retained) =
+            adaptive_sparse_coarse_renderer_or_skip(W, H, "adaptive sparse coarse 2049 active")
+        else {
+            return;
+        };
+        let mut oracle = dense_sparse_coarse_oracle(W, H);
+        let before = (
+            Rect::new(229.25, 17.5, 245.75, 37.25),
+            Rect::new(17.0, 226.5, 43.0, 242.0),
+            Rect::new(111.5, 113.25, 130.75, 130.5),
+            Rect::new(244.0, 244.0, 250.0, 250.0),
+        );
+        retained.render_rgba_resilient(&adaptive_sparse_coarse_2049_scene(
+            before.0, before.1, before.2, before.3,
+        ));
+        let after = (
+            Rect::new(242.25, 17.5, 257.0, 41.75),
+            Rect::new(16.5, 241.25, 47.75, 257.0),
+            Rect::new(121.5, 120.5, 139.25, 137.0),
+            Rect::new(252.25, 252.5, 257.0, 257.0),
+        );
+        let next = adaptive_sparse_coarse_2049_scene(after.0, after.1, after.2, after.3);
+        let damage = [
+            before.0, before.1, before.2, before.3, after.0, after.1, after.2, after.3,
+        ]
+        .map(|rect| translated_damage(rect.inflate(1.0, 1.0)));
+        let (raster_pixels, timing) =
+            retained.render_damage_regions_gpu_wait_profiled(&next, Color::TRANSPARENT, &damage);
+        assert!(raster_pixels < u64::from(W).saturating_mul(u64::from(H)));
+        assert_eq!(timing.sparse_submissions, 1);
+        assert_eq!(timing.full_attempts, 0);
+        assert_eq!(timing.sparse_coarse_adaptive_submissions, 1);
+        assert_eq!(timing.sparse_coarse_adaptive_dense_submissions, 0);
+        assert_eq!(timing.sparse_coarse_active_bins_submissions, 1);
+        assert_eq!(timing.sparse_coarse_native_bins, 81);
+        assert_eq!(timing.sparse_coarse_selected_native_bins, 4);
+        assert_eq!(
+            timing.coarse_prefix_pixels,
+            u64::from(W).saturating_mul(u64::from(H)),
+            "the translated edge damage must retain the real 2049px native prefix"
+        );
+        let partial = retained.readback_current();
+        let dense = oracle.render_rgba_resilient(&next);
+        assert_exact_fixture_pixels(&partial, &dense, "adaptive sparse coarse 2049", 0);
+        assert_adaptive_coarse_timestamp(&mut retained, &timing, 28, "adaptive sparse coarse 2049");
     }
 
     #[test]

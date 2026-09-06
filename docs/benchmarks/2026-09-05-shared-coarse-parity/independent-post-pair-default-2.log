@@ -1,0 +1,13 @@
+Command: env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE /home/user/qos/target/debug/examples/redraw_bench-591dddf465a25152 native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions --nocapture --test-threads=1
+Exit code: 0
+
+
+running 1 test
+test tests::native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions ... libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+libEGL warning: egl: failed to create dri2 screen
+libEGL warning: DRI2: failed to create screen
+redraw_bench native 4K oracle: sparse_attempts=11 full_attempts=2 readback_payload_bytes=75915264
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 15.55s

@@ -1,0 +1,99 @@
+{
+  "all_passed": true,
+  "completed": 18,
+  "attempted": 18,
+  "source_manifest_match": true,
+  "artifacts_match": true,
+  "checks": [
+    {
+      "name": "shell-default-round-1",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-bounds-round-1",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-bounds-row-mask-round-1",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-default-round-1",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-bounds-round-1",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-bounds-row-mask-round-1",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-bounds-row-mask-round-2",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-default-round-2",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-bounds-round-2",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-bounds-row-mask-round-2",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-default-round-2",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-bounds-round-2",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-bounds-round-3",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-bounds-row-mask-round-3",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "shell-default-round-3",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-bounds-round-3",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-bounds-row-mask-round-3",
+      "passed": true,
+      "errors": []
+    },
+    {
+      "name": "ui-default-round-3",
+      "passed": true,
+      "errors": []
+    }
+  ]
+}

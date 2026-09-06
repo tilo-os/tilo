@@ -1,0 +1,2534 @@
+{
+  "acceptance_eligible": false,
+  "raw_logs_match": true,
+  "source_unchanged": true,
+  "binary_unchanged": true,
+  "counts": {
+    "matched_tail_rows": 40,
+    "settle_exceeds_submit": 39,
+    "other_compute_exceeds_last_compute": 38,
+    "render_tail_also_in_total_top10": 40
+  },
+  "captures": [
+    {
+      "name": "ui-default-round-1",
+      "variant": "default",
+      "round": 1,
+      "exit_code": 0,
+      "acceptance_eligible": false,
+      "parsed": {
+        "base": {
+          "solid_fuse_selected": 0,
+          "opaque_prune_selected": 0,
+          "stats": null,
+          "peak_rss_kib": 377076,
+          "known_gpu_bytes": 62282124,
+          "sparse": {
+            "total": 1000,
+            "active": 0,
+            "applied": 0,
+            "bbox_tiles": 0
+          },
+          "quad": {
+            "applied": 0,
+            "total": 0,
+            "active": 0,
+            "skipped": 0
+          },
+          "attempts": null,
+          "native_extent": [
+            3840,
+            2160
+          ],
+          "cpu_readback_bytes": 0,
+          "segment_row_mask_selected": 0,
+          "adapter": {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          "adapter_headers": 1,
+          "canonical": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": false,
+            "renderer_requested": false,
+            "available": false,
+            "full_selected_attempts": 0,
+            "sparse_selected_attempts": 0,
+            "total_selected_attempts": 0,
+            "counts_consistent": true
+          },
+          "exact_total_us": null,
+          "exact_count": null,
+          "exact_mean_us": null,
+          "exact_gate": null,
+          "xrgb": {
+            "header_count": 0,
+            "counts_count": 0,
+            "requested": null,
+            "available": null,
+            "targets": null,
+            "full": null,
+            "partial": null,
+            "total": null,
+            "bytes": null,
+            "counts_consistent": false,
+            "full_frame_bytes": 33177600,
+            "full_write_baseline_bytes": null,
+            "cpu_write_reduction_percent": null
+          },
+          "ppt8": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": false,
+            "renderer_requested": false,
+            "available": false,
+            "full": 0,
+            "sparse": 0,
+            "total": 0,
+            "counts_consistent": true
+          },
+          "diagnostic": false
+        },
+        "phases": {
+          "handle_event": {
+            "mean_us": 11,
+            "p95_us": 19,
+            "p99_us": 30
+          },
+          "layout (gated)": {
+            "mean_us": 4,
+            "p95_us": 7,
+            "p99_us": 10
+          },
+          "draw_to_scene": {
+            "mean_us": 66,
+            "p95_us": 98,
+            "p99_us": 120
+          },
+          "vello render": {
+            "mean_us": 18263,
+            "p95_us": 31888,
+            "p99_us": 81851
+          },
+          "TOTAL/event": {
+            "mean_us": 18361,
+            "p95_us": 31987,
+            "p99_us": 81925
+          }
+        },
+        "metrics": {
+          "vello-submit*": {
+            "mean": 614,
+            "p99": 1423,
+            "unit": "us"
+          },
+          "copy-encode": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "us"
+          },
+          "damage-setup": {
+            "mean": 7,
+            "p99": 2,
+            "unit": "us"
+          },
+          "scratch-create": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "sparse-submits": {
+            "mean": 1,
+            "p99": 1,
+            "unit": "count"
+          },
+          "sparse-fine-tiles": {
+            "mean": 379,
+            "p99": 735,
+            "unit": "count"
+          },
+          "sparse-written": {
+            "mean": 74759,
+            "p99": 146548,
+            "unit": "px"
+          },
+          "coarse-prefix": {
+            "mean": 704820,
+            "p99": 8294400,
+            "unit": "px"
+          },
+          "adaptive-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "adaptive-dense-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "native-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "selected-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-native-bbox": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "tiles"
+          },
+          "opaque-prune-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "solid-fuse-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "segment-row-mask-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-skip-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-total": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-active": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-skipped": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "gpu-span": {
+            "mean": 16273807,
+            "p99": 79047718,
+            "unit": "ns"
+          },
+          "gpu-pass-time": {
+            "mean": 15439961,
+            "p99": 73935952,
+            "unit": "ns"
+          },
+          "last-compute": {
+            "mean": 1258168,
+            "p99": 3757847,
+            "unit": "ns"
+          },
+          "other-compute": {
+            "mean": 14181793,
+            "p99": 72938130,
+            "unit": "ns"
+          },
+          "gpu-pass-count": {
+            "mean": 2,
+            "p99": 2,
+            "unit": "count"
+          },
+          "settle-wait": {
+            "mean": 17625,
+            "p99": 80218,
+            "unit": "us"
+          },
+          "unaccounted": {
+            "mean": 15,
+            "p99": 38,
+            "unit": "us"
+          }
+        },
+        "stages": [
+          {
+            "name": "flatten",
+            "id": 7,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 3025776,
+            "p99_ns": 9467328
+          },
+          {
+            "name": "clip_leaf",
+            "id": 11,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1131635,
+            "p99_ns": 3716805
+          },
+          {
+            "name": "binning",
+            "id": 12,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 998629,
+            "p99_ns": 3989516
+          },
+          {
+            "name": "tile_alloc",
+            "id": 13,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1040793,
+            "p99_ns": 4944526
+          },
+          {
+            "name": "backdrop_dyn",
+            "id": 16,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 988743,
+            "p99_ns": 4707336
+          },
+          {
+            "name": "coarse",
+            "id": 17,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1333912,
+            "p99_ns": 5644896
+          },
+          {
+            "name": "fine_sparse_area",
+            "id": 23,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1225900,
+            "p99_ns": 3666336
+          },
+          {
+            "name": "draw_leaf_prefix",
+            "id": 25,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1755806,
+            "p99_ns": 12442095
+          },
+          {
+            "name": "path_count_direct",
+            "id": 26,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1162424,
+            "p99_ns": 5214319
+          },
+          {
+            "name": "path_tiling_direct",
+            "id": 27,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1169582,
+            "p99_ns": 5571407
+          }
+        ],
+        "gpu": [
+          1000,
+          1000,
+          0,
+          1000,
+          1000,
+          0
+        ],
+        "dispatch": {
+          "status": "Idle",
+          "counts": [
+            1000,
+            1000,
+            0,
+            1000,
+            1000,
+            0,
+            0
+          ]
+        },
+        "slowest": [
+          {
+            "index": 17,
+            "render_us": 130951,
+            "submit_us": 604,
+            "copy_us": 0,
+            "setup_us": 2,
+            "creates": 0,
+            "settle_us": 130327,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 887,
+            "written_pixels": 181844,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 116180513,
+            "last_compute_ns": 3034560,
+            "other_compute_ns": 112547510,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 227072
+          },
+          {
+            "index": 221,
+            "render_us": 118291,
+            "submit_us": 696,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 117576,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 465,
+            "written_pixels": 90028,
+            "coarse_prefix_pixels": 311320,
+            "gpu_span_ns": 116429994,
+            "last_compute_ns": 1372669,
+            "other_compute_ns": 114392735,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116640
+          },
+          {
+            "index": 31,
+            "render_us": 104050,
+            "submit_us": 893,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 103136,
+            "unaccounted_us": 20,
+            "sparse_submits": 1,
+            "fine_tiles": 735,
+            "written_pixels": 146368,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 102030433,
+            "last_compute_ns": 1974654,
+            "other_compute_ns": 99518795,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 188160
+          },
+          {
+            "index": 854,
+            "render_us": 95067,
+            "submit_us": 716,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 94334,
+            "unaccounted_us": 16,
+            "sparse_submits": 1,
+            "fine_tiles": 125,
+            "written_pixels": 25288,
+            "coarse_prefix_pixels": 659104,
+            "gpu_span_ns": 89556826,
+            "last_compute_ns": 1392877,
+            "other_compute_ns": 87967072,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 30080
+          },
+          {
+            "index": 648,
+            "render_us": 85317,
+            "submit_us": 480,
+            "copy_us": 0,
+            "setup_us": 0,
+            "creates": 0,
+            "settle_us": 84820,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 365,
+            "written_pixels": 72348,
+            "coarse_prefix_pixels": 176988,
+            "gpu_span_ns": 83390779,
+            "last_compute_ns": 1035843,
+            "other_compute_ns": 81563887,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 91280
+          },
+          {
+            "index": 590,
+            "render_us": 83285,
+            "submit_us": 68063,
+            "copy_us": 0,
+            "setup_us": 2,
+            "creates": 0,
+            "settle_us": 15181,
+            "unaccounted_us": 39,
+            "sparse_submits": 1,
+            "fine_tiles": 510,
+            "written_pixels": 99688,
+            "coarse_prefix_pixels": 596840,
+            "gpu_span_ns": 13823150,
+            "last_compute_ns": 1263293,
+            "other_compute_ns": 11780475,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 129120
+          },
+          {
+            "index": 921,
+            "render_us": 83136,
+            "submit_us": 546,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 82571,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 485,
+            "written_pixels": 94648,
+            "coarse_prefix_pixels": 538532,
+            "gpu_span_ns": 81094769,
+            "last_compute_ns": 1380742,
+            "other_compute_ns": 76641654,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 122480
+          },
+          {
+            "index": 204,
+            "render_us": 82934,
+            "submit_us": 534,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 82379,
+            "unaccounted_us": 20,
+            "sparse_submits": 1,
+            "fine_tiles": 300,
+            "written_pixels": 60048,
+            "coarse_prefix_pixels": 141728,
+            "gpu_span_ns": 80589867,
+            "last_compute_ns": 840632,
+            "other_compute_ns": 79284386,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 74880
+          },
+          {
+            "index": 589,
+            "render_us": 82676,
+            "submit_us": 499,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 82158,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 465,
+            "written_pixels": 89668,
+            "coarse_prefix_pixels": 561752,
+            "gpu_span_ns": 80645754,
+            "last_compute_ns": 34699022,
+            "other_compute_ns": 11632140,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116640
+          },
+          {
+            "index": 553,
+            "render_us": 81879,
+            "submit_us": 545,
+            "copy_us": 0,
+            "setup_us": 0,
+            "creates": 0,
+            "settle_us": 81321,
+            "unaccounted_us": 13,
+            "sparse_submits": 1,
+            "fine_tiles": 459,
+            "written_pixels": 89028,
+            "coarse_prefix_pixels": 256452,
+            "gpu_span_ns": 80082259,
+            "last_compute_ns": 1380065,
+            "other_compute_ns": 78072917,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 115184
+          }
+        ],
+        "totalTail": [
+          {
+            "index": 17,
+            "total_us": 131100,
+            "raster_pixels": 227072
+          },
+          {
+            "index": 221,
+            "total_us": 118395,
+            "raster_pixels": 116640
+          },
+          {
+            "index": 31,
+            "total_us": 104182,
+            "raster_pixels": 188160
+          },
+          {
+            "index": 854,
+            "total_us": 95161,
+            "raster_pixels": 30080
+          },
+          {
+            "index": 648,
+            "total_us": 85410,
+            "raster_pixels": 91280
+          },
+          {
+            "index": 590,
+            "total_us": 83433,
+            "raster_pixels": 129120
+          },
+          {
+            "index": 921,
+            "total_us": 83237,
+            "raster_pixels": 122480
+          },
+          {
+            "index": 204,
+            "total_us": 83035,
+            "raster_pixels": 74880
+          },
+          {
+            "index": 589,
+            "total_us": 82780,
+            "raster_pixels": 116640
+          },
+          {
+            "index": 553,
+            "total_us": 81980,
+            "raster_pixels": 115184
+          }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "ui-ppt8-round-1",
+      "variant": "ppt8",
+      "round": 1,
+      "exit_code": 0,
+      "acceptance_eligible": false,
+      "parsed": {
+        "base": {
+          "solid_fuse_selected": 0,
+          "opaque_prune_selected": 0,
+          "stats": null,
+          "peak_rss_kib": 405348,
+          "known_gpu_bytes": 62282124,
+          "sparse": {
+            "total": 1000,
+            "active": 0,
+            "applied": 0,
+            "bbox_tiles": 0
+          },
+          "quad": {
+            "applied": 0,
+            "total": 0,
+            "active": 0,
+            "skipped": 0
+          },
+          "attempts": null,
+          "native_extent": [
+            3840,
+            2160
+          ],
+          "cpu_readback_bytes": 0,
+          "segment_row_mask_selected": 0,
+          "adapter": {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          "adapter_headers": 1,
+          "canonical": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": false,
+            "renderer_requested": false,
+            "available": false,
+            "full_selected_attempts": 0,
+            "sparse_selected_attempts": 0,
+            "total_selected_attempts": 0,
+            "counts_consistent": true
+          },
+          "exact_total_us": null,
+          "exact_count": null,
+          "exact_mean_us": null,
+          "exact_gate": null,
+          "xrgb": {
+            "header_count": 0,
+            "counts_count": 0,
+            "requested": null,
+            "available": null,
+            "targets": null,
+            "full": null,
+            "partial": null,
+            "total": null,
+            "bytes": null,
+            "counts_consistent": false,
+            "full_frame_bytes": 33177600,
+            "full_write_baseline_bytes": null,
+            "cpu_write_reduction_percent": null
+          },
+          "ppt8": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": true,
+            "renderer_requested": true,
+            "available": true,
+            "full": 0,
+            "sparse": 1000,
+            "total": 1000,
+            "counts_consistent": true
+          },
+          "diagnostic": false
+        },
+        "phases": {
+          "handle_event": {
+            "mean_us": 12,
+            "p95_us": 21,
+            "p99_us": 48
+          },
+          "layout (gated)": {
+            "mean_us": 4,
+            "p95_us": 6,
+            "p99_us": 11
+          },
+          "draw_to_scene": {
+            "mean_us": 67,
+            "p95_us": 97,
+            "p99_us": 133
+          },
+          "vello render": {
+            "mean_us": 18185,
+            "p95_us": 34541,
+            "p99_us": 67132
+          },
+          "TOTAL/event": {
+            "mean_us": 18285,
+            "p95_us": 34643,
+            "p99_us": 67247
+          }
+        },
+        "metrics": {
+          "vello-submit*": {
+            "mean": 574,
+            "p99": 2759,
+            "unit": "us"
+          },
+          "copy-encode": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "us"
+          },
+          "damage-setup": {
+            "mean": 8,
+            "p99": 2,
+            "unit": "us"
+          },
+          "scratch-create": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "sparse-submits": {
+            "mean": 1,
+            "p99": 1,
+            "unit": "count"
+          },
+          "sparse-fine-tiles": {
+            "mean": 384,
+            "p99": 735,
+            "unit": "count"
+          },
+          "sparse-written": {
+            "mean": 75606,
+            "p99": 146968,
+            "unit": "px"
+          },
+          "coarse-prefix": {
+            "mean": 723236,
+            "p99": 8294400,
+            "unit": "px"
+          },
+          "adaptive-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "adaptive-dense-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "native-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "selected-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-native-bbox": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "tiles"
+          },
+          "opaque-prune-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "solid-fuse-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "segment-row-mask-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-skip-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-total": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-active": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-skipped": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "gpu-span": {
+            "mean": 16149836,
+            "p99": 65602645,
+            "unit": "ns"
+          },
+          "gpu-pass-time": {
+            "mean": 15360734,
+            "p99": 52263040,
+            "unit": "ns"
+          },
+          "last-compute": {
+            "mean": 1095686,
+            "p99": 3919151,
+            "unit": "ns"
+          },
+          "other-compute": {
+            "mean": 14265047,
+            "p99": 48078887,
+            "unit": "ns"
+          },
+          "gpu-pass-count": {
+            "mean": 2,
+            "p99": 2,
+            "unit": "count"
+          },
+          "settle-wait": {
+            "mean": 17587,
+            "p99": 66566,
+            "unit": "us"
+          },
+          "unaccounted": {
+            "mean": 15,
+            "p99": 46,
+            "unit": "us"
+          }
+        },
+        "stages": [
+          {
+            "name": "flatten",
+            "id": 7,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 3076643,
+            "p99_ns": 12143967
+          },
+          {
+            "name": "clip_leaf",
+            "id": 11,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 990705,
+            "p99_ns": 3993943
+          },
+          {
+            "name": "binning",
+            "id": 12,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1082406,
+            "p99_ns": 4897389
+          },
+          {
+            "name": "tile_alloc",
+            "id": 13,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1004171,
+            "p99_ns": 4917285
+          },
+          {
+            "name": "backdrop_dyn",
+            "id": 16,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1058114,
+            "p99_ns": 4898952
+          },
+          {
+            "name": "coarse",
+            "id": 17,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1336731,
+            "p99_ns": 7679447
+          },
+          {
+            "name": "fine_sparse_area",
+            "id": 23,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1058531,
+            "p99_ns": 3913890
+          },
+          {
+            "name": "draw_leaf_prefix",
+            "id": 25,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1930618,
+            "p99_ns": 29899967
+          },
+          {
+            "name": "path_count_direct",
+            "id": 26,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1130759,
+            "p99_ns": 4323946
+          },
+          {
+            "name": "path_tiling_direct",
+            "id": 27,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1146418,
+            "p99_ns": 5342133
+          }
+        ],
+        "gpu": [
+          1000,
+          1000,
+          0,
+          1000,
+          1000,
+          0
+        ],
+        "dispatch": {
+          "status": "Idle",
+          "counts": [
+            1000,
+            1000,
+            0,
+            1000,
+            1000,
+            0,
+            0
+          ]
+        },
+        "slowest": [
+          {
+            "index": 723,
+            "render_us": 182151,
+            "submit_us": 528,
+            "copy_us": 0,
+            "setup_us": 0,
+            "creates": 0,
+            "settle_us": 181607,
+            "unaccounted_us": 16,
+            "sparse_submits": 1,
+            "fine_tiles": 460,
+            "written_pixels": 89788,
+            "coarse_prefix_pixels": 596152,
+            "gpu_span_ns": 110116186,
+            "last_compute_ns": 939853,
+            "other_compute_ns": 41771484,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116000
+          },
+          {
+            "index": 574,
+            "render_us": 148877,
+            "submit_us": 477,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 148384,
+            "unaccounted_us": 15,
+            "sparse_submits": 1,
+            "fine_tiles": 426,
+            "written_pixels": 84448,
+            "coarse_prefix_pixels": 217064,
+            "gpu_span_ns": 147323356,
+            "last_compute_ns": 1189282,
+            "other_compute_ns": 145426828,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 107616
+          },
+          {
+            "index": 47,
+            "render_us": 114709,
+            "submit_us": 460,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 114231,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 465,
+            "written_pixels": 89908,
+            "coarse_prefix_pixels": 594604,
+            "gpu_span_ns": 112565635,
+            "last_compute_ns": 954384,
+            "other_compute_ns": 110998225,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116560
+          },
+          {
+            "index": 319,
+            "render_us": 110875,
+            "submit_us": 475,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 110383,
+            "unaccounted_us": 16,
+            "sparse_submits": 1,
+            "fine_tiles": 215,
+            "written_pixels": 43848,
+            "coarse_prefix_pixels": 95288,
+            "gpu_span_ns": 108661484,
+            "last_compute_ns": 498129,
+            "other_compute_ns": 107592256,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 53280
+          },
+          {
+            "index": 12,
+            "render_us": 95455,
+            "submit_us": 865,
+            "copy_us": 0,
+            "setup_us": 2,
+            "creates": 0,
+            "settle_us": 94542,
+            "unaccounted_us": 46,
+            "sparse_submits": 1,
+            "fine_tiles": 724,
+            "written_pixels": 145068,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 91713253,
+            "last_compute_ns": 1294230,
+            "other_compute_ns": 89870476,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 185344
+          },
+          {
+            "index": 9,
+            "render_us": 88960,
+            "submit_us": 582,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 88360,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 635,
+            "written_pixels": 128388,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 85143192,
+            "last_compute_ns": 1735329,
+            "other_compute_ns": 82884420,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 162560
+          },
+          {
+            "index": 569,
+            "render_us": 87685,
+            "submit_us": 574,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 87094,
+            "unaccounted_us": 16,
+            "sparse_submits": 1,
+            "fine_tiles": 320,
+            "written_pixels": 64008,
+            "coarse_prefix_pixels": 153080,
+            "gpu_span_ns": 85607467,
+            "last_compute_ns": 794227,
+            "other_compute_ns": 84165734,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 80160
+          },
+          {
+            "index": 935,
+            "render_us": 81101,
+            "submit_us": 454,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 80631,
+            "unaccounted_us": 15,
+            "sparse_submits": 1,
+            "fine_tiles": 460,
+            "written_pixels": 89668,
+            "coarse_prefix_pixels": 598904,
+            "gpu_span_ns": 79196678,
+            "last_compute_ns": 1030531,
+            "other_compute_ns": 77315306,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116000
+          },
+          {
+            "index": 651,
+            "render_us": 80741,
+            "submit_us": 542,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 80180,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 110,
+            "written_pixels": 23168,
+            "coarse_prefix_pixels": 54352,
+            "gpu_span_ns": 79025687,
+            "last_compute_ns": 723340,
+            "other_compute_ns": 12403658,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 26640
+          },
+          {
+            "index": 932,
+            "render_us": 80662,
+            "submit_us": 798,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 79843,
+            "unaccounted_us": 20,
+            "sparse_submits": 1,
+            "fine_tiles": 490,
+            "written_pixels": 94588,
+            "coarse_prefix_pixels": 551604,
+            "gpu_span_ns": 78677662,
+            "last_compute_ns": 1214595,
+            "other_compute_ns": 76948219,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 123440
+          }
+        ],
+        "totalTail": [
+          {
+            "index": 723,
+            "total_us": 182240,
+            "raster_pixels": 116000
+          },
+          {
+            "index": 574,
+            "total_us": 148970,
+            "raster_pixels": 107616
+          },
+          {
+            "index": 47,
+            "total_us": 114799,
+            "raster_pixels": 116560
+          },
+          {
+            "index": 319,
+            "total_us": 110969,
+            "raster_pixels": 53280
+          },
+          {
+            "index": 12,
+            "total_us": 95592,
+            "raster_pixels": 185344
+          },
+          {
+            "index": 9,
+            "total_us": 89061,
+            "raster_pixels": 162560
+          },
+          {
+            "index": 569,
+            "total_us": 87802,
+            "raster_pixels": 80160
+          },
+          {
+            "index": 935,
+            "total_us": 81179,
+            "raster_pixels": 116000
+          },
+          {
+            "index": 651,
+            "total_us": 80839,
+            "raster_pixels": 26640
+          },
+          {
+            "index": 932,
+            "total_us": 80816,
+            "raster_pixels": 123440
+          }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "ui-ppt8-round-2",
+      "variant": "ppt8",
+      "round": 2,
+      "exit_code": 0,
+      "acceptance_eligible": false,
+      "parsed": {
+        "base": {
+          "solid_fuse_selected": 0,
+          "opaque_prune_selected": 0,
+          "stats": null,
+          "peak_rss_kib": 404912,
+          "known_gpu_bytes": 62282124,
+          "sparse": {
+            "total": 1000,
+            "active": 0,
+            "applied": 0,
+            "bbox_tiles": 0
+          },
+          "quad": {
+            "applied": 0,
+            "total": 0,
+            "active": 0,
+            "skipped": 0
+          },
+          "attempts": null,
+          "native_extent": [
+            3840,
+            2160
+          ],
+          "cpu_readback_bytes": 0,
+          "segment_row_mask_selected": 0,
+          "adapter": {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          "adapter_headers": 1,
+          "canonical": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": false,
+            "renderer_requested": false,
+            "available": false,
+            "full_selected_attempts": 0,
+            "sparse_selected_attempts": 0,
+            "total_selected_attempts": 0,
+            "counts_consistent": true
+          },
+          "exact_total_us": null,
+          "exact_count": null,
+          "exact_mean_us": null,
+          "exact_gate": null,
+          "xrgb": {
+            "header_count": 0,
+            "counts_count": 0,
+            "requested": null,
+            "available": null,
+            "targets": null,
+            "full": null,
+            "partial": null,
+            "total": null,
+            "bytes": null,
+            "counts_consistent": false,
+            "full_frame_bytes": 33177600,
+            "full_write_baseline_bytes": null,
+            "cpu_write_reduction_percent": null
+          },
+          "ppt8": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": true,
+            "renderer_requested": true,
+            "available": true,
+            "full": 0,
+            "sparse": 1000,
+            "total": 1000,
+            "counts_consistent": true
+          },
+          "diagnostic": false
+        },
+        "phases": {
+          "handle_event": {
+            "mean_us": 11,
+            "p95_us": 19,
+            "p99_us": 28
+          },
+          "layout (gated)": {
+            "mean_us": 4,
+            "p95_us": 7,
+            "p99_us": 11
+          },
+          "draw_to_scene": {
+            "mean_us": 67,
+            "p95_us": 97,
+            "p99_us": 125
+          },
+          "vello render": {
+            "mean_us": 18146,
+            "p95_us": 31345,
+            "p99_us": 81992
+          },
+          "TOTAL/event": {
+            "mean_us": 18245,
+            "p95_us": 31440,
+            "p99_us": 82087
+          }
+        },
+        "metrics": {
+          "vello-submit*": {
+            "mean": 565,
+            "p99": 1486,
+            "unit": "us"
+          },
+          "copy-encode": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "us"
+          },
+          "damage-setup": {
+            "mean": 7,
+            "p99": 2,
+            "unit": "us"
+          },
+          "scratch-create": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "sparse-submits": {
+            "mean": 1,
+            "p99": 1,
+            "unit": "count"
+          },
+          "sparse-fine-tiles": {
+            "mean": 384,
+            "p99": 740,
+            "unit": "count"
+          },
+          "sparse-written": {
+            "mean": 75487,
+            "p99": 146668,
+            "unit": "px"
+          },
+          "coarse-prefix": {
+            "mean": 689182,
+            "p99": 8294400,
+            "unit": "px"
+          },
+          "adaptive-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "adaptive-dense-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "native-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "selected-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-native-bbox": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "tiles"
+          },
+          "opaque-prune-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "solid-fuse-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "segment-row-mask-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-skip-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-total": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-active": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-skipped": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "gpu-span": {
+            "mean": 15997335,
+            "p99": 76023159,
+            "unit": "ns"
+          },
+          "gpu-pass-time": {
+            "mean": 15276119,
+            "p99": 75311642,
+            "unit": "ns"
+          },
+          "last-compute": {
+            "mean": 1144774,
+            "p99": 4623845,
+            "unit": "ns"
+          },
+          "other-compute": {
+            "mean": 14131344,
+            "p99": 63010120,
+            "unit": "ns"
+          },
+          "gpu-pass-count": {
+            "mean": 2,
+            "p99": 2,
+            "unit": "count"
+          },
+          "settle-wait": {
+            "mean": 17557,
+            "p99": 81458,
+            "unit": "us"
+          },
+          "unaccounted": {
+            "mean": 15,
+            "p99": 37,
+            "unit": "us"
+          }
+        },
+        "stages": [
+          {
+            "name": "flatten",
+            "id": 7,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 3003293,
+            "p99_ns": 8065283
+          },
+          {
+            "name": "clip_leaf",
+            "id": 11,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1060957,
+            "p99_ns": 4605043
+          },
+          {
+            "name": "binning",
+            "id": 12,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1135716,
+            "p99_ns": 4515875
+          },
+          {
+            "name": "tile_alloc",
+            "id": 13,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 970773,
+            "p99_ns": 3563731
+          },
+          {
+            "name": "backdrop_dyn",
+            "id": 16,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1008920,
+            "p99_ns": 3644826
+          },
+          {
+            "name": "coarse",
+            "id": 17,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1297589,
+            "p99_ns": 4807858
+          },
+          {
+            "name": "fine_sparse_area",
+            "id": 23,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1072639,
+            "p99_ns": 4364989
+          },
+          {
+            "name": "draw_leaf_prefix",
+            "id": 25,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1831922,
+            "p99_ns": 23045893
+          },
+          {
+            "name": "path_count_direct",
+            "id": 26,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1187790,
+            "p99_ns": 4906660
+          },
+          {
+            "name": "path_tiling_direct",
+            "id": 27,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1093263,
+            "p99_ns": 4856191
+          }
+        ],
+        "gpu": [
+          1000,
+          1000,
+          0,
+          1000,
+          1000,
+          0
+        ],
+        "dispatch": {
+          "status": "Idle",
+          "counts": [
+            1000,
+            1000,
+            0,
+            1000,
+            1000,
+            0,
+            0
+          ]
+        },
+        "slowest": [
+          {
+            "index": 621,
+            "render_us": 234115,
+            "submit_us": 538,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 233559,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 135,
+            "written_pixels": 27028,
+            "coarse_prefix_pixels": 659104,
+            "gpu_span_ns": 226504252,
+            "last_compute_ns": 849122,
+            "other_compute_ns": 223132346,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 32640
+          },
+          {
+            "index": 9,
+            "render_us": 121730,
+            "submit_us": 594,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 121118,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 625,
+            "written_pixels": 127188,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 120440918,
+            "last_compute_ns": 1841893,
+            "other_compute_ns": 118373086,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 160000
+          },
+          {
+            "index": 608,
+            "render_us": 116544,
+            "submit_us": 455,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 116074,
+            "unaccounted_us": 14,
+            "sparse_submits": 1,
+            "fine_tiles": 465,
+            "written_pixels": 89788,
+            "coarse_prefix_pixels": 644484,
+            "gpu_span_ns": 113001213,
+            "last_compute_ns": 5653334,
+            "other_compute_ns": 74023609,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116720
+          },
+          {
+            "index": 594,
+            "render_us": 116313,
+            "submit_us": 515,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 115780,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 460,
+            "written_pixels": 89668,
+            "coarse_prefix_pixels": 500692,
+            "gpu_span_ns": 114726176,
+            "last_compute_ns": 1069073,
+            "other_compute_ns": 112905586,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116400
+          },
+          {
+            "index": 480,
+            "render_us": 109227,
+            "submit_us": 441,
+            "copy_us": 0,
+            "setup_us": 0,
+            "creates": 0,
+            "settle_us": 108766,
+            "unaccounted_us": 20,
+            "sparse_submits": 1,
+            "fine_tiles": 465,
+            "written_pixels": 89788,
+            "coarse_prefix_pixels": 413832,
+            "gpu_span_ns": 74605176,
+            "last_compute_ns": 62338916,
+            "other_compute_ns": 11741933,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116960
+          },
+          {
+            "index": 630,
+            "render_us": 92912,
+            "submit_us": 513,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 92381,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 305,
+            "written_pixels": 60708,
+            "coarse_prefix_pixels": 143620,
+            "gpu_span_ns": 91208561,
+            "last_compute_ns": 34058652,
+            "other_compute_ns": 54713428,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 75760
+          },
+          {
+            "index": 26,
+            "render_us": 90512,
+            "submit_us": 594,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 89897,
+            "unaccounted_us": 20,
+            "sparse_submits": 1,
+            "fine_tiles": 740,
+            "written_pixels": 147028,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 83777085,
+            "last_compute_ns": 1220480,
+            "other_compute_ns": 81933839,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 189440
+          },
+          {
+            "index": 575,
+            "render_us": 86892,
+            "submit_us": 524,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 86344,
+            "unaccounted_us": 23,
+            "sparse_submits": 1,
+            "fine_tiles": 460,
+            "written_pixels": 89668,
+            "coarse_prefix_pixels": 308224,
+            "gpu_span_ns": 85151109,
+            "last_compute_ns": 975791,
+            "other_compute_ns": 83612032,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116480
+          },
+          {
+            "index": 24,
+            "render_us": 83165,
+            "submit_us": 696,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 82406,
+            "unaccounted_us": 62,
+            "sparse_submits": 1,
+            "fine_tiles": 735,
+            "written_pixels": 146608,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 80944871,
+            "last_compute_ns": 1496473,
+            "other_compute_ns": 78873289,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 188160
+          },
+          {
+            "index": 80,
+            "render_us": 82410,
+            "submit_us": 614,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 81778,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 203,
+            "written_pixels": 42336,
+            "coarse_prefix_pixels": 77228,
+            "gpu_span_ns": 80346741,
+            "last_compute_ns": 454119,
+            "other_compute_ns": 79264804,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 48492
+          }
+        ],
+        "totalTail": [
+          {
+            "index": 621,
+            "total_us": 234234,
+            "raster_pixels": 32640
+          },
+          {
+            "index": 9,
+            "total_us": 121830,
+            "raster_pixels": 160000
+          },
+          {
+            "index": 608,
+            "total_us": 116633,
+            "raster_pixels": 116720
+          },
+          {
+            "index": 594,
+            "total_us": 116410,
+            "raster_pixels": 116400
+          },
+          {
+            "index": 480,
+            "total_us": 109319,
+            "raster_pixels": 116960
+          },
+          {
+            "index": 630,
+            "total_us": 93014,
+            "raster_pixels": 75760
+          },
+          {
+            "index": 26,
+            "total_us": 90610,
+            "raster_pixels": 189440
+          },
+          {
+            "index": 575,
+            "total_us": 87014,
+            "raster_pixels": 116480
+          },
+          {
+            "index": 24,
+            "total_us": 83381,
+            "raster_pixels": 188160
+          },
+          {
+            "index": 80,
+            "total_us": 82512,
+            "raster_pixels": 48492
+          }
+        ]
+      },
+      "issues": []
+    },
+    {
+      "name": "ui-default-round-2",
+      "variant": "default",
+      "round": 2,
+      "exit_code": 0,
+      "acceptance_eligible": false,
+      "parsed": {
+        "base": {
+          "solid_fuse_selected": 0,
+          "opaque_prune_selected": 0,
+          "stats": null,
+          "peak_rss_kib": 377524,
+          "known_gpu_bytes": 62282124,
+          "sparse": {
+            "total": 1000,
+            "active": 0,
+            "applied": 0,
+            "bbox_tiles": 0
+          },
+          "quad": {
+            "applied": 0,
+            "total": 0,
+            "active": 0,
+            "skipped": 0
+          },
+          "attempts": null,
+          "native_extent": [
+            3840,
+            2160
+          ],
+          "cpu_readback_bytes": 0,
+          "segment_row_mask_selected": 0,
+          "adapter": {
+            "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+            "backend": "Vulkan",
+            "device_type": "Cpu",
+            "driver": "llvmpipe"
+          },
+          "adapter_headers": 1,
+          "canonical": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": false,
+            "renderer_requested": false,
+            "available": false,
+            "full_selected_attempts": 0,
+            "sparse_selected_attempts": 0,
+            "total_selected_attempts": 0,
+            "counts_consistent": true
+          },
+          "exact_total_us": null,
+          "exact_count": null,
+          "exact_mean_us": null,
+          "exact_gate": null,
+          "xrgb": {
+            "header_count": 0,
+            "counts_count": 0,
+            "requested": null,
+            "available": null,
+            "targets": null,
+            "full": null,
+            "partial": null,
+            "total": null,
+            "bytes": null,
+            "counts_consistent": false,
+            "full_frame_bytes": 33177600,
+            "full_write_baseline_bytes": null,
+            "cpu_write_reduction_percent": null
+          },
+          "ppt8": {
+            "header_count": 1,
+            "counts_count": 1,
+            "env_requested": false,
+            "renderer_requested": false,
+            "available": false,
+            "full": 0,
+            "sparse": 0,
+            "total": 0,
+            "counts_consistent": true
+          },
+          "diagnostic": false
+        },
+        "phases": {
+          "handle_event": {
+            "mean_us": 11,
+            "p95_us": 20,
+            "p99_us": 38
+          },
+          "layout (gated)": {
+            "mean_us": 4,
+            "p95_us": 7,
+            "p99_us": 11
+          },
+          "draw_to_scene": {
+            "mean_us": 67,
+            "p95_us": 96,
+            "p99_us": 127
+          },
+          "vello render": {
+            "mean_us": 18465,
+            "p95_us": 34985,
+            "p99_us": 78471
+          },
+          "TOTAL/event": {
+            "mean_us": 18564,
+            "p95_us": 35083,
+            "p99_us": 78583
+          }
+        },
+        "metrics": {
+          "vello-submit*": {
+            "mean": 553,
+            "p99": 896,
+            "unit": "us"
+          },
+          "copy-encode": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "us"
+          },
+          "damage-setup": {
+            "mean": 13,
+            "p99": 2,
+            "unit": "us"
+          },
+          "scratch-create": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "sparse-submits": {
+            "mean": 1,
+            "p99": 1,
+            "unit": "count"
+          },
+          "sparse-fine-tiles": {
+            "mean": 390,
+            "p99": 740,
+            "unit": "count"
+          },
+          "sparse-written": {
+            "mean": 76575,
+            "p99": 148188,
+            "unit": "px"
+          },
+          "coarse-prefix": {
+            "mean": 658118,
+            "p99": 8294400,
+            "unit": "px"
+          },
+          "adaptive-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "adaptive-dense-coarse": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "native-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "selected-coarse-bins": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "path-tile-bounds-native-bbox": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "tiles"
+          },
+          "opaque-prune-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "solid-fuse-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "segment-row-mask-selected": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-skip-applied": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "count"
+          },
+          "fine-quad-total": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-active": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "fine-quad-skipped": {
+            "mean": 0,
+            "p99": 0,
+            "unit": "groups"
+          },
+          "gpu-span": {
+            "mean": 16239631,
+            "p99": 61714796,
+            "unit": "ns"
+          },
+          "gpu-pass-time": {
+            "mean": 15456044,
+            "p99": 61159321,
+            "unit": "ns"
+          },
+          "last-compute": {
+            "mean": 1267105,
+            "p99": 3822744,
+            "unit": "ns"
+          },
+          "other-compute": {
+            "mean": 14188939,
+            "p99": 56450683,
+            "unit": "ns"
+          },
+          "gpu-pass-count": {
+            "mean": 2,
+            "p99": 2,
+            "unit": "count"
+          },
+          "settle-wait": {
+            "mean": 17882,
+            "p99": 77930,
+            "unit": "us"
+          },
+          "unaccounted": {
+            "mean": 15,
+            "p99": 34,
+            "unit": "us"
+          }
+        },
+        "stages": [
+          {
+            "name": "flatten",
+            "id": 7,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 2892883,
+            "p99_ns": 7504445
+          },
+          {
+            "name": "clip_leaf",
+            "id": 11,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1138341,
+            "p99_ns": 8030805
+          },
+          {
+            "name": "binning",
+            "id": 12,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1035912,
+            "p99_ns": 4199466
+          },
+          {
+            "name": "tile_alloc",
+            "id": 13,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1109926,
+            "p99_ns": 5332758
+          },
+          {
+            "name": "backdrop_dyn",
+            "id": 16,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1104447,
+            "p99_ns": 3992068
+          },
+          {
+            "name": "coarse",
+            "id": 17,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1290509,
+            "p99_ns": 5554218
+          },
+          {
+            "name": "fine_sparse_area",
+            "id": 23,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1228340,
+            "p99_ns": 3817380
+          },
+          {
+            "name": "draw_leaf_prefix",
+            "id": 25,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1741958,
+            "p99_ns": 12257145
+          },
+          {
+            "name": "path_count_direct",
+            "id": 26,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1239857,
+            "p99_ns": 5249268
+          },
+          {
+            "name": "path_tiling_direct",
+            "id": 27,
+            "complete_samples": 1000,
+            "dispatches": 1000,
+            "mean_ns": 1077539,
+            "p99_ns": 3649201
+          }
+        ],
+        "gpu": [
+          1000,
+          1000,
+          0,
+          1000,
+          1000,
+          0
+        ],
+        "dispatch": {
+          "status": "Idle",
+          "counts": [
+            1000,
+            1000,
+            0,
+            1000,
+            1000,
+            0,
+            0
+          ]
+        },
+        "slowest": [
+          {
+            "index": 957,
+            "render_us": 150878,
+            "submit_us": 502,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 150346,
+            "unaccounted_us": 29,
+            "sparse_submits": 1,
+            "fine_tiles": 223,
+            "written_pixels": 47104,
+            "coarse_prefix_pixels": 120400,
+            "gpu_span_ns": 149179258,
+            "last_compute_ns": 1189490,
+            "other_compute_ns": 147231584,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 55488
+          },
+          {
+            "index": 944,
+            "render_us": 112676,
+            "submit_us": 594,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 112063,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 315,
+            "written_pixels": 60988,
+            "coarse_prefix_pixels": 659104,
+            "gpu_span_ns": 108826174,
+            "last_compute_ns": 1395795,
+            "other_compute_ns": 106833186,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 78720
+          },
+          {
+            "index": 2,
+            "render_us": 105336,
+            "submit_us": 567,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 104751,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 655,
+            "written_pixels": 132588,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 32267593,
+            "last_compute_ns": 14450187,
+            "other_compute_ns": 17245994,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 167680
+          },
+          {
+            "index": 75,
+            "render_us": 95288,
+            "submit_us": 634,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 94636,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 305,
+            "written_pixels": 60888,
+            "coarse_prefix_pixels": 144136,
+            "gpu_span_ns": 93538687,
+            "last_compute_ns": 798758,
+            "other_compute_ns": 92241331,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 76000
+          },
+          {
+            "index": 9,
+            "render_us": 87262,
+            "submit_us": 748,
+            "copy_us": 0,
+            "setup_us": 2,
+            "creates": 0,
+            "settle_us": 86489,
+            "unaccounted_us": 23,
+            "sparse_submits": 1,
+            "fine_tiles": 740,
+            "written_pixels": 147028,
+            "coarse_prefix_pixels": 8294400,
+            "gpu_span_ns": 85298037,
+            "last_compute_ns": 2400179,
+            "other_compute_ns": 82105768,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 189440
+          },
+          {
+            "index": 39,
+            "render_us": 84457,
+            "submit_us": 443,
+            "copy_us": 0,
+            "setup_us": 0,
+            "creates": 0,
+            "settle_us": 83997,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 460,
+            "written_pixels": 89668,
+            "coarse_prefix_pixels": 645688,
+            "gpu_span_ns": 82866868,
+            "last_compute_ns": 1568608,
+            "other_compute_ns": 80790182,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 116000
+          },
+          {
+            "index": 862,
+            "render_us": 82356,
+            "submit_us": 531,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 81807,
+            "unaccounted_us": 17,
+            "sparse_submits": 1,
+            "fine_tiles": 325,
+            "written_pixels": 64968,
+            "coarse_prefix_pixels": 155832,
+            "gpu_span_ns": 80942267,
+            "last_compute_ns": 1307877,
+            "other_compute_ns": 78913602,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 81440
+          },
+          {
+            "index": 324,
+            "render_us": 82128,
+            "submit_us": 563,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 81548,
+            "unaccounted_us": 16,
+            "sparse_submits": 1,
+            "fine_tiles": 465,
+            "written_pixels": 90028,
+            "coarse_prefix_pixels": 403340,
+            "gpu_span_ns": 80453669,
+            "last_compute_ns": 1414649,
+            "other_compute_ns": 78434171,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 117200
+          },
+          {
+            "index": 268,
+            "render_us": 80443,
+            "submit_us": 441,
+            "copy_us": 0,
+            "setup_us": 1,
+            "creates": 0,
+            "settle_us": 79986,
+            "unaccounted_us": 15,
+            "sparse_submits": 1,
+            "fine_tiles": 235,
+            "written_pixels": 46168,
+            "coarse_prefix_pixels": 659104,
+            "gpu_span_ns": 79018863,
+            "last_compute_ns": 718079,
+            "other_compute_ns": 77594371,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 58240
+          },
+          {
+            "index": 63,
+            "render_us": 78947,
+            "submit_us": 511,
+            "copy_us": 0,
+            "setup_us": 2,
+            "creates": 0,
+            "settle_us": 78416,
+            "unaccounted_us": 18,
+            "sparse_submits": 1,
+            "fine_tiles": 112,
+            "written_pixels": 22208,
+            "coarse_prefix_pixels": 659104,
+            "gpu_span_ns": 77406192,
+            "last_compute_ns": 1046573,
+            "other_compute_ns": 11446669,
+            "gpu_received": 1,
+            "gpu_expected": 1,
+            "gpu_missing": 0,
+            "full_attempts": 0,
+            "raster_pixels": 26752
+          }
+        ],
+        "totalTail": [
+          {
+            "index": 957,
+            "total_us": 150990,
+            "raster_pixels": 55488
+          },
+          {
+            "index": 944,
+            "total_us": 112787,
+            "raster_pixels": 78720
+          },
+          {
+            "index": 2,
+            "total_us": 105437,
+            "raster_pixels": 167680
+          },
+          {
+            "index": 75,
+            "total_us": 95382,
+            "raster_pixels": 76000
+          },
+          {
+            "index": 9,
+            "total_us": 87429,
+            "raster_pixels": 189440
+          },
+          {
+            "index": 39,
+            "total_us": 84537,
+            "raster_pixels": 116000
+          },
+          {
+            "index": 862,
+            "total_us": 82457,
+            "raster_pixels": 81440
+          },
+          {
+            "index": 324,
+            "total_us": 82232,
+            "raster_pixels": 117200
+          },
+          {
+            "index": 268,
+            "total_us": 80521,
+            "raster_pixels": 58240
+          },
+          {
+            "index": 63,
+            "total_us": 79054,
+            "raster_pixels": 26752
+          }
+        ]
+      },
+      "issues": []
+    }
+  ]
+}
