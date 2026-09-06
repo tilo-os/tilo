@@ -29,149 +29,19 @@
 
 use qos_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 use crate::backend::{MusicBackend, SearchTop};
-use crate::model::{Album, Artist, Library, Playlist, Track};
+use crate::model::Library;
 
 /// A query never evaluates more than this many indexed library entities. The
 /// palette has a much smaller visible result limit; the extra headroom keeps
 /// common short-prefix searches useful without turning a no-match query into a
 /// linear scan of the local catalogue.
 const SEARCH_CANDIDATE_LIMIT: usize = 512;
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum IndexedEntity {
-    Track(String),
-    Album(String),
-    Artist(String),
-    Playlist(String),
-}
-
-/// Small in-memory inverted index used only by the synchronous Ctrl+K
-/// provider. It indexes the complete local snapshot, never network results or
-/// audio metadata. Query-time intersection finds complete matches first; only
-/// the final entity evaluation is budgeted.
-#[derive(Default)]
-struct LibrarySearchIndex {
-    exact: std::collections::BTreeMap<String, std::collections::BTreeSet<IndexedEntity>>,
-    prefixes: std::collections::BTreeMap<String, std::collections::BTreeSet<IndexedEntity>>,
-    trigrams: std::collections::BTreeMap<String, std::collections::BTreeSet<IndexedEntity>>,
-}
-
-struct CandidateSelection<'a> {
-    entities: Vec<&'a IndexedEntity>,
-    inspected: usize,
-}
-
-impl LibrarySearchIndex {
-    fn insert(&mut self, entity: &IndexedEntity, fields: &[&str]) {
-        let mut keys = std::collections::BTreeSet::new();
-        for field in fields {
-            let normalized = normalize_search_text(field);
-            if !normalized.is_empty() {
-                let exact = self.exact.entry(normalized.clone()).or_default();
-                exact.insert(entity.clone());
-            }
-            for term in normalized.split_whitespace() {
-                let mut prefix = String::new();
-                for ch in term.chars().take(12) {
-                    prefix.push(ch);
-                    keys.insert((true, prefix.clone()));
-                }
-            }
-            let chars: Vec<char> = normalized.chars().collect();
-            for window in chars.windows(3) {
-                keys.insert((false, window.iter().collect::<String>()));
-            }
-        }
-        for (is_prefix, key) in keys {
-            let postings = if is_prefix {
-                self.prefixes.entry(key).or_default()
-            } else {
-                self.trigrams.entry(key).or_default()
-            };
-            postings.insert(entity.clone());
-        }
-    }
-
-    fn candidates(&self, query: &str) -> CandidateSelection<'_> {
-        let normalized = normalize_search_text(query);
-        if let Some(exact) = self.exact.get(&normalized) {
-            let entities: Vec<_> = exact.iter().take(SEARCH_CANDIDATE_LIMIT).collect();
-            return CandidateSelection {
-                inspected: entities.len(),
-                entities,
-            };
-        }
-
-        let mut postings = Vec::new();
-        for term in normalized.split_whitespace() {
-            let chars: Vec<char> = term.chars().collect();
-            if chars.len() >= 3 {
-                for window in chars.windows(3) {
-                    let key: String = window.iter().collect();
-                    let Some(posting) = self.trigrams.get(&key) else {
-                        return CandidateSelection {
-                            entities: Vec::new(),
-                            inspected: 0,
-                        };
-                    };
-                    postings.push(posting);
-                }
-            } else if let Some(posting) = self.prefixes.get(term) {
-                postings.push(posting);
-            } else {
-                return CandidateSelection {
-                    entities: Vec::new(),
-                    inspected: 0,
-                };
-            }
-        }
-        let Some((rarest_index, _)) = postings.iter().enumerate().min_by_key(|(_, p)| p.len())
-        else {
-            return CandidateSelection {
-                entities: Vec::new(),
-                inspected: 0,
-            };
-        };
-        let Some(rarest) = postings.get(rarest_index).copied() else {
-            return CandidateSelection {
-                entities: Vec::new(),
-                inspected: 0,
-            };
-        };
-        let mut inspected = 0;
-        let entities = rarest
-            .iter()
-            .take(SEARCH_CANDIDATE_LIMIT)
-            .filter(|entity| {
-                inspected += 1;
-                postings
-                    .iter()
-                    .enumerate()
-                    .all(|(index, posting)| index == rarest_index || posting.contains(entity))
-            })
-            .collect();
-        CandidateSelection {
-            entities,
-            inspected,
-        }
-    }
-}
-
-fn normalize_search_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect()
-}
 
 /// Stable ids for Music's four searchable result types. The framework uses them
 /// to deduplicate providers and persist per-type preferences.
@@ -463,108 +333,57 @@ fn top_hit(top: &SearchTop) -> SearchHit {
 /// Empty query yields nothing; nothing here is fabricated — an empty library
 /// contributes zero rows.
 pub fn library_hits(lib: &Library, query: &str) -> Vec<SearchHit> {
-    library_hits_limited(lib, query, DEFAULT_SEARCH_RESULT_LIMIT)
-}
-
-fn library_hits_limited(lib: &Library, query: &str, limit: usize) -> Vec<SearchHit> {
-    let q = query.trim();
-    let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-    if q.is_empty() || limit == 0 {
-        return Vec::new();
-    }
-    let needle = q.to_lowercase();
-    let artist_genre = |id: &str| {
-        lib.artists
-            .get(id)
-            .map(|artist| artist.genre.to_lowercase())
-            .unwrap_or_default()
-    };
-    let mut top_tracks = std::collections::BinaryHeap::new();
-    for track in lib.tracks.values().filter(|track| {
-        track.title.to_lowercase().contains(&needle)
-            || lib
-                .artist_name(&track.artist_id)
-                .to_lowercase()
-                .contains(&needle)
-            || artist_genre(&track.artist_id).contains(&needle)
-    }) {
-        top_tracks.push(std::cmp::Reverse((
-            track.plays,
-            std::cmp::Reverse(track.id.as_str()),
-        )));
-        if top_tracks.len() > limit {
-            top_tracks.pop();
-        }
-    }
-    // Library::search ranks tracks by play count. Retain its exact top-k in a
-    // bounded heap while scanning the bounded snapshot, then restore the
-    // stable popularity/id order for presentation.
-    let mut tracks = top_tracks
+    LibrarySearchProvider::new(lib)
+        .search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
         .into_iter()
-        .filter_map(|std::cmp::Reverse((_, std::cmp::Reverse(id)))| lib.track(id))
-        .collect::<Vec<_>>();
-    tracks.sort_by(|a, b| b.plays.cmp(&a.plays).then_with(|| a.id.cmp(&b.id)));
-    let mut hits = Vec::with_capacity(limit.min(32));
-    for t in tracks {
-        hits.push(SearchHit {
-            type_id: SONG_TYPE_ID,
-            title: t.title.clone(),
-            subtitle: song_subtitle(lib.artist_name(&t.artist_id), t.duration_s),
-            cover_url: String::new(),
-            thumbnail_seed: t.album_id.clone(),
-            deep_link: SearchHit::track_link(&t.id),
-        });
-    }
-    if hits.len() == limit {
-        return hits;
-    }
-    for a in lib.albums.values().filter(|album| {
-        album.title.to_lowercase().contains(&needle)
-            || artist_genre(&album.artist_id).contains(&needle)
-    }) {
-        hits.push(SearchHit {
-            type_id: ALBUM_TYPE_ID,
-            title: a.title.clone(),
-            subtitle: album_subtitle(lib.artist_name(&a.artist_id), "Album", a.year),
-            cover_url: String::new(),
-            thumbnail_seed: a.id.clone(),
-            deep_link: SearchHit::album_link(&a.id),
-        });
-        if hits.len() == limit {
-            return hits;
-        }
-    }
-    for a in lib.artists.values().filter(|artist| {
-        artist.name.to_lowercase().contains(&needle)
-            || artist.genre.to_lowercase().contains(&needle)
-    }) {
-        hits.push(SearchHit {
-            type_id: ARTIST_TYPE_ID,
-            title: a.name.clone(),
-            subtitle: if a.genre.is_empty() {
-                "Artist".into()
-            } else {
-                a.genre.clone()
-            },
-            cover_url: String::new(),
-            thumbnail_seed: a.id.clone(),
-            deep_link: SearchHit::artist_link(&a.id),
-        });
-        if hits.len() == limit {
-            return hits;
-        }
-    }
-    append_matching_playlists(lib, q, limit, &mut hits);
-    hits
+        .filter_map(|result| library_search_result_hit(lib, &result))
+        .collect()
 }
 
-fn append_matching_playlists(lib: &Library, query: &str, limit: usize, hits: &mut Vec<SearchHit>) {
-    // Library::search does not include playlists, but the user's own synced
-    // playlists should still be discoverable OS-wide.
-    let query = query.to_lowercase();
-    for playlist in &lib.playlists {
-        if playlist.name.to_lowercase().contains(&query) {
-            hits.push(SearchHit {
+fn library_search_result_hit(lib: &Library, result: &SearchResult) -> Option<SearchHit> {
+    let address = result.action_address()?;
+    if address.action == "play" {
+        let id = address.resource.strip_prefix("music.track:")?;
+        let track = lib.track(id)?;
+        return Some(SearchHit {
+            type_id: SONG_TYPE_ID,
+            title: track.title.clone(),
+            subtitle: song_subtitle(lib.artist_name(&track.artist_id), track.duration_s),
+            cover_url: String::new(),
+            thumbnail_seed: track.album_id.clone(),
+            deep_link: SearchHit::track_link(&track.id),
+        });
+    }
+    if address.action == "open" {
+        if let Some(id) = address.resource.strip_prefix("music.album:") {
+            let album = lib.album(id)?;
+            return Some(SearchHit {
+                type_id: ALBUM_TYPE_ID,
+                title: album.title.clone(),
+                subtitle: album_subtitle(lib.artist_name(&album.artist_id), "Album", album.year),
+                cover_url: String::new(),
+                thumbnail_seed: album.id.clone(),
+                deep_link: SearchHit::album_link(&album.id),
+            });
+        }
+        if let Some(id) = address.resource.strip_prefix("music.artist:") {
+            let artist = lib.artist(id)?;
+            return Some(SearchHit {
+                type_id: ARTIST_TYPE_ID,
+                title: artist.name.clone(),
+                subtitle: if artist.genre.is_empty() {
+                    "Artist".into()
+                } else {
+                    artist.genre.clone()
+                },
+                cover_url: String::new(),
+                thumbnail_seed: artist.id.clone(),
+                deep_link: SearchHit::artist_link(&artist.id),
+            });
+        }
+        if let Some(id) = address.resource.strip_prefix("music.playlist:") {
+            let playlist = lib.playlist(id)?;
+            return Some(SearchHit {
                 type_id: PLAYLIST_TYPE_ID,
                 title: playlist.name.clone(),
                 subtitle: playlist_subtitle("Your library", playlist.track_ids.len() as u64),
@@ -572,11 +391,9 @@ fn append_matching_playlists(lib: &Library, query: &str, limit: usize, hits: &mu
                 thumbnail_seed: playlist.id.clone(),
                 deep_link: SearchHit::playlist_link(&playlist.id),
             });
-            if hits.len() == limit {
-                break;
-            }
         }
     }
+    None
 }
 
 fn song_subtitle(artist: &str, duration_s: u32) -> String {
@@ -656,24 +473,6 @@ fn kind_icon(type_id: &str) -> Icon {
     }
 }
 
-impl SearchHit {
-    /// Adapt a Music hit onto the framework's typed [`SearchResult`], addressing
-    /// the exact play/open operation exported by Music's live resource tree.
-    fn into_search_result(self) -> Option<SearchResult> {
-        let target = DeepLink::parse(&self.deep_link)?;
-        let mut r = SearchResult::for_action(
-            kind_label(self.type_id),
-            self.title,
-            target.action_address(),
-        )
-        .with_icon(kind_icon(self.type_id));
-        if !self.subtitle.is_empty() {
-            r = r.with_subtitle(self.subtitle);
-        }
-        Some(r)
-    }
-}
-
 /// The [`ui::search::SearchProvider`] Music registers into the global Ctrl+K
 /// palette. It contributes the user's **own library** — synced across their
 /// devices — as typed Song/Album/Artist/Playlist rows.
@@ -686,28 +485,134 @@ impl SearchHit {
 /// shell-level Ctrl+K can register this provider directly and every activation
 /// still lands on the one router.
 ///
-/// Holds an owned snapshot of the [`Library`] (cheap to rebuild whenever the
-/// search surface opens), mirroring [`apps/contacts`]' provider. An empty
-/// library contributes zero rows — nothing is fabricated.
+/// Holds a cheap clone of a prebuilt shared catalog. [`MusicApp`](crate::app::MusicApp)
+/// retains the catalog and refreshes it only when its library revision changes,
+/// so merely opening Ctrl+K never rebuilds or reindexes the whole corpus. An
+/// empty library contributes zero rows — nothing is fabricated.
+#[derive(Clone)]
 pub struct LibrarySearchProvider {
-    lib: Library,
-    index: LibrarySearchIndex,
+    catalog: SearchCatalog,
 }
 
 impl LibrarySearchProvider {
     /// Snapshot the current library into a provider.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete four-kind catalog is intentionally constructed together so canonical resource/action identities cannot drift between search kinds"
+    )]
     pub fn new(lib: &Library) -> Self {
-        let snapshot = lib.clone();
-        let index = library_search_index(&snapshot);
-        Self {
-            lib: snapshot,
-            index,
+        let catalog = SearchCatalog::new("Music");
+        for track in lib.tracks.values() {
+            let artist = lib.artist_name(&track.artist_id);
+            let genre = lib
+                .artist(&track.artist_id)
+                .map_or("", |artist| artist.genre.as_str());
+            let result = SearchResult::for_action(
+                kind_label(SONG_TYPE_ID),
+                &track.title,
+                crate::actions::play_track_address(&track.id),
+            )
+            .with_icon(kind_icon(SONG_TYPE_ID))
+            .with_subtitle(song_subtitle(artist, track.duration_s))
+            .with_score(track.plays.min(i32::MAX as u64) as i32);
+            // The resource id and canonical action address are deliberately
+            // identical at the namespace boundary. SearchCatalog rejects any
+            // mismatch, preserving the authority door for every result.
+            let _ = catalog.upsert(
+                crate::actions::track_resource_id(&track.id),
+                format!("{} {artist} {genre}", track.title),
+                result,
+            );
         }
+        for album in lib.albums.values() {
+            let artist = lib.artist_name(&album.artist_id);
+            let genre = lib
+                .artist(&album.artist_id)
+                .map_or("", |artist| artist.genre.as_str());
+            let result = SearchResult::for_action(
+                kind_label(ALBUM_TYPE_ID),
+                &album.title,
+                crate::actions::open_album_address(&album.id),
+            )
+            .with_icon(kind_icon(ALBUM_TYPE_ID))
+            .with_subtitle(album_subtitle(artist, "Album", album.year));
+            let _ = catalog.upsert(
+                crate::actions::album_resource_id(&album.id),
+                format!("{} {artist} {genre}", album.title),
+                result,
+            );
+        }
+        for artist in lib.artists.values() {
+            let result = SearchResult::for_action(
+                kind_label(ARTIST_TYPE_ID),
+                &artist.name,
+                crate::actions::open_artist_address(&artist.id),
+            )
+            .with_icon(kind_icon(ARTIST_TYPE_ID))
+            .with_subtitle(if artist.genre.is_empty() {
+                "Artist".to_string()
+            } else {
+                artist.genre.clone()
+            });
+            let _ = catalog.upsert(
+                crate::actions::artist_resource_id(&artist.id),
+                format!("{} {}", artist.name, artist.genre),
+                result,
+            );
+        }
+        for playlist in &lib.playlists {
+            let result = SearchResult::for_action(
+                kind_label(PLAYLIST_TYPE_ID),
+                &playlist.name,
+                crate::actions::open_playlist_address(&playlist.id),
+            )
+            .with_icon(kind_icon(PLAYLIST_TYPE_ID))
+            .with_subtitle(playlist_subtitle(
+                "Your library",
+                playlist.track_ids.len() as u64,
+            ));
+            let _ = catalog.upsert(
+                crate::actions::playlist_resource_id(&playlist.id),
+                &playlist.name,
+                result,
+            );
+            for track_id in &playlist.track_ids {
+                let Some(track) = lib.track(track_id) else {
+                    continue;
+                };
+                let resource_id =
+                    crate::actions::playlist_track_resource_id(&playlist.id, track_id);
+                let result = SearchResult::for_action(
+                    "Playlist tracks",
+                    format!("{} — {}", track.title, playlist.name),
+                    crate::actions::open_playlist_membership_address(&playlist.id, track_id),
+                )
+                .with_icon(kind_icon(SONG_TYPE_ID))
+                .with_subtitle(format!(
+                    "Open in {} · {}",
+                    playlist.name,
+                    lib.artist_name(&track.artist_id)
+                ));
+                let _ = catalog.upsert(
+                    resource_id,
+                    format!(
+                        "{} {} {}",
+                        track.title,
+                        playlist.name,
+                        lib.artist_name(&track.artist_id)
+                    ),
+                    result,
+                );
+            }
+        }
+        Self { catalog }
     }
 
     #[cfg(test)]
     fn candidate_count_for_query(&self, query: &str) -> usize {
-        self.index.candidates(query).inspected
+        self.catalog
+            .query_page(query, None, SEARCH_CANDIDATE_LIMIT, 1)
+            .inspected
     }
 }
 
@@ -723,216 +628,25 @@ impl SearchProvider for LibrarySearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        indexed_library_hits(&self.lib, &self.index, query, limit)
-            .into_iter()
-            .filter_map(SearchHit::into_search_result)
-            .collect()
+        self.catalog
+            .query_page(
+                query,
+                None,
+                SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
     }
-}
 
-fn library_search_index(lib: &Library) -> LibrarySearchIndex {
-    let mut index = LibrarySearchIndex::default();
-    for track in lib.tracks.values() {
-        index.insert(
-            &IndexedEntity::Track(track.id.clone()),
-            &[
-                track.title.as_str(),
-                lib.artist_name(&track.artist_id),
-                lib.artist(&track.artist_id)
-                    .map_or("", |artist| artist.genre.as_str()),
-            ],
-        );
-    }
-    for album in lib.albums.values() {
-        index.insert(
-            &IndexedEntity::Album(album.id.clone()),
-            &[
-                album.title.as_str(),
-                lib.artist_name(&album.artist_id),
-                lib.artist(&album.artist_id)
-                    .map_or("", |artist| artist.genre.as_str()),
-            ],
-        );
-    }
-    for artist in lib.artists.values() {
-        index.insert(
-            &IndexedEntity::Artist(artist.id.clone()),
-            &[artist.name.as_str(), artist.genre.as_str()],
-        );
-    }
-    for playlist in &lib.playlists {
-        index.insert(
-            &IndexedEntity::Playlist(playlist.id.clone()),
-            &[playlist.name.as_str()],
-        );
-    }
-    index
-}
-
-fn track_matches(lib: &Library, track: &Track, needle: &str) -> bool {
-    track.title.to_lowercase().contains(needle)
-        || lib
-            .artist_name(&track.artist_id)
-            .to_lowercase()
-            .contains(needle)
-        || lib
-            .artist(&track.artist_id)
-            .is_some_and(|artist| artist.genre.to_lowercase().contains(needle))
-}
-
-fn album_matches(lib: &Library, album: &Album, needle: &str) -> bool {
-    album.title.to_lowercase().contains(needle)
-        || lib
-            .artist(&album.artist_id)
-            .is_some_and(|artist| artist.genre.to_lowercase().contains(needle))
-}
-
-fn artist_matches(artist: &Artist, needle: &str) -> bool {
-    artist.name.to_lowercase().contains(needle) || artist.genre.to_lowercase().contains(needle)
-}
-
-fn playlist_matches(playlist: &Playlist, needle: &str) -> bool {
-    playlist.name.to_lowercase().contains(needle)
-}
-
-fn indexed_library_hits(
-    lib: &Library,
-    index: &LibrarySearchIndex,
-    query: &str,
-    limit: usize,
-) -> Vec<SearchHit> {
-    let q = query.trim();
-    let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-    if q.is_empty() || limit == 0 {
-        return Vec::new();
-    }
-    let needle = q.to_lowercase();
-    let mut tracks = Vec::new();
-    let mut albums = Vec::new();
-    let mut artists = Vec::new();
-    let mut playlists = Vec::new();
-    let candidates = index.candidates(q);
-    debug_assert!(candidates.inspected <= SEARCH_CANDIDATE_LIMIT);
-    for candidate in candidates.entities {
-        match candidate {
-            IndexedEntity::Track(id) => {
-                if let Some(track) = lib
-                    .track(id)
-                    .filter(|track| track_matches(lib, track, &needle))
-                {
-                    tracks.push(track);
-                }
-            }
-            IndexedEntity::Album(id) => {
-                if let Some(album) = lib
-                    .album(id)
-                    .filter(|album| album_matches(lib, album, &needle))
-                {
-                    albums.push(album);
-                }
-            }
-            IndexedEntity::Artist(id) => {
-                if let Some(artist) = lib
-                    .artist(id)
-                    .filter(|artist| artist_matches(artist, &needle))
-                {
-                    artists.push(artist);
-                }
-            }
-            IndexedEntity::Playlist(id) => {
-                if let Some(playlist) = lib
-                    .playlist(id)
-                    .filter(|playlist| playlist_matches(playlist, &needle))
-                {
-                    playlists.push(playlist);
-                }
-            }
-        }
-    }
-    tracks.sort_by(|a, b| b.plays.cmp(&a.plays).then_with(|| a.id.cmp(&b.id)));
-    let mut hits = Vec::with_capacity(limit.min(32));
-    append_indexed_tracks(lib, &tracks, limit, &mut hits);
-    append_indexed_albums(lib, &albums, limit, &mut hits);
-    append_indexed_artists(&artists, limit, &mut hits);
-    append_indexed_playlists(&playlists, limit, &mut hits);
-    hits
-}
-
-fn append_indexed_tracks(
-    lib: &Library,
-    tracks: &[&Track],
-    limit: usize,
-    hits: &mut Vec<SearchHit>,
-) {
-    for track in tracks {
-        if hits.len() == limit {
-            return;
-        }
-        hits.push(SearchHit {
-            type_id: SONG_TYPE_ID,
-            title: track.title.clone(),
-            subtitle: song_subtitle(lib.artist_name(&track.artist_id), track.duration_s),
-            cover_url: String::new(),
-            thumbnail_seed: track.album_id.clone(),
-            deep_link: SearchHit::track_link(&track.id),
-        });
-    }
-}
-
-fn append_indexed_albums(
-    lib: &Library,
-    albums: &[&Album],
-    limit: usize,
-    hits: &mut Vec<SearchHit>,
-) {
-    for album in albums {
-        if hits.len() == limit {
-            return;
-        }
-        hits.push(SearchHit {
-            type_id: ALBUM_TYPE_ID,
-            title: album.title.clone(),
-            subtitle: album_subtitle(lib.artist_name(&album.artist_id), "Album", album.year),
-            cover_url: String::new(),
-            thumbnail_seed: album.id.clone(),
-            deep_link: SearchHit::album_link(&album.id),
-        });
-    }
-}
-
-fn append_indexed_artists(artists: &[&Artist], limit: usize, hits: &mut Vec<SearchHit>) {
-    for artist in artists {
-        if hits.len() == limit {
-            return;
-        }
-        hits.push(SearchHit {
-            type_id: ARTIST_TYPE_ID,
-            title: artist.name.clone(),
-            subtitle: if artist.genre.is_empty() {
-                "Artist".into()
-            } else {
-                artist.genre.clone()
-            },
-            cover_url: String::new(),
-            thumbnail_seed: artist.id.clone(),
-            deep_link: SearchHit::artist_link(&artist.id),
-        });
-    }
-}
-
-fn append_indexed_playlists(playlists: &[&Playlist], limit: usize, hits: &mut Vec<SearchHit>) {
-    for playlist in playlists {
-        if hits.len() == limit {
-            return;
-        }
-        hits.push(SearchHit {
-            type_id: PLAYLIST_TYPE_ID,
-            title: playlist.name.clone(),
-            subtitle: playlist_subtitle("Your library", playlist.track_ids.len() as u64),
-            cover_url: playlist.cover.clone(),
-            thumbnail_seed: playlist.id.clone(),
-            deep_link: SearchHit::playlist_link(&playlist.id),
-        });
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 }
 
@@ -1164,10 +878,9 @@ mod tests {
             "a no-match query consults an index posting, never every library entity"
         );
         assert_eq!(provider.candidate_count_for_query("absent-token"), 0);
-        assert_eq!(
-            provider.candidate_count_for_query("song"),
-            SEARCH_CANDIDATE_LIMIT,
-            "even a broad query evaluates the fixed candidate budget"
+        assert!(
+            provider.candidate_count_for_query("song") <= SEARCH_CANDIDATE_LIMIT,
+            "a broad query still honors the per-page inspection budget"
         );
         assert!(provider.search_limited("song", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
     }
@@ -1282,5 +995,80 @@ mod tests {
             provider.candidate_count_for_query("opening distinctive moonlit"),
             1
         );
+    }
+
+    #[test]
+    fn provider_pages_unicode_results_without_scanning_the_whole_library() {
+        let mut lib = Library::default();
+        lib.artists.insert(
+            "artist".into(),
+            crate::model::Artist {
+                id: "artist".into(),
+                name: "Mañana".into(),
+                genre: "Électronica".into(),
+                monthly_listeners: 0,
+            },
+        );
+        lib.albums.insert(
+            "album".into(),
+            crate::model::Album {
+                id: "album".into(),
+                title: "Café Sessions".into(),
+                artist_id: "artist".into(),
+                year: 2026,
+            },
+        );
+        for number in 0..40 {
+            let id = format!("track-{number:03}");
+            lib.tracks.insert(
+                id.clone(),
+                crate::model::Track {
+                    id,
+                    title: if number == 39 {
+                        "Café Paged Finale 🎧".into()
+                    } else {
+                        format!("Café paged song {number:03}")
+                    },
+                    album_id: "album".into(),
+                    artist_id: "artist".into(),
+                    track_no: 1,
+                    duration_s: 1,
+                    yt_id: format!("video-{number}"),
+                    plays: 0,
+                },
+            );
+        }
+        let provider = LibrarySearchProvider::new(&lib);
+        let first = provider.search_page("CAFÉ", None, 7, 7);
+        assert_eq!(first.inspected, 7);
+        assert_eq!(first.results.len(), 7);
+        let next = first.next.as_ref().expect("more matching rows remain");
+        let second = provider.search_page("CAFÉ", Some(next), 7, 7);
+        assert_eq!(second.inspected, 7);
+        assert!(
+            second
+                .results
+                .iter()
+                .all(|result| result.action_address().is_some())
+        );
+
+        let all = provider.search("PAGED FINALE 🎧");
+        assert!(
+            all.iter()
+                .any(|result| result.title == "Café Paged Finale 🎧")
+        );
+    }
+
+    #[test]
+    fn provider_indexes_playlist_memberships_with_safe_canonical_open_actions() {
+        let lib = seed::sample_library();
+        let playlist = lib.playlists.first().expect("seed playlist");
+        let track_id = playlist.track_ids.first().expect("seed membership");
+        let track = lib.track(track_id).expect("seed track");
+        let provider = LibrarySearchProvider::new(&lib);
+        let address = crate::actions::open_playlist_membership_address(&playlist.id, track_id);
+        assert!(provider.search(&track.title).iter().any(|result| {
+            result.action_address().as_ref() == Some(&address) && result.kind == "Playlist tracks"
+        }));
     }
 }
