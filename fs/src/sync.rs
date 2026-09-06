@@ -1563,6 +1563,7 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     async fn start(
         endpoint: Endpoint,
         lookup: MemoryLookup,
