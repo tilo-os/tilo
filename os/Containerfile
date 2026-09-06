@@ -2011,10 +2011,12 @@ ENV QOS_SEAL_GENERATION=${QOS_SEAL_GENERATION}
 # an object into it needs O_TMPFILE — which overlayfs, the filesystem a build
 # stage's root is, does not support. The failure is "Creating object tmpfile: ...
 # Operation not supported (os error 95)" and it names neither /var/tmp nor
-# overlayfs. A cache mount is host-backed, so it both supports O_TMPFILE and lets
-# the objects survive between builds instead of re-hashing the whole rootfs each
-# time. tmpfs would work too but would hold the entire rootfs content in RAM.
-RUN --mount=type=cache,target=/var/tmp,sharing=locked \
+# overlayfs. A cache mount is host-backed and supports O_TMPFILE. Give this
+# workspace an explicit generation: interrupted seal attempts can strand a
+# rootfs-sized repository in the default anonymous cache, leaving no room for
+# every later retry before the accessibility/installed-image gates can run.
+# Rotating the id is recoverable and affects only disposable build scratch.
+RUN --mount=type=cache,id=qos-composefs-v2,target=/var/tmp,sharing=locked \
     --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
     --mount=type=bind,from=split,target=/target \
