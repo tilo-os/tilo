@@ -186,6 +186,10 @@ pub fn invalidate() {
 
 /// For tests, which must not depend on a registry being reachable.
 pub fn seed_for_test(apps: Vec<CatalogueApp>) {
+    // A test fixture is the authoritative cache for this process.  Marking the
+    // disk probe complete prevents the first query from replacing it with a
+    // developer machine's persisted listing.
+    DISK_CACHE_LOADED.store(true, Ordering::SeqCst);
     *lock_catalogue() = Some((apps, Instant::now()));
 }
 
