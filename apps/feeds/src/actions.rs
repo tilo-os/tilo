@@ -160,7 +160,13 @@ impl Action for FeedsAction {
                 order,
                 kind,
             } => {
-                if let Ok(uuid) = id.parse::<Id>() {
+                // Palette prompts and the in-app dialog both trim before
+                // authoring; retain that invariant at the replay boundary so
+                // a malformed/empty remote payload cannot create an unusable
+                // durable subscription resource.
+                if !url.trim().is_empty()
+                    && let Ok(uuid) = id.parse::<Id>()
+                {
                     let feed = Feed {
                         id: uuid,
                         // Placeholder until the fetch fills the real title in —
@@ -399,6 +405,11 @@ pub struct FolderRef {
 pub struct FeedsResourceCtx {
     pub folders: Vec<FolderRef>,
     pub feeds: Vec<FeedRef>,
+    /// Unread articles across the whole reader, resolved before the global
+    /// action is authored so replay never depends on a peer's local filter.
+    pub unread: Vec<Id>,
+    /// The order a palette-created, uncategorised subscription takes.
+    pub next_feed_order: u32,
     /// The order a "New folder" created from the palette takes.
     pub next_folder_order: u32,
     pub settings: ReadSettings,
@@ -468,8 +479,29 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         });
     }
 
-    // Reader-level: create a folder. The uuid is minted once when the name is
-    // committed, then baked into the envelope, so replay stays deterministic.
+    // Reader-level durable actions. UUIDs are minted once when prompts commit
+    // and then baked into the envelope, so replay stays deterministic.
+    let feed_order = ctx.next_feed_order;
+    root = root.with_action(ActionSpec::prompted(
+        "add-subscription",
+        "Add subscription",
+        "Feed URL",
+        "https://example.com/feed.xml",
+        ExecutionLocus::ClientLocal,
+        move |url: &str| {
+            encode(&add_subscription_action(
+                Uuid::new_v4(),
+                url,
+                None,
+                feed_order,
+            ))
+        },
+    ));
+    root = root.with_action(immediate_spec(
+        "mark-all-read",
+        "Mark all articles as read",
+        &mark_all_read_action(&ctx.unread),
+    ));
     let order = ctx.next_folder_order;
     root = root.with_action(ActionSpec::prompted(
         "new-folder",
@@ -716,6 +748,14 @@ mod tests {
         let reader = &resources[0];
         assert_eq!(reader.kind, "feeds.reader");
         let reader_actions: Vec<&str> = reader.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            reader_actions.contains(&"add-subscription"),
+            "{reader_actions:?}"
+        );
+        assert!(
+            reader_actions.contains(&"mark-all-read"),
+            "{reader_actions:?}"
+        );
         assert!(reader_actions.contains(&"new-folder"), "{reader_actions:?}");
         assert!(
             reader_actions.contains(&"refresh-all"),
@@ -817,6 +857,8 @@ mod tests {
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
+        assert!(flat.contains(&"Add subscription"), "{flat:?}");
+        assert!(flat.contains(&"Mark all articles as read"), "{flat:?}");
         assert!(flat.contains(&"New folder"), "{flat:?}");
         assert!(flat.contains(&"Unsubscribe"), "{flat:?}");
         assert!(flat.contains(&"Delete folder"), "{flat:?}");
@@ -835,6 +877,50 @@ mod tests {
             labels.iter().any(|l| l.contains("Rename folder")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn reader_level_add_subscription_uses_the_replayable_action_contract() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let add = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "add-subscription")
+            .expect("reader exports canonical add-subscription");
+        let encoded = prompted_encode(add, "https://example.test/updates.xml");
+        assert_eq!(encoded.type_id, FEEDS_ACTION_TYPE);
+
+        let decoded = registry()
+            .decode(&encoded)
+            .expect("prompt result decodes through the Feeds registry");
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+            .expect("canonical prompt result applies deterministically");
+        assert!(
+            FeedsDoc::load(&doc)
+                .feeds
+                .iter()
+                .any(|feed| feed.url == "https://example.test/updates.xml")
+        );
+    }
+
+    #[test]
+    fn blank_canonical_subscription_prompt_is_a_safe_no_op() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let add = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "add-subscription")
+            .expect("reader exports canonical add-subscription");
+        let encoded = prompted_encode(add, "   ");
+        let decoded = registry().decode(&encoded).expect("prompt still decodes");
+        let before = FeedsDoc::load(&doc).feeds.len();
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+            .expect("blank action is harmless");
+        assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
