@@ -953,6 +953,12 @@ pub struct CodeEditorResourceCtx {
     pub search_results: Vec<SearchResultRef>,
 }
 
+/// The resource forest is an immediate UI snapshot, not a second complete
+/// project index. Search and `ResourceProvider::resource` retain authority for
+/// every omitted row. Keeping this small prevents a large project (or a noisy
+/// search result set) from being flattened on every palette interaction.
+pub const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+
 fn project_resource(ctx: &CodeEditorResourceCtx) -> Resource {
     let label = if ctx.project_name.trim().is_empty() {
         "Project".to_string()
@@ -1081,7 +1087,7 @@ fn replace_text_action(file_id: String, base: String) -> ActionSpec {
     )
 }
 
-fn file_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, f: &OpenFileRef) -> Resource {
+fn file_resource_base(doc: &AutoCommit, f: &OpenFileRef) -> Resource {
     let label = if f.name.trim().is_empty() {
         "untitled".to_string()
     } else {
@@ -1156,28 +1162,47 @@ fn file_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, f: &OpenFileRef)
         )
         .destructive(),
     );
-    for symbol in ctx.symbols.iter().filter(|symbol| symbol.file_id == f.id) {
-        file = file.with_child(
-            Resource::new(
-                symbol_resource_id(symbol),
-                "code_editor.symbol",
-                symbol.name.clone(),
-            )
-            .with_action(file_operation(
-                "open",
-                "Open symbol",
-                OperationKind::View,
-                &CodeEditorOperation::RevealLocation {
-                    file_id: Some(symbol.file_id.clone()),
-                    path: None,
-                    line: symbol.line,
-                    col: symbol.col,
-                    show_search: false,
-                },
-            )),
-        );
-    }
     file
+}
+
+fn symbol_resource(symbol: &SymbolRef) -> Resource {
+    Resource::new(
+        symbol_resource_id(symbol),
+        "code_editor.symbol",
+        symbol.name.clone(),
+    )
+    .with_action(file_operation(
+        "open",
+        "Open symbol",
+        OperationKind::View,
+        &CodeEditorOperation::RevealLocation {
+            file_id: Some(symbol.file_id.clone()),
+            path: None,
+            line: symbol.line,
+            col: symbol.col,
+            show_search: false,
+        },
+    ))
+}
+
+fn result_resource(result: &SearchResultRef) -> Resource {
+    Resource::new(
+        result_resource_id(result),
+        "code_editor.search-result",
+        result.preview.clone(),
+    )
+    .with_action(file_operation(
+        "reveal",
+        "Reveal search result",
+        OperationKind::View,
+        &CodeEditorOperation::RevealLocation {
+            file_id: result.file_id.clone(),
+            path: result.disk_path.clone(),
+            line: result.line,
+            col: result.col,
+            show_search: true,
+        },
+    ))
 }
 
 fn folder_resource(ctx: &CodeEditorResourceCtx, doc: &AutoCommit, folder: &FolderRef) -> Resource {
@@ -1364,7 +1389,145 @@ fn attach_nested_resources(
     }
 }
 
-fn nest_project_resources(project: &mut Resource, ctx: &CodeEditorResourceCtx) {
+fn root_folder_id(ctx: &CodeEditorResourceCtx) -> Option<&str> {
+    ctx.folders
+        .iter()
+        .find(|folder| folder.parent.is_none())
+        .map(|folder| folder.id.as_str())
+}
+
+/// Select a deterministic, ancestor-closed contextual tree. A folder or file
+/// is included only when its real parent chain fits in the snapshot budget;
+/// we never move a child to project root merely because its parent was too
+/// expensive to publish. The lazy resolver below keeps every omitted address
+/// reachable.
+#[allow(
+    clippy::too_many_lines,
+    reason = "selection, ancestor validation, budget accounting, and projection construction must stay adjacent to make the no-false-reparenting invariant auditable"
+)]
+fn bounded_resource_snapshot(ctx: &CodeEditorResourceCtx) -> CodeEditorResourceCtx {
+    let root_folder = root_folder_id(ctx);
+    let folders = ctx
+        .folders
+        .iter()
+        .map(|folder| (folder.id.as_str(), folder))
+        .collect::<HashMap<_, _>>();
+    let mut candidates = Vec::new();
+    for folder in &ctx.folders {
+        if folder.parent.is_some() {
+            candidates.push((
+                folder.path.clone(),
+                true,
+                folder.order,
+                folder.id.clone(),
+                None,
+            ));
+        }
+    }
+    for file in &ctx.open_files {
+        candidates.push((
+            file.path.clone(),
+            false,
+            file.order,
+            file.id.clone(),
+            Some(file),
+        ));
+    }
+    candidates.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+
+    let mut selected_folders = HashSet::new();
+    let mut selected_files = HashSet::new();
+    for (_, is_folder, _, id, file) in candidates {
+        let mut chain = Vec::new();
+        let mut parent = if is_folder {
+            folders
+                .get(id.as_str())
+                .and_then(|folder| folder.parent.as_deref())
+        } else {
+            file.and_then(|file| file.parent.as_deref())
+        };
+        let mut valid = true;
+        let mut seen = HashSet::new();
+        while let Some(parent_id) = parent {
+            if Some(parent_id) == root_folder {
+                break;
+            }
+            if !seen.insert(parent_id) {
+                valid = false;
+                break;
+            }
+            let Some(folder) = folders.get(parent_id) else {
+                valid = false;
+                break;
+            };
+            chain.push(folder.id.clone());
+            parent = folder.parent.as_deref();
+        }
+        if !valid {
+            continue;
+        }
+        if is_folder {
+            chain.push(id.clone());
+        }
+        chain.reverse();
+        let needed = chain
+            .iter()
+            .filter(|folder| !selected_folders.contains(folder.as_str()))
+            .count()
+            .saturating_add(usize::from(
+                !is_folder && !selected_files.contains(id.as_str()),
+            ));
+        if selected_folders
+            .len()
+            .saturating_add(selected_files.len())
+            .saturating_add(needed)
+            > EAGER_RESOURCE_SNAPSHOT_LIMIT
+        {
+            continue;
+        }
+        selected_folders.extend(chain);
+        if !is_folder {
+            selected_files.insert(id);
+        }
+    }
+
+    let used = selected_folders.len().saturating_add(selected_files.len());
+    let remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(used);
+    CodeEditorResourceCtx {
+        project_name: ctx.project_name.clone(),
+        project_id: ctx.project_id.clone(),
+        next_file_id: ctx.next_file_id.clone(),
+        next_file_name: ctx.next_file_name.clone(),
+        next_folder_id: ctx.next_folder_id.clone(),
+        next_folder_name: ctx.next_folder_name.clone(),
+        open_files: ctx
+            .open_files
+            .iter()
+            .filter(|file| selected_files.contains(file.id.as_str()))
+            .cloned()
+            .collect(),
+        folders: ctx
+            .folders
+            .iter()
+            .filter(|folder| selected_folders.contains(folder.id.as_str()))
+            .cloned()
+            .collect(),
+        symbols: Vec::new(),
+        search_results: ctx.search_results.iter().take(remaining).cloned().collect(),
+    }
+}
+
+fn nest_project_resources(
+    project: &mut Resource,
+    ctx: &CodeEditorResourceCtx,
+    root_folder: Option<&str>,
+) {
     let folder_ids: HashSet<_> = ctx
         .folders
         .iter()
@@ -1375,11 +1538,6 @@ fn nest_project_resources(project: &mut Resource, ctx: &CodeEditorResourceCtx) {
         .iter()
         .map(|file| file_resource_id(&file.id))
         .collect();
-    let root_folder = ctx
-        .folders
-        .iter()
-        .find(|folder| folder.parent.is_none())
-        .map(|folder| folder.id.as_str());
     let mut resources = HashMap::new();
     let mut ancillary = Vec::new();
     for child in std::mem::take(&mut project.children) {
@@ -1402,9 +1560,6 @@ fn nest_project_resources(project: &mut Resource, ctx: &CodeEditorResourceCtx) {
             .push((file.order, file_resource_id(&file.id)));
     }
     for folder in &ctx.folders {
-        if folder.parent.is_none() {
-            continue;
-        }
         let parent = if Some(folder.parent.as_deref().unwrap_or_default()) == root_folder {
             project_resource_id(&ctx.project_id)
         } else {
@@ -1417,11 +1572,9 @@ fn nest_project_resources(project: &mut Resource, ctx: &CodeEditorResourceCtx) {
     }
     let mut visited = HashSet::new();
     attach_nested_resources(project, &mut children, &mut resources, &mut visited);
-    // A malformed/imported legacy parent must not make a resource disappear;
-    // surface it at the project root where an agent can repair it.
-    let mut orphaned: Vec<_> = resources.into_values().collect();
-    orphaned.sort_by(|left, right| left.id.0.cmp(&right.id.0));
-    project.children.extend(orphaned);
+    // A bounded snapshot never lies about hierarchy. Malformed/orphaned rows
+    // stay out of this contextual tree and remain available only through their
+    // exact lazy address, rather than being falsely reparented to project root.
     project.children.extend(ancillary);
 }
 
@@ -1438,44 +1591,100 @@ fn nest_project_resources(project: &mut Resource, ctx: &CodeEditorResourceCtx) {
 ///
 pub fn provide_resources(ctx: &CodeEditorResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut project = add_project_actions(project_resource(ctx), ctx);
+    let root_folder = root_folder_id(ctx).map(str::to_owned);
+    let snapshot = bounded_resource_snapshot(ctx);
 
-    for file in &ctx.open_files {
-        project = project.with_child(file_resource(ctx, doc, file));
+    for file in &snapshot.open_files {
+        project = project.with_child(file_resource_base(doc, file));
+    }
+    for folder in &snapshot.folders {
+        project = project.with_child(folder_resource(&snapshot, doc, folder));
+    }
+    for result in &snapshot.search_results {
+        project = project.with_child(result_resource(result));
     }
 
-    for folder in &ctx.folders {
-        project = project.with_child(folder_resource(ctx, doc, folder));
-    }
-
-    for result in &ctx.search_results {
-        project = project.with_child(
-            Resource::new(
-                result_resource_id(result),
-                "code_editor.search-result",
-                result.preview.clone(),
-            )
-            .with_action(file_operation(
-                "reveal",
-                "Reveal search result",
-                OperationKind::View,
-                &CodeEditorOperation::RevealLocation {
-                    file_id: result.file_id.clone(),
-                    path: result.disk_path.clone(),
-                    line: result.line,
-                    col: result.col,
-                    show_search: true,
-                },
-            )),
-        );
-    }
-
-    nest_project_resources(&mut project, ctx);
+    nest_project_resources(&mut project, &snapshot, root_folder.as_deref());
     vec![project]
+}
+
+fn lazy_folder_resource(
+    ctx: &CodeEditorResourceCtx,
+    doc: &AutoCommit,
+    folder: &FolderRef,
+) -> Resource {
+    let mut resource = folder_resource(ctx, doc, folder);
+    let mut children = ctx
+        .folders
+        .iter()
+        .filter(|child| child.parent.as_deref() == Some(folder.id.as_str()))
+        .map(|child| (child.path.clone(), child.order, child.id.clone(), true))
+        .chain(
+            ctx.open_files
+                .iter()
+                .filter(|child| child.parent.as_deref() == Some(folder.id.as_str()))
+                .map(|child| (child.path.clone(), child.order, child.id.clone(), false)),
+        )
+        .collect::<Vec<_>>();
+    children.sort();
+    for (_, _, id, is_folder) in children.into_iter().take(EAGER_RESOURCE_SNAPSHOT_LIMIT) {
+        if is_folder {
+            if let Some(child) = ctx.folders.iter().find(|child| child.id == id) {
+                resource = resource.with_child(folder_resource(ctx, doc, child));
+            }
+        } else if let Some(child) = ctx.open_files.iter().find(|child| child.id == id) {
+            resource = resource.with_child(file_resource_base(doc, child));
+        }
+    }
+    resource
+}
+
+pub fn resolve_resource(
+    ctx: &CodeEditorResourceCtx,
+    doc: &AutoCommit,
+    id: &str,
+) -> Option<Resource> {
+    if id == project_resource_id(&ctx.project_id) {
+        return Some(add_project_actions(project_resource(ctx), ctx));
+    }
+    if let Some(file_id) = id.strip_prefix("code_editor.file:") {
+        return ctx
+            .open_files
+            .iter()
+            .find(|file| file.id == file_id)
+            .map(|file| file_resource_base(doc, file));
+    }
+    if let Some(folder_id) = id.strip_prefix("code_editor.folder:") {
+        return ctx
+            .folders
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .map(|folder| lazy_folder_resource(ctx, doc, folder));
+    }
+    if let Some(symbol) = ctx
+        .symbols
+        .iter()
+        .find(|symbol| symbol_resource_id(symbol) == id)
+    {
+        return ctx
+            .open_files
+            .iter()
+            .any(|file| file.id == symbol.file_id)
+            .then(|| symbol_resource(symbol));
+    }
+    ctx.search_results
+        .iter()
+        .find(|result| result_resource_id(result) == id)
+        .map(result_resource)
 }
 
 impl ResourceProvider for crate::app::CodeApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.code_resource_ctx(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resolve_resource(&self.code_resource_ctx(), doc, id)
     }
 }
 
@@ -2082,5 +2291,104 @@ mod tests {
             assert!(!flat.resource_id.as_str().contains("/tmp/"));
             assert!(!flat.resource_id.as_str().contains("disk:"));
         }
+    }
+
+    #[test]
+    fn bounded_snapshot_preserves_real_ancestry_and_lazy_folder_children() {
+        fn count(resource: &Resource) -> usize {
+            1usize.saturating_add(resource.children.iter().map(count).sum::<usize>())
+        }
+
+        let root = "root".to_string();
+        let mut folders = vec![FolderRef {
+            id: root.clone(),
+            name: "workspace".into(),
+            parent: None,
+            path: "workspace".into(),
+            order: 0,
+        }];
+        let mut parent = root;
+        for index in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 8) {
+            let id = format!("folder-{index}");
+            folders.push(FolderRef {
+                id: id.clone(),
+                name: format!("f{index}"),
+                parent: Some(parent.clone()),
+                path: format!(
+                    "workspace/{}",
+                    (0..=index)
+                        .map(|n| format!("f{n}"))
+                        .collect::<Vec<_>>()
+                        .join("/")
+                ),
+                order: index as i64,
+            });
+            parent = id;
+        }
+        let mut open_files = Vec::new();
+        for index in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 4) {
+            open_files.push(OpenFileRef {
+                node: index as u64,
+                id: format!("deep-file-{index}"),
+                name: format!("child-{index}.rs"),
+                parent: Some(parent.clone()),
+                path: format!("workspace/deep/child-{index}.rs"),
+                order: index as i64,
+                can_save: false,
+            });
+        }
+        let ctx = CodeEditorResourceCtx {
+            project_name: "workspace".into(),
+            project_id: "project".into(),
+            next_file_id: "new-file".into(),
+            next_file_name: "untitled.txt".into(),
+            next_folder_id: "new-folder".into(),
+            next_folder_name: "untitled-folder".into(),
+            open_files,
+            folders,
+            symbols: Vec::new(),
+            search_results: Vec::new(),
+        };
+        let doc = AutoCommit::new();
+        let project = provide_resources(&ctx, &doc)
+            .pop()
+            .expect("project resource");
+
+        assert!(
+            count(&project) <= EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_add(1),
+            "project plus its bounded contextual descendants"
+        );
+        assert_eq!(
+            project.children.len(),
+            1,
+            "only the real first folder is at root"
+        );
+        assert_eq!(
+            project.children[0].id.as_str(),
+            "code_editor.folder:folder-0"
+        );
+        assert!(
+            !project
+                .children
+                .iter()
+                .any(|child| child.id.as_str().starts_with("code_editor.file:")),
+            "a deep file with omitted ancestors must not be falsely reparented"
+        );
+
+        let deep_folder = folder_resource_id(&parent);
+        let lazy = resolve_resource(&ctx, &doc, &deep_folder)
+            .expect("deep folder remains lazy-addressable");
+        assert_eq!(lazy.children.len(), EAGER_RESOURCE_SNAPSHOT_LIMIT);
+        assert!(
+            lazy.children
+                .iter()
+                .all(|child| child.id.as_str().starts_with("code_editor.file:"))
+        );
+        assert!(lazy.children.iter().all(|child| {
+            ctx.open_files.iter().any(|file| {
+                child.id.as_str() == file_resource_id(&file.id)
+                    && file.parent.as_deref() == Some(parent.as_str())
+            })
+        }));
     }
 }
