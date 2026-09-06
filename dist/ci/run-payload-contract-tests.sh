@@ -34,6 +34,17 @@ for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; 
     }
 done
 
+# A local Atomic trial must install only the runtime RPM unless the developer
+# entry is explicitly requested; a broad qos-session*.rpm glob regresses that
+# contract by silently layering qos-session-devel too.
+overlay_helper="$repo_root/dist/rpm/usroverlay-install.sh"
+grep -Fq -- "-name 'qos-session-[0-9]*.rpm'" "$overlay_helper"
+grep -Fq -- 'include_devel=1' "$overlay_helper"
+if grep -Fq -- "-name 'qos-session*.rpm'" "$overlay_helper"; then
+    echo "usroverlay helper still selects the optional developer RPM by default" >&2
+    exit 1
+fi
+
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/licenses/qos-session}
 for target in "$fhs/usr/bin/qos-shell" "$fhs/usr/bin/qos-launcher" \

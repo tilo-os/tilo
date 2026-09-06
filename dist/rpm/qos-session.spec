@@ -7,7 +7,7 @@
 # /usr/local/share/wayland-sessions nor ~/.local/share/wayland-sessions is
 # scanned by GDM. So the entry has to arrive as part of /usr, and on an
 # ostree host the supported way to add to /usr is a layered package.
-# `rpm-ostree install ./qos-session-*.rpm` puts this in the next deployment;
+# `rpm-ostree install ./qos-session-[0-9]*.rpm` puts this in the next deployment;
 # `rpm-ostree usroverlay` plus unpacking it is the same file layout without a
 # reboot, for trying it out (see DEVELOPMENT.md).
 #
