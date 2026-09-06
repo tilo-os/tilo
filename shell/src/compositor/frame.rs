@@ -2314,7 +2314,9 @@ mod tests {
             .expect("existing-identity action reaches the external tree");
         let (_, create) = exported_node_named(&update, "Create identity")
             .expect("create-identity action reaches the external tree");
-        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 3: Choose")
+        // Identity setup has distinct backup and final hand-off states, so
+        // its semantic progress surface contains four stages.
+        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
             .expect("the OOBE progress state reaches the external tree");
 
         assert_eq!(existing.role(), ui::accesskit::Role::Button);
@@ -2413,7 +2415,7 @@ mod tests {
         let (ack_id, acknowledgement) =
             exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
                 .expect("the recovery acknowledgement reaches the external tree");
-        let (_, create) = exported_node_named(&protect, "Create")
+        let (_, create) = exported_node_named(&protect, "Create local identity")
             .expect("the gated create action reaches the external tree");
         assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
         assert_eq!(
@@ -2443,7 +2445,7 @@ mod tests {
         let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
         let (_, acknowledgement) =
             exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
-        let (_, create) = exported_node_named(&acknowledged, "Create").unwrap();
+        let (_, create) = exported_node_named(&acknowledged, "Create local identity").unwrap();
         assert_eq!(
             acknowledgement.toggled(),
             Some(ui::accesskit::Toggled::True),
