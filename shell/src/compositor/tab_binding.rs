@@ -285,6 +285,39 @@ pub fn rename_tab_for_app_id_with_title(
     false
 }
 
+/// Finish adoption when a client (notably Electron and some GTK stacks) sets
+/// its app-id after `new_toplevel`.  The anonymous adoption has already used
+/// the ordinary placement rule, so claim the launch note now and re-home that
+/// exact surface before merely changing its label.  The note is intentionally
+/// left claimed: the rendered mirror asks the same API and receives the same
+/// placement, while a later surface retires the one-shot note normally.
+pub fn rebind_toplevel_for_app_id(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    new_app_id: String,
+    authoritative_title: Option<&str>,
+) -> bool {
+    let title = authoritative_title
+        .map(str::to_string)
+        .unwrap_or_else(|| tab_label_for_foreign(&new_app_id));
+    let anonymous =
+        app_id_for_surface(tree, surface_id).is_some_and(|app_id| app_id.starts_with("anon-"));
+    if anonymous
+        && let Some(placement) =
+            crate::shell::launcher::placement_for_toplevel(&new_app_id, surface_id)
+    {
+        // `relocate_foreign_toplevel` deliberately preserves the identity
+        // already stored on the tab. Replace the synthetic identity first so
+        // the relocated tab cannot remain `anon-*` even though its title and
+        // destination changed successfully.
+        if !rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, Some(&title)) {
+            return false;
+        }
+        return relocate_foreign_toplevel(tree, surface_id, placement, &title);
+    }
+    rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, Some(&title))
+}
+
 /// Re-home an already mapped foreign surface after its compositor-minted
 /// activation token identifies the user-selected launch. The original tab is
 /// process-local; remove it before creating the replacement so neither the
@@ -1306,6 +1339,66 @@ mod tests {
             TileContent::Foreign { app_id, surface_id: 99 } if app_id == "com.openai.ChatGPT"
         ));
         assert_eq!(tab.title, "ChatGPT");
+    }
+
+    /// Electron/GTK may create the xdg-toplevel before publishing its app-id.
+    /// The anonymous first adoption must still claim the launch placement when
+    /// the identity arrives; otherwise the next same-app window consumes the
+    /// stale note and lands in the first launch's intended group.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn late_app_id_claims_placement_once_and_does_not_leak_to_next_window() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let (_strip, opener) = focus_lone_window(&mut tree);
+        crate::shell::launcher::set_pending_placement(
+            "org.example.electron",
+            Placement::TabIn(opener),
+        );
+
+        // The first protocol callback has no app-id yet, so it follows the
+        // ordinary fallback and is initially beside the focused group.
+        let first = adopt_toplevel(&mut tree, 0x101, None);
+        assert_ne!(group_of(&tree, 0x101).id, opener);
+        assert!(rebind_toplevel_for_app_id(
+            &mut tree,
+            0x101,
+            "org.example.electron".into(),
+            None,
+        ));
+        assert_eq!(group_of(&tree, 0x101).id, opener);
+        assert_eq!(tab_of(&tree, 0x101).title, "Electron");
+        assert_eq!(
+            app_id_for_surface(&tree, 0x101),
+            Some("org.example.electron"),
+            "late placement must replace the synthetic identity as well as the title"
+        );
+
+        // A second window must not inherit the one-shot placement claimed by
+        // the first surface, even when it announces the app-id immediately.
+        // Move focus to a distinct one-tab group so the ordinary placement
+        // rule is observably different from the original `TabIn(opener)`
+        // launch request.
+        let _ = adopt_toplevel_at(
+            &mut tree,
+            0x999,
+            Some("org.example.anchor".into()),
+            Placement::NewGroup,
+        );
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
+        let second = adopt_toplevel(&mut tree, 0x102, Some("org.example.electron".into()));
+        assert_ne!(second, first);
+        assert_ne!(
+            group_of(&tree, 0x102).id,
+            opener,
+            "the second surface must follow current placement, not the claimed launch note"
+        );
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups.len(),
+            groups_before + 1,
+            "the claimed late identity note must not place the next window as a tab"
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 
     // A tab carries the app's name, never a raw identifier like `app` or `word-processor`.
