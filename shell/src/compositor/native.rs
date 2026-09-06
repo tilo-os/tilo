@@ -3522,6 +3522,17 @@ fn bind_and_publish_wayland_socket() -> (
     (listening_socket, socket_name, display_file)
 }
 
+fn update_output_presentation_repaint_pending(
+    pending: &mut bool,
+    previous_surface_count: &mut usize,
+    current_surface_count: usize,
+    frame_changed: bool,
+) -> bool {
+    *pending |= frame_changed || *previous_surface_count != current_surface_count;
+    *previous_surface_count = current_surface_count;
+    *pending
+}
+
 /// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
 /// `main` can use it next to [`super::hosted::run`] without juggling return
 /// types; unrecoverable setup errors are logged and end the process via
@@ -4088,6 +4099,11 @@ pub fn run() -> ! {
     let mut last_paint = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
+    // `output_presentation_frame_changed` observes live foreign-frame
+    // sequences, but removal leaves no live entry to report. Keep a local
+    // repaint edge until its full-frame boundary is actually submitted.
+    let mut output_presentation_repaint_pending = false;
+    let mut output_presentation_surface_count = state.output_presentation_surfaces.len();
     // Start announcements can beat the replicated `PeerWindow` tab they
     // describe, and a workspace rebuild can replace a mounted runtime
     // widget. Retain descriptors until explicit stream end and retry their
@@ -4685,6 +4701,7 @@ pub fn run() -> ! {
                 let center = surface.content_rect.center();
                 (surface.surface_id, (center.x, center.y))
             }));
+            placements.extend(state.output_presentation_placements());
             state.update_surface_scales(&placements);
         }
 
@@ -4884,6 +4901,13 @@ pub fn run() -> ! {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
+        let output_presentation_count = state.output_presentation_surfaces.len();
+        let presentation_frame_changed = update_output_presentation_repaint_pending(
+            &mut output_presentation_repaint_pending,
+            &mut output_presentation_surface_count,
+            output_presentation_count,
+            state.output_presentation_frame_changed(),
+        );
         let keepalive_due = last_paint.elapsed() >= keepalive;
         metrics.mark_pump(
             iter_t0
@@ -4901,6 +4925,7 @@ pub fn run() -> ! {
             || animating
             || apps_changed
             || peers_moved
+            || presentation_frame_changed
             || capture_executor.has_live_mirrors()
             || capture_executor.is_recording()
             || portal_backend
@@ -5083,6 +5108,22 @@ pub fn run() -> ! {
                 } else {
                     FramePaint::full(frame_builder.paint())
                 };
+                // Audience presentation surfaces bypass WorkspaceTree and
+                // paint only into their requested output rectangles. The DRM
+                // backend splits this combined scene per scanout afterwards.
+                for surface in &state.output_presentation_surfaces {
+                    foreign::paint_output_presentation_surface(
+                        &mut frame_paint.scene,
+                        surface.surface_id,
+                        surface.rect,
+                    );
+                }
+                if presentation_frame_changed || !state.output_presentation_surfaces.is_empty() {
+                    // The output-specific projection is appended after the
+                    // retained sections; removal is also a full boundary so
+                    // a prior audience projection cannot leave stale pixels.
+                    frame_paint.force_full();
+                }
                 // On top of everything, since a drag is over whatever it's over — drawn
                 // here (not by either app) because once the pointer leaves the source window, neither end can paint the carried item.
                 if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
@@ -5293,6 +5334,8 @@ pub fn run() -> ! {
                      (clients keep running)"
                 );
                 present_pipe = None;
+            } else {
+                output_presentation_repaint_pending = false;
             }
             let submit_done = Instant::now();
             metrics.mark_submit(
@@ -5500,6 +5543,38 @@ mod tests {
         assert!(take_deferred_peer_sync_activation(&mut deferred, false));
         assert!(!deferred, "the current-session start is one-shot");
         assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    }
+
+    #[test]
+    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
+        let mut pending = false;
+        let mut previous_surface_count = 1;
+
+        assert!(update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            false,
+        ));
+        assert_eq!(previous_surface_count, 0);
+        assert!(
+            pending,
+            "an off-cadence removal must survive until the next submitted frame"
+        );
+
+        pending = false;
+        assert!(!update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            false,
+        ));
+        assert!(update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            true,
+        ));
     }
 
     #[test]

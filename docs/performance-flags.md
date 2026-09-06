@@ -135,6 +135,25 @@ Sources: [app.rs](../ui/src/app.rs), [nav_split.rs](../ui/src/widget/nav_split.r
 [profiling.rs](../ui/src/profiling.rs),
 [WebView profiling](../ui/src/webview/profile.rs).
 
+## Startup warmup and DMA-BUF routing
+
+These affect startup or the actual pixel-transfer route, not just shader
+selection. Keep their values identical across steady-state comparisons.
+
+| Variable | Default / values | Effect and limits |
+| --- | --- | --- |
+| `QOS_STARTUP_WARM` | On; trimmed, case-insensitive `off`, `0`, `false`, or `no` disables | Master background warmup switch, cached at first use. Empty/other values enable it. The shell warms a throwaway font system to populate OS/font caches; this is not a persistent GPU pipeline cache. |
+| `QOS_STARTUP_WARM_VELLO` | Off; trimmed empty/`0`/`off`/`false`/`no` disables, case-insensitive | Other supplied values additionally request a 4×4 Vello scratch render in shell and shot-harness startup. Requires master warmup enabled. Can contend with real renderer initialization; do not assume it improves first paint. |
+| `QOS_STARTUP_METRICS_PATH` | Unset: disabled; path | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result. |
+| `QOS_WEBVIEW_DMABUF` | Present, off | WPE-only EGL/DMA-BUF export path; **`=0` enables the request**. Setup failure falls back to SHM. Requires the compiled WPE/import path and compatible devices; request alone is not proof of zero-copy. |
+| `QOS_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
+| `QOS_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
+
+Sources: [warmup.rs](../ui/src/warmup.rs), [shell startup](../shell/src/main.rs),
+[startup metrics](../crates/system/qos-startup-metrics/src/lib.rs),
+[WPE export](../ui/src/webview/wpe/mod.rs), [EGL node](../ui/src/webview/wpe/egl.rs),
+[compositor render node](../shell/src/compositor/render_node.rs).
+
 ## UI dashboard benchmark
 
 Build `cargo build -p ui --release --example ui-perf --locked`, then invoke
@@ -240,6 +259,8 @@ separate from headless and nested-window results.
 | `QOS_FRAME_TRACE` | Unset; path | Enables instrumentation and creates/truncates a per-tick CSV file. |
 | `QOS_FRAME_SUMMARY` | Unset; path | Enables instrumentation and writes a JSON summary at shutdown. Either path alone enables recording; use valid dedicated paths, not empty strings. |
 | `QOS_FRAME_WARMUP_MS` | `1500`; trimmed u64 | Excludes early samples from summary; zero allowed, invalid falls back. Only useful with instrumentation enabled. |
+| `QOS_PAINT_STATS` | Present (Unicode), off | Logs painted/idle tick counts, selected redraw causes, cadence, and presentation/backpressure counters about every two seconds. `=0` still logs. The cause counters are not an exhaustive partition of all redraw reasons. |
+| `QOS_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
 | `QOS_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
 | `QOS_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
 | `NIRIOS_HEADLESS_SIZE` | `1600x900` | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. |
@@ -269,6 +290,26 @@ test infrastructure, not an optimization flag. `present_async` in traces
 distinguishes input-to-queued from synchronous input-to-present; neither an
 offscreen GPU fence nor a queue submission proves a physical page flip.
 
+### Projector capture workload
+
+`QOS_PROJECTOR_PROFILE` is an **input JSON path**, not a profiling-output flag.
+It defaults to `XDG_RUNTIME_DIR/qos-projector/capture-profile.json` when that
+directory variable exists; otherwise no profile file is selected. The path is
+latched at capture construction, but active capture rereads the file at most
+once per second. Its u32 fields are `max_width`, `max_height`, `fps`, and
+`bitrate_kbps`; unreadable/malformed files leave the prior profile in place.
+The initial unknown-receiver ceiling is 1920×1080 at 60 fps and 10,368 kbps.
+Encoder pressure can reduce the effective dimensions/bitrate below the ceiling.
+This changes the streamed workload, not native display resolution; scaled
+projector results are not native-4K redraw evidence.
+
+`QOS_PROJECTOR_VIDEO_SOCKET` selects the capture worker's Unix socket, defaulting
+to `XDG_RUNTIME_DIR/qos-projector/video.sock` when available. It routes output,
+not rendering speed. Sources:
+[capture](../shell/src/compositor/projection_capture.rs),
+[profile schema and defaults](../crates/system/projector/src/lib.rs),
+[native-loop diagnostics](../shell/src/compositor/native.rs).
+
 ## Build and dependency controls
 
 The standard release profile is `opt-level=3`, fat LTO, one codegen unit,
@@ -291,6 +332,19 @@ control build scheduling/caching. The optional Cargo shim also uses
 [DEVELOPMENT.md](../DEVELOPMENT.md). They are not runtime UI switches. Use a
 separate target directory per worktree. Do not call a cache-hit build-time
 reduction a frame-time improvement.
+
+The optional [PGO/BOLT scripts](../scripts/perf/README.md) are separate build
+experiments, not part of the default release recipe or the preserved A/B runs.
+`-C profile-generate=DIR`, `LLVM_PROFILE_FILE`, and `-C profile-use=FILE`
+control Rust instrumentation, training output, and profile-guided codegen.
+The scripts use fixed `target/pgo-*` directories and the named Distrobox
+environment; merging profiles writes `os/pgo/qos.profdata` and does not itself
+commit it. The BOLT helper additionally requires per-binary `.fdata` and uses
+`-reorder-blocks=ext-tsp`, `-reorder-functions=hfsort+`, `-split-functions`,
+`-split-all-cold`, `-icf=1`, and `-use-gnu-stack`. Rust `.profraw` collection
+does not automatically produce BOLT `.fdata`. These helpers were not validated
+in this integration; record training data, tool versions, hardening flags, and
+both final binaries before attributing any runtime gain to them.
 
 qOS passes wgpu environment configuration through at device initialization.
 `WGPU_BACKEND` selects a comma-separated list of compiled/platform-supported

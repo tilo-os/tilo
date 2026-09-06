@@ -575,13 +575,13 @@ impl ActorState {
                 self.surface_connections.insert(peer, connection.clone());
                 connection
             };
-            let send = async {
+            let send_frame = async {
                 let mut stream = connection.open_uni().await.map_err(|_| ())?;
                 stream.write_all(&bytes).await.map_err(|_| ())?;
                 stream.finish().map_err(|_| ())?;
                 Ok::<(), ()>(())
             };
-            match tokio::time::timeout(Duration::from_millis(40), send).await {
+            match tokio::time::timeout(Duration::from_millis(40), send_frame).await {
                 Ok(Ok(())) => sent = sent.saturating_add(1),
                 _ => {
                     self.surface_connections.remove(&peer);
