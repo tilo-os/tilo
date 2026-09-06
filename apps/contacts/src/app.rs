@@ -47,7 +47,8 @@ use crate::date;
 use crate::doc::ContactsDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
-    Address, Birthday, Contact, ContactId, ContactStore, Labeled, SortKey, sample_contacts,
+    Address, Birthday, Contact, ContactId, ContactStore, GroupEntry, Labeled, SortKey,
+    sample_contacts,
 };
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
@@ -250,6 +251,10 @@ struct FieldInput {
 /// The live editing surface: a draft contact plus the text inputs that
 /// mirror it. Type chips live on `draft` directly (set via popup).
 struct EditForm {
+    /// Contact value when the editor opened. Save derives a granular patch
+    /// against this stable base, rather than overwriting peer changes that
+    /// arrived while the form was open.
+    base: Contact,
     draft: Contact,
     is_new: bool,
     inputs: Vec<FieldInput>,
@@ -257,6 +262,7 @@ struct EditForm {
 
 impl EditForm {
     fn new(draft: Contact, is_new: bool) -> Self {
+        let base = draft.clone();
         let mut inputs = vec![
             field(Slot::First, &draft.first),
             field(Slot::Last, &draft.last),
@@ -282,12 +288,25 @@ impl EditForm {
         ));
         inputs.push(field(Slot::Website, &draft.website));
         inputs.push(field(Slot::Notes, &draft.notes));
-        inputs.push(field(Slot::Groups, &draft.groups.join(", ")));
+        let group_names = draft
+            .groups
+            .iter()
+            .map(|group| group.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        inputs.push(field(Slot::Groups, &group_names));
         Self {
+            base,
             draft,
             is_new,
             inputs,
         }
+    }
+
+    fn with_base(base: Contact, draft: Contact, is_new: bool) -> Self {
+        let mut form = Self::new(draft, is_new);
+        form.base = base;
+        form
     }
 
     /// Pull every input's live value back into the draft.
@@ -305,10 +324,20 @@ impl EditForm {
                 Slot::Birthday => self.draft.birthday = Birthday::parse(&v),
                 Slot::Notes => self.draft.notes = v,
                 Slot::Groups => {
+                    let mut previous = std::mem::take(&mut self.draft.groups);
                     self.draft.groups = v
                         .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(|name| {
+                            previous
+                                .iter()
+                                .position(|entry| entry.value.eq_ignore_ascii_case(name))
+                                .map_or_else(
+                                    || GroupEntry::new(name),
+                                    |index| previous.remove(index),
+                                )
+                        })
                         .collect();
                 }
                 Slot::Phone(i) => {
@@ -876,17 +905,39 @@ impl ContactsApp {
             form.collect();
             let c = form.draft.clone();
             let id = c.id;
-            self.store.upsert(c.clone());
-            self.perform_action(doc, &crate::actions::upsert_contact_action(&c));
-            self.selected = Some(id);
-            Self::persist();
-            self.show_toast(if form.is_new {
-                "Contact created"
+            let action = if form.is_new {
+                crate::actions::create_contact_action(&c)
             } else {
-                "Saved"
-            });
+                crate::actions::patch_contact_action(&form.base, &c)
+            };
+            match self.try_perform_action(doc, &action) {
+                Ok(()) => {
+                    self.store.upsert(c);
+                    self.selected = Some(id);
+                    Self::persist();
+                    self.show_toast(if form.is_new {
+                        "Contact created"
+                    } else {
+                        "Saved"
+                    });
+                    self.mode = Mode::View;
+                }
+                Err(error) => {
+                    // The draft is intentionally not a durable authority. Put
+                    // the document back in charge, then preserve the user's
+                    // unsaved text in an editor rebased on the latest record.
+                    self.store.contacts = ContactsDoc::list_contacts(doc);
+                    let base = self
+                        .store
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| form.base.clone());
+                    self.form = Some(EditForm::with_base(base, form.draft, form.is_new));
+                    self.mode = Mode::Edit;
+                    self.show_toast(format!("Couldn't save contact: {error}"));
+                }
+            }
         }
-        self.mode = Mode::View;
         self.popup = None;
         self.relayout = true;
         self.dirty = true;
@@ -905,22 +956,63 @@ impl ContactsApp {
     /// true, one layer up.
     fn persist() {}
 
-    /// Dispatch one [`ContactsAction`](crate::actions::ContactsAction) — the
-    /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
-    /// applied through the qOS action executor (a pinned actor + committed
-    /// change, so it replays byte-identically on peers), exactly as the palette
-    /// does. The document heads captured just before the first action of the
-    /// event are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory store is updated by the
-    /// caller for immediate UI feedback and reconciled from the document on the
-    /// next `sync`.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::ContactsAction) {
-        self.actions.dispatch_with_context(
+    /// Attempt the canonical action route shared with the Ctrl+K palette.
+    /// Unlike the compatibility dispatch wrapper, this exposes a rejected
+    /// operation so local projection updates cannot falsely claim success.
+    fn try_perform_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::actions::ContactsAction,
+    ) -> Result<(), qos_actions::ActionError> {
+        self.actions.try_dispatch_with_context(
             doc,
             crate::actions::CONTACTS_ACTION_TYPE,
             action,
             crate::actions::history_context(action),
-        );
+        )
+    }
+
+    /// Restore the local projection from the durable source after a rejected
+    /// collaborative operation, and tell both sighted and assistive users what
+    /// actually happened.
+    fn reconcile_refused_action(
+        &mut self,
+        doc: &AutoCommit,
+        operation: &str,
+        error: &qos_actions::ActionError,
+    ) {
+        self.store.contacts = ContactsDoc::list_contacts(doc);
+        if self.selected.is_some_and(|id| self.store.get(id).is_none()) {
+            self.selected = self.visible_ids().first().copied();
+        }
+        self.show_toast(format!("Couldn't {operation}: {error}"));
+        self.relayout = true;
+        self.dirty = true;
+    }
+
+    /// Toggle the favourite flag through the sole published action route.
+    /// Every painted, semantic, keyboard, and menu affordance calls this so a
+    /// stale local contact cannot mutate the projection after a refusal.
+    fn toggle_favorite(&mut self, doc: &mut AutoCommit, id: ContactId) -> bool {
+        let Some(contact) = self.store.get(id) else {
+            return false;
+        };
+        let favorite = !contact.favorite;
+        let action = crate::actions::set_favorite_action(id.to_string(), favorite);
+        match self.try_perform_action(doc, &action) {
+            Ok(()) => {
+                if let Some(contact) = self.store.get_mut(id) {
+                    contact.favorite = favorite;
+                }
+                Self::persist();
+                self.dirty = true;
+                true
+            }
+            Err(error) => {
+                self.reconcile_refused_action(doc, "update favorite", &error);
+                false
+            }
+        }
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -950,6 +1042,7 @@ impl ContactsApp {
         // Fold the live input values into a candidate draft without mutating
         // the real form.
         let mut candidate = EditForm {
+            base: form.base.clone(),
             draft: form.draft.clone(),
             is_new: form.is_new,
             inputs: form
@@ -1025,16 +1118,22 @@ impl ContactsApp {
     }
 
     fn delete_selected(&mut self, doc: &mut AutoCommit, id: ContactId) {
-        self.store.delete(id);
-        self.perform_action(doc, &crate::actions::delete_contact_action(id.to_string()));
-        if self.selected == Some(id) {
-            self.selected = self.visible_ids().first().copied();
+        let action = crate::actions::delete_contact_action(id.to_string());
+        match self.try_perform_action(doc, &action) {
+            Ok(()) => {
+                self.store.delete(id);
+                if self.selected == Some(id) {
+                    self.selected = self.visible_ids().first().copied();
+                }
+                Self::persist();
+                self.show_toast("Contact deleted");
+            }
+            Err(error) => self.reconcile_refused_action(doc, "delete contact", &error),
         }
         self.confirm_delete = None;
         self.delete_dialog = None;
-        Self::persist();
-        self.show_toast("Contact deleted");
         self.relayout = true;
+        self.dirty = true;
     }
 
     /// Move the list selection by `delta` rows within the visible set.
@@ -1093,16 +1192,27 @@ impl ContactsApp {
             };
             // Each file may hold arbitrarily many, differently-shaped cards.
             for c in vcard::parse_vcards(&text) {
-                if first_new.is_none() {
-                    first_new = Some(c.id);
-                }
-                self.store.upsert(c.clone());
+                let action = match self.store.get(c.id) {
+                    Some(existing) => crate::actions::patch_contact_action(existing, &c),
+                    None => crate::actions::create_contact_action(&c),
+                };
                 // Route each imported card through the action model too, so the
-                // whole import is one undo boundary (perform_action captures the
-                // pre-import heads once) and replays on peers like any other
-                // create.
-                self.perform_action(doc, &crate::actions::upsert_contact_action(&c));
-                n += 1;
+                // whole import is one undo boundary. A rejected row never
+                // leaks into the local projection or the reported count.
+                match self.try_perform_action(doc, &action) {
+                    Ok(()) => {
+                        if first_new.is_none() {
+                            first_new = Some(c.id);
+                        }
+                        self.store.upsert(c);
+                        n += 1;
+                    }
+                    Err(error) => {
+                        errors += 1;
+                        tracing::warn!(error = %error, "contacts: import action refused");
+                        self.store.contacts = ContactsDoc::list_contacts(doc);
+                    }
+                }
             }
         }
         if let Some(id) = first_new {
@@ -1110,13 +1220,15 @@ impl ContactsApp {
         }
         if n > 0 {
             Self::persist();
-            self.show_toast(format!(
-                "Imported {n} contact{}",
-                if n == 1 { "" } else { "s" }
-            ));
+            let imported = format!("Imported {n} contact{}", if n == 1 { "" } else { "s" });
+            if errors > 0 {
+                self.show_toast(format!("{imported}; {errors} couldn't be imported"));
+            } else {
+                self.show_toast(imported);
+            }
             self.relayout = true;
         } else if errors > 0 {
-            self.show_toast("Couldn't read the selected file(s)");
+            self.show_toast("Couldn't import the selected contact(s)");
         } else {
             // A valid but empty/unparseable selection: say so rather than
             // silently doing nothing.
@@ -2398,7 +2510,7 @@ impl ContactsApp {
             let mut bx = x0;
             let by = hy;
             for g in &contact.groups {
-                let tw = f64::from(tr.measure(g, 11.0, None).0);
+                let tw = f64::from(tr.measure(&g.value, 11.0, None).0);
                 let bw = tw + 18.0;
                 let br = Rect::new(bx, by, bx + bw, by + 20.0);
                 let shape = RoundedRect::from_rect(br, 10.0);
@@ -2411,7 +2523,7 @@ impl ContactsApp {
                 );
                 tr.draw_text(
                     scene,
-                    g,
+                    &g.value,
                     11.0,
                     theme.accent_primary,
                     t * Affine::translate((bx + 9.0, by + 4.0)),
@@ -2625,7 +2737,15 @@ impl ContactsApp {
         } else {
             draft_name
         };
-        let head_avail = (self.hit.cancel.x0 - 12.0 - (av.x1 + 12.0)).max(40.0) as f32;
+        // Save/Cancel live on the second header row. On a narrow detail pane
+        // they must not steal the identity row's width and turn a real name
+        // into an unnecessary ellipsis.
+        let heading_right = if self.narrow {
+            area.x1 - PAD
+        } else {
+            self.hit.cancel.x0 - 12.0
+        };
+        let head_avail = (heading_right - (av.x1 + 12.0)).max(40.0) as f32;
         let heading = tr.elide_to_width_weighted(&heading, 20.0, head_avail, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
@@ -3879,6 +3999,10 @@ impl Widget for ContactsApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // Legacy rows receive deterministic read identities, then this small
+        // canonical migration persists them before UI edits/actions can target
+        // a row. It only touches missing row ids and is idempotent.
+        ContactsDoc::migrate_legacy_rows(state);
         if let Some((export, file)) = self.resource_file.take() {
             if export {
                 let ids = self
@@ -4434,6 +4558,14 @@ impl Widget for ContactsApp {
                 children.push(detail);
             }
         }
+        if let Some((message, _)) = &self.toast {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(message.clone())
+                    .with_hashed_key("contacts.status")
+                    .with_live(ui::a11y::Politeness::Assertive),
+            );
+        }
         match self.popup {
             Some(Popup::TypeMenu { target, anchor }) if self.mode == Mode::Edit => {
                 if let Some(id) = self.form.as_ref().map(|form| form.draft.id) {
@@ -4678,17 +4810,9 @@ impl Widget for ContactsApp {
         if matches!(action, Action::Activate | Action::ToggleCheck) {
             if let Some(raw) = target.strip_prefix("contacts.detail.favorite:")
                 && let Ok(id) = raw.parse::<ContactId>()
-                && let Some(contact) = self.store.get(id)
+                && self.store.get(id).is_some()
             {
-                let favorite = !contact.favorite;
-                self.perform_action(
-                    state,
-                    &crate::actions::set_favorite_action(id.to_string(), favorite),
-                );
-                if let Some(contact) = self.store.get_mut(id) {
-                    contact.favorite = favorite;
-                }
-                self.dirty = true;
+                self.toggle_favorite(state, id);
                 return true;
             }
             if let Some(raw) = target.strip_prefix("contacts.detail.edit:")
@@ -5283,16 +5407,7 @@ impl ContactsApp {
         if self.selected.is_some() {
             if self.hit.fav.contains(p) {
                 if let Some(id) = self.selected {
-                    let new_fav = !self.store.get(id).is_some_and(|c| c.favorite);
-                    self.perform_action(
-                        state,
-                        &crate::actions::set_favorite_action(id.to_string(), new_fav),
-                    );
-                    if let Some(c) = self.store.get_mut(id) {
-                        c.favorite = new_fav;
-                    }
-                    Self::persist();
-                    self.dirty = true;
+                    self.toggle_favorite(state, id);
                 }
                 return true;
             }
@@ -5677,9 +5792,11 @@ impl ContactsApp {
 
     fn form_add(&mut self, f: impl Fn(&mut Contact)) {
         if let Some(form) = self.form.take() {
+            let base = form.base.clone();
             let mut draft = form.draft;
             // First fold current input values back in.
             let mut tmp = EditForm {
+                base: form.base,
                 draft: draft.clone(),
                 is_new: form.is_new,
                 inputs: form.inputs,
@@ -5687,7 +5804,7 @@ impl ContactsApp {
             tmp.collect();
             draft = tmp.draft;
             f(&mut draft);
-            self.form = Some(EditForm::new(draft, form.is_new));
+            self.form = Some(EditForm::with_base(base, draft, form.is_new));
             self.relayout = true;
             self.dirty = true;
         }
@@ -5695,7 +5812,9 @@ impl ContactsApp {
 
     fn form_remove(&mut self, target: TypeTarget) {
         if let Some(form) = self.form.take() {
+            let base = form.base.clone();
             let mut tmp = EditForm {
+                base: form.base,
                 draft: form.draft.clone(),
                 is_new: form.is_new,
                 inputs: form.inputs,
@@ -5714,7 +5833,7 @@ impl ContactsApp {
                 }
                 _ => {}
             }
-            self.form = Some(EditForm::new(draft, form.is_new));
+            self.form = Some(EditForm::with_base(base, draft, form.is_new));
             self.relayout = true;
             self.dirty = true;
         }
@@ -5857,15 +5976,7 @@ impl ContactsApp {
                 // path (same action the view-mode star and Ctrl+K
                 // dispatch), so the list star and the menu label flip
                 // immediately and the change survives a reload.
-                let new_fav = !self.store.get(target).is_some_and(|c| c.favorite);
-                self.perform_action(
-                    state,
-                    &crate::actions::set_favorite_action(target.to_string(), new_fav),
-                );
-                if let Some(c) = self.store.get_mut(target) {
-                    c.favorite = new_fav;
-                }
-                Self::persist();
+                self.toggle_favorite(state, target);
                 self.relayout = true;
             }
             ContextAction::Export => {
@@ -6622,19 +6733,109 @@ mod tests {
         let mut app = ContactsApp::sample();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
-        let mut c = app
+        let c = app
             .selected
             .and_then(|id| app.store.get(id))
             .cloned()
             .unwrap();
         let id = c.id;
-        c.title = "Edited Title".into();
         app.begin_edit(c, false);
+        app.form
+            .as_mut()
+            .and_then(|form| {
+                form.inputs
+                    .iter_mut()
+                    .find(|input| input.slot == Slot::Title)
+            })
+            .expect("the editor exposes a title input")
+            .ti
+            .set_text("Edited Title");
         app.save_edit(&mut doc);
         assert_eq!(app.mode, Mode::View);
         let stored = ContactsDoc::list_contacts(&doc);
         let r = stored.iter().find(|x| x.id == id).unwrap();
         assert_eq!(r.title, "Edited Title");
+    }
+
+    #[test]
+    fn refused_save_reconciles_and_announces_an_error_without_claiming_success() {
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let contact = app
+            .selected
+            .and_then(|id| app.store.get(id))
+            .cloned()
+            .unwrap();
+        ContactsDoc::delete_contact(&mut doc, contact.id);
+        app.begin_edit(contact.clone(), false);
+        app.save_edit(&mut doc);
+
+        assert_eq!(app.mode, Mode::Edit, "the rejected draft remains editable");
+        assert!(app.form.is_some());
+        assert!(
+            app.store.get(contact.id).is_none(),
+            "store reconciles from the document"
+        );
+        let message = app
+            .toast
+            .as_ref()
+            .map(|(message, _)| message.as_str())
+            .unwrap();
+        assert!(message.starts_with("Couldn't save contact:"));
+        let tree = app.accessibility().unwrap();
+        assert!(
+            live_message(&tree, message).is_some(),
+            "the refusal is announced through the retained live region"
+        );
+    }
+
+    #[test]
+    fn refused_favorite_and_delete_reconcile_without_false_success() {
+        // Simulate a peer deleting the record after this replica rendered its
+        // detail controls. Both public mutations must use the action result,
+        // not their stale local projection.
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let contact = app
+            .selected
+            .and_then(|id| app.store.get(id))
+            .cloned()
+            .unwrap();
+        ContactsDoc::delete_contact(&mut doc, contact.id);
+
+        assert!(
+            !app.toggle_favorite(&mut doc, contact.id),
+            "a tombstoned favorite toggle is rejected"
+        );
+        assert!(
+            app.store.get(contact.id).is_none(),
+            "favorite refusal reconciles"
+        );
+        let favorite_error = app.toast.as_ref().unwrap().0.clone();
+        assert!(favorite_error.starts_with("Couldn't update favorite:"));
+        assert!(
+            live_message(&app.accessibility().unwrap(), &favorite_error).is_some(),
+            "the favorite refusal is announced"
+        );
+
+        // Recreate the stale projection to exercise the independently visible
+        // delete-confirmation path against the same tombstone.
+        app.store.upsert(contact.clone());
+        app.selected = Some(contact.id);
+        app.delete_selected(&mut doc, contact.id);
+        assert!(
+            app.store.get(contact.id).is_none(),
+            "delete refusal reconciles"
+        );
+        let delete_error = app.toast.as_ref().unwrap().0.clone();
+        assert!(delete_error.starts_with("Couldn't delete contact:"));
+        assert_ne!(delete_error, "Contact deleted", "no false success toast");
+        assert!(
+            live_message(&app.accessibility().unwrap(), &delete_error).is_some(),
+            "the delete refusal is announced"
+        );
     }
 
     // =================================================================
@@ -7938,7 +8139,7 @@ mod tests {
                 .unwrap()
                 .groups
                 .iter()
-                .any(|g| g.eq_ignore_ascii_case("Friends")),
+                .any(|g| g.value.eq_ignore_ascii_case("Friends")),
         );
         // Open the group filter popup and choose "Friends".
         assert!(h.press_left(h.app.hit.group.center()));
@@ -7968,7 +8169,7 @@ mod tests {
                 .unwrap()
                 .groups
                 .iter()
-                .any(|g| g.eq_ignore_ascii_case("Friends"))),
+                .any(|g| g.value.eq_ignore_ascii_case("Friends"))),
             "every visible contact is in Friends",
         );
         // Selection stayed valid: it now points at a still-visible contact.
@@ -8163,6 +8364,27 @@ mod tests {
             base,
             "remove-field shrank the draft"
         );
+    }
+
+    #[test]
+    fn form_collect_preserves_repeated_row_ids_across_value_and_group_order_edits() {
+        let contact = sample_contacts().into_iter().next().unwrap();
+        let phone_id = contact.phones[0].id;
+        let first_group_id = contact.groups[0].id;
+        let second_group_id = contact.groups[1].id;
+        let mut form = EditForm::new(contact, false);
+        for input in &mut form.inputs {
+            match input.slot {
+                Slot::Phone(0) => input.ti.set_text("+44 20 7946 0999"),
+                Slot::Groups => input.ti.set_text("Favorites, Work"),
+                _ => {}
+            }
+        }
+        form.collect();
+        assert_eq!(form.draft.phones[0].id, phone_id);
+        assert_eq!(form.draft.phones[0].value, "+44 20 7946 0999");
+        assert_eq!(form.draft.groups[0].id, second_group_id);
+        assert_eq!(form.draft.groups[1].id, first_group_id);
     }
 
     #[test]
@@ -9044,6 +9266,15 @@ mod tests {
         node.children
             .iter()
             .find_map(|child| access_target(child, target))
+    }
+
+    fn live_message<'a>(node: &'a AccessNode, message: &str) -> Option<&'a AccessNode> {
+        if node.name.as_deref() == Some(message) && node.live.is_some() {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| live_message(child, message))
     }
 
     #[test]
