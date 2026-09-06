@@ -803,6 +803,7 @@ impl ShellDriver {
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
             "qs-compact" => self.scene_qs_compact(),
             "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
+            "qs-wifi-long-labels" => self.scene_qs_wifi_long_labels(),
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
@@ -971,6 +972,31 @@ impl ShellDriver {
         self.with_chrome(|st| {
             st.overlays.quick_settings = true;
             st.quick_settings.push_level(QsLevel::Wifi);
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// Long SSIDs are normal in apartment blocks and enterprise networks;
+    /// keep this deterministic scene so their text cannot regress across the
+    /// trailing signal/connection indicators.
+    fn scene_qs_wifi_long_labels(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Wifi);
+            st.quick_settings.wifi_networks = vec![
+                shell::shell::quick_settings::WifiNetwork {
+                    ssid: "Conference-room-very-long-5GHz-network-name".into(),
+                    signal: 4,
+                    secure: true,
+                    connected: true,
+                },
+                shell::shell::quick_settings::WifiNetwork {
+                    ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
+                    signal: 2,
+                    secure: false,
+                    connected: false,
+                },
+            ];
         });
         self.fb.host_mut().force_quick_settings_settled();
     }
@@ -1560,6 +1586,7 @@ impl ShellDriver {
         "qs-hardware-wired",
         "qs-compact",
         "qs-wifi-drillin",
+        "qs-wifi-long-labels",
         "qs-bt-drillin",
         "ws-settings-general",
         "ws-settings-members",
