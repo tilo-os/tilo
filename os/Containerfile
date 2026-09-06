@@ -686,11 +686,15 @@ COPY os/scripts/finalize-rpmdb.sh /usr/libexec/qos/finalize-rpmdb
 RUN chmod 0755 /usr/libexec/qos/finalize-rpmdb
 ARG FINALIZE_RPMDB="/usr/libexec/qos/finalize-rpmdb"
 
-# Graphics stack
+# Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
+# service discovered by AccessKit providers at runtime. Keep it explicit so
+# compositor and packaged-app export never depends on a transitive browser
+# accessibility dependency.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
+    at-spi2-core \
     google-noto-sans-fonts \
     plymouth \
     plymouth-plugin-script \
