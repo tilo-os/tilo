@@ -398,6 +398,22 @@ pub fn remove_track_from_playlist(doc: &mut AutoCommit, playlist_id: &str, track
     }
 }
 
+/// Whether a playlist currently contains this track. Action replay checks this
+/// before removing an addressable membership so a stale resource is refused
+/// rather than recorded as a successful no-op.
+pub fn playlist_contains_track(doc: &AutoCommit, playlist_id: &str, track_id: &str) -> bool {
+    find_playlist_obj(doc, playlist_id)
+        .and_then(|playlist| get_list(doc, &playlist, "tracks"))
+        .is_some_and(|list| list_strings(doc, &list).iter().any(|id| id == track_id))
+}
+
+/// Read the exact membership identity at an ordered playlist position.
+pub fn playlist_track_at(doc: &AutoCommit, playlist_id: &str, index: usize) -> Option<String> {
+    let playlist = find_playlist_obj(doc, playlist_id)?;
+    let list = get_list(doc, &playlist, "tracks")?;
+    list_strings(doc, &list).get(index).cloned()
+}
+
 /// Move a track within a playlist from `from` to `to` (clamped). Implemented
 /// as delete + insert so the ordered list stays compact.
 pub fn move_track_in_playlist(doc: &mut AutoCommit, playlist_id: &str, from: usize, to: usize) {
