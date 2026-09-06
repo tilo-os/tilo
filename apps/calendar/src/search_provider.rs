@@ -12,7 +12,7 @@ use ui::icons::Icon;
 use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
 
 use crate::date;
-use crate::model::{Event, Model, Task};
+use crate::model::{Event, Model, Project, Task};
 
 /// The kind label (and result-group header) Calendar produces.
 pub const CALENDAR_KIND: &str = "Calendar";
@@ -24,6 +24,7 @@ const QUERY_CANDIDATE_LIMIT: usize = 128;
 
 #[derive(Clone, Copy)]
 enum Record {
+    Project(usize),
     Event(usize),
     Task(usize),
 }
@@ -32,8 +33,11 @@ enum Record {
 /// index. `CalDAV` work remains off the palette's query path: all I/O happens
 /// before this provider is constructed, never while typing in search.
 pub struct CalendarSearchProvider {
+    projects: Vec<Project>,
     events: Vec<Event>,
     tasks: Vec<Task>,
+    event_notes: Vec<String>,
+    task_notes: Vec<String>,
     records: Vec<Record>,
     /// Normalized one-, two-, and three-character grams mapped to complete
     /// snapshot record ids. The bounded query path intersects these compact
@@ -49,19 +53,51 @@ pub struct CalendarSearchProvider {
 
 impl CalendarSearchProvider {
     pub fn new(model: &Model) -> Self {
+        let projects = model.projects.clone();
         let events = model.events.clone();
         let tasks = model.tasks.clone();
-        let mut records = Vec::with_capacity(events.len() + tasks.len());
+        let event_len = events.len();
+        let task_len = tasks.len();
+        let mut records = Vec::with_capacity(projects.len() + events.len() + tasks.len());
+        records.extend((0..projects.len()).map(Record::Project));
         records.extend((0..events.len()).map(Record::Event));
         records.extend((0..tasks.len()).map(Record::Task));
         let mut provider = Self {
+            projects,
             events,
             tasks,
+            event_notes: vec![String::new(); event_len],
+            task_notes: vec![String::new(); task_len],
             records,
             grams: HashMap::new(),
             words: HashMap::new(),
             candidate_inspections: Cell::new(0),
         };
+        provider.index_complete_snapshot();
+        provider
+    }
+
+    /// The note projection joins the normal resource/search snapshot without
+    /// changing activation: a note hit still opens its owning event or task.
+    pub fn new_with_notes(model: &Model, notes: &HashMap<String, String>) -> Self {
+        let mut provider = Self::new(model);
+        provider.event_notes = provider
+            .events
+            .iter()
+            .map(|event| {
+                notes
+                    .get(&event.id.to_string())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+        provider.task_notes = provider
+            .tasks
+            .iter()
+            .map(|task| notes.get(&task.id.to_string()).cloned().unwrap_or_default())
+            .collect();
+        provider.grams.clear();
+        provider.words.clear();
         provider.index_complete_snapshot();
         provider
     }
@@ -90,11 +126,23 @@ impl CalendarSearchProvider {
     )]
     fn record_haystack(&self, index: usize) -> String {
         match self.records[index] {
+            Record::Project(index) => self.projects[index].name.to_lowercase(),
             Record::Event(index) => {
                 let event = &self.events[index];
-                format!("{} {}", event.display_title(), event.location).to_lowercase()
+                format!(
+                    "{} {} {}",
+                    event.display_title(),
+                    event.location,
+                    self.event_notes[index]
+                )
+                .to_lowercase()
             }
-            Record::Task(index) => Self::task_title(&self.tasks[index]).to_lowercase(),
+            Record::Task(index) => format!(
+                "{} {}",
+                Self::task_title(&self.tasks[index]),
+                self.task_notes[index]
+            )
+            .to_lowercase(),
         }
     }
 
@@ -183,6 +231,16 @@ impl CalendarSearchProvider {
     )]
     fn result_for(&self, index: usize) -> SearchResult {
         match self.records[index] {
+            Record::Project(index) => {
+                let project = &self.projects[index];
+                SearchResult::for_action(
+                    CALENDAR_KIND,
+                    &project.name,
+                    crate::actions::open_project_address(project.id),
+                )
+                .with_subtitle("Task project")
+                .with_icon(Icon::Check)
+            }
             Record::Event(index) => {
                 let event = &self.events[index];
                 SearchResult::for_action(
@@ -296,7 +354,7 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(
             groups[0].results.len(),
-            model.events.len() + model.tasks.len()
+            model.projects.len() + model.events.len() + model.tasks.len()
         );
         assert!(
             groups[0]
