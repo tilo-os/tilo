@@ -59,6 +59,52 @@ pub fn open(manifest_id: &str) -> (State, Autosave) {
     })
 }
 
+/// Open the index for one collaboration room.  Record-aware applications use
+/// this instead of [`open`]: their package-global document used to be the
+/// room index, which let two rooms hydrate and overwrite each other's record
+/// references after a restart.
+///
+/// On the first scoped open the legacy package document is merged, never
+/// moved or deleted.  The next autosave lands in the room directory, so a
+/// crash during migration still leaves the legacy source intact.
+pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
+    let package_id = std::env::var("QOS_PACKAGE_ID")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| manifest_id.to_string());
+    let attempt = || -> Result<(State, Autosave), StoreError> {
+        let mut store = DocStore::open_room(&package_id, room_id)?;
+        let legacy = DocStore::legacy_package_document_path(&package_id)?;
+        if legacy.is_file() && DocStore::claim_legacy_package_migration(&package_id, room_id)? {
+            match store.migrate_from(&legacy) {
+                Ok(true) => tracing::info!(
+                    room = room_id,
+                    from = %legacy.display(),
+                    to = %store.document_path().display(),
+                    "migrated package-global record index into its room"
+                ),
+                Ok(false) => {}
+                Err(error) => tracing::error!(
+                    room = room_id,
+                    error = %error,
+                    "legacy package record index could not be imported"
+                ),
+            }
+        } else if legacy.is_file() {
+            tracing::info!(
+                room = room_id,
+                from = %legacy.display(),
+                "legacy package record index belongs to another room; not importing"
+            );
+        }
+        Ok(finish(store))
+    };
+    attempt().unwrap_or_else(|error| {
+        tracing::error!(room = room_id, error = %error, "room index unavailable; running without persistence");
+        in_memory_fallback()
+    })
+}
+
 /// [`open`], plus a one-time import of a document an older release of this
 /// app left at `legacy`.
 ///
@@ -212,6 +258,34 @@ mod tests {
             "state written on the first run must load on the second open"
         );
 
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn legacy_record_index_is_imported_by_one_room_only() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let package = "dev.qos.legacy-room-index";
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        let id = crate::record::RecordId::minted();
+        let kind = crate::record::RecordKind::new("note");
+        let mut legacy = DocStore::open_for(package).expect("legacy store");
+        let mut legacy_doc = legacy.load_or_new();
+        crate::record::room::reference(&mut legacy_doc, &id, &kind);
+        legacy.save(&mut legacy_doc).expect("write legacy index");
+        let source = legacy.document_path().to_path_buf();
+
+        let (a, _) = open_room(package, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        assert!(crate::record::room::holds(&a.doc, &id));
+        let (b, _) = open_room(package, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert!(
+            !crate::record::room::holds(&b.doc, &id),
+            "a second room must not re-import a package-global index"
+        );
+        assert!(source.is_file(), "legacy source is retained for recovery");
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 

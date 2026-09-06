@@ -4,10 +4,10 @@
 //! rather than nesting (annotations reference the document they mark up),
 //! so "share the book without my notes" is expressible.
 //!
-//! A record exists once; rooms hold references to it ([`room::reference`]),
-//! so bringing it into a second room moves no bytes and edits through
-//! either room hit the same document. Copying is the separate
-//! [`room::duplicate`], which mints a new id.
+//! A record id is scoped by the room that hydrates it. Rooms hold references
+//! ([`room::reference`]), but an identical id in another room gets a distinct
+//! local document and collaboration route; explicit export/import is required
+//! to move content across that authority boundary.
 //!
 //! One document per record is forced, not chosen: an Automerge change graph
 //! names its dependencies by hash, so a filtered stream leaves the receiver
@@ -26,6 +26,9 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "qos:record";
+/// Key in a record document for the room that owns this local replica.
+/// `RecordId` is a user/application name; it is not an authority boundary.
+const ROOM: &str = "room";
 /// Key, in a room's index document, of the map of record references.
 const INDEX: &str = "qos:records";
 
@@ -248,14 +251,35 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
 /// re-opening leaves an existing stamp alone, so a restart doesn't author
 /// a change graph entry that says nothing new.
 pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) {
+    let _ = init_scoped(doc, id, kind, home, None);
+}
+
+/// Bind a record document to `room`.  Unlike the historical [`init`], this
+/// never rewrites an existing identity or room: accepting a document stamped
+/// for another room would turn a matching record id into a cross-room alias.
+/// A room-less legacy document may be adopted exactly once after its identity
+/// has been checked.
+pub fn init_scoped(
+    doc: &mut AutoCommit,
+    id: &RecordId,
+    kind: &RecordKind,
+    home: &str,
+    room: Option<&str>,
+) -> bool {
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
-        return;
+        return false;
     };
-    if str_at(doc, &m, "id").as_deref() != Some(id.as_str()) {
+    if str_at(doc, &m, "id").is_some_and(|existing| existing != id.as_str())
+        || str_at(doc, &m, "kind").is_some_and(|existing| existing != kind.as_str())
+        || room.is_some_and(|scope| str_at(doc, &m, ROOM).is_some_and(|existing| existing != scope))
+    {
+        return false;
+    }
+    if str_at(doc, &m, "id").is_none() {
         let _ = doc.put(&m, "id", id.as_str());
     }
-    if str_at(doc, &m, "kind").as_deref() != Some(kind.as_str()) {
+    if str_at(doc, &m, "kind").is_none() {
         let _ = doc.put(&m, "kind", kind.as_str());
     }
     // Home is the room that minted the record; never rewritten on a later
@@ -263,12 +287,18 @@ pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) 
     if str_at(doc, &m, "home").is_none() {
         let _ = doc.put(&m, "home", home);
     }
+    if let Some(room) = room
+        && str_at(doc, &m, ROOM).is_none()
+    {
+        let _ = doc.put(&m, ROOM, room);
+    }
     if !matches!(
         doc.get(&m, "refs"),
         Ok(Some((Value::Object(ObjType::List), _)))
     ) {
         let _ = doc.put_object(&m, "refs", ObjType::List);
     }
+    true
 }
 
 /// The identity stamped into `doc`, if it holds a record.
@@ -287,6 +317,17 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
         return None;
     };
     str_at(doc, &m, "home")
+}
+
+/// The room this local record replica is bound to.  Absent only for records
+/// written before room-partitioned persistence; callers may adopt those once
+/// with [`init_scoped`], but must never treat an explicit different room as
+/// interchangeable.
+pub fn room_scope(doc: &AutoCommit) -> Option<String> {
+    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+        return None;
+    };
+    str_at(doc, &m, ROOM)
 }
 
 /// `None` only if the containing document's root/meta object is gone; see
@@ -376,9 +417,10 @@ pub mod room {
         }
     }
 
-    /// Bring a record into this room; moves no bytes. Keyed by record id
-    /// (not appended to a list) so two machines referencing the same
-    /// record concurrently converge on one entry.
+    /// Bring a record name into this room. Keyed by record id (not appended
+    /// to a list) so two machines referencing the same name concurrently
+    /// converge on one index entry. The document it resolves to remains
+    /// room-scoped; this is not a cross-room data grant.
     pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool {
         let Some(idx) = index_obj(doc) else {
             return false;
@@ -404,8 +446,7 @@ pub mod room {
     }
 
     /// Drop a record's reference from this room. The record itself is
-    /// untouched — it may be referenced by other rooms, and it is the same
-    /// document in each.
+    /// untouched — another room may hold an independently scoped replica.
     pub fn unreference(doc: &mut AutoCommit, id: &RecordId) -> bool {
         let Some(idx) = index_ro(doc) else {
             return false;
@@ -538,7 +579,10 @@ impl RecordSet {
                     .ok()
                     .filter(|s| !s.is_empty())
             })
-            .unwrap_or_default();
+            // A launcher-less process still gets an explicit, non-routable
+            // scope.  It may not collaborate (the broker rejects nil), but
+            // it must never fall back to the historical package-global file.
+            .unwrap_or_else(|| uuid::Uuid::nil().to_string());
         Self {
             package_id,
             home,
@@ -633,8 +677,7 @@ impl RecordSet {
                     history,
                 },
             );
-            self.finish_checkout(state, room, want);
-            return true;
+            return self.finish_checkout(state, room, want);
         }
 
         if let Some(prev) = self.active.take() {
@@ -666,8 +709,7 @@ impl RecordSet {
         };
 
         state.adopt_doc(incoming);
-        self.finish_checkout(state, room, want);
-        true
+        self.finish_checkout(state, room, want)
     }
 
     /// Stamps identity, applies declared references, and indexes the
@@ -678,8 +720,19 @@ impl RecordSet {
         state: &mut crate::state::State,
         room: Option<&mut AutoCommit>,
         want: &RecordCheckout,
-    ) {
-        init(&mut state.doc, &want.id, &want.kind, &self.home);
+    ) -> bool {
+        // Persistent records must always have an explicit room.  Failing
+        // closed here prevents a launcher-less process from recreating the
+        // old package-global record namespace.
+        if self.persistent && self.home.is_empty() {
+            tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
+            return false;
+        }
+        let scope = (!self.home.is_empty()).then_some(self.home.as_str());
+        if !init_scoped(&mut state.doc, &want.id, &want.kind, &self.home, scope) {
+            tracing::warn!(record = %want.id, room = %self.home, "record identity or room scope did not match stored document");
+            return false;
+        }
         for (target, relation) in &want.references {
             add_reference(
                 &mut state.doc,
@@ -695,6 +748,7 @@ impl RecordSet {
             }
         }
         self.active = Some(want.id.clone());
+        true
     }
 
     /// Open a record's stored document, and the writer for it.
@@ -713,8 +767,15 @@ impl RecordSet {
         if !self.persistent {
             return None;
         }
-        let mut store = match app_state::DocStore::open_record(&self.package_id, &id.storage_key())
-        {
+        if self.home.is_empty() {
+            return None;
+        }
+        let record_key = id.storage_key();
+        let mut store = match app_state::DocStore::open_room_record(
+            &self.package_id,
+            &self.home,
+            &record_key,
+        ) {
             Ok(store) => store,
             Err(e) => {
                 tracing::error!(
@@ -736,9 +797,45 @@ impl RecordSet {
                 None
             }
         };
+        // The old package-global record file is a read-only migration source.
+        // It remains on disk until a later explicit cleanup, so a crash before
+        // the first scoped autosave cannot lose it.
+        let mut adopted_legacy = false;
+        let stored = stored.or_else(|| {
+            let legacy =
+                app_state::DocStore::legacy_record_document_path(&self.package_id, &record_key)
+                    .ok()?;
+            if !legacy.is_file()
+                || !app_state::DocStore::claim_legacy_record_migration(
+                    &self.package_id,
+                    &self.home,
+                    &record_key,
+                )
+                .ok()?
+            {
+                return None;
+            }
+            let mut legacy_store =
+                app_state::DocStore::open_record(&self.package_id, &record_key).ok()?;
+            let legacy_doc = legacy_store.load().ok().flatten()?;
+            tracing::info!(
+                record = %id,
+                room = %self.home,
+                from = %legacy.display(),
+                "adopting a legacy package-global record into a room"
+            );
+            adopted_legacy = true;
+            Some(legacy_doc)
+        });
         let mut autosave = crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
         if let Some(mut stored) = stored {
-            autosave.seed(&mut stored);
+            // Only seed heads that are already in this scoped store.  A
+            // legacy document's heads are absent from the new file; seeding
+            // them would append just the metadata change and strand its
+            // dependencies after a crash.
+            if !adopted_legacy {
+                autosave.seed(&mut stored);
+            }
             if let Err(e) = doc.merge(&mut stored) {
                 tracing::error!(
                     record = %id,
@@ -762,7 +859,15 @@ impl RecordSet {
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
             let (mut doc, autosave) = self.load(&want.id);
-            init(&mut doc, &want.id, &want.kind, &self.home);
+            if self.persistent && self.home.is_empty() {
+                tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
+                return false;
+            }
+            let scope = (!self.home.is_empty()).then_some(self.home.as_str());
+            if !init_scoped(&mut doc, &want.id, &want.kind, &self.home, scope) {
+                tracing::warn!(record = %want.id, room = %self.home, "record identity or room scope did not match stored document");
+                return false;
+            }
             for (target, relation) in &want.references {
                 add_reference(
                     &mut doc,
@@ -1086,9 +1191,9 @@ mod tests {
     }
 
     #[test]
-    fn two_rooms_referencing_one_record_are_the_same_document() {
-        // A record brought into a second room is not a copy: both rooms
-        // name the same id, so both check out one document.
+    fn same_record_id_in_two_rooms_has_independent_in_memory_state() {
+        // An id is an app-level name, not a capability.  Two room-scoped
+        // sets must not accidentally turn a matching id into shared state.
         let mut room_a = AutoCommit::new();
         let mut room_b = AutoCommit::new();
         let id = RecordId::minted();
@@ -1096,21 +1201,22 @@ mod tests {
         room::reference(&mut room_a, &id, &kind);
         room::reference(&mut room_b, &id, &kind);
 
-        let mut set = RecordSet::in_memory();
-        let mut state = State::new();
+        let mut set_a = RecordSet::in_memory().with_home("room-a");
+        let mut state_a = State::new();
         let want = RecordCheckout::new(id.clone(), kind.clone());
-        assert!(set.checkout(&mut state, Some(&mut room_a), &want));
-        put_text(&mut state.doc, "title", "Chapter 3");
+        assert!(set_a.checkout(&mut state_a, Some(&mut room_a), &want));
+        put_text(&mut state_a.doc, "title", "A only");
 
-        // Leave and come back through a different record, the way a user
-        // does, so the park/restore path is the one under test.
-        let other = RecordCheckout::new(RecordId::minted(), kind.clone());
-        assert!(set.checkout(&mut state, Some(&mut room_b), &other));
-        assert!(set.checkout(&mut state, Some(&mut room_b), &want));
+        let mut set_b = RecordSet::in_memory().with_home("room-b");
+        let mut state_b = State::new();
+        assert!(set_b.checkout(&mut state_b, Some(&mut room_b), &want));
+        assert_eq!(text(&state_b.doc, "title"), None);
+        put_text(&mut state_b.doc, "title", "B only");
+
         assert_eq!(
-            text(&state.doc, "title").as_deref(),
-            Some("Chapter 3"),
-            "the record reached from room B is the record edited in room A"
+            text(&state_a.doc, "title").as_deref(),
+            Some("A only"),
+            "room B must not alias room A's record by id"
         );
     }
 
@@ -1178,6 +1284,7 @@ mod tests {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
             std::env::remove_var("QOS_PACKAGE_ID");
         }
+        let room_id = "11111111-1111-4111-8111-111111111111";
 
         let a = RecordCheckout::new(
             RecordId::for_file("/work/a.odt"),
@@ -1189,7 +1296,7 @@ mod tests {
         );
 
         {
-            let mut set = RecordSet::open("dev.qos.test-records");
+            let mut set = RecordSet::open("dev.qos.test-records").with_home(room_id);
             let mut state = State::new();
             let mut room = AutoCommit::new();
             // `a` is adopted: content exists before the record is named,
@@ -1202,7 +1309,7 @@ mod tests {
         }
 
         // A fresh process: same package, same record ids, nothing else shared.
-        let mut set = RecordSet::open("dev.qos.test-records");
+        let mut set = RecordSet::open("dev.qos.test-records").with_home(room_id);
         let mut state = State::new();
         let mut room = AutoCommit::new();
         set.checkout(&mut state, Some(&mut room), &a);
@@ -1221,6 +1328,8 @@ mod tests {
         let dir = tmp
             .path()
             .join("dev.qos.test-records")
+            .join(app_state::ROOMS_DIR)
+            .join(room_id)
             .join(app_state::RECORDS_DIR);
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("records directory exists")
@@ -1234,6 +1343,58 @@ mod tests {
         );
 
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn same_record_id_in_two_rooms_never_aliases_and_each_hydrates_after_restart() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        let a = "22222222-2222-4222-8222-222222222222";
+        let b = "33333333-3333-4333-8333-333333333333";
+        let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+
+        for (room, body) in [(a, "private to a"), (b, "private to b")] {
+            let mut set = RecordSet::open("dev.qos.scoped-records").with_home(room);
+            let mut state = State::new();
+            assert!(set.checkout(&mut state, None, &record));
+            put_text(&mut state.doc, "body", body);
+            set.flush(&mut state.doc);
+        }
+
+        for (room, expected) in [(a, "private to a"), (b, "private to b")] {
+            let mut set = RecordSet::open("dev.qos.scoped-records").with_home(room);
+            let mut state = State::new();
+            assert!(set.checkout(&mut state, None, &record));
+            assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));
+            assert_eq!(room_scope(&state.doc).as_deref(), Some(room));
+        }
+
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    #[test]
+    fn rejects_a_remote_document_stamped_for_another_room() {
+        let id = RecordId::minted();
+        let kind = RecordKind::new("note");
+        let mut remote = AutoCommit::new();
+        assert!(init_scoped(
+            &mut remote,
+            &id,
+            &kind,
+            "room-a",
+            Some("room-a")
+        ));
+        put_text(&mut remote, "body", "remote merge");
+
+        assert!(
+            !init_scoped(&mut remote, &id, &kind, "room-b", Some("room-b")),
+            "a received document's recorded room is authority, not a hint"
+        );
+        assert_eq!(room_scope(&remote).as_deref(), Some("room-a"));
     }
 
     #[test]
