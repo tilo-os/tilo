@@ -84,6 +84,32 @@ pub fn open_pane_address(category: Category) -> ActionAddress {
     ActionAddress::new(pane_resource_id(category), OPEN_PANE_ACTION)
 }
 
+/// Build the minimal, canonical resource needed to resolve a Settings search
+/// result lazily.  Search navigation is deliberately independent from the
+/// eager resource snapshot: opening a category must remain available even
+/// while a dynamic pane is loading or its device inventory is unavailable.
+///
+/// Keep this constructor next to [`open_pane_address`] so the address payload,
+/// action id and resource id cannot drift apart between the search provider
+/// and the full resource tree.
+pub fn pane_navigation_resource(category: Category) -> Resource {
+    let mut pane = Resource::new(
+        pane_resource_id(category),
+        "settings.section",
+        category.label(),
+    );
+    if let Ok(open) = ActionSpec::operation(
+        OPEN_PANE_ACTION,
+        format!("Open {}", category.label()),
+        OperationKind::View,
+        OPEN_PANE_OPERATION_TYPE,
+        &category.slug(),
+    ) {
+        pane = pane.with_action(open);
+    }
+    pane
+}
+
 /// A typed setting value carried whole in the action payload. The variant fixes
 /// the Automerge scalar written, so a bool setting can never be replayed as a
 /// string on a peer.
@@ -434,13 +460,11 @@ pub fn provide_resources_with_accounts(
                 category.label(),
             ),
         };
-        if let Ok(open) = ActionSpec::operation(
-            OPEN_PANE_ACTION,
-            format!("Open {}", category.label()),
-            OperationKind::View,
-            OPEN_PANE_OPERATION_TYPE,
-            &category.slug(),
-        ) {
+        if let Some(open) = pane_navigation_resource(category)
+            .actions
+            .into_iter()
+            .next()
+        {
             // `&str` serialization is infallible in serde_json. Keep the
             // fallible API boundary explicit; the resource-coverage test
             // ensures a framework regression cannot silently drop this door.
