@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -106,10 +107,38 @@ impl Compositor {
         Self::start_with(home, (1280, 800))
     }
 
+    /// Start with a deliberately persisted input configuration. This is kept
+    /// inside the fixture's XDG tree so an input-layout test cannot ever read
+    /// or rewrite the person running it’s desktop preferences.
+    fn start_with_input_settings(input: serde_json::Value) -> Self {
+        Self::start_with_fixture_settings((1280, 800), serde_json::json!({ "input": input }))
+    }
+
     /// [`Self::start_with_home`] on a screen of `size`. A wider screen keeps
     /// two window groups on screen at once when one of them is the demo
     /// group, whose tabs are laid out at their normal width.
     fn start_with(home: Option<&Path>, size: (i32, i32)) -> Self {
+        Self::start_with_config(home, size, None, false)
+    }
+
+    /// Host-desktop mode is intentionally a separate fixture mode: it is the
+    /// only supported configuration in which qOS starts the rootless Xwayland
+    /// bridge. It still uses the same private XDG tree and Wayland socket as
+    /// every other test, never the caller's session.
+    fn start_host_desktop() -> Self {
+        Self::start_with_config(None, (1280, 800), None, true)
+    }
+
+    fn start_with_fixture_settings(size: (i32, i32), settings: serde_json::Value) -> Self {
+        Self::start_with_config(None, size, Some(settings), false)
+    }
+
+    fn start_with_config(
+        home: Option<&Path>,
+        size: (i32, i32),
+        settings: Option<serde_json::Value>,
+        host_desktop: bool,
+    ) -> Self {
         // SUN_LEN caps a unix socket path (~108 bytes), so the runtime dir must be
         // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
@@ -119,6 +148,16 @@ impl Compositor {
             next_id(),
         ));
         std::fs::create_dir_all(&runtime_dir).expect("create private runtime dir");
+        if let Some(settings) = settings {
+            let settings_path = runtime_dir.join("config/qos/settings.json");
+            let parent = settings_path.parent().expect("settings parent");
+            std::fs::create_dir_all(parent).expect("create fixture config root");
+            std::fs::write(
+                &settings_path,
+                serde_json::to_vec(&settings).expect("encode fixture settings"),
+            )
+            .expect("write fixture settings");
+        }
         let control_socket = runtime_dir.join("ctl");
         // Production first boot is intentionally empty. This harness predates
         // that policy and exercises the hosted Files tab, so seed the demo
@@ -138,6 +177,7 @@ impl Compositor {
             &control_socket,
             &state_path,
             &identity_root,
+            host_desktop,
         );
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let rx = Self::drain_log_pipes(&mut child, &log);
@@ -203,13 +243,17 @@ impl Compositor {
         control_socket: &Path,
         state_path: &Path,
         identity_root: &Path,
+        host_desktop: bool,
     ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
             command.env("HOME", home).env("QOS_USER_HOME", home);
         }
+        command.args(["--mode", "native", "--backend", "headless"]);
+        if host_desktop {
+            command.arg("--host-desktop-session");
+        }
         command
-            .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", runtime_dir)
             // Point every XDG dir at the throwaway runtime dir so the test neither
             // reads nor writes the developer's real desktop, and each run starts from
@@ -488,6 +532,16 @@ struct ClientState {
     configured: bool,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
+    /// The exact XKB text keymap the compositor sent on keyboard focus. A
+    /// protocol client must make decisions from this map, not from the
+    /// compositor's preferred locale or from the test process environment.
+    keyboard_keymap: Option<String>,
+    /// Raw evdev transitions observed on the real Wayland socket. These are
+    /// deliberately captured before toolkit translation, allowing the test to
+    /// prove that a held modifier/release pair reaches a foreign client.
+    keyboard_events: Vec<(u32, bool)>,
+    /// The most recent protocol repeat contract, `(rate_hz, delay_ms)`.
+    keyboard_repeat_info: Option<(i32, i32)>,
     /// Latest serial from any input event, for requests that need one.
     last_serial: u32,
     /// Set once the pointer entered this surface — the implicit grab `start_drag` needs.
@@ -580,6 +634,17 @@ impl TestClient {
         self.queue
             .roundtrip(&mut self.state)
             .expect("client roundtrip");
+    }
+
+    fn clear_keyboard_trace(&mut self) {
+        self.state.keyboard_events.clear();
+    }
+
+    fn wait_for_keyboard_events(&mut self, at_least: usize) {
+        self.wait_until(
+            |s| s.keyboard_events.len() >= at_least,
+            "the focused client did not receive the expected keyboard transitions",
+        );
     }
 
     /// Map an xdg-toplevel and return once the compositor has given this
@@ -1014,9 +1079,39 @@ impl Dispatch<WlKeyboard, ()> for ClientState {
                 state.keyboard_focused = false;
                 state.last_serial = serial;
             }
-            wl_keyboard::Event::Key { serial, .. }
-            | wl_keyboard::Event::Modifiers { serial, .. } => {
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                let mut bytes = Vec::new();
+                let file = std::fs::File::from(fd);
+                // The protocol promises `size` bytes including a trailing
+                // NUL. Bound the read to it: a malformed compositor must not
+                // make this diagnostic client consume an unbounded fd.
+                let take = u64::from(size);
+                file.take(take)
+                    .read_to_end(&mut bytes)
+                    .expect("read wl_keyboard keymap");
+                if bytes.last() == Some(&0) {
+                    let _ = bytes.pop();
+                }
+                state.keyboard_keymap = Some(
+                    String::from_utf8(bytes).expect("wl_keyboard keymap must be UTF-8 XKB text"),
+                );
+            }
+            wl_keyboard::Event::Key {
+                serial,
+                key,
+                state: key_state,
+                ..
+            } => {
                 state.last_serial = serial;
+                let pressed = matches!(
+                    key_state,
+                    wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
+                );
+                state.keyboard_events.push((key, pressed));
+            }
+            wl_keyboard::Event::Modifiers { serial, .. } => state.last_serial = serial,
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                state.keyboard_repeat_info = Some((rate, delay));
             }
             _ => {}
         }
@@ -1283,6 +1378,270 @@ fn write_and_close(fd: OwnedFd, text: &str) {
 }
 
 // Tests
+
+/// Translate a trace exactly as a real Wayland toolkit does: with the XKB
+/// keymap delivered by the compositor, rather than with the locale of the
+/// test runner. The protocol uses evdev codes; xkbcommon uses evdev + 8.
+fn translated_keysyms(keymap_text: &str, trace: &[(u32, bool)]) -> Vec<u32> {
+    use smithay::input::keyboard::xkb;
+
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let keymap = xkb::Keymap::new_from_string(
+        &context,
+        keymap_text.to_owned(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+    .expect("the compositor sent a parseable XKB keymap");
+    let mut state = xkb::State::new(&keymap);
+    let mut symbols = Vec::new();
+    for &(evdev, pressed) in trace {
+        let keycode = xkb::Keycode::new(evdev.saturating_add(8));
+        if pressed {
+            symbols.push(u32::from(state.key_get_one_sym(keycode)));
+        }
+        let direction = if pressed {
+            xkb::KeyDirection::Down
+        } else {
+            xkb::KeyDirection::Up
+        };
+        let _ = state.update_key(keycode, direction);
+    }
+    symbols
+}
+
+/// A GUI application can spawn helpers. Put it in its own process group so a
+/// failed live-client probe cannot leave an Electron renderer attached to the
+/// developer's machine after the isolated compositor is gone.
+struct KillProcessGroup(Child);
+
+impl Drop for KillProcessGroup {
+    fn drop(&mut self) {
+        let pid = i32::try_from(self.0.id()).unwrap_or(i32::MAX);
+        // `-pid` targets the group established immediately before exec. It
+        // contains only the throwaway client command below, never this test
+        // runner or the caller's graphical session.
+        let _ = unsafe { libc::kill(-pid, libc::SIGTERM) };
+        let _ = self.0.wait();
+    }
+}
+
+/// Start the installed ChatGPT Electron client strictly through qOS's
+/// rootless Xwayland bridge. The test is opt-in because it opens a real
+/// heavyweight graphical process, but it is a genuine compatibility lane:
+/// private HOME/XDG state, qOS-created Xauthority, no inherited display or
+/// D-Bus session, and a child process group that is always torn down.
+fn spawn_isolated_chatgpt_x11(
+    compositor: &Compositor,
+) -> Option<(KillProcessGroup, Arc<Mutex<Vec<String>>>)> {
+    let chatgpt = Path::new("/usr/bin/chatgpt");
+    if !chatgpt.is_file() {
+        eprintln!("SKIP Xwayland/Electron lane: /usr/bin/chatgpt is not installed");
+        return None;
+    }
+    let bridge = compositor.runtime_dir.join("qos-session/xwayland");
+    let authority = std::fs::read_dir(&bridge)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("Xauthority-"))
+        })?;
+    let number = authority
+        .file_name()?
+        .to_string_lossy()
+        .strip_prefix("Xauthority-")?
+        .to_string();
+    let profile = compositor.runtime_dir.join("chatgpt-profile");
+    std::fs::create_dir_all(&profile).expect("create isolated Electron profile");
+
+    let mut command = Command::new(chatgpt);
+    command
+        .arg("--ozone-platform=x11")
+        .env("DISPLAY", format!(":{number}"))
+        .env("XAUTHORITY", authority)
+        .env("HOME", &profile)
+        .env("XDG_CONFIG_HOME", profile.join("config"))
+        .env("XDG_DATA_HOME", profile.join("data"))
+        .env("XDG_CACHE_HOME", profile.join("cache"))
+        .env("XDG_STATE_HOME", profile.join("state"))
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // SAFETY: `setpgid` is one async-signal-safe syscall before exec, with no
+    // captured Rust state. The new process group makes the Drop cleanup exact.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
+        .expect("spawn isolated ChatGPT Electron client");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&log);
+    let stderr = child.stderr.take().expect("Electron stderr");
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if let Ok(mut lines) = sink.lock() {
+                lines.push(line);
+            }
+        }
+    });
+    Some((KillProcessGroup(child), log))
+}
+
+#[test]
+#[ignore = "starts an installed Electron client in a private Xwayland session; opt in for compatibility review"]
+fn installed_electron_client_maps_through_the_private_xwayland_bridge() {
+    let compositor = Compositor::start_host_desktop();
+    // Keep one ordinary native Wayland client alive throughout the Electron
+    // launch. A bridge that only works in an otherwise empty compositor is
+    // not compatible with a desktop where qOS and host applications coexist.
+    let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-alongside-x11");
+    native.assert_is_qos_compositor();
+    native.map_window(&compositor);
+    let before = compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let Some((_child, log)) = spawn_isolated_chatgpt_x11(&compositor) else {
+        return;
+    };
+    let started = Instant::now();
+    loop {
+        let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
+        let mapped = frames
+            .get("foreign_frames")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| entries.len() > before);
+        if mapped {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "the installed Electron client never mapped through qOS Xwayland.\nElectron log:\n{}\nCompositor log:\n{}",
+            log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
+            compositor.recent_log(),
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// This is deliberately a real client-to-compositor exercise, not a unit
+/// test of `KeyboardSettings`: qOS must serialize the selected German keymap
+/// onto the Wayland seat and forward complete press/release/modifier streams
+/// to a focused foreign client. Electron and Xwayland both consume this same
+/// seat contract.
+#[test]
+fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract() {
+    let compositor = Compositor::start_with_input_settings(serde_json::json!({
+        "keyboard_layout": "de:nodeadkeys",
+        "key_repeat": 0.5,
+    }));
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.de-keyboard");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |s| s.keyboard_keymap.is_some() && s.keyboard_repeat_info.is_some(),
+        "focused foreign client never received the keymap and repeat contract",
+    );
+
+    let keymap = client
+        .state
+        .keyboard_keymap
+        .clone()
+        .expect("wait above established a keymap");
+    assert!(
+        keymap.contains("nodeadkeys"),
+        "the client received a keymap other than the persisted de:nodeadkeys layout"
+    );
+    let (rate, delay) = client
+        .state
+        .keyboard_repeat_info
+        .expect("wait above established repeat info");
+    assert!(
+        (10..=50).contains(&rate) && (200..=600).contains(&delay),
+        "repeat information must be usable by GTK/Qt/Electron clients, got rate={rate} delay={delay}"
+    );
+
+    client.clear_keyboard_trace();
+    // Physical positions: code 21 is the US-Y / German-Z position; code 12
+    // becomes `?` under Shift in de(nodeadkeys); code 43 becomes apostrophe.
+    // Holding modifiers as separate transitions proves the protocol does not
+    // collapse Shift into a synthetic text event (which breaks selection in
+    // Electron and all standard toolkits).
+    for (key, down) in [
+        ("Shift", true),
+        ("y", true),
+        ("y", false),
+        ("-", true),
+        ("-", false),
+        ("\\", true),
+        ("\\", false),
+        ("Shift", false),
+        ("Control", true),
+        ("ArrowLeft", true),
+        ("ArrowLeft", false),
+        ("Control", false),
+        // A held editing key has one press and one release. The client owns
+        // repeated delivery according to `repeat_info`; qOS must never leave
+        // the key logically down or manufacture a second press on release.
+        ("Backspace", true),
+        ("Backspace", false),
+    ] {
+        let operation = if down { "key_down" } else { "key_up" };
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} {key}: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(14);
+    let trace = client.state.keyboard_events.clone();
+    assert_eq!(
+        trace,
+        vec![
+            (42, true),
+            (21, true),
+            (21, false),
+            (12, true),
+            (12, false),
+            (43, true),
+            (43, false),
+            (42, false),
+            (29, true),
+            (105, true),
+            (105, false),
+            (29, false),
+            (14, true),
+            (14, false),
+        ],
+        "the foreign client must receive every physical transition exactly once"
+    );
+    let symbols = translated_keysyms(&keymap, &trace);
+    use smithay::input::keyboard::xkb::keysyms;
+    assert_eq!(
+        symbols,
+        vec![
+            keysyms::KEY_Shift_L,
+            keysyms::KEY_Z,
+            keysyms::KEY_question,
+            keysyms::KEY_apostrophe,
+            keysyms::KEY_Control_L,
+            keysyms::KEY_Left,
+            keysyms::KEY_BackSpace,
+        ],
+        "the delivered keymap must make German punctuation, uppercase text and Ctrl+Arrow available to a real client"
+    );
+}
 
 /// A real toolkit must find every global it treats as mandatory — GTK
 /// refuses the display outright (stopping every GTK program) if
