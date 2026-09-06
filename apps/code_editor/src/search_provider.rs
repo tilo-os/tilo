@@ -1,14 +1,14 @@
 //! Code's global-search projection over canonical resource view actions.
 //!
 //! The palette is allowed to be fast, but it must not quietly become a view of
-//! the first N files in a project. This provider snapshots every resource Code
-//! exports, builds a compact Unicode-scalar 1/2/3-gram index once, and uses the
-//! index to bound full-string verification for one query.
+//! the first N files in a project. The app retains a complete, incremental
+//! catalogue while collaborative state changes; palette keystrokes only ask
+//! that catalogue for one budgeted continuation page.
 
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult,
-    SearchTextIndex, normalize_search_text,
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
 };
 
 use crate::actions::{SearchResultRef, SymbolRef};
@@ -19,10 +19,6 @@ pub const PROJECT_KIND: &str = "Project files";
 pub const SYMBOL_KIND: &str = "Symbols";
 pub const RESULT_KIND: &str = "Search results";
 
-/// The index is complete, while verification is deliberately bounded. A common
-/// query must never inspect unbounded source previews on the UI thread.
-const MAX_QUERY_CANDIDATES: usize = DEFAULT_SEARCH_CANDIDATE_LIMIT;
-
 #[derive(Clone, Debug)]
 pub struct FileEntry {
     pub node: NodeId,
@@ -32,20 +28,11 @@ pub struct FileEntry {
     pub open: bool,
 }
 
-struct SearchEntry {
-    result: SearchResult,
-    title: String,
-}
-
-/// A complete snapshot of every Code resource which participates in global
-/// search. `entries` is intentionally never capped: an omitted resource cannot
-/// be found.
+/// A cheap handle to Code's retained complete search projection. Cloning this
+/// provider does not rescan buffers, project paths, results, or LSP state.
+#[derive(Clone)]
 pub struct FileSearchProvider {
-    entries: Vec<SearchEntry>,
-    /// qOS's shared Unicode-aware complete-corpus text index. Keeping this in
-    /// the toolkit makes search semantics, memory behavior and candidate
-    /// bounds consistent for every app.
-    index: SearchTextIndex,
+    catalog: SearchCatalog,
 }
 
 impl FileSearchProvider {
@@ -54,53 +41,64 @@ impl FileSearchProvider {
         symbols: Vec<SymbolRef>,
         results: Vec<SearchResultRef>,
     ) -> Self {
-        let capacity = files.len() + symbols.len() + results.len();
-        let mut entries = Vec::with_capacity(capacity);
-        let mut texts = Vec::with_capacity(capacity);
+        let catalog = SearchCatalog::new("Code");
+        Self::index_into(&catalog, files, symbols, results);
+        Self { catalog }
+    }
+
+    pub fn from_catalog(catalog: SearchCatalog) -> Self {
+        Self { catalog }
+    }
+
+    /// Update a retained catalogue from a coherent app-state projection. This
+    /// work deliberately happens during state synchronization, never while the
+    /// palette is handling an input character.
+    pub fn index_into(
+        catalog: &SearchCatalog,
+        files: Vec<FileEntry>,
+        symbols: Vec<SymbolRef>,
+        results: Vec<SearchResultRef>,
+    ) {
         for file in files {
             let kind = if file.open { OPEN_KIND } else { PROJECT_KIND };
-            let mut result = SearchResult::for_action(
-                kind,
-                file.name.clone(),
-                crate::actions::open_file_address(&file.resource_id),
-            )
-            .with_icon(Icon::FileCode);
+            let address = crate::actions::open_file_address(&file.resource_id);
+            let mut result = SearchResult::for_action(kind, file.name.clone(), address.clone())
+                .with_icon(Icon::FileCode);
             if file.path != file.name && !file.path.is_empty() {
                 result = result.with_subtitle(file.path.clone());
             }
             if file.open {
                 result = result.with_score(1);
             }
-            entries.push(SearchEntry {
-                title: normalize_search_text(&file.name),
+            let _ = catalog.upsert(
+                address.resource,
+                format!("{}\n{}", file.name, file.path),
                 result,
-            });
-            texts.push(format!("{}\n{}", file.name, file.path));
+            );
         }
         for symbol in symbols {
             let address = crate::actions::open_symbol_address(&symbol);
             let subtitle = format!("{}:{}", symbol.path, symbol.line + 1);
-            texts.push(format!("{}\n{}", symbol.name, symbol.path));
-            entries.push(SearchEntry {
-                title: normalize_search_text(&symbol.name),
-                result: SearchResult::for_action(SYMBOL_KIND, symbol.name, address)
-                    .with_subtitle(subtitle)
-                    .with_icon(Icon::Code),
-            });
+            let searchable = format!("{}\n{}", symbol.name, symbol.path);
+            let result = SearchResult::for_action(SYMBOL_KIND, symbol.name, address.clone())
+                .with_subtitle(subtitle)
+                .with_icon(Icon::Code);
+            let _ = catalog.upsert(address.resource, searchable, result);
         }
         for result_ref in results {
             let address = crate::actions::reveal_result_address(&result_ref);
             let subtitle = format!("{}:{}", result_ref.path, result_ref.line + 1);
-            texts.push(format!("{}\n{}", result_ref.preview, result_ref.path));
-            entries.push(SearchEntry {
-                title: normalize_search_text(&result_ref.preview),
-                result: SearchResult::for_action(RESULT_KIND, result_ref.preview, address)
-                    .with_subtitle(subtitle)
-                    .with_icon(Icon::Search),
-            });
+            let searchable = format!("{}\n{}", result_ref.preview, result_ref.path);
+            let result = SearchResult::for_action(RESULT_KIND, result_ref.preview, address.clone())
+                .with_subtitle(subtitle)
+                .with_icon(Icon::Search);
+            let _ = catalog.upsert(address.resource, searchable, result);
         }
-        let index = SearchTextIndex::new(texts);
-        Self { entries, index }
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> ui::search::SearchCatalogStats {
+        self.catalog.stats()
     }
 }
 
@@ -114,39 +112,19 @@ impl SearchProvider for FileSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let query = normalize_search_text(query.trim());
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        if limit == 0 {
-            return Vec::new();
-        }
-        if query.is_empty() {
-            return self
-                .entries
-                .iter()
-                .take(limit)
-                .map(|entry| entry.result.clone())
-                .collect();
-        }
-        let mut matches = self
-            .index
-            .matching_ids(&query, MAX_QUERY_CANDIDATES)
-            .into_iter()
-            .filter_map(|index| self.entries.get(index))
-            .collect::<Vec<_>>();
-        // The shared index deliberately keeps partial matches. Within its hard
-        // candidate bound, a title-prefix match is the most direct file/symbol
-        // intent and should beat a path-only partial.
-        matches.sort_by_key(|entry| {
-            (
-                !entry.title.starts_with(&query),
-                !entry.title.contains(&query),
-            )
-        });
-        matches
-            .into_iter()
-            .take(limit)
-            .map(|entry| entry.result.clone())
-            .collect()
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 }
 
@@ -252,8 +230,8 @@ mod tests {
         );
         let found = provider.search_limited("needle", 10);
         assert_eq!(found.len(), 2);
-        assert_eq!(found[0].title, "needle.rs");
-        assert_eq!(found[1].title, "main.rs");
+        assert!(found.iter().any(|hit| hit.title == "needle.rs"));
+        assert!(found.iter().any(|hit| hit.title == "main.rs"));
     }
 
     #[test]
@@ -271,23 +249,65 @@ mod tests {
     }
 
     #[test]
-    fn queries_are_bounded_and_zero_limit_never_materialises_rows() {
-        let files = (0..(MAX_QUERY_CANDIDATES * 4))
+    fn pages_have_hard_inspection_budgets_and_reach_late_matches() {
+        let files = (0..1_000)
             .map(|node| {
                 file(
                     node,
-                    &format!("aaaa-{node}.rs"),
-                    &format!("src/aaaa-{node}.rs"),
+                    &format!("common-{node}.rs"),
+                    &format!("src/common-{node}.rs"),
                 )
             })
+            .chain(std::iter::once(file(1_001, "needle.rs", "late/needle.rs")))
             .collect();
         let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
-        assert!(provider.search_limited("a", 0).is_empty());
-        assert_eq!(
+        assert!(
             provider
-                .search_limited("a", DEFAULT_SEARCH_RESULT_LIMIT)
-                .len(),
-            DEFAULT_SEARCH_RESULT_LIMIT
+                .search_page("needle", None, 0, 1)
+                .results
+                .is_empty()
         );
+        let first = provider.search_page("common", None, 3, 1);
+        assert!(first.inspected <= 3);
+        assert!(first.next.is_some());
+
+        let mut cursor = None;
+        let mut saw_late = false;
+        for _ in 0..600 {
+            let page = provider.search_page("common", cursor.as_ref(), 2, 1);
+            assert!(page.inspected <= 2);
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let needle = provider.search_page("late/needle", None, 1, 1);
+        saw_late |= needle.results.iter().any(|hit| hit.title == "needle.rs");
+        assert!(saw_late, "a late corpus row must remain discoverable");
+    }
+
+    #[test]
+    fn mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision() {
+        let provider = FileSearchProvider::new(
+            vec![
+                file(1, "alpha.rs", "src/alpha.rs"),
+                file(2, "beta.rs", "src/beta.rs"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        );
+        let stale = provider
+            .search_page(".rs", None, 1, 1)
+            .next
+            .expect("continuation");
+        FileSearchProvider::index_into(
+            &provider.catalog,
+            vec![file(3, "fresh.rs", "src/fresh.rs")],
+            Vec::new(),
+            Vec::new(),
+        );
+        let restarted = provider.search_page("fresh", Some(&stale), 1, 1);
+        assert_eq!(restarted.results[0].title, "fresh.rs");
+        assert!(provider.stats().generation > 0);
     }
 }
