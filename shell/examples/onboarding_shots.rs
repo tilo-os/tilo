@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
 use shell::onboarding_view::{
-    KEY_BEGIN, KEY_CONNECT, KEY_CREATE, KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD,
-    OnboardingView,
+    KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CONNECT, KEY_CREATE,
+    KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView,
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
@@ -34,19 +34,45 @@ use vello::kurbo::{Affine, Point};
 const WIDTH: u32 = 1000;
 const HEIGHT: u32 = 720;
 
+fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> Result<(), String> {
+    shoot_in_context(theme, out, steps, width, height, false)
+}
+
+fn shoot_host(
+    theme: &Theme,
+    out: &Path,
+    steps: &[&str],
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    shoot_in_context(theme, out, steps, width, height, true)
+}
+
 #[allow(
     clippy::cast_precision_loss,
     reason = "snapshot dimensions are small renderer sizes and exactly representable"
 )]
-fn shoot(theme: &Theme, out: &Path, steps: &[&str], width: u32, height: u32) -> Result<(), String> {
+fn shoot_in_context(
+    theme: &Theme,
+    out: &Path,
+    steps: &[&str],
+    width: u32,
+    height: u32,
+    host_desktop: bool,
+) -> Result<(), String> {
     let mut state = State::new();
-    let mut view = OnboardingView::with_minter(Box::new(|| {
+    let minter = Box::new(|| {
         Ok(MintedIdentity {
             fingerprint: "3f7a1c9e40b28d6512ef0a73c8b4d915e26f88a0c3147bd5e9f20a6c7b81d34e"
                 .to_string(),
             path: PathBuf::from("/home/quinten/.config/qos/identity/primary.json"),
         })
-    }));
+    });
+    let mut view = if host_desktop {
+        OnboardingView::with_minter_for_host_desktop(minter)
+    } else {
+        OnboardingView::with_minter(minter)
+    };
 
     // Drive the real widget through the real keys, one sync per press, the
     // way a click would.
@@ -105,6 +131,94 @@ fn main() -> Result<(), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("create_dir_all({dir}): {e}"))?;
     let dir = PathBuf::from(dir);
 
+    // The Fedora/rpm-ostree host-session path is reviewed at the three common
+    // laptop sizes that motivated this harness. Include the acknowledgement
+    // state separately because it changes both the checkbox and primary
+    // action, and must not shift either one.
+    for (width, height) in [(1600, 900), (1366, 768), (1280, 720)] {
+        let size = format!("{width}x{height}");
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-1-choose-{size}.png")),
+            &[],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-2-connect-{size}.png")),
+            &[KEY_CONNECT],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-2-protect-{size}.png")),
+            &[KEY_BEGIN],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-2-protect-acknowledged-{size}.png")),
+            &[KEY_BEGIN, KEY_UNDERSTOOD],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-3-backup-{size}.png")),
+            &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-3-backup-acknowledged-{size}.png")),
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            ],
+            width,
+            height,
+        )?;
+        shoot_host(
+            &Theme::dark(),
+            &dir.join(format!("host-4-ready-{size}.png")),
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
+            ],
+            width,
+            height,
+        )?;
+    }
+    shoot_host(
+        &Theme::dark().with_text_scale(1.3),
+        &dir.join("host-compact-large-text-1024x640.png"),
+        &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
+        1024,
+        640,
+    )?;
+    shoot_host(
+        &Theme::high_contrast()
+            .with_ui_scale(1.25)
+            .with_reduce_motion(true),
+        &dir.join("host-hidpi-high-contrast-1280x720.png"),
+        &[KEY_BEGIN],
+        1280,
+        720,
+    )?;
+
+    if std::env::var_os("ONBOARDING_SHOTS_HOST_ONLY").is_some() {
+        return Ok(());
+    }
+
     for (theme, suffix) in [
         (Theme::dark(), "dark"),
         (Theme::light(), "light"),
@@ -141,7 +255,7 @@ fn main() -> Result<(), String> {
         )?;
         shoot(
             &theme,
-            &dir.join(format!("5-done-{suffix}.png")),
+            &dir.join(format!("5-backup-{suffix}.png")),
             &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
             WIDTH,
             HEIGHT,
@@ -149,7 +263,14 @@ fn main() -> Result<(), String> {
         shoot(
             &theme,
             &dir.join(format!("6-tour-move-{suffix}.png")),
-            &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START],
+            &[
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
+                KEY_TOUR_START,
+            ],
             WIDTH,
             HEIGHT,
         )?;
@@ -160,6 +281,8 @@ fn main() -> Result<(), String> {
                 KEY_BEGIN,
                 KEY_UNDERSTOOD,
                 KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
                 KEY_TOUR_START,
                 KEY_TOUR_NEXT,
             ],
@@ -173,6 +296,8 @@ fn main() -> Result<(), String> {
                 KEY_BEGIN,
                 KEY_UNDERSTOOD,
                 KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
                 KEY_TOUR_START,
                 KEY_TOUR_NEXT,
                 KEY_TOUR_NEXT,
@@ -215,7 +340,14 @@ fn main() -> Result<(), String> {
     shoot(
         &Theme::dark(),
         &dir.join("13-tour-move-narrow-dark.png"),
-        &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START],
+        &[
+            KEY_BEGIN,
+            KEY_UNDERSTOOD,
+            KEY_CREATE,
+            KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            KEY_BACKUP_CONTINUE,
+            KEY_TOUR_START,
+        ],
         420,
         640,
     )?;
@@ -226,6 +358,8 @@ fn main() -> Result<(), String> {
             KEY_BEGIN,
             KEY_UNDERSTOOD,
             KEY_CREATE,
+            KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            KEY_BACKUP_CONTINUE,
             KEY_TOUR_START,
             KEY_TOUR_NEXT,
         ],
