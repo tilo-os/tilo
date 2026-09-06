@@ -25,6 +25,7 @@ pub(crate) struct PowerMenu {
     open: bool,
     transition: ui::Transition,
     armed: Option<usize>,
+    selected: usize,
 }
 
 impl Default for PowerMenu {
@@ -33,14 +34,20 @@ impl Default for PowerMenu {
             open: false,
             transition: ui::Transition::closed(),
             armed: None,
+            selected: 0,
         }
     }
 }
 
 impl PowerMenu {
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.armed = None;
+        self.selected = 0;
         self.transition.set_open(
             true,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
@@ -79,6 +86,59 @@ impl PowerMenu {
         else {
             return PowerMenuClick::Consumed;
         };
+        self.selected = index;
+        self.activate(index)
+    }
+
+    pub(crate) fn key(&mut self, key: &winit::keyboard::Key, shift: bool) -> PowerMenuClick {
+        use winit::keyboard::{Key, NamedKey};
+        if !self.open {
+            return PowerMenuClick::Ignored;
+        }
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.close();
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
+                self.selected = self
+                    .selected
+                    .checked_sub(1)
+                    .unwrap_or(ACTIONS.len().saturating_sub(1));
+                self.armed = None;
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
+                self.selected = if self.selected.saturating_add(1) >= ACTIONS.len() {
+                    0
+                } else {
+                    self.selected.saturating_add(1)
+                };
+                self.armed = None;
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::Tab) => {
+                if shift {
+                    self.selected = self
+                        .selected
+                        .checked_sub(1)
+                        .unwrap_or(ACTIONS.len().saturating_sub(1));
+                } else {
+                    self.selected = if self.selected.saturating_add(1) >= ACTIONS.len() {
+                        0
+                    } else {
+                        self.selected.saturating_add(1)
+                    };
+                }
+                self.armed = None;
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => self.activate(self.selected),
+            _ => PowerMenuClick::Consumed,
+        }
+    }
+
+    fn activate(&mut self, index: usize) -> PowerMenuClick {
         if index >= 3 && self.armed != Some(index) {
             self.armed = Some(index);
             return PowerMenuClick::Consumed;
@@ -173,11 +233,14 @@ impl PowerMenu {
         for (index, (_, label, detail, icon)) in ACTIONS.iter().enumerate() {
             let row = action_rect(viewport, index);
             let armed = self.armed == Some(index);
+            let selected = self.selected == index;
             scene.fill(
                 Fill::NonZero,
                 transform,
                 if armed {
                     colors.semantic.danger.with_alpha_factor(0.18)
+                } else if selected {
+                    colors.accent[5].with_alpha_factor(0.16)
                 } else {
                     colors.neutral[2]
                 },
@@ -349,6 +412,47 @@ mod tests {
         let mut menu = PowerMenu::default();
         menu.open();
         assert_eq!(menu.click(VIEWPORT, Point::ZERO), PowerMenuClick::Consumed);
+        assert!(!menu.open);
+    }
+
+    #[test]
+    fn keyboard_navigation_reaches_actions_and_keeps_confirmation() {
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut menu = PowerMenu::default();
+        menu.open();
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::ArrowDown), false),
+            PowerMenuClick::Consumed
+        );
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Execute(os_actions::SessionAction::Logout)
+        );
+
+        menu.open();
+        menu.selected = 4;
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Space), false),
+            PowerMenuClick::Consumed
+        );
+        assert!(menu.open, "first activation only arms Shut down");
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Space), false),
+            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_keyboard_modal_without_an_action() {
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut menu = PowerMenu::default();
+        menu.open();
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Escape), false),
+            PowerMenuClick::Consumed
+        );
         assert!(!menu.open);
     }
 
