@@ -821,6 +821,10 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
     // File-drop owns the durable insertion; the ordinary chrome revision
     // below is the frame boundary that mounts its new tab affordance.
     h.chrome.borrow_mut().bump();
+    assert!(
+        h.host.take_structure_dirty(),
+        "the revision must splice the opened tab into the live row before pointer input"
+    );
     h.tick();
     let close = h
         .host
