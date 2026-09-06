@@ -149,6 +149,20 @@ impl ActionKind {
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
         }
     }
+
+    /// Whether this operation requires the host's Flatpak runtime. These are
+    /// never merely view choices: each one eventually asks the host to invoke
+    /// Flatpak or launch its independently-sandboxed desktop application.
+    pub fn requires_flatpak_host(self) -> bool {
+        matches!(
+            self,
+            Self::FlatpakInstall
+                | Self::FlatpakUpdate
+                | Self::FlatpakOpen
+                | Self::FlatpakRemove
+                | Self::NeedsFlatpakHost
+        )
+    }
 }
 
 /// One version the source knows about.
@@ -280,6 +294,17 @@ impl StoreItem {
             }
             _ => None,
         }
+    }
+
+    /// Whether an action is still valid for this exact catalogue/install
+    /// snapshot. Resource operations re-check this at execution time so a
+    /// stale agent result cannot turn an old "Remove" or "Update" offer into
+    /// a different package-management operation.
+    pub fn allows_action(&self, action: ActionKind, flatpak_available: bool) -> bool {
+        (!action.requires_flatpak_host() || flatpak_available)
+            && (self.action_kind(flatpak_available) == action
+                || self.pin_action() == Some(action)
+                || self.remove_action() == Some(action))
     }
 
     /// Whether a card should offer a secondary **Remove**.
@@ -508,6 +533,20 @@ mod tests {
             flatpak_item("Chess", InstalledState::Not).remove_action(),
             None
         );
+    }
+
+    #[test]
+    fn action_authorization_tracks_the_current_install_snapshot() {
+        let not_installed = qos_item("Notes", InstalledState::Not, "1");
+        assert!(not_installed.allows_action(ActionKind::Open, true));
+        assert!(!not_installed.allows_action(ActionKind::Remove, true));
+        assert!(!not_installed.allows_action(ActionKind::MarkInstalled, true));
+
+        let cached = qos_item("Notes", qinstalled("1", "1", false), "1");
+        assert!(cached.allows_action(ActionKind::Open, true));
+        assert!(cached.allows_action(ActionKind::Remove, true));
+        assert!(cached.allows_action(ActionKind::MarkInstalled, true));
+        assert!(!cached.allows_action(ActionKind::Update, true));
     }
 
     #[test]
