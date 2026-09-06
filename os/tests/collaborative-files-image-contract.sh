@@ -78,6 +78,15 @@ require_file /usr/share/wayland-sessions/shell-peer-sync.desktop
 require_file /usr/lib/tmpfiles.d/qos.conf
 require_file /usr/share/qos/fs-capabilities.json
 
+# AccessKit's provider requests org.a11y.Bus from the session bus. Keep the
+# daemon package explicit: a tree-only smoke must never pass merely because a
+# browser happened to pull it in transitively.
+if [ "$root" = / ]; then
+  rpm -q at-spi2-core >/dev/null 2>&1 || die "at-spi2-core is not installed"
+else
+  require_file /usr/share/dbus-1/services/org.a11y.Bus.service
+fi
+
 # The system host and per-user recipient must be enabled, not merely copied.
 require_link /etc/systemd/system/multi-user.target.wants/fs.service
 require_link /etc/systemd/system/multi-user.target.wants/qos-growfs-sysroot.service

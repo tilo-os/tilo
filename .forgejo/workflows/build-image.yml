@@ -18,6 +18,11 @@ on:
     tags: ["v*"]
     paths:
       - "os/**"
+      - "shell/**"
+      - "ui/**"
+      - "apps/file-explorer/tests/atspi_smoke.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
@@ -26,6 +31,11 @@ on:
     branches: ["main"]
     paths:
       - "os/**"
+      - "shell/**"
+      - "ui/**"
+      - "apps/file-explorer/tests/atspi_smoke.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "keys/**"
       - "docs/recovery.md"
       - "docs/security/**"
@@ -680,11 +690,12 @@ jobs:
           done
 
           # This is a fresh installed user, so the real compositor must start
-          # directly into its trusted first-login identity ceremony. Drive the
-          # keyboard-accessible flow exactly as a person does:
-          # Continue -> acknowledge no recovery -> Create -> Start qOS. The
-          # artifact poll is the deterministic barrier between Create and the
-          # final screen; no test-only minting or bypass enters the image.
+          # directly into its trusted first-login identity ceremony. The
+          # release invokes the three normal setup actions through the real
+          # AT-SPI provider, then observes each resulting tree transaction;
+          # finish still uses ordinary keyboard input. The artifact poll is
+          # the deterministic barrier between Create and the final screen; no
+          # test-only minting or bypass enters the image.
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
               "pgrep -f '^/usr/bin/shell --backend drm( |$)' >/dev/null"; then
@@ -702,16 +713,7 @@ jobs:
           # the release gate that proves the compositor-owned first-use UI is
           # actually visible to an external AT-SPI consumer on the installed
           # graphical session.
-          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh oobe
-          # The intro exposes two actions in focus order: connect an existing
-          # identity, then create a new one. Select the latter explicitly.
-          ./os/dev/vm.sh keys tab tab ret
-          sleep 1
-          ./os/dev/vm.sh keys tab spc
-          sleep 1
-          # Enabling the acknowledgement rebuilds the button in place while
-          # preserving checkbox focus. One Tab reaches the enabled action.
-          ./os/dev/vm.sh keys tab ret
+          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
               "test -s \"\$HOME/.config/qos/identity/primary.json\" && test -s /var/lib/qos/device/cert.bin"; then

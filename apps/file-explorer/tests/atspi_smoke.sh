@@ -117,11 +117,13 @@ content_name=$(property "$app_bus" "$content_path" Name)
 # root's immediate children makes this smoke depend on AccessKit's incidental
 # tree shape. Walk a small, cycle-safe subtree instead: the contract is that
 # visible named controls are exported, not which intermediate group owns them.
-# AccessKit can publish the application root one transaction before it adds
-# its semantic descendants.  Treat that as an in-flight tree, rather than a
-# failed audit of an otherwise healthy app, and bound both retries and walk.
+# Keep the provider's real object paths too: the action assertion below must
+# operate on the exact node an external screen reader discovered.
+declare -A node_names=()
 names=""
-for _ in $(seq 1 200); do
+collect_tree() {
+    local current child_path
+    node_names=()
     names=""
     declare -a pending=("$content_path")
     declare -A visited=()
@@ -130,25 +132,88 @@ for _ in $(seq 1 200); do
         pending=("${pending[@]:1}")
         [[ -n ${visited[$current]+yes} ]] && continue
         visited[$current]=1
-        names+="$(property "$app_bus" "$current" Name 2>/dev/null || true)"$'\n'
+        local name
+        name=$(property "$app_bus" "$current" Name) || return 1
+        node_names["$current"]=$name
+        names+="$name"$'\n'
         while IFS= read -r child_path; do
             [[ -n "$child_path" ]] && pending+=("$child_path")
         done < <(
-            children "$app_bus" "$current" 2>/dev/null \
+            children "$app_bus" "$current" \
                 | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true
         )
     done
-    [[ "$names" == *"Breadcrumbs"* && "$names" == *"View options"* ]] && break
-    sleep 0.05
-done
-
-[[ "$names" == *"Breadcrumbs"* ]] || {
-    echo "AT-SPI tree is missing Breadcrumbs" >&2
-    exit 1
-}
-[[ "$names" == *"View options"* ]] || {
-    echo "AT-SPI tree is missing View options" >&2
-    exit 1
+    ((${#node_names[@]} > 0))
 }
 
-printf 'AT-SPI smoke passed: Files activity, Breadcrumbs, and View options are exported.\n'
+node_named() {
+    local expected=$1 current needle
+    needle="'$expected'"
+    for current in "${!node_names[@]}"; do
+        [[ ${node_names[$current]} == *"$needle"* ]] && {
+            printf '%s\n' "$current"
+            return 0
+        }
+    done
+    return 1
+}
+
+wait_for_names() {
+    local expected missing attempt
+    for attempt in $(seq 1 200); do
+        if collect_tree; then
+            missing=""
+            for expected in "$@"; do
+                node_named "$expected" >/dev/null || missing+=" $expected"
+            done
+            [[ -z "$missing" ]] && return 0
+        fi
+        sleep 0.05
+    done
+    echo "AT-SPI tree never exposed:$missing" >&2
+    printf '%s\n' "$names" >&2
+    sed -n '1,120p' "$smoke_dir/file-explorer.log" >&2
+    return 1
+}
+
+click_named() {
+    local expected=$1 path candidate needle actions result
+    needle="'$expected'"
+    # A control can share its spoken label with neighbouring explanatory text.
+    # Select the click-capable object from the live provider, never by a
+    # brittle traversal position or a precomputed AccessKit id.
+    for candidate in "${!node_names[@]}"; do
+        [[ ${node_names[$candidate]} == *"$needle"* ]] || continue
+        actions=$(gdbus call --address "$atspi_address" \
+            --dest "$app_bus" \
+            --object-path "$candidate" \
+            --method org.a11y.atspi.Action.GetActions 2>/dev/null) || continue
+        if [[ $actions == *"('click',"* ]]; then
+            path=$candidate
+            break
+        fi
+    done
+    [[ -n ${path:-} ]] || {
+        echo "AT-SPI tree has no click-capable node named '$expected'" >&2
+        return 1
+    }
+    result=$(gdbus call --address "$atspi_address" \
+        --dest "$app_bus" \
+        --object-path "$path" \
+        --method org.a11y.atspi.Action.DoAction 0)
+    [[ ${result//[[:space:]]/} == '(true,)' ]] || {
+        echo "AT-SPI click on '$expected' was rejected: $result" >&2
+        return 1
+    }
+}
+
+wait_for_names "Breadcrumbs" "View options"
+
+# Exercise an ordinary screen-reader action against an actual package payload,
+# then observe the application state it changed. `New folder` appears only in
+# the menu opened by View options, so a provider that merely advertises Click
+# but fails to deliver it through accesskit_winit cannot pass.
+click_named "View options"
+wait_for_names "New folder"
+
+printf 'AT-SPI smoke passed: Files activity, toolbar controls, and View options action are exported.\n'

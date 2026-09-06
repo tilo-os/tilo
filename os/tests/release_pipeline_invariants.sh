@@ -86,6 +86,19 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
+if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
+  && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 2 ] \
+  && [ "$(grep -Fc '      - "apps/file-explorer/tests/atspi_smoke.sh"' "$os")" -eq 2 ] \
+  && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'wait_for_names "New folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
+  && grep -Fq 'at-spi2-core' "$repo/os/Containerfile"; then
+  ok 'OS release VM invokes real AT-SPI actions and carries its session bus provider'
+else
+  bad 'AT-SPI release gate can ship an unreadable or actionless desktop'
+fi
+
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
   && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
