@@ -2,6 +2,7 @@
 //! accepted bindings are validated and atomically persisted through the
 //! shared typed contract the compositor consumes.
 
+use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
 use crate::widgets::{card, rows, setting_row};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
@@ -19,6 +20,14 @@ const LOCK: &str = "shortcuts.lock";
 const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
 const VIM_MODE: &str = "shortcuts.vim_mode";
 
+fn draft_key(key: &str) -> String {
+    format!("{key}.edit")
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete shortcut catalog stays contiguous so its action/key/label mapping is auditable"
+)]
 fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> {
     [
         (
@@ -147,6 +156,7 @@ pub struct ShortcutPane {
     commit_context_pending: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    actions: ui::ActionHost,
 }
 
 impl Default for ShortcutPane {
@@ -167,6 +177,7 @@ impl Default for ShortcutPane {
             commit_context_pending: false,
             composed: None,
             rect: Rect::ZERO,
+            actions: ui::ActionHost::new(),
         }
     }
 }
@@ -177,7 +188,8 @@ impl ShortcutPane {
         let mut desktop: Vec<Box<dyn Widget>> = vec![setting_row(
             "Vim navigation (H J K L)",
             Box::new(
-                Toggle::new("settings.shortcuts.vim_mode", VIM_MODE).with_id("shortcuts.vim_mode"),
+                Toggle::new("settings.shortcuts.vim_mode", &draft_key(VIM_MODE))
+                    .with_id("shortcuts.vim_mode"),
             ),
         )];
         let defaults = ShortcutConfig::default();
@@ -195,7 +207,12 @@ impl ShortcutPane {
                 .unwrap_or_default();
             let row = setting_row(
                 label,
-                Box::new(ShortcutRecorder::new(key, key, &value, &default)),
+                Box::new(ShortcutRecorder::new(
+                    key,
+                    &draft_key(key),
+                    &value,
+                    &default,
+                )),
             );
             if is_desktop_navigation(action) {
                 desktop.push(row);
@@ -219,6 +236,25 @@ impl ShortcutPane {
             _ => None,
         }
     }
+
+    fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
+        match state.get(root, key) {
+            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                automerge::ScalarValue::Boolean(value) => Some(*value),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
+        self.actions.dispatch_with_context(
+            state,
+            SETTINGS_ACTION_TYPE,
+            action,
+            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+        );
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -236,22 +272,33 @@ impl Widget for ShortcutPane {
                     .map(KeyChord::display)
                     .unwrap_or_default();
                 let _ = state.put(root, key, value.clone());
+                let _ = state.put(root, draft_key(key), value.clone());
                 self.last_text.insert(action, value);
             }
             let _ = state.put(root, VIM_MODE, self.desktop_controls.vim_mode);
+            let _ = state.put(root, draft_key(VIM_MODE), self.desktop_controls.vim_mode);
             self.needs_seed = false;
         }
-        if let Ok(Some((Value::Scalar(value), _))) = state.get(root, VIM_MODE)
-            && let automerge::ScalarValue::Boolean(enabled) = value.as_ref()
-            && *enabled != self.last_vim_mode
-        {
+        let vim = Self::read_bool(state, root, VIM_MODE).unwrap_or(self.last_vim_mode);
+        let vim_draft = Self::read_bool(state, root, &draft_key(VIM_MODE)).unwrap_or(vim);
+        if vim != self.last_vim_mode {
+            let _ = state.put(root, draft_key(VIM_MODE), vim);
             let previous = self.last_vim_mode;
-            self.desktop_controls.vim_mode = *enabled;
+            self.desktop_controls.vim_mode = vim;
             if self.desktop_controls.save().is_ok() {
-                self.last_vim_mode = *enabled;
+                self.last_vim_mode = vim;
             } else {
                 self.desktop_controls.vim_mode = previous;
-                let _ = state.put(root, VIM_MODE, previous);
+                self.dispatch(state, &set_bool_action(VIM_MODE, previous));
+            }
+        } else if vim_draft != vim {
+            self.desktop_controls.vim_mode = vim_draft;
+            if self.desktop_controls.save().is_ok() {
+                self.last_vim_mode = vim_draft;
+                self.dispatch(state, &set_bool_action(VIM_MODE, vim_draft));
+            } else {
+                self.desktop_controls.vim_mode = vim;
+                let _ = state.put(root, draft_key(VIM_MODE), vim);
             }
         }
         for (action, key, _, _) in entries() {
@@ -259,6 +306,24 @@ impl Widget for ShortcutPane {
                 continue;
             };
             if self.last_text.get(&action) == Some(&value) {
+                let draft =
+                    Self::read_text(state, root, &draft_key(key)).unwrap_or_else(|| value.clone());
+                if draft == value {
+                    continue;
+                }
+                let valid = KeyChord::parse(&draft).and_then(|chord| {
+                    self.config
+                        .set(action, chord)
+                        .map_err(|_| "shortcut conflicts with another system action")
+                });
+                if valid.is_ok() && self.config.save().is_ok() {
+                    self.last_text.insert(action, draft.clone());
+                    self.dispatch(state, &set_text_action(key, draft));
+                    let _ = state.put(root, format!("{key}.error"), false);
+                } else {
+                    let _ = state.put(root, draft_key(key), value);
+                    let _ = state.put(root, format!("{key}.error"), true);
+                }
                 continue;
             }
             let valid = KeyChord::parse(&value).and_then(|chord| {
@@ -269,8 +334,9 @@ impl Widget for ShortcutPane {
             if valid.is_ok() && self.config.save().is_ok() {
                 self.last_text.insert(action, value);
                 let _ = state.put(root, format!("{key}.error"), false);
-            } else if let Some(previous) = self.last_text.get(&action) {
-                let _ = state.put(root, key, previous.clone());
+            } else if let Some(previous) = self.last_text.get(&action).cloned() {
+                self.dispatch(state, &set_text_action(key, previous.clone()));
+                let _ = state.put(root, draft_key(key), previous.clone());
                 let _ = state.put(root, format!("{key}.error"), true);
             }
         }
@@ -381,6 +447,9 @@ impl Widget for ShortcutPane {
             "Keyboard shortcuts",
             "Change keyboard shortcuts",
         )
+    }
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
     fn name(&self) -> &'static str {
         "ShortcutPane"
