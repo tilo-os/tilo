@@ -60,3 +60,6 @@ splash-budget   = 250
 [providers]
 mime = ["application/vnd.flatpak.ref"]
 ext  = ["flatpakref"]
+# The shell's global palette opens an uninstalled app in this trusted detail
+# route. The target is a stable package id, never an install command.
+schemes = ["qos-store"]
