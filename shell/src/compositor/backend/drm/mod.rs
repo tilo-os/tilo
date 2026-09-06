@@ -24,6 +24,7 @@ pub mod session;
 mod xrgb_history;
 
 use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 
 use vello::Scene;
 
@@ -135,11 +136,20 @@ pub struct DrmPresenter {
     paused: bool,
     /// Reconfiguration commands from the loop thread (hotplug, VT switches, resume), drained at the top of every frame so a change lands between frames, not during one.
     commands: Option<Receiver<ScanoutCommand>>,
+    /// Shared with the dispatch thread so dropping DRM master cannot race a
+    /// present already in progress. The lock is held across one complete
+    /// render/reconfiguration operation.
+    present_gate: Option<Arc<Mutex<()>>>,
 }
 
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
+        let present_gate = self.present_gate.clone();
+        let _present_guard = present_gate.as_ref().map(|gate| {
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         self.drain_commands();
         if self.blanked || self.paused {
             return;
@@ -518,6 +528,11 @@ impl Presenter for DrmPresenter {
     }
 
     fn set_dpms(&mut self, on: bool) {
+        let present_gate = self.present_gate.clone();
+        let _present_guard = present_gate.as_ref().map(|gate| {
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         self.blanked = !on;
         for e in &mut self.scanouts {
             e.scanout.set_dpms(on);
@@ -538,6 +553,11 @@ impl Backend for DrmBackend {
 
     /// Inline presentation, reached only when the presenter hasn't been split off yet — kept so a caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
+        let present_gate = self.inner.dispatch.present_gate.clone();
+        let _present_guard = present_gate.as_ref().map(|gate| {
+            gate.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
         // While blanked the CRTCs are disabled — painting/presenting would be wasted or re-light the
         // panel out from under idle/lock logic; skip until `set_dpms(true)`. `paused` is the other reason: the CRTCs belong to another session until it switches back.
         if self.blanked || self.paused {
@@ -634,6 +654,7 @@ impl Backend for DrmBackend {
             paused: self.paused,
             // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
             commands: self.commands.take(),
+            present_gate: self.inner.dispatch.present_gate.clone(),
         }))
     }
 
