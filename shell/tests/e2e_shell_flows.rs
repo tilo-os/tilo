@@ -1502,6 +1502,24 @@ fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
     );
 }
 
+#[test]
+fn e2e_super_tab_toggles_overview_in_live_binary_path() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
+
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
+    assert!(handled, "Super+Tab must be consumed by the overlay host");
+    assert!(
+        chrome.borrow().overlays.overview,
+        "Super+Tab must toggle the overview overlay in the live-binary event path"
+    );
+}
+
 /// The overview finishes on the keyboard: arrows walk the room list, Enter
 /// commits and closes.
 #[test]
@@ -1517,11 +1535,11 @@ fn e2e_overview_arrows_select_and_enter_switches_room() {
     );
     let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
-    let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
     assert!(pump_host(
         &mut host,
         &key_press(Key::Named(NamedKey::Tab)),
-        ctrl
+        super_key
     ));
     assert!(
         chrome.borrow().overlays.overview,
