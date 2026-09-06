@@ -94,6 +94,7 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'release/app-collections.toml' "$apps" \
+  && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
   && grep -Fq '$package_api/qos-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/qos-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
@@ -109,8 +110,8 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'QOS_APP_RELEASE_TAG_AUDIENCE' "$apps" \
   && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
-  && ok 'app collections are durable across workflows and use Forgejo-compatible artifacts' \
-  || bad 'app release artifacts cannot be consumed by later component releases'
+  && ok 'app collections serialize channel updates and remain durable across workflows' \
+  || bad 'app releases can cancel a required channel update or cannot be consumed later'
 
 grep -Fq 'QOS_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'QOS_APP_COLLECTION_URL_AARCH64' "$os" \
