@@ -27,7 +27,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use chrono::NaiveDateTime;
+use chrono::{NaiveDate, NaiveDateTime};
 
 use crate::model::{Event, Id, Model, Palette, Priority, Project, Recurrence, Task};
 
@@ -128,23 +128,63 @@ impl CalDoc {
         Self::write_event_fields(doc, &m, e);
     }
 
+    /// Whether `project` is absent or names a project currently represented in
+    /// this document.  Action payloads are collaborative input, not only UI
+    /// output, so an otherwise well-formed UUID must not become a dangling
+    /// relationship simply because it is not in this calendar.
+    pub fn project_exists(doc: &AutoCommit, project: Option<Id>) -> bool {
+        let Some(project) = project else {
+            return true;
+        };
+        matches!(
+            doc.get(&ROOT, "projects"),
+            Ok(Some((Value::Object(ObjType::Map), projects)))
+                if matches!(doc.get(&projects, project.to_string().as_str()),
+                    Ok(Some((Value::Object(ObjType::Map), _))))
+        )
+    }
+
     /// Apply only the event registers named in a sparse action patch. The
     /// event must already exist: a field edit racing a delete is a harmless
     /// no-op, never an accidental recreation with half a schema.
     pub fn patch_event(doc: &mut AutoCommit, id: Id, patch: &crate::actions::EventPatch) {
         let events = Self::map_at(doc, "events");
-        let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&events, id.to_string().as_str())
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&events, id.to_string().as_str())
         else {
             return;
         };
         if let Some(value) = &patch.title {
             let _ = doc.put(&item, "title", value.as_str());
         }
-        if let Some(value) = &patch.start {
-            let _ = doc.put(&item, "start", value.as_str());
-        }
-        if let Some(value) = &patch.end {
-            let _ = doc.put(&item, "end", value.as_str());
+        let current_start = NaiveDateTime::parse_from_str(&get_str(doc, &item, "start"), DT_FMT);
+        let current_end = NaiveDateTime::parse_from_str(&get_str(doc, &item, "end"), DT_FMT);
+        let start = patch
+            .start
+            .as_deref()
+            .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+            .transpose();
+        let end = patch
+            .end
+            .as_deref()
+            .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+            .transpose();
+        // Time fields form one invariant.  Validate the candidate composed of
+        // the sparse patch and its stored sibling before writing either field;
+        // this closes the direct-action route to end-before-start events.
+        if let (Ok(start), Ok(end)) = (start, end) {
+            let candidate_start = start.or_else(|| current_start.ok());
+            let candidate_end = end.or_else(|| current_end.ok());
+            if let (Some(candidate_start), Some(candidate_end)) = (candidate_start, candidate_end)
+                && candidate_start <= candidate_end
+            {
+                if let Some(value) = &patch.start {
+                    let _ = doc.put(&item, "start", value.as_str());
+                }
+                if let Some(value) = &patch.end {
+                    let _ = doc.put(&item, "end", value.as_str());
+                }
+            }
         }
         if let Some(value) = patch.all_day {
             let _ = doc.put(&item, "all_day", value);
@@ -152,17 +192,33 @@ impl CalDoc {
         if let Some(value) = &patch.location {
             let _ = doc.put(&item, "location", value.as_str());
         }
-        if let Some(value) = patch.color {
+        if let Some(value) = patch.color
+            && value < Palette::ALL.len()
+        {
             let _ = doc.put(&item, "color", value as i64);
         }
         if let Some(value) = &patch.rrule {
-            let _ = doc.put(&item, "rrule", value.as_str());
+            let normalized = Recurrence::from_rrule(value).to_rrule();
+            if value == &normalized {
+                let _ = doc.put(&item, "rrule", value.as_str());
+            }
         }
-        if let Some(value) = patch.reminder {
+        if let Some(value) = patch.reminder
+            && matches!(value, -1 | 10 | 30 | 60)
+        {
             let _ = doc.put(&item, "reminder", value);
         }
         if let Some(value) = &patch.calendar_id {
             let _ = doc.put(&item, "cal", value.as_str());
+        }
+        if let Some(value) = &patch.project
+            && (value.is_empty()
+                || value
+                    .parse::<Id>()
+                    .ok()
+                    .is_some_and(|project| Self::project_exists(doc, Some(project))))
+        {
+            let _ = doc.put(&item, "project", value.as_str());
         }
     }
 
@@ -171,6 +227,42 @@ impl CalDoc {
         let tasks = Self::map_at(doc, "tasks");
         let m = Self::ensure_child(doc, &tasks, &t.id.to_string());
         Self::write_task_fields(doc, &m, t);
+    }
+
+    /// Apply only the task registers named in a sparse action patch. A task
+    /// field edit that races a delete is intentionally a no-op: it must never
+    /// recreate a partial task.
+    pub fn patch_task(doc: &mut AutoCommit, id: Id, patch: &crate::actions::TaskPatch) {
+        let tasks = Self::map_at(doc, "tasks");
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&tasks, id.to_string().as_str())
+        else {
+            return;
+        };
+        if let Some(value) = &patch.title {
+            let _ = doc.put(&item, "title", value.as_str());
+        }
+        if let Some(value) = &patch.due
+            && (value.is_empty() || NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok())
+        {
+            let _ = doc.put(&item, "due", value.as_str());
+        }
+        if let Some(value) = patch.priority {
+            // Network-replayed actions bypass the resource choice list, so do
+            // not let a hostile payload persist an out-of-domain priority.
+            if value <= Priority::None.rank() {
+                let _ = doc.put(&item, "priority", i64::from(value));
+            }
+        }
+        if let Some(value) = &patch.project
+            && (value.is_empty()
+                || value
+                    .parse::<Id>()
+                    .ok()
+                    .is_some_and(|project| Self::project_exists(doc, Some(project))))
+        {
+            let _ = doc.put(&item, "project", value.as_str());
+        }
     }
 
     /// Flip a task's `done` flag in place, deterministically against the current
@@ -251,10 +343,9 @@ impl CalDoc {
             };
             if get_str(doc, &item, "cal") == calendar_id
                 && crate::caldav::hrefs_equal(&get_str(doc, &item, "href"), href)
+                && let Ok(id) = key.parse::<Id>()
             {
-                if let Ok(id) = key.parse::<Id>() {
-                    return Some(id);
-                }
+                return Some(id);
             }
         }
         None
@@ -815,5 +906,65 @@ mod tests {
         // Idempotent: second seed is a no-op.
         CalDoc::seed_notes_if_empty(&mut doc, &list, &["should not appear"]);
         assert_eq!(doc.length(&list), 2);
+    }
+
+    #[test]
+    fn event_time_patch_cannot_persist_end_before_its_stored_start() {
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let mut doc = AutoCommit::new();
+        CalDoc::seed(&mut doc, &model);
+        let event = &model.events[0];
+        let before = CalDoc::read_model(&doc).event(event.id).unwrap().clone();
+        CalDoc::patch_event(
+            &mut doc,
+            event.id,
+            &crate::actions::EventPatch {
+                end: Some(
+                    (before.start - chrono::Duration::minutes(1))
+                        .format(DT_FMT)
+                        .to_string(),
+                ),
+                ..crate::actions::EventPatch::default()
+            },
+        );
+        let after_model = CalDoc::read_model(&doc);
+        let after = after_model.event(event.id).unwrap();
+        assert_eq!(after.start, before.start);
+        assert_eq!(
+            after.end, before.end,
+            "invalid sparse end patch is rejected as a pair"
+        );
+    }
+
+    #[test]
+    fn patches_reject_unknown_project_relationships() {
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let mut doc = AutoCommit::new();
+        CalDoc::seed(&mut doc, &model);
+        let unknown = Id::new_v4().to_string();
+        let event_id = model.events[0].id;
+        let task_id = model.tasks[0].id;
+        CalDoc::patch_event(
+            &mut doc,
+            event_id,
+            &crate::actions::EventPatch {
+                project: Some(unknown.clone()),
+                ..crate::actions::EventPatch::default()
+            },
+        );
+        CalDoc::patch_task(
+            &mut doc,
+            task_id,
+            &crate::actions::TaskPatch {
+                project: Some(unknown),
+                ..crate::actions::TaskPatch::default()
+            },
+        );
+        let back = CalDoc::read_model(&doc);
+        assert_eq!(
+            back.event(event_id).unwrap().project,
+            model.events[0].project
+        );
+        assert_eq!(back.task(task_id).unwrap().project, model.tasks[0].project);
     }
 }
