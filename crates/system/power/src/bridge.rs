@@ -37,6 +37,11 @@ pub enum PowerSignal {
     /// lock state and draw that state before acknowledging the sleep delay
     /// inhibitor; this is distinct from a policy-only lock request.
     PreparingForSleep,
+    /// A compositor-requested suspend could not be started. The compositor
+    /// must cancel any pre-sleep latch it was waiting to prepare; otherwise a
+    /// transient logind/polkit failure would strand the session behind its
+    /// lock screen even though the machine never slept.
+    SuspendFailed,
     /// Post a battery notification.
     Notify(PowerNotification),
     /// The machine just resumed from sleep — reset the idle timer so it does
