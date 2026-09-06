@@ -88,12 +88,12 @@ impl QuickSettingsRoot {
     // control has a 16px leading/trailing inset. These are intentionally
     // shared rather than nudged per widget so 1:1 rendering stays aligned.
     const HEADER: f64 = 40.0;
-    // Four destination actions are deliberately icon-only.  Their old
-    // vertical icon-and-caption treatment turned a single utility row into
-    // a competing second header (and made translated captions collide at
-    // common laptop widths).  The accessible name remains explicit, while
-    // the visible row stays recognisably in the original compact qOS style.
-    const ACTIONS: f64 = 44.0;
+    // Utilities deliberately remain in a labelled top action area.  A
+    // footer of bare glyphs made core actions (especially Power) hard to
+    // discover and visually disconnected from the controls they affect.
+    // The compact icon-over-label treatment keeps their meaning visible
+    // without turning them into a second dashboard.
+    const ACTIONS: f64 = 58.0;
     const SLIDERS: f64 = 72.0;
     const CARD: f64 = 70.0;
     const GAP: f64 = 8.0;
@@ -127,7 +127,13 @@ impl QuickSettingsRoot {
         self.keyboard_focus = Some(0);
     }
     pub fn set_layout_text_scale(&mut self, scale: f32) {
-        self.layout_scale = f64::from(scale).clamp(1.0, 2.0);
+        // Text itself follows the user's full scale.  The surrounding shell
+        // geometry deliberately stops growing at 120%: scaling every pad,
+        // gap and card to 130% or 200% pushes the last essential control
+        // below an 800×600 desktop even though its label still fits.  The
+        // retained 20% row headroom keeps the two-line cards legible while
+        // preserving the whole popover as a single, usable panel.
+        self.layout_scale = f64::from(scale).clamp(1.0, 1.2);
     }
     fn scaled(&self, value: f64) -> f64 {
         value * self.layout_scale
@@ -933,11 +939,11 @@ impl QuickSettingsRoot {
         state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
-        // Destinations stay first, in the place established by the original
-        // compact shell, instead of being hidden behind unexplained footer
-        // glyphs.
-        let mut action_tooltip = None;
-        for (i, (icon, accessible, tooltip)) in [
+        // Destinations remain at the top, in the place established by the
+        // original GNOME-inspired shell, rather than becoming unexplained
+        // footer glyphs.  The visible label is part of the control: a
+        // tooltip or accessibility tree is not sufficient discoverability.
+        for (i, (icon, accessible, label)) in [
             (ui::icons::Icon::Settings2, "Open Settings", "Settings"),
             (ui::icons::Icon::Shield, "Privacy controls", "Privacy"),
             (ui::icons::Icon::History, "Notification history", "History"),
@@ -959,9 +965,6 @@ impl QuickSettingsRoot {
                     .focused(self.keyboard_focus == Some(i + 1))
                     .accessible_name(accessible),
             );
-            if hovered {
-                action_tooltip = Some((tooltip, r));
-            }
             let color = if power {
                 colors.semantic.danger
             } else {
@@ -972,19 +975,43 @@ impl QuickSettingsRoot {
                 transform,
                 Rect::new(
                     r.center().x - 9.,
-                    r.center().y - 9.,
+                    r.y0 + self.scaled(8.),
                     r.center().x + 9.,
-                    r.center().y + 9.,
+                    r.y0 + self.scaled(26.),
                 ),
                 icon,
                 color,
                 1.5,
             );
-            // The name is intentionally not painted beside the glyph.  A
-            // four-up row only has ~80 px per target at a normal desktop
-            // width; text there either truncates or crowds the icon.  The
-            // button's accessible name is the canonical label and the
-            // stable semantic icon makes the visual action row scannable.
+            // These four labels are fixed, high-value shell destinations.
+            // Keep every word intact; at an unusually large text scale we
+            // reduce this one caption before we truncate its meaning.
+            let max_label_width = (r.width() - self.scaled(8.)).max(1.);
+            let label_size = theme.tokens.typography.scale.xs;
+            let (unscaled_label_width, _) =
+                text.measure_weighted(label, label_size, None, TextWeight::Medium);
+            let label_size = if f64::from(unscaled_label_width) > max_label_width {
+                label_size * f32v(max_label_width / f64::from(unscaled_label_width))
+            } else {
+                label_size
+            };
+            let (label_width, _) =
+                text.measure_weighted(label, label_size, None, TextWeight::Medium);
+            text.draw_text_weighted(
+                scene,
+                label,
+                label_size,
+                color,
+                transform.pre_translate(
+                    (
+                        r.center().x - f64::from(label_width) / 2.,
+                        r.y0 + self.scaled(46.),
+                    )
+                        .into(),
+                ),
+                None,
+                TextWeight::Medium,
+            );
         }
         let sliders = Rect::new(
             self.panel.x0 + self.scaled(Self::PAD),
@@ -1126,15 +1153,6 @@ impl QuickSettingsRoot {
             colors.text_dim,
             1.5,
         );
-        if let Some((label, anchor)) = action_tooltip {
-            // The compact top actions intentionally avoid permanent captions;
-            // a hover label restores immediate discoverability without
-            // turning the utility row back into a second header. Keyboard
-            // users receive the same names through the focus ring and a11y.
-            ui::widget::tooltip::draw_hover_tooltip(
-                scene, transform, text, theme, anchor, label, self.panel,
-            );
-        }
     }
     fn draw_control(
         &self,
@@ -1675,6 +1693,35 @@ mod tests {
         assert_eq!(full.x0, panel.x0 + QuickSettingsRoot::PAD);
         assert_eq!(full.x1, panel.x1 - QuickSettingsRoot::PAD);
         assert_eq!(full.width(), 368.);
+    }
+    #[test]
+    fn labelled_top_utilities_keep_independent_touch_targets() {
+        let mut root = QuickSettingsRoot::default();
+        root.panel = Rect::new(0., 48., 400., 520.);
+        let actions: Vec<_> = (0..4).map(|index| root.action(index)).collect();
+        for action in &actions {
+            assert!(action.width() >= 44. && action.height() >= 44.);
+        }
+        for (index, action) in actions.iter().enumerate() {
+            for earlier in &actions[..index] {
+                let overlap = action.intersect(*earlier);
+                assert!(overlap.width() <= 0. || overlap.height() <= 0.);
+            }
+        }
+    }
+    #[test]
+    fn large_text_keeps_the_complete_root_panel_on_an_800_by_600_desktop() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        root.set_layout_text_scale(1.3);
+        // The panel begins below the 48px top bar and must leave the shell's
+        // 16px lower margin intact.  This catches accidental scaling of
+        // whitespace that hides the power profile at common laptop sizes.
+        assert!(root.preferred_height(&state) <= 536.);
+        let panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
+        assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
     }
     #[test]
     fn edit_catalogue_does_not_offer_unavailable_mobile_data() {
