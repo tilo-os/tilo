@@ -250,6 +250,9 @@ type SyncWorkerResult = (
 )]
 pub struct CalendarApp {
     model: Model,
+    /// Plain-text projection of each rich note for global search. The CRDT
+    /// remains canonical; this is a refreshed, local indexing cache only.
+    note_search: HashMap<String, String>,
     today: NaiveDate,
     anchor: NaiveDate,
     view: View,
@@ -447,6 +450,7 @@ impl CalendarApp {
         let task_priority_choice = LocalState::new(String::new());
         Self {
             model,
+            note_search: HashMap::new(),
             today,
             anchor: today,
             view: View::Month,
@@ -454,7 +458,7 @@ impl CalendarApp {
             selection,
             detail_open,
             accounts,
-            notes_editor: BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER),
+            notes_editor: Self::new_notes_editor(),
             bound: None,
             seeded: false,
             title_input: TextInput::local()
@@ -1078,6 +1082,41 @@ impl CalendarApp {
         &mut self.notes_editor
     }
 
+    fn new_notes_editor() -> BlockEditor {
+        let mut editor = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
+        editor.set_action_interception(true);
+        editor
+    }
+
+    /// Convert the editor's UUID-addressed delta into the sole Calendar
+    /// mutation path. A refused stale/deleted target is reconciled from the
+    /// document and announced through the visible status message.
+    fn dispatch_note_ops(&mut self, doc: &mut AutoCommit, ops: Vec<ui::widget::BlockEditOp>) {
+        if ops.is_empty() {
+            return;
+        }
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let owner = match selection {
+            Sel::Event(id) => crate::actions::NoteOwner::Event { id: id.to_string() },
+            Sel::Task(id) => crate::actions::NoteOwner::Task { id: id.to_string() },
+        };
+        let action = crate::actions::CalendarAction::ApplyNoteOps { owner, ops };
+        if let Err(error) = self.actions.try_dispatch_with_context(
+            doc,
+            crate::actions::CALENDAR_ACTION_TYPE,
+            &action,
+            crate::actions::history_context(&action),
+        ) {
+            self.status = Some(format!("Couldn't edit notes: {error}"));
+            self.notes_editor = Self::new_notes_editor();
+            self.bound = None;
+            self.ensure_bound(doc);
+        }
+        self.dirty = true;
+    }
+
     // --- CRDT plumbing ---------------------------------------------------
 
     fn notes_list_for(doc: &mut AutoCommit, sel: Sel) -> Option<ObjId> {
@@ -1085,6 +1124,17 @@ impl CalendarApp {
             Sel::Event(id) => CalDoc::event_notes(doc, id),
             Sel::Task(id) => CalDoc::task_notes(doc, id),
         }
+    }
+
+    fn refresh_note_search(&mut self, doc: &AutoCommit) {
+        let mut notes = HashMap::new();
+        for event in &self.model.events {
+            notes.insert(event.id.to_string(), CalDoc::note_text(doc, true, event.id));
+        }
+        for task in &self.model.tasks {
+            notes.insert(task.id.to_string(), CalDoc::note_text(doc, false, task.id));
+        }
+        self.note_search = notes;
     }
 
     fn seed_demo_notes(&self, doc: &mut AutoCommit) {
@@ -1129,7 +1179,7 @@ impl CalendarApp {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
+                    self.notes_editor = Self::new_notes_editor();
                     self.bound = None;
                 }
                 return;
@@ -1139,7 +1189,7 @@ impl CalendarApp {
             return;
         }
         if let Some(list) = Self::notes_list_for(doc, sel) {
-            let mut ed = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
+            let mut ed = Self::new_notes_editor();
             ed.bind_blocks(doc, list);
             // Install the freshly-bound editor through the single notes-editor
             // seam (the swap-point for the shared WYSIWYG editor).
@@ -1344,6 +1394,24 @@ impl CalendarApp {
                     .collect(),
             })
             .collect();
+        let projects = self
+            .model
+            .projects
+            .iter()
+            .map(|project| crate::actions::ProjectResource {
+                data: crate::actions::ProjectData::from_project(project),
+                in_use: self
+                    .model
+                    .events
+                    .iter()
+                    .any(|event| event.project == Some(project.id))
+                    || self
+                        .model
+                        .tasks
+                        .iter()
+                        .any(|task| task.project == Some(project.id)),
+            })
+            .collect();
         // Keep the resource tree's available destinations identical to the
         // editor's selector: a local calendar plus real collections discovered
         // in the shared accounts store. Account configuration remains in
@@ -1374,6 +1442,7 @@ impl CalendarApp {
             new_event: crate::actions::EventData::from_event(&template),
             events,
             tasks,
+            projects,
             calendar_targets,
             task_project_targets,
             can_sync: self.demo || !self.accounts.is_empty(),
@@ -2823,7 +2892,15 @@ impl CalendarApp {
             ),
             Action::Sync => (
                 "calendar.sync".into(),
-                "Sync calendars".into(),
+                if self
+                    .status
+                    .as_deref()
+                    .is_some_and(|status| status.starts_with("Sync failed"))
+                {
+                    "Retry calendar synchronization".into()
+                } else {
+                    "Sync calendars".into()
+                },
                 Role::Button,
                 AccessState::new().focusable(true).disabled(self.syncing),
             ),
@@ -3859,7 +3936,7 @@ impl CalendarApp {
                     );
                     tr.draw_text(
                         scene,
-                        "EVENT",
+                        "EVENT · SAVES AUTOMATICALLY",
                         11.0,
                         c.text_dim,
                         t * Affine::translate((x + 20.0, y + 2.0)),
@@ -4483,6 +4560,7 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         content_x0: f64,
+        hits: &mut Vec<(Rect, Action)>,
     ) {
         if let Some(msg) = &self.status {
             let c = &theme.tokens.colors;
@@ -4503,6 +4581,30 @@ impl CalendarApp {
                 t * Affine::translate((pill.x0 + 12.0, pill.center().y - 7.0)),
                 None,
             );
+            // An error must offer its recovery at the point where it is
+            // explained. Reusing the canonical Sync action keeps pointer,
+            // keyboard, screen-reader and resource-operation retry on one
+            // execution path instead of presenting inert advice.
+            if msg.starts_with("Sync failed") {
+                let retry = Rect::new(pill.x1 + 8.0, pill.y0, pill.x1 + 68.0, pill.y1);
+                let hot = retry.contains(self.last_mouse);
+                fill_round(
+                    scene,
+                    t,
+                    if hot { c.accent[5] } else { c.accent[4] },
+                    retry,
+                    8.0,
+                );
+                tr.draw_text(
+                    scene,
+                    "Retry",
+                    12.0,
+                    c.on_accent(4.5),
+                    t * Affine::translate((retry.x0 + 12.0, retry.center().y - 7.0)),
+                    None,
+                );
+                hits.push((retry, Action::Sync));
+            }
         }
     }
 
@@ -4869,6 +4971,7 @@ impl CalendarApp {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
             if let Some(n) = self.editor_node {
+                self.notes_editor.begin_action_intercept();
                 self.notes_editor.handle_event(
                     event,
                     scale_factor,
@@ -4880,6 +4983,8 @@ impl CalendarApp {
                     n,
                     taffy,
                 );
+                let ops = self.notes_editor.take_intercepted_ops();
+                self.dispatch_note_ops(state, ops);
             }
             self.dirty = true;
             return true;
@@ -5037,6 +5142,25 @@ impl Widget for CalendarApp {
                 }
                 self.select_task(id);
             }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CalendarOperation::OpenProject { id },
+            ) => {
+                let id = id
+                    .parse::<Id>()
+                    .map_err(|_| "invalid project id".to_string())?;
+                if self.model.project(id).is_none() {
+                    return Err("project no longer exists".to_string());
+                }
+                self.list_sel = ListSel::Project(id);
+                // Opening a project is presentation-only. It must not route
+                // through Back/Close because those deliberately discard a
+                // pristine new-event draft via a durable delete action.
+                self.detail_open = false;
+                self.selection = None;
+                self.narrow_screen = NarrowScreen::Calendar;
+                self.blur_editor();
+            }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
                 self.view = View::Month;
             }
@@ -5144,7 +5268,10 @@ impl Widget for CalendarApp {
     /// Every hit addresses the matching resource's exported `open` view action.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(
-            crate::search_provider::CalendarSearchProvider::new(&self.model),
+            crate::search_provider::CalendarSearchProvider::new_with_notes(
+                &self.model,
+                &self.note_search,
+            ),
         )]
     }
 
@@ -5198,6 +5325,7 @@ impl Widget for CalendarApp {
             self.model_heads = heads;
         }
         self.ensure_bound(state);
+        self.refresh_note_search(state);
         // Seed the form's title/location/time widgets from the current event
         // whenever the selection changes.
         self.ensure_form_bound();
@@ -5406,7 +5534,14 @@ impl Widget for CalendarApp {
             {
                 Self::draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
             }
-            self.draw_status(scene, t, text_renderer, theme, self.content_rect.x0);
+            self.draw_status(
+                scene,
+                t,
+                text_renderer,
+                theme,
+                self.content_rect.x0,
+                &mut hits,
+            );
         }
 
         if detail_drawn {
@@ -5605,6 +5740,7 @@ impl Widget for CalendarApp {
         // Forward remaining events (key typing, mouse move) to the editor
         // when the notes panel is active so editing works.
         if editor_active && let Some(n) = self.editor_node {
+            self.notes_editor.begin_action_intercept();
             self.notes_editor.handle_event(
                 event,
                 scale_factor,
@@ -5616,6 +5752,8 @@ impl Widget for CalendarApp {
                 n,
                 taffy,
             );
+            let ops = self.notes_editor.take_intercepted_ops();
+            self.dispatch_note_ops(state, ops);
         }
         self.dirty = true;
     }
@@ -5653,6 +5791,19 @@ impl Widget for CalendarApp {
                 AccessNode::new(Role::StaticText)
                     .with_name("Synchronizing calendars")
                     .with_live(ui::a11y::Politeness::Polite),
+            );
+        }
+        if let Some(status) = &self.status {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(status.clone())
+                    .with_live(ui::a11y::Politeness::Polite),
+            );
+        }
+        if self.detail_open && matches!(self.selection, Some(Sel::Event(_))) {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Event editor. Changes save automatically."),
             );
         }
         Some(root)

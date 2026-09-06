@@ -28,6 +28,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use chrono::{NaiveDate, NaiveDateTime};
+use ui::widget::{BlockEditOp, legacy_block_id};
 
 use crate::model::{Event, Id, Model, Palette, Priority, Project, Recurrence, Task};
 
@@ -103,6 +104,12 @@ impl CalDoc {
         let _ = doc.put(m, "cal", e.calendar_id.clone().unwrap_or_default());
     }
 
+    fn write_project_fields(doc: &mut AutoCommit, m: &ObjId, project: &Project) {
+        let _ = doc.put(m, "name", project.name.as_str());
+        let _ = doc.put(m, "color", project.color.index() as i64);
+        let _ = doc.put(m, "order", i64::from(project.order));
+    }
+
     fn write_task_fields(doc: &mut AutoCommit, m: &ObjId, t: &Task) {
         let _ = doc.put(m, "title", t.title.as_str());
         let _ = doc.put(m, "done", t.done);
@@ -126,6 +133,47 @@ impl CalDoc {
         let events = Self::map_at(doc, "events");
         let m = Self::ensure_child(doc, &events, &e.id.to_string());
         Self::write_event_fields(doc, &m, e);
+    }
+
+    /// Create or replace a complete project during creation/import. Ordinary
+    /// edits should use [`Self::patch_project`] so independently changed
+    /// registers converge without a stale snapshot clobbering them.
+    pub fn update_project(doc: &mut AutoCommit, project: &Project) {
+        let projects = Self::map_at(doc, "projects");
+        let item = Self::ensure_child(doc, &projects, &project.id.to_string());
+        Self::write_project_fields(doc, &item, project);
+    }
+
+    /// Apply just the named project registers. Missing/deleted projects never
+    /// get recreated by a late field edit.
+    pub fn patch_project(doc: &mut AutoCommit, id: Id, patch: &crate::actions::ProjectPatch) {
+        let projects = Self::map_at(doc, "projects");
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&projects, id.to_string().as_str())
+        else {
+            return;
+        };
+        if let Some(name) = &patch.name
+            && !name.trim().is_empty()
+        {
+            let _ = doc.put(&item, "name", name.as_str());
+        }
+        if let Some(color) = patch.color
+            && color < Palette::ALL.len()
+        {
+            let _ = doc.put(&item, "color", color as i64);
+        }
+        if let Some(order) = patch.order {
+            let _ = doc.put(&item, "order", i64::from(order));
+        }
+    }
+
+    /// Delete one project after its action-level relationship check. The
+    /// scalar references stay validated at the action boundary, so this
+    /// low-level helper is deliberately idempotent.
+    pub fn delete_project(doc: &mut AutoCommit, id: Id) {
+        let projects = Self::map_at(doc, "projects");
+        let _ = doc.delete(&projects, id.to_string().as_str());
     }
 
     /// Whether `project` is absent or names a project currently represented in
@@ -459,6 +507,71 @@ impl CalDoc {
         Some(Self::ensure_notes_list(doc, &m))
     }
 
+    /// Plain text projection used exclusively for local search indexing. It
+    /// never creates a notes list, so indexing cannot mutate a shared doc.
+    pub fn note_text(doc: &AutoCommit, event_owner: bool, id: Id) -> String {
+        let parent = if event_owner { "events" } else { "tasks" };
+        let Ok(Some((Value::Object(ObjType::Map), items))) = doc.get(&ROOT, parent) else {
+            return String::new();
+        };
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&items, id.to_string().as_str())
+        else {
+            return String::new();
+        };
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&item, "notes") else {
+            return String::new();
+        };
+        (0..doc.length(&list))
+            .filter_map(|index| {
+                let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&list, index) else {
+                    return None;
+                };
+                let Ok(Some((Value::Object(ObjType::Text), text))) = doc.get(&block, "text") else {
+                    return None;
+                };
+                doc.text(&text).ok()
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Apply one action-owned semantic note delta.  UUIDs, never list
+    /// indexes, identify existing blocks; a stale operation therefore fails
+    /// safely instead of applying to a neighbour after a concurrent insert.
+    /// # Errors
+    ///
+    /// Returns an error if the owner or its note block cannot be found, an
+    /// operation names an invalid UUID or kind, or a text splice is not on a
+    /// Unicode scalar boundary.
+    pub fn apply_note_ops(
+        doc: &mut AutoCommit,
+        event_owner: bool,
+        id: Id,
+        ops: &[BlockEditOp],
+    ) -> Result<(), String> {
+        let parent = if event_owner { "events" } else { "tasks" };
+        let Ok(Some((Value::Object(ObjType::Map), items))) = doc.get(&ROOT, parent) else {
+            return Err("note owner no longer exists".into());
+        };
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&items, id.to_string().as_str())
+        else {
+            return Err("note owner no longer exists".into());
+        };
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&item, "notes") else {
+            return Err("note document no longer exists".into());
+        };
+        // The widget only derives legacy IDs while action interception is
+        // enabled. Persist that deterministic migration here, inside the
+        // owner action's one durable mutation path.
+        ensure_note_block_ids(doc, &list)?;
+        for op in ops {
+            apply_note_op(doc, &list, op)?;
+        }
+        Ok(())
+    }
+
     /// Seed an item's notes list with markdown-ish lines if it is still
     /// empty. Each line becomes a `paragraph` block. Lets the demo show
     /// real rich-text notes on first paint without a user typing.
@@ -729,6 +842,191 @@ impl CalDoc {
     }
 }
 
+fn note_block_index(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
+    (0..doc.length(list)).find(|index| {
+        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, *index) else {
+            return false;
+        };
+        get_str(doc, &block, "id") == id
+    })
+}
+
+fn ensure_note_block_ids(doc: &mut AutoCommit, list: &ObjId) -> Result<(), String> {
+    for index in 0..doc.length(list) {
+        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(list, index) else {
+            return Err("note block no longer exists".into());
+        };
+        if uuid::Uuid::parse_str(&get_str(doc, &block, "id")).is_ok() {
+            continue;
+        }
+        let kind = get_str(doc, &block, "kind");
+        let text = match doc.get(&block, "text") {
+            Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).unwrap_or_default(),
+            _ => return Err("note text no longer exists".into()),
+        };
+        let id = legacy_block_id(list, index, &kind, &text);
+        doc.put(&block, "id", id.as_str())
+            .map_err(|_| "note document no longer exists")?;
+    }
+    Ok(())
+}
+
+fn note_block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)> {
+    let index = note_block_index(doc, list, id)?;
+    match doc.get(list, index) {
+        Ok(Some((Value::Object(ObjType::Map), block))) => Some((index, block)),
+        _ => None,
+    }
+}
+
+fn note_kind_is_valid(kind: &str) -> bool {
+    matches!(
+        kind,
+        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+    ) || kind
+        .strip_prefix("bullet:")
+        .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
+        || kind
+            .strip_prefix("numbered:")
+            .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
+        || kind.strip_prefix("checklist:").is_some_and(|rest| {
+            let mut parts = rest.split(':');
+            parts
+                .next()
+                .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
+                && matches!(parts.next(), Some("0" | "1"))
+                && parts.next().is_none()
+        })
+        || kind.starts_with("code:")
+}
+
+fn insert_note_block(
+    doc: &mut AutoCommit,
+    list: &ObjId,
+    index: usize,
+    id: &str,
+    kind: &str,
+    text: &str,
+) -> Result<(), String> {
+    if uuid::Uuid::parse_str(id).is_err() || !note_kind_is_valid(kind) {
+        return Err("note operation is invalid".into());
+    }
+    let block = doc
+        .insert_object(list, index.min(doc.length(list)), ObjType::Map)
+        .map_err(|_| "note document no longer exists")?;
+    doc.put(&block, "id", id)
+        .map_err(|_| "note document no longer exists")?;
+    doc.put(&block, "kind", kind)
+        .map_err(|_| "note document no longer exists")?;
+    let text_obj = doc
+        .put_object(&block, "text", ObjType::Text)
+        .map_err(|_| "note document no longer exists")?;
+    if !text.is_empty() {
+        doc.splice_text(&text_obj, 0, 0, text)
+            .map_err(|_| "note text could not be written")?;
+    }
+    Ok(())
+}
+
+fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result<(), String> {
+    match op {
+        BlockEditOp::Insert {
+            block_id,
+            after,
+            kind,
+            text,
+        } => {
+            if note_block_index(doc, list, block_id).is_some() {
+                return Err("note block already exists".into());
+            }
+            let index = match after {
+                Some(after) => note_block_index(doc, list, after)
+                    .map(|i| i.saturating_add(1))
+                    .ok_or_else(|| "note predecessor no longer exists".to_string())?,
+                None => 0,
+            };
+            insert_note_block(doc, list, index, block_id, kind, text)
+        }
+        BlockEditOp::Delete { block_id } => {
+            let (index, _) = note_block_map(doc, list, block_id)
+                .ok_or_else(|| "note block no longer exists".to_string())?;
+            doc.delete(list, index)
+                .map_err(|_| "note document no longer exists".into())
+        }
+        BlockEditOp::SetKind { block_id, kind } => {
+            if !note_kind_is_valid(kind) {
+                return Err("note kind is invalid".into());
+            }
+            let (_, block) = note_block_map(doc, list, block_id)
+                .ok_or_else(|| "note block no longer exists".to_string())?;
+            doc.put(&block, "kind", kind.as_str())
+                .map_err(|_| "note document no longer exists".into())
+        }
+        BlockEditOp::SetChecklist { block_id, done } => {
+            let (_, block) = note_block_map(doc, list, block_id)
+                .ok_or_else(|| "note block no longer exists".to_string())?;
+            let old = get_str(doc, &block, "kind");
+            let Some((prefix, _)) = old.rsplit_once(':') else {
+                return Err("note block is not a checklist".into());
+            };
+            if !prefix.starts_with("checklist:") {
+                return Err("note block is not a checklist".into());
+            }
+            doc.put(&block, "kind", format!("{prefix}:{}", i32::from(*done)))
+                .map_err(|_| "note document no longer exists".into())
+        }
+        BlockEditOp::TextSplice {
+            block_id,
+            start,
+            end,
+            text,
+        } => {
+            let (_, block) = note_block_map(doc, list, block_id)
+                .ok_or_else(|| "note block no longer exists".to_string())?;
+            let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text") else {
+                return Err("note text no longer exists".into());
+            };
+            let current = doc
+                .text(&text_obj)
+                .map_err(|_| "note text no longer exists")?;
+            if start > end
+                || *end > current.len()
+                || !current.is_char_boundary(*start)
+                || !current.is_char_boundary(*end)
+            {
+                return Err("note splice is not on a character boundary".into());
+            }
+            let deleted = isize::try_from(end.saturating_sub(*start))
+                .map_err(|_| "note splice is too large")?;
+            doc.splice_text(&text_obj, *start, deleted, text)
+                .map_err(|_| "note text could not be written".into())
+        }
+        BlockEditOp::Move { block_id, after } => {
+            if after.as_deref() == Some(block_id.as_str()) {
+                return Err("note block cannot follow itself".into());
+            }
+            let (old_index, block) = note_block_map(doc, list, block_id)
+                .ok_or_else(|| "note block no longer exists".to_string())?;
+            let kind = get_str(doc, &block, "kind");
+            let text = match doc.get(&block, "text") {
+                Ok(Some((Value::Object(ObjType::Text), text))) => {
+                    doc.text(&text).unwrap_or_default()
+                }
+                _ => return Err("note text no longer exists".into()),
+            };
+            doc.delete(list, old_index)
+                .map_err(|_| "note document no longer exists")?;
+            let index = match after {
+                Some(after) => note_block_index(doc, list, after)
+                    .map(|i| i.saturating_add(1))
+                    .ok_or_else(|| "note predecessor no longer exists".to_string())?,
+                None => 0,
+            };
+            insert_note_block(doc, list, index, block_id, &kind, &text)
+        }
+    }
+}
+
 fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
@@ -966,5 +1264,64 @@ mod tests {
             model.events[0].project
         );
         assert_eq!(back.task(task_id).unwrap().project, model.tasks[0].project);
+    }
+
+    #[test]
+    fn note_ops_are_uuid_addressed_unicode_safe_and_refuse_stale_blocks() {
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let id = model.events[0].id;
+        let mut doc = AutoCommit::new();
+        CalDoc::seed(&mut doc, &model);
+        let block = uuid::Uuid::new_v4().to_string();
+        CalDoc::apply_note_ops(
+            &mut doc,
+            true,
+            id,
+            &[BlockEditOp::Insert {
+                block_id: block.clone(),
+                after: None,
+                kind: "paragraph".into(),
+                text: "café".into(),
+            }],
+        )
+        .unwrap();
+        CalDoc::apply_note_ops(
+            &mut doc,
+            true,
+            id,
+            &[BlockEditOp::TextSplice {
+                block_id: block.clone(),
+                start: 3,
+                end: 5,
+                text: "e".into(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(CalDoc::note_text(&doc, true, id), "cafe");
+        assert!(
+            CalDoc::apply_note_ops(
+                &mut doc,
+                true,
+                id,
+                &[BlockEditOp::Delete {
+                    block_id: block.clone()
+                }],
+            )
+            .is_ok()
+        );
+        assert!(
+            CalDoc::apply_note_ops(
+                &mut doc,
+                true,
+                id,
+                &[BlockEditOp::TextSplice {
+                    block_id: block,
+                    start: 0,
+                    end: 0,
+                    text: "x".into()
+                }],
+            )
+            .is_err()
+        );
     }
 }
