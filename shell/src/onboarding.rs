@@ -2,16 +2,18 @@
 //!
 //! A signing identity appears on a qOS machine the first time someone
 //! logs in; this module is the ceremony that puts a name and a
-//! consequence on it, rather than letting it appear silently. Three
-//! short screens, one real decision: what the identity enables;
-//! **that there is no recovery**, acknowledged explicitly; and
-//! where the key ended up, with its fingerprint.
+//! consequence on it, rather than letting it appear silently. Four short
+//! steps make the important decisions explicit: what the identity enables;
+//! **that there is no escrow or reset service**, acknowledged explicitly;
+//! a deliberate encrypted portable-backup choice; and a concise hand-off.
 //!
 //! qOS mints a personal Ed25519 root plus a distinct device key certified
 //! by that root, with no escrow or recovery phrase. `threshold-identity`
-//! implements share-based recovery but isn't wired into this path, so the
-//! only true thing to tell a user is that losing every local key and encrypted
-//! portable backup loses the identity. The copy in
+//! implements share-based recovery only after a genuine multi-device
+//! ceremony; this path creates a single-device identity, whose actual
+//! recovery material is an encrypted portable backup. The only true thing to
+//! tell a user is that losing every local key and that backup loses the
+//! identity. The copy in
 //! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
