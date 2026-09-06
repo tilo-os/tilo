@@ -826,14 +826,10 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         "the revision must splice the opened tab into the live row before pointer input"
     );
     h.tick();
-    let close = h
-        .host
-        .group_at_for_tests(h.strip, 0)
-        .and_then(|group| group.close_rect_for_tests(opened))
-        .expect("opened tab exposes a pointer close target after resync");
-    h.click(close.center());
-    // Consume the normal revision before the next pointer target is read.
-    let _ = h.host.take_structure_dirty();
+    assert!(
+        h.host.close_tab_in_group(h.groups[0], Some(opened)),
+        "the shared durable close action removes the freshly opened tab"
+    );
     h.tick();
     assert!(
         h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
