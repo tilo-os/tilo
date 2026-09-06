@@ -1,2 +1,0 @@
-/home/xaver/qos/target/ui-perf-comparison/ui-perf-solid-fuse-20260906 17359872 bytes
-/home/xaver/qos/target/ui-perf-comparison/shell-redraw-solid-fuse-20260906 33462240 bytes

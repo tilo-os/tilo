@@ -11,9 +11,9 @@ Requested does not mean applied: unsupported paths fall back, and the harnesses
 print selection/support counters. Shader selection is not evidence of fewer
 copies, lower GPU memory, faster completion, or successful presentation.
 
-The [benchmark guide](ui-performance-benchmark.md) contains commands; the
-[current-main comparison](benchmarks/2026-09-06-current-main/RESULTS.md) contains
-the preserved measurements and their limitations. Those measurements predate
+The [benchmark guide](ui-performance-benchmark.md) contains commands. Historical
+measurements and their limitations remain in Git history at `f780ae5c0`, under
+`docs/benchmarks/2026-09-06-current-main/`. Those measurements predate
 the latest-main integration; they are not fresh measurements of this merge.
 No flag combination has established constant 60 fps on a 2010 laptop at 4K.
 

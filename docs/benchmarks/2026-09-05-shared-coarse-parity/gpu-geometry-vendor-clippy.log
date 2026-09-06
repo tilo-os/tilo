@@ -1,7 +1,0 @@
-Command: cargo clippy -p vello --lib --locked --no-deps -- -D warnings
-Exit code: 0
-
-   Compiling vello_shaders v0.9.0 (/home/xaver/qos/vendor/vello_shaders)
-    Checking vello v0.9.0 (/home/xaver/qos/vendor/vello)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.97s
-

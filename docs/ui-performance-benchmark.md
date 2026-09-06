@@ -8,11 +8,15 @@ offscreen VM cannot measure its compositor.
 
 See [Performance controls](performance-flags.md) for every qOS rendering and
 benchmark flag, defaults, value parsing, dependencies, and diagnostic caveats.
-The [2026-09-06 current-main comparison](benchmarks/2026-09-06-current-main/RESULTS.md)
+The archived 2026-09-06 current-main comparison
 supersedes the older matrices below for that recorded source/binary snapshot;
 it is not a measurement of the subsequent latest-main integration.
 The [integration validation record](performance-integration-validation.md)
 separates current correctness checks and outstanding gates from those timings.
+
+Raw benchmark archives were removed from this branch. Archive paths below
+refer to Git history at `f780ae5c0`; for example, recover the current-main matrix
+with `git show f780ae5c0:docs/benchmarks/2026-09-06-current-main/RESULTS.md`.
 
 ## Acceptance commands
 
@@ -2022,8 +2026,8 @@ undetermined, and neither incomplete run is promoted to an acceptance result.
 The one-second deadline is not relaxed. The earlier completed 281.109 ms
 baseline remains recorded, but does not erase these later failures.
 
-Portable raw logs for this follow-up are also committed under
-[`docs/benchmarks/2026-09-05-zero-gradient`](benchmarks/2026-09-05-zero-gradient/):
+Portable raw logs for this follow-up were recorded under
+`docs/benchmarks/2026-09-05-zero-gradient/` (now in Git history):
 the complete UI A/B/resource/idle/pixel outputs, both shell diagnostics, and
 both incomplete unprofiled shell runs. The UI allocation improvement is
 established; the 30 ms UI p99, 8 ms shell mean, physical scanout, and 2010
@@ -2081,16 +2085,16 @@ the timed benchmark does not. Normal benchmark animations remain wall-clock
 driven, so faster execution can naturally sample different animation phases
 from an older binary even with the unchanged action stream.
 
-The predeclared measurement protocol and raw validation results are in
-[`docs/benchmarks/2026-09-05-retained-shell`](benchmarks/2026-09-05-retained-shell/).
+The predeclared measurement protocol and raw validation results are archived in
+Git history under `docs/benchmarks/2026-09-05-retained-shell/`.
 
 ### Default-release measurements and retained failures
 
 The production release artifact was built once with the ordinary repository
 profile and target settings. Subsequent source changes before this report were
 test-only lint fixes and a standalone debug probe; they did not change either
-measured production path. Commands, exit codes, and artifact hashes are retained
-in the [evidence directory](benchmarks/2026-09-05-retained-shell/).
+measured production path. Commands, exit codes, and artifact hashes remain in
+Git history under `docs/benchmarks/2026-09-05-retained-shell/`.
 
 The original predeclared shell trials do **not** establish acceptance: the
 previous committed control times out at sample index 357, and all three
@@ -2216,7 +2220,7 @@ made by these focused checks.
 
 ## Native shell dispatch follow-up: evidence, no new optimization promoted
 
-The [dispatch follow-up evidence](benchmarks/2026-09-05-shell-dispatch/README.md)
+The dispatch follow-up (archived at `docs/benchmarks/2026-09-05-shell-dispatch/README.md`)
 adds opt-in, submission-matched GPU stage reporting to the real native-4K
 1,000-action shell harness. Missing/stale/failed samples stay visible, retries
 remain in whole-action latency, and instrumented or non-default direct-grid
@@ -2252,7 +2256,7 @@ physical 2010 hardware or KMS scanout.
 ## 2026-09-05: active native bins and the historical 20 ms question
 
 Protocol, exact commands, preserved hashes, all validation results and every
-trial are in [the active-bin record](benchmarks/2026-09-05-active-coarse-bins/README.md).
+trial are archived in `docs/benchmarks/2026-09-05-active-coarse-bins/README.md`.
 Both examples use unchanged ordinary release settings and native 3840×2160.
 No animation, action, sample count, AA tolerance, fence limit or acceptance
 gate was relaxed. Builds/tests did not overlap any measured process.

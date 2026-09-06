@@ -1,3 +1,0 @@
-$ rustfmt --check --edition 2024 shell/examples/redraw_bench.rs shell/src/compositor/backend/drm/paint.rs vendor/vello/src/lib.rs vendor/vello/src/render.rs && git diff --check
-
-EXIT_CODE=0
