@@ -1512,6 +1512,7 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::End => NamedKey::End,
             NamedKeyTag::PageUp => NamedKey::PageUp,
             NamedKeyTag::PageDown => NamedKey::PageDown,
+            NamedKeyTag::PrintScreen => NamedKey::PrintScreen,
             NamedKeyTag::Space => NamedKey::Space,
             NamedKeyTag::Shift => NamedKey::Shift,
             NamedKeyTag::Control => NamedKey::Control,

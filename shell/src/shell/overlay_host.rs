@@ -576,6 +576,19 @@ enum AccessibleOverlay {
     ShortcutHelp,
 }
 
+/// The result of asking whether the global Print Screen shortcut may change
+/// the desktop's modal stack. Capture is a temporary input owner: it may sit
+/// above an OOBE, portal, consent, or file-selection dialog, but it must not
+/// mutate that dialog's state. Escaping capture returns to the exact workflow
+/// the person was inspecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrintScreenArbitration {
+    /// Close only presentation-only chrome and enter Capture Studio.
+    OpenCapture,
+    /// Do not stack a second capture over an in-progress capture/markup flow.
+    Blocked(&'static str),
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -7549,6 +7562,84 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Decide the global screenshot shortcut before any modal gets a chance
+    /// to consume it.  This is intentionally a single policy point shared by
+    /// the early modal gate and ordinary keyboard routing: otherwise Print
+    /// Screen can behave differently merely because a dialog happened to be
+    /// first in the event-dispatch chain.
+    fn arbitrate_print_screen(&self) -> PrintScreenArbitration {
+        if self.screenshot_markup.is_some() || self.capture_studio.is_open() {
+            return PrintScreenArbitration::Blocked(
+                "Finish the current capture before taking another screenshot.",
+            );
+        }
+        PrintScreenArbitration::OpenCapture
+    }
+
+    /// Dismiss presentation-only chrome as one state transition before the
+    /// capture selector opens. Transactional surfaces stay mounted below it:
+    /// Capture Studio must be able to photograph a broken setup page, portal,
+    /// permission prompt, or credential error and then return to it intact.
+    fn dismiss_transient_chrome_for_capture(&mut self) {
+        self.palette_visible = false;
+        if self.shortcut_rebind.is_none() {
+            self.shortcut_rebind_message = None;
+        }
+        self.shortcut_guide_focus = None;
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        state.set_wheel_summon(None);
+        state.overlays.shortcut_help = false;
+        state.overlays.desktop_tour = false;
+        state.overlays.overview = false;
+        if state.quick_settings.wifi_password.is_none() {
+            state.overlays.quick_settings = false;
+        }
+        if state.editing_workspace_name.is_none()
+            && !self.workspace_settings_overlay.member_sheet_is_open()
+            && state.pending_grants.is_empty()
+        {
+            state.overlays.ws_settings = false;
+            state.overlays.collaborators = false;
+            state.overlays.room_activity = false;
+        }
+        state.bump();
+    }
+
+    /// Apply the Print Screen policy. Existing capture work is the only flow
+    /// that blocks a new capture; ordinary dialogs remain mounted below the
+    /// temporary Capture Studio input owner.
+    fn apply_print_screen_priority(&mut self) {
+        match self.arbitrate_print_screen() {
+            PrintScreenArbitration::OpenCapture => {
+                self.dismiss_transient_chrome_for_capture();
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            }
+            PrintScreenArbitration::Blocked(reason) => {
+                tracing::debug!(reason, "Print Screen deferred by modal workflow");
+            }
+        }
+    }
+
+    /// Returns `true` only for a Print Screen press.  It runs before modal
+    /// event gates; [`Self::apply_print_screen_priority`] is also used by the
+    /// normal keyboard dispatcher so the policy cannot drift.
+    fn handle_print_screen_priority(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ElementState::Pressed
+            || !matches!(key.logical_key, Key::Named(NamedKey::PrintScreen))
+        {
+            return false;
+        }
+        self.apply_print_screen_priority();
+        *handled = true;
+        true
+    }
+
     #[allow(
         clippy::items_after_statements,
         clippy::too_many_lines,
@@ -7576,11 +7667,11 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Print Screen is a desktop key, not application input. Keep it as a
-        // direct route into the same trusted Capture Studio used by
-        // Super+Shift+S and screenshot portal requests.
+        // The usual host event path handles this ahead of modal routing.
+        // Keep the same arbitration here for direct widget dispatch and any
+        // future backend that enters through this keyboard-only helper.
         if matches!(logical_key, Key::Named(NamedKey::PrintScreen)) {
-            let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            self.apply_print_screen_priority();
             *handled = true;
             return true;
         }
@@ -10071,7 +10162,14 @@ impl Widget for ShellOverlayHost {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         if let Some(onboarding) = self.onboarding.as_mut() {
-            let child = onboarding.build_layout(taffy, theme, node_map);
+            let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
+            // Setup remains an independent modal workflow, but Print Screen
+            // must be able to put Capture Studio above it without destroying
+            // the setup step.  Keep the capture node in this otherwise
+            // dedicated tree so the chooser has both geometry and an input
+            // target while OOBE is active.
+            let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+            self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
                     Style {
@@ -10081,9 +10179,9 @@ impl Widget for ShellOverlayHost {
                         },
                         ..Default::default()
                     },
-                    &[child],
+                    &[onboarding_node, capture_node],
                 )
-                .unwrap_or(child);
+                .unwrap_or(onboarding_node);
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
@@ -10245,6 +10343,13 @@ impl Widget for ShellOverlayHost {
             {
                 onboarding.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
             }
+            if let Some(capture_node) = self.capture_node {
+                self.capture_studio.apply_layout(
+                    taffy,
+                    capture_node,
+                    Point::new(self.rect.x0, self.rect.y0),
+                );
+            }
             return;
         }
         // One more pass if the card sized against a stale host width;
@@ -10369,6 +10474,8 @@ impl Widget for ShellOverlayHost {
     ) {
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.capture_studio
+                .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
         // The root needs the active text scale before any of its popover
@@ -10423,6 +10530,39 @@ impl Widget for ShellOverlayHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Print Screen has an explicit arbitration policy. It must run before
+        // OOBE, portal and consent gates so Capture Studio can temporarily
+        // own input above those preserved workflows instead of being consumed
+        // by whichever modal was first in the dispatch chain.
+        if self.handle_print_screen_priority(event, handled) {
+            return;
+        }
+        // Capture Studio is deliberately above every ordinary session modal:
+        // it lets people capture a broken setup, chooser, or permission
+        // surface, then returns them to the intact workflow on Escape.
+        if self.capture_studio.is_open() {
+            if let Some(capture_node) = self.capture_node {
+                self.capture_studio.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    capture_node,
+                    taffy,
+                );
+            }
+            if !self.capture_studio.is_open()
+                && let Some(chrome) = self.chrome.as_ref()
+            {
+                chrome.borrow_mut().overlays.capture = false;
+            }
+            if *handled || self.capture_studio.modal_capture().is_some() {
+                return;
+            }
+        }
         if let Some(onboarding) = self.onboarding.as_mut() {
             let child_node = taffy
                 .children(node_id)
@@ -10545,33 +10685,6 @@ impl Widget for ShellOverlayHost {
             // overlay: drawing and shortcuts must never leak to the app below.
             *handled = true;
             return;
-        }
-
-        if self.capture_studio.is_open() {
-            if let Some(capture_node) = self.capture_node {
-                self.capture_studio.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    capture_node,
-                    taffy,
-                );
-            }
-            if !self.capture_studio.is_open()
-                && let Some(chrome) = self.chrome.as_ref()
-            {
-                chrome.borrow_mut().overlays.capture = false;
-            }
-            // Source selection remains modal. Once recording begins the same
-            // widget becomes a tiny shell surface: only the pill itself owns
-            // pointer input, while apps remain fully interactive beneath it.
-            if *handled || self.capture_studio.modal_capture().is_some() {
-                return;
-            }
         }
 
         if self
@@ -10895,7 +11008,7 @@ impl Widget for ShellOverlayHost {
     /// child-node order (sidebar last so it paints over the chrome).
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(onboarding) = self.onboarding.as_ref() {
-            return vec![onboarding];
+            return vec![onboarding, &self.capture_studio];
         }
         let mut out: Vec<&dyn Widget> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
@@ -10918,7 +11031,7 @@ impl Widget for ShellOverlayHost {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if let Some(onboarding) = self.onboarding.as_mut() {
-            return vec![onboarding];
+            return vec![onboarding, &mut self.capture_studio];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
@@ -11019,11 +11132,13 @@ impl ShellOverlayHost {
     /// about the animation rather than about how busy the machine was between
     /// two statements.
     fn needs_animation_frame_at(&self, now: Instant) -> bool {
-        // Onboarding owns the screen while it is up, so its own animation is
-        // the only one that matters. Inside the pinned-clock method rather
-        // than the trait wrapper, so a test can reach this branch too.
+        // OOBE normally owns the screen, except when Capture Studio is
+        // temporarily above it. Keep both animation clocks alive so opening
+        // a screenshot picker during setup cannot freeze its entrance or
+        // leave an opaque frame behind after Escape.
         if let Some(onboarding) = self.onboarding.as_ref() {
-            return onboarding.needs_animation_frame();
+            return onboarding.needs_animation_frame()
+                || self.capture_studio.needs_animation_frame();
         }
         // Continuous redraws while any of the overview crossfade, the
         // workspace slide-swap, quick-settings open/close, or any inner
@@ -18524,6 +18639,268 @@ mod tests {
             ui::widget::CaptureMode::Screenshot
         );
         assert!(h.chrome.borrow().overlays.capture);
+    }
+
+    #[test]
+    fn print_screen_replaces_every_transient_desktop_surface_atomically() {
+        let mut h = build_harness();
+        h.host.palette_visible = true;
+        h.host.shortcut_guide_focus = Some(ShortcutGuideFocus::Done);
+        {
+            let mut state = h.chrome.borrow_mut();
+            state.set_wheel_summon(Some(Point::new(600.0, 400.0)));
+            state.overlays.shortcut_help = true;
+            state.overlays.overview = true;
+            state.overlays.quick_settings = true;
+            state.overlays.ws_settings = true;
+            state.overlays.collaborators = true;
+            state.overlays.room_activity = true;
+            state.push_notification("Update ready", "A transient toast");
+        }
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+
+        assert!(h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host.capture_studio.mode(),
+            ui::widget::CaptureMode::Screenshot
+        );
+        assert!(!h.host.palette_visible);
+        assert!(h.host.shortcut_guide_focus.is_none());
+        let state = h.chrome.borrow();
+        assert!(state.wheel_summon().is_none());
+        assert!(!state.overlays.shortcut_help);
+        assert!(!state.overlays.overview);
+        assert!(!state.overlays.quick_settings);
+        assert!(!state.overlays.ws_settings);
+        assert!(!state.overlays.collaborators);
+        assert!(!state.overlays.room_activity);
+        assert!(
+            state
+                .notifications()
+                .iter()
+                .any(|notification| notification.title == "Update ready"),
+            "taking a screenshot must not mutate a notification's lifecycle"
+        );
+    }
+
+    #[test]
+    fn print_screen_preserves_transactional_workflows_below_capture() {
+        let mut h = build_harness();
+        h.host.begin_wifi_password("qOS test network");
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("a".into())),
+            Modifiers::default()
+        ));
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(
+            h.chrome.borrow().quick_settings.wifi_password.is_some(),
+            "a typed Wi-Fi credential must not be discarded by Print Screen"
+        );
+        assert!(h.host.capture_studio.is_open());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.host.capture_studio.is_open());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("b".into())),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            h.chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .map(|prompt| prompt.password.as_str()),
+            Some("ab"),
+            "after capture closes, the original credential field must regain its text focus and selection"
+        );
+
+        let mut permission = build_harness();
+        permission
+            .host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
+        assert!(pump(
+            &mut permission,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(
+            permission
+                .host
+                .workspace_settings_overlay
+                .member_sheet_is_open(),
+            "a destructive member-removal confirmation must survive capture"
+        );
+        assert!(permission.host.capture_studio.is_open());
+
+        let mut rebind = build_harness();
+        rebind.host.shortcut_rebind =
+            Some(settings_store::hardware::ShortcutAction::FocusNextWindow);
+        assert!(pump(
+            &mut rebind,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            rebind.host.shortcut_rebind,
+            Some(settings_store::hardware::ShortcutAction::FocusNextWindow),
+            "a pending shortcut edit is a transaction, not transient guide chrome"
+        );
+        assert!(rebind.host.capture_studio.is_open());
+
+        let mut projection = build_harness();
+        projection.chrome.borrow_mut().overlays.projection = true;
+        assert!(pump(
+            &mut projection,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(projection.chrome.borrow().overlays.projection);
+        assert!(projection.host.capture_studio.is_open());
+
+        let mut nested = build_harness();
+        assert!(
+            nested
+                .host
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+        assert!(pump(
+            &mut nested,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(nested.host.capture_studio.is_open());
+    }
+
+    #[test]
+    fn print_screen_keeps_a_live_portal_file_chooser_open() {
+        use crate::portal::FilePickerSpawner as _;
+
+        let mut h = build_harness();
+        let pickers = crate::portal::FilePickerQueue::new();
+        h.host.set_portal_queues(
+            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+            pickers.clone(),
+        );
+        let workspace = h
+            .chrome
+            .borrow()
+            .tree()
+            .active_workspace()
+            .expect("demo desktop has an active workspace")
+            .id;
+        let (reply, _parked) = tokio::sync::oneshot::channel();
+        pickers.spawn(crate::portal::FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "org.qos.audit"),
+            title: "Save document".to_string(),
+            save: true,
+            multiple: false,
+            accept_label: None,
+            current_name: Some("before".to_string()),
+            filters: Vec::new(),
+            reply,
+        });
+        assert!(h.host.pump_file_picker());
+        assert!(h.host.file_picker().is_some());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("x".into())),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            h.host.file_picker().map(ui::widget::FilePicker::filename),
+            Some("beforex"),
+            "the Save name field owns text input before capture opens"
+        );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(
+            h.host.file_picker().is_some(),
+            "Print Screen must not silently cancel an app's parked portal request"
+        );
+        assert!(
+            h.host.capture_studio.is_open(),
+            "Capture Studio must become the temporary input owner above the live chooser"
+        );
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.host.capture_studio.is_open());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("y".into())),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            h.host.file_picker().map(ui::widget::FilePicker::filename),
+            Some("beforexy"),
+            "after capture closes, the exact prior Save field must regain keyboard input"
+        );
+    }
+
+    #[test]
+    fn print_screen_preserves_oobe_and_returns_to_the_same_step() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.desktop_tour = true;
+        h.host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        let before = h
+            .host
+            .onboarding
+            .as_ref()
+            .expect("desktop tour activates onboarding")
+            .flow()
+            .screen();
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(h.host.onboarding_active());
+        assert!(h.host.capture_studio.is_open());
+        assert!(
+            h.host.needs_animation_frame(),
+            "Capture Studio's entrance must keep repainting while it temporarily sits above OOBE"
+        );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("Capture Studio must not tear down OOBE")
+                .flow()
+                .screen(),
+            before,
+            "Escaping Capture Studio returns to the exact OOBE step being inspected"
+        );
     }
 
     #[test]
