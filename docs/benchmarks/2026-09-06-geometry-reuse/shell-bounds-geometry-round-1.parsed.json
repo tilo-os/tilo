@@ -1,0 +1,179 @@
+{
+  "parsed": {
+    "solid_fuse_selected": 0,
+    "opaque_prune_selected": 0,
+    "stats": {
+      "count": 1000,
+      "mean_us": 22466,
+      "p99_us": 52157,
+      "min_us": 12969,
+      "max_us": 412207,
+      "gate": "DISABLED_DIAGNOSTIC"
+    },
+    "peak_rss_kib": 609356,
+    "known_gpu_bytes": null,
+    "sparse": {
+      "total": 999,
+      "active": 999,
+      "applied": 999,
+      "bbox_tiles": 807864
+    },
+    "quad": {
+      "applied": 0,
+      "total": 0,
+      "active": 0,
+      "skipped": 0
+    },
+    "attempts": {
+      "total": 1000,
+      "sparse": 999,
+      "full": 1,
+      "recovery": 0
+    },
+    "native_extent": [
+      3840,
+      2160
+    ],
+    "cpu_readback_bytes": null,
+    "segment_row_mask_selected": 0,
+    "adapter": {
+      "name": "llvmpipe (LLVM 22.1.8, 128 bits)",
+      "backend": "Vulkan",
+      "device_type": "Cpu",
+      "driver": "llvmpipe"
+    },
+    "adapter_headers": 1,
+    "canonical": {
+      "header_count": 1,
+      "counts_count": 1,
+      "env_requested": false,
+      "renderer_requested": false,
+      "available": false,
+      "full_selected_attempts": 0,
+      "sparse_selected_attempts": 0,
+      "total_selected_attempts": 0,
+      "counts_consistent": true
+    },
+    "exact_total_us": 22466086,
+    "exact_count": 1000,
+    "exact_mean_us": 22466.086,
+    "exact_gate": null,
+    "xrgb": {
+      "header_count": 1,
+      "counts_count": 1,
+      "requested": false,
+      "available": false,
+      "targets": 1,
+      "full": 1000,
+      "partial": 0,
+      "total": 1000,
+      "bytes": 33177600000,
+      "counts_consistent": true,
+      "full_frame_bytes": 33177600,
+      "full_write_baseline_bytes": 33177600000,
+      "cpu_write_reduction_percent": 0
+    },
+    "ppt8": {
+      "header_count": 1,
+      "counts_count": 1,
+      "env_requested": false,
+      "renderer_requested": false,
+      "available": false,
+      "full": 0,
+      "sparse": 0,
+      "total": 0,
+      "counts_consistent": true
+    },
+    "diagnostic": true,
+    "clip_single_group": {
+      "header_count": 1,
+      "counts_count": 1,
+      "env_requested": false,
+      "renderer_requested": false,
+      "available": false,
+      "full": 0,
+      "sparse": 0,
+      "total": 0,
+      "counts_consistent": true
+    },
+    "clip_single_measured_sparse": null,
+    "acceptance_eligible": false,
+    "geometry": {
+      "counts": {
+        "count": 1,
+        "values": {
+          "observations": 1000,
+          "accepted": 1000,
+          "misses": 1000,
+          "hits": 0,
+          "rank1": 0,
+          "rank2": 0,
+          "rank3": 0,
+          "rank4": 0,
+          "entries": 4
+        }
+      },
+      "bytes": {
+        "count": 1,
+        "values": {
+          "extracted_total": 164143840,
+          "extracted_min": 158408,
+          "extracted_max": 183432,
+          "copied_payload": 164143840,
+          "retained_payload": 633632,
+          "peak_payload": 729168,
+          "descriptor_equal": 0,
+          "layout_different": 0,
+          "viewport_different": 0,
+          "capacities_different": 0,
+          "mode_different": 0
+        }
+      },
+      "rejects": {
+        "count": 1,
+        "values": {
+          "missing_or_malformed": 0,
+          "empty": 0,
+          "oversized": 0,
+          "cpu_route": 0,
+          "recovery_or_invalid_route": 0,
+          "pending_bump_readback": 0
+        }
+      }
+    },
+    "timestamp": {
+      "count": 1,
+      "values": {
+        "matched": 0,
+        "requested": 0,
+        "missing": 0,
+        "stale": 0,
+        "unsupported": 0,
+        "disabled": 1000,
+        "pending": 0,
+        "map_failed": 0,
+        "invalid": 0,
+        "overflowed": 0,
+        "no_submission_id": 0,
+        "recovery_submissions": 0,
+        "buffers": 0
+      }
+    },
+    "unique_counts": {
+      "profile": 1,
+      "summary": 1,
+      "exact_total": 1,
+      "gate": 1,
+      "attempts": 1,
+      "completed": 1
+    },
+    "whole_scene_probe_present": false,
+    "raw_error_lines": [
+      "Error: \"diagnostic run completed: acceptance gates are intentionally disabled\""
+    ]
+  },
+  "issues": [
+    "incomplete or unexpected process result"
+  ],
+  "acceptance_eligible": false
+}

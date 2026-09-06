@@ -1,0 +1,38 @@
+{
+  "synthetic_only": true,
+  "passed": 8,
+  "tests": [
+    {
+      "name": "default shell retains no candidate selection",
+      "passed": true
+    },
+    {
+      "name": "PPT8 shell, bounds and partial-write cases retain matched controls",
+      "passed": true
+    },
+    {
+      "name": "PPT8 UI sparse selection is actual, not a no-path control",
+      "passed": true
+    },
+    {
+      "name": "requested but unused and partially selected candidate rejected",
+      "passed": true
+    },
+    {
+      "name": "missing duplicate and inconsistent counters rejected",
+      "passed": true
+    },
+    {
+      "name": "unplanned bounds/canonical/fine variants rejected",
+      "passed": true
+    },
+    {
+      "name": "diagnostics cannot count as ordinary comparison",
+      "passed": true
+    },
+    {
+      "name": "unsafe counters and wrong adapter rejected",
+      "passed": true
+    }
+  ]
+}

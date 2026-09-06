@@ -1,0 +1,7 @@
+$ rustfmt --check --edition 2024 ui/src/offscreen.rs ui/examples/dashboard_perf_bench.rs && git diff --check
+
+
+
+exit_code=0
+
+acceptance_eligible=false

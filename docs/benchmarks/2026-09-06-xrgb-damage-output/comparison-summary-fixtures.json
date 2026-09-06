@@ -1,0 +1,26 @@
+{
+  "synthetic": true,
+  "note": "Old raw default logs plus synthetic XRGB accounting fields; no new benchmark. Complete threshold-failure reports remain in timing medians; timeouts do not.",
+  "tests": [
+    {
+      "case": "shell complete gate failures retained",
+      "pass": true
+    },
+    {
+      "case": "shell timeout retained in attempt denominator",
+      "pass": true
+    },
+    {
+      "case": "UI complete gate failures retained",
+      "pass": true
+    },
+    {
+      "case": "no failed frame gate counted as pass",
+      "pass": true
+    },
+    {
+      "case": "unexpected exit not timing-complete",
+      "pass": true
+    }
+  ]
+}

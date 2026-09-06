@@ -1,0 +1,52 @@
+{
+  "scope": "Derived from v3 captured command histogram and source-defined widths; excludes END/JUMP/header words, not GPU transactions/copies/cache misses or bandwidth. Shell representative scenes only, not UI or exact1000-actiontrajectory. Actual fusion not yet executed.",
+  "commandWidths": {
+    "1": 4,
+    "3": 1,
+    "5": 2,
+    "6": 3,
+    "7": 3,
+    "8": 3,
+    "9": 2,
+    "10": 1,
+    "11": 3,
+    "13": 3
+  },
+  "sparse": [
+    {
+      "label": "framework_click_2_topbar_overview_button",
+      "commands": 31973,
+      "logicalPayloadWords": 63226,
+      "fusableWords": 9410,
+      "logicalPayloadWordReductionPercent": 14.88311770474172
+    },
+    {
+      "label": "framework_click_3_topbar_tray_pill",
+      "commands": 31643,
+      "logicalPayloadWords": 62566,
+      "fusableWords": 9302,
+      "logicalPayloadWordReductionPercent": 14.867499920084391
+    },
+    {
+      "label": "framework_click_4_topbar_overview_button",
+      "commands": 32131,
+      "logicalPayloadWords": 63649,
+      "fusableWords": 9427,
+      "logicalPayloadWordReductionPercent": 14.810916118085123
+    },
+    {
+      "label": "framework_click_5_topbar_tray_pill",
+      "commands": 31643,
+      "logicalPayloadWords": 62566,
+      "fusableWords": 9302,
+      "logicalPayloadWordReductionPercent": 14.867499920084391
+    },
+    {
+      "label": "framework_click_6_topbar_overview_button",
+      "commands": 32131,
+      "logicalPayloadWords": 63649,
+      "fusableWords": 9427,
+      "logicalPayloadWordReductionPercent": 14.810916118085123
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "source_scope": "Only benchmark reporting changes; verify other 32 source/config/fixture inputs match XRGB v5",
+  "strict_checks": [
+    "format/diff check on all 13 owned Rust files",
+    "production clippy for ui/shell/vello libraries and both benchmark examples with -D warnings",
+    "test-inclusive changed-line/compiler clippy on all owned Rust changes"
+  ],
+  "runtime": [
+    "shell-example-tests",
+    "shell-default-native-oracle",
+    "shell-bounds-native-oracle",
+    "shell-profile-bounds-xrgb-example-tests"
+  ],
+  "unchanged_validation_reused": "The 803 passing v5 test executions remain evidence for unchanged production code; vendor/UI runtime suites need not be recompiled solely for this example-only diagnostic edit.",
+  "required_review": [
+    "same action/time/gate/warm-up boundaries",
+    "profile-only allocation/reporting",
+    "bounded 1000-row storage",
+    "same elapsed sample value",
+    "explicit exact timestamp match and incomplete status",
+    "retry coverage limitation",
+    "unchanged existing aggregate accounting"
+  ],
+  "failure_handling": "Retain each source version and all failures; stop that version's sequence on failure before edits; repeat lint/tests after repair. No source edits while runtime is live.",
+  "status": "planned only; source owner has not frozen"
+}

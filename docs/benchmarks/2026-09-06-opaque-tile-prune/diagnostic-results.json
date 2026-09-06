@@ -1,0 +1,254 @@
+[
+  {
+    "name": "shell-bounds-dispatch",
+    "variant": "bounds",
+    "workload": "shell",
+    "kind": "diagnostic",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_GPU_TIMESTAMPS=1 VELLO_GPU_DISPATCH_TIMESTAMPS=1 QOS_REDRAW_BENCH_PROFILE=1 /home/xaver/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-dispatch.log",
+    "exit_code": 1,
+    "summary": [
+      "DRM render/readback at 3840x2160: samples=1000 mean=33856us p99=93105us min=19955us max=476616us",
+      "gates: mean<=25000us p99<=50000us (DisabledDiagnostic)",
+      "diagnostic phase means: input=25us registry=65us layout=36us scene=617us submit=2228us gpu_completion_map=28681us settle=79us cpu_copy_swizzle=2104us readback_bytes/sample=808636 cpu_output_bytes/sample=33177600",
+      "diagnostic GPU dispatch timestamps: matched=1000/1000 missing=0 stale=0 unsupported=0 disabled=0 pending=0 map_failed=0 invalid=0 overflowed=0 no_submission_id=0 recovery_submissions=0; diagnostic_buffers=2048B",
+      "Error: \"diagnostic run completed: acceptance gates are intentionally disabled\""
+    ],
+    "stages": [
+      {
+        "name": "flatten",
+        "id": 7,
+        "samples": 1000,
+        "mean_ns": 1394999,
+        "p99_ns": 5149111,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "clip_leaf",
+        "id": 11,
+        "samples": 1000,
+        "mean_ns": 1007590,
+        "p99_ns": 5531510,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "binning",
+        "id": 12,
+        "samples": 1000,
+        "mean_ns": 1109354,
+        "p99_ns": 8203723,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "tile_alloc",
+        "id": 13,
+        "samples": 1000,
+        "mean_ns": 937993,
+        "p99_ns": 4514625,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "backdrop_dyn",
+        "id": 16,
+        "samples": 1000,
+        "mean_ns": 933951,
+        "p99_ns": 3885505,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "coarse",
+        "id": 17,
+        "samples": 1,
+        "mean_ns": 19434402,
+        "p99_ns": 19434402,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "fine_area",
+        "id": 20,
+        "samples": 1,
+        "mean_ns": 291109767,
+        "p99_ns": 291109767,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "fine_sparse_area",
+        "id": 23,
+        "samples": 999,
+        "mean_ns": 12388847,
+        "p99_ns": 36468156,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "draw_leaf_prefix",
+        "id": 25,
+        "samples": 1000,
+        "mean_ns": 1658309,
+        "p99_ns": 22793443,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "path_count_direct",
+        "id": 26,
+        "samples": 1000,
+        "mean_ns": 1285498,
+        "p99_ns": 5793336,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "path_tiling_direct",
+        "id": 27,
+        "samples": 1000,
+        "mean_ns": 1067551,
+        "p99_ns": 5628595,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "coarse_sparse_active",
+        "id": 28,
+        "samples": 999,
+        "mean_ns": 1592949,
+        "p99_ns": 10841144,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      }
+    ]
+  },
+  {
+    "name": "shell-bounds-prune-dispatch",
+    "variant": "bounds-prune",
+    "workload": "shell",
+    "kind": "diagnostic",
+    "cmd": "timeout --signal=TERM --kill-after=30s 15m /usr/bin/time -v env -u VELLO_BUMP_LOG -u VELLO_BUMP_BUDGET -u VELLO_SPARSE_COARSE_AUTO -u VELLO_SPARSE_FINE -u VELLO_SPARSE_COARSE -u VELLO_SPARSE_UPLOAD_REUSE -u VELLO_COMPUTE_BATCH -u VELLO_CPU_PATHTAG -u VELLO_CPU_PATHTAG_REUSE -u VELLO_CPU_METADATA -u VELLO_CPU_DRAW_PREFIX -u VELLO_DIRECT_PATH_DISPATCH -u VELLO_DEFER_BUMP_READBACK -u VELLO_GPU_TIMESTAMPS -u VELLO_GPU_DISPATCH_TIMESTAMPS -u VELLO_ZERO_GRADIENT_REUSE -u QUICK_UI_DAMAGE_GEOMETRIC -u QUICK_UI_VELLO_CPU -u QOS_SHOTS_THEME -u VELLO_DIRECT_PATH_WORKGROUPS -u VELLO_SPARSE_COARSE_ACTIVE_BINS -u QOS_REDRAW_BENCH_PROFILE -u QUICK_UI_DASH_ALLOC_BREAKDOWN -u QUICK_UI_DASH_ALLOC_BUDGET_PER_1000 -u QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW -u QUICK_UI_DASH_ALLOC_PROFILE -u QUICK_UI_DASH_DAMAGE -u QUICK_UI_DASH_EVENT_BUDGET_US -u QUICK_UI_DASH_FRAME_BREAKDOWN -u QUICK_UI_DASH_FRAME_BUDGET_US -u QUICK_UI_DASH_FROZEN -u QUICK_UI_DASH_GPU_BUDGET_BYTES -u QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES -u QUICK_UI_DASH_HEIGHT -u QUICK_UI_DASH_ITERS -u QUICK_UI_DASH_MEAN_FRAME_BUDGET_US -u QUICK_UI_DASH_RASTER_PIXEL_BUDGET -u QUICK_UI_DASH_RENDER_PROFILE -u QUICK_UI_DASH_RSS_BUDGET_KIB -u QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB -u QUICK_UI_DASH_SCROLL -u QUICK_UI_DASH_STATIC -u QUICK_UI_DASH_VERIFY -u QUICK_UI_DASH_VERIFY_FRAMES -u QUICK_UI_DASH_WIDTH -u VELLO_SPARSE_TILE_BOUNDS -u VELLO_SPARSE_FINE_QUAD_SKIP -u VELLO_COMPUTE_BATCH_LOG -u VELLO_SPARSE_OPAQUE_PRUNE VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1 VELLO_SPARSE_OPAQUE_PRUNE=1 VELLO_GPU_TIMESTAMPS=1 VELLO_GPU_DISPATCH_TIMESTAMPS=1 QOS_REDRAW_BENCH_PROFILE=1 /home/xaver/qos/target/ui-perf-comparison/shell-redraw-opaque-tile-prune-20260906",
+    "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-opaque-tile-prune/shell-bounds-prune-dispatch.log",
+    "exit_code": 1,
+    "summary": [
+      "DRM render/readback at 3840x2160: samples=1000 mean=34479us p99=93334us min=18802us max=480550us",
+      "gates: mean<=25000us p99<=50000us (DisabledDiagnostic)",
+      "diagnostic phase means: input=25us registry=66us layout=37us scene=626us submit=2061us gpu_completion_map=29522us settle=15us cpu_copy_swizzle=2106us readback_bytes/sample=807591 cpu_output_bytes/sample=33177600",
+      "diagnostic GPU dispatch timestamps: matched=1000/1000 missing=0 stale=0 unsupported=0 disabled=0 pending=0 map_failed=0 invalid=0 overflowed=0 no_submission_id=0 recovery_submissions=0; diagnostic_buffers=2048B",
+      "Error: \"diagnostic run completed: acceptance gates are intentionally disabled\""
+    ],
+    "stages": [
+      {
+        "name": "flatten",
+        "id": 7,
+        "samples": 1000,
+        "mean_ns": 1536098,
+        "p99_ns": 8512528,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "clip_leaf",
+        "id": 11,
+        "samples": 1000,
+        "mean_ns": 925173,
+        "p99_ns": 3925401,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "binning",
+        "id": 12,
+        "samples": 1000,
+        "mean_ns": 938766,
+        "p99_ns": 5063537,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "tile_alloc",
+        "id": 13,
+        "samples": 1000,
+        "mean_ns": 936346,
+        "p99_ns": 4880411,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "backdrop_dyn",
+        "id": 16,
+        "samples": 1000,
+        "mean_ns": 989607,
+        "p99_ns": 5868440,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "coarse",
+        "id": 17,
+        "samples": 1,
+        "mean_ns": 37291445,
+        "p99_ns": 37291445,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "fine_area",
+        "id": 20,
+        "samples": 1,
+        "mean_ns": 357809197,
+        "p99_ns": 357809197,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "fine_sparse_area",
+        "id": 23,
+        "samples": 999,
+        "mean_ns": 12894577,
+        "p99_ns": 40770696,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "draw_leaf_prefix",
+        "id": 25,
+        "samples": 1000,
+        "mean_ns": 1681816,
+        "p99_ns": 28810843,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "path_count_direct",
+        "id": 26,
+        "samples": 1000,
+        "mean_ns": 1390195,
+        "p99_ns": 7206631,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "path_tiling_direct",
+        "id": 27,
+        "samples": 1000,
+        "mean_ns": 1145472,
+        "p99_ns": 6512249,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      },
+      {
+        "name": "coarse_sparse_active",
+        "id": 28,
+        "samples": 999,
+        "mean_ns": 1543491,
+        "p99_ns": 7659186,
+        "dispatch_mean": 1,
+        "dispatch_p99": 1
+      }
+    ]
+  }
+]

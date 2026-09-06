@@ -1,0 +1,25 @@
+{
+  "candidate": 5,
+  "mismatchedBytes": 3,
+  "maxDelta": 1,
+  "first": [
+    1894,
+    14,
+    2,
+    234,
+    233
+  ],
+  "damage": {
+    "x": 3496,
+    "y": 32,
+    "width": 336,
+    "height": 576
+  },
+  "actualFusionSelected": true,
+  "sharedCoarseFullSparseMismatches": 0,
+  "freshDenseVsOriginalMismatches": 3,
+  "repeatedOracleVsOriginalMismatches": 3,
+  "freshDenseVsRepeatedOracleMismatches": 0,
+  "acceptance": false,
+  "interpretation": "outside damage and ordinary dense replay differs from original dense; supports baseline repeatability issue, not a proved cause. Preserve failure; no promotion/performance comparison yet."
+}

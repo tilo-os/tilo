@@ -1,0 +1,71 @@
+{
+  "version": "v3",
+  "commands": [
+    {
+      "name": "format-diff",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-format-diff.log"
+    },
+    {
+      "name": "strict-production-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-strict-production-clippy.log"
+    },
+    {
+      "name": "test-inclusive-changed-line-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-test-inclusive-changed-line-clippy.log"
+    },
+    {
+      "name": "shell-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [
+        "test result: ok. 43 passed; 0 failed; 7 ignored; 0 measured; 1 filtered out; finished in 6.22s"
+      ],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-example-tests.log"
+    },
+    {
+      "name": "shell-default-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 14.85s"
+      ],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-default-native-oracle.log"
+    },
+    {
+      "name": "shell-bounds-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 15.97s"
+      ],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-bounds-native-oracle.log"
+    },
+    {
+      "name": "shell-profile-bounds-xrgb-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "test_results": [
+        "test result: ok. 43 passed; 0 failed; 7 ignored; 0 measured; 1 filtered out; finished in 6.09s"
+      ],
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-redraw-tail-correlation/v3-shell-profile-bounds-xrgb-example-tests.log"
+    }
+  ],
+  "all_7_passed": true,
+  "passing_test_executions": 88,
+  "ignored_test_executions": 14,
+  "ignored_explanation": "The same seven pre-existing explicit GPU diagnostics were ignored in each broad example suite; the original native pixel oracle ran separately in default and bounds modes.",
+  "adapter_skip_seen": false,
+  "all_33_source_hashes_match_frozen_v3": true,
+  "other_32_inputs_identical_to_xrgb_v5": true,
+  "performance_acceptance": false,
+  "prior_default_gpu_oracle_instability_resolved": false
+}

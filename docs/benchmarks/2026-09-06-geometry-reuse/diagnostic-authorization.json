@@ -1,0 +1,22 @@
+{
+  "authorized_at": {
+    "current_time": "2026-09-06 15:05:21 UTC"
+  },
+  "source_frozen": true,
+  "validation_checks_passed": 9,
+  "pure_new_tests_passed": 15,
+  "parser_fixtures_passed": 20,
+  "summary_fixtures_passed": 9,
+  "ordinary_release_audited": true,
+  "unprofiled_rejected_before_adapter": true,
+  "source_inputs": 37,
+  "planned_attempts": 6,
+  "replacements_allowed": false,
+  "acceptance_eligible": false,
+  "binary": {
+    "path": "/home/xaver/qos/target/ui-perf-comparison/shell-redraw-geometry-reuse-20260906",
+    "sha256": "e9345b63a60f172b7f6e92142c328b3119140d26deca41ec65e06eb43e8c4c3a",
+    "size_bytes": 33740944,
+    "ordinary_release": true
+  }
+}

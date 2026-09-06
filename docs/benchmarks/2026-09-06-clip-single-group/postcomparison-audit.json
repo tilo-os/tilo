@@ -1,0 +1,14 @@
+{
+  "attempts": 30,
+  "complete_reports": 30,
+  "primary_eligible": 30,
+  "all_raw_logs_and_metadata_match": true,
+  "raw_artifact_hashes": 90,
+  "source_hashes_unchanged": 34,
+  "binaries_unchanged": 2,
+  "actual_clip_selected_attempts": 15000,
+  "shell_numeric_passes": 0,
+  "ui_numeric_passes": 1,
+  "goal_met": false,
+  "default_promotion": false
+}

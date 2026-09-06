@@ -1,0 +1,175 @@
+{
+  "version": "v5",
+  "source_inputs": 33,
+  "source_hashes_unchanged": true,
+  "all_17_commands_passed": true,
+  "test_executions_passed": 803,
+  "ignored_explicit_older_diagnostics": 7,
+  "adapter_skips": [],
+  "runs": [
+    {
+      "name": "format-diff",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-format-diff.log",
+      "summaries": [],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "strict-production-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-strict-production-clippy.log",
+      "summaries": [],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "strict-vendor-tests-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-strict-vendor-tests-clippy.log",
+      "summaries": [],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "test-inclusive-changed-line-clippy",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-test-inclusive-changed-line-clippy.log",
+      "summaries": [],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "vendor-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-vendor-tests.log",
+      "summaries": [
+        "ok. 103 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.18s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-drm-library-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-drm-library-tests.log",
+      "summaries": [
+        "ok. 216 passed; 0 failed; 0 ignored; 0 measured; 2075 filtered out; finished in 14.52s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-example-tests.log",
+      "summaries": [
+        "ok. 36 passed; 0 failed; 7 ignored; 0 measured; 1 filtered out; finished in 6.52s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "ui-example-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-ui-example-tests.log",
+      "summaries": [
+        "ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "ui-accounting",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-ui-accounting.log",
+      "summaries": [
+        "ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2674 filtered out; finished in 0.00s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-default-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-default-native-oracle.log",
+      "summaries": [
+        "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 14.23s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-bounds-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-bounds-native-oracle.log",
+      "summaries": [
+        "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 14.75s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-bounds-canonical-native-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-bounds-canonical-native-oracle.log",
+      "summaries": [
+        "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 15.86s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-xrgb-native-staging-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-xrgb-native-staging-oracle.log",
+      "summaries": [
+        "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2290 filtered out; finished in 18.58s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-bounds-xrgb-native-staging-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-bounds-xrgb-native-staging-oracle.log",
+      "summaries": [
+        "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2290 filtered out; finished in 18.70s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-bounds-canonical-xrgb-native-staging-oracle",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-bounds-canonical-xrgb-native-staging-oracle.log",
+      "summaries": [
+        "ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2290 filtered out; finished in 18.63s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-bounds-xrgb-drm-library-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-bounds-xrgb-drm-library-tests.log",
+      "summaries": [
+        "ok. 216 passed; 0 failed; 0 ignored; 0 measured; 2075 filtered out; finished in 16.93s"
+      ],
+      "gpu_adapter_skips": []
+    },
+    {
+      "name": "shell-bounds-canonical-xrgb-drm-library-tests",
+      "exit_code": 0,
+      "output_truncated": false,
+      "log": "/home/xaver/qos/docs/benchmarks/2026-09-06-xrgb-damage-output/v5-shell-bounds-canonical-xrgb-drm-library-tests.log",
+      "summaries": [
+        "ok. 216 passed; 0 failed; 0 ignored; 0 measured; 2075 filtered out; finished in 18.44s"
+      ],
+      "gpu_adapter_skips": []
+    }
+  ],
+  "acceptance_eligible": false,
+  "note": "Correctness/lint evidence only. Earlier default native GPU nondeterminism remains retained and is not proved fixed by this round's one pass. Release and comparisons not yet run."
+}

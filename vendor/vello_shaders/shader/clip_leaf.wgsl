@@ -83,6 +83,20 @@ fn main(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) wg_id: vec3<u32>,
 ) {
+#ifdef clip_single_group
+    // The specialised route is only recorded for a single clip workgroup.  In
+    // that case there is no preceding workgroup and therefore no prefix stack
+    // to reduce or scan. Keep the arrays and all later intra-workgroup logic
+    // intact so this permutation changes only the provably-empty prefix work.
+    if config.n_clip == 0u || config.n_clip > WG_SIZE
+        || any(wg_id != vec3(0u)) {
+        return;
+    }
+    var bic = Bic();
+    let stack_size = 0u;
+    var bbox = vec4(-1e9, -1e9, 1e9, 1e9);
+    sh_stack_bbox[local_id.x] = bbox;
+#else
     var bic: Bic;
     if local_id.x < wg_id.x {
         bic = reduced[local_id.x];
@@ -127,6 +141,7 @@ fn main(
         workgroupBarrier();
     }
     sh_stack_bbox[local_id.x] = bbox;
+#endif
 
     // Read input and compute Bic binary tree
     let inp = load_clip_path(global_id.x);

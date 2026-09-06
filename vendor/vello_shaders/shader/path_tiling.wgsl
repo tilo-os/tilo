@@ -39,6 +39,48 @@ fn span(a: f32, b: f32) -> u32 {
 const ONE_MINUS_ULP: f32 = 0.99999994;
 const ROBUST_EPSILON: f32 = 2e-7;
 
+#ifdef segment_row_mask
+// The fine Area equations are the oracle: this is only a conservative
+// nonzero-row superset after clipping, robustness, and orientation handling.
+// It intentionally uses interval masks rather than a 16-row producer loop.
+fn row_interval_mask(first: i32, last: i32) -> u32 {
+    if last < 0 || first >= i32(TILE_HEIGHT) {
+        return 0u;
+    }
+    let lo = u32(max(first, 0));
+    let hi = u32(min(last, i32(TILE_HEIGHT) - 1));
+    let upper = (1u << (hi + 1u)) - 1u;
+    let lower = (1u << lo) - 1u;
+    return upper & ~lower;
+}
+
+fn conservative_row_mask(p0: vec2<f32>, p1: vec2<f32>, y_edge: f32) -> u32 {
+    // Ordered comparisons reject NaN as well as infinities. Coordinates are
+    // final tile-local values, so any unexpected range is uncertainty.
+    if !(p0.x >= 0.0 && p0.x <= f32(TILE_WIDTH)
+        && p0.y >= 0.0 && p0.y <= f32(TILE_HEIGHT)
+        && p1.x >= 0.0 && p1.x <= f32(TILE_WIDTH)
+        && p1.y >= 0.0 && p1.y <= f32(TILE_HEIGHT)) {
+        return 0xffffu;
+    }
+    let sentinel_edge = y_edge == 1e9;
+    if !sentinel_edge && !(y_edge >= 0.0 && y_edge <= f32(TILE_HEIGHT)) {
+        return 0xffffu;
+    }
+    let dy_mask = row_interval_mask(
+        i32(floor(min(p0.y, p1.y))) - 1,
+        i32(ceil(max(p0.y, p1.y))),
+    );
+    // Preserve WGSL signed-zero behavior: only an exact nonzero final dx can
+    // have an edge contribution. The sentinel is exactly known to contribute
+    // zero in native rows 0..15.
+    if p1.x - p0.x == 0.0 || sentinel_edge {
+        return dy_mask;
+    }
+    return dy_mask | row_interval_mask(i32(floor(y_edge)) - 1, i32(TILE_HEIGHT) - 1);
+}
+#endif
+
 // One invocation for each tile that is to be written.
 // Total number of invocations = bump.seg_counts
 @compute @workgroup_size(256)
@@ -195,7 +237,11 @@ fn main(
             p0 = p1;
             p1 = tmp;
         }
+#ifdef segment_row_mask
+        let segment = Segment(p0, p1, y_edge, conservative_row_mask(p0, p1, y_edge));
+#else
         let segment = Segment(p0, p1, y_edge);
+#endif
         segments[seg_start + seg_within_slice] = segment;
     }
 }

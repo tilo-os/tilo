@@ -1,0 +1,86 @@
+{
+  "kind": "CPU f32 stepwise emulation, not GPU replay or final pixel proof",
+  "source": "gpu-geometry-native-2.log",
+  "command": 29,
+  "tile": 1435,
+  "backdrop": 0,
+  "fillRule": "nonzero",
+  "orders": [
+    {
+      "label": "left",
+      "count": 49,
+      "areas": [
+        {
+          "nativeX": 3768,
+          "nativeY": 95,
+          "raw": 0.377032071352005,
+          "rawBits": 1052838489,
+          "coverage": 0.377032071352005,
+          "coverageBits": 1052838489
+        },
+        {
+          "nativeX": 3769,
+          "nativeY": 95,
+          "raw": 0.461492657661438,
+          "rawBits": 1055672516,
+          "coverage": 0.461492657661438,
+          "coverageBits": 1055672516
+        },
+        {
+          "nativeX": 3770,
+          "nativeY": 95,
+          "raw": 0.6837971210479736,
+          "rawBits": 1060048212,
+          "coverage": 0.6837971210479736,
+          "coverageBits": 1060048212
+        },
+        {
+          "nativeX": 3771,
+          "nativeY": 95,
+          "raw": 0.1179189682006836,
+          "rawBits": 1039236992,
+          "coverage": 0.1179189682006836,
+          "coverageBits": 1039236992
+        }
+      ]
+    },
+    {
+      "label": "right",
+      "count": 49,
+      "areas": [
+        {
+          "nativeX": 3768,
+          "nativeY": 95,
+          "raw": 0.377032071352005,
+          "rawBits": 1052838489,
+          "coverage": 0.377032071352005,
+          "coverageBits": 1052838489
+        },
+        {
+          "nativeX": 3769,
+          "nativeY": 95,
+          "raw": 0.461492657661438,
+          "rawBits": 1055672516,
+          "coverage": 0.461492657661438,
+          "coverageBits": 1055672516
+        },
+        {
+          "nativeX": 3770,
+          "nativeY": 95,
+          "raw": 0.6837971806526184,
+          "rawBits": 1060048213,
+          "coverage": 0.6837971806526184,
+          "coverageBits": 1060048213
+        },
+        {
+          "nativeX": 3771,
+          "nativeY": 95,
+          "raw": 0.11791908740997314,
+          "rawBits": 1039237008,
+          "coverage": 0.11791908740997314,
+          "coverageBits": 1039237008
+        }
+      ]
+    }
+  ]
+}

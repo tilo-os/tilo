@@ -1,0 +1,2 @@
+Error: "QOS_REDRAW_BENCH_PROFILE=1 is required when QOS_REDRAW_BENCH_GEOMETRY_REUSE=1; geometry-input reuse telemetry is diagnostic-only"
+
