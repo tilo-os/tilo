@@ -59,6 +59,10 @@ pub enum SliderCommit {
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
     panel: Rect,
+    // Text scale changes the amount of vertical room a two-line control
+    // needs.  The host supplies this before it resolves the popover rect,
+    // so large-text screenshots and the live frame use the same geometry.
+    layout_scale: f64,
     slider_drag: Option<usize>,
     keyboard_focus: Option<usize>,
     config: QuickSettingsConfig,
@@ -80,9 +84,14 @@ impl QuickSettingsRoot {
     // control has a 16px leading/trailing inset. These are intentionally
     // shared rather than nudged per widget so 1:1 rendering stays aligned.
     const HEADER: f64 = 40.0;
-    const ACTIONS: f64 = 58.0;
+    // Four destination actions are deliberately icon-only.  Their old
+    // vertical icon-and-caption treatment turned a single utility row into
+    // a competing second header (and made translated captions collide at
+    // common laptop widths).  The accessible name remains explicit, while
+    // the visible row stays recognisably in the original compact qOS style.
+    const ACTIONS: f64 = 44.0;
     const SLIDERS: f64 = 72.0;
-    const CARD: f64 = 74.0;
+    const CARD: f64 = 70.0;
     const GAP: f64 = 8.0;
     const POWER: f64 = 50.0;
     const EDIT_ROW: f64 = 50.0;
@@ -95,6 +104,7 @@ impl QuickSettingsRoot {
     pub fn with_config(config: QuickSettingsConfig) -> Self {
         Self {
             panel: Rect::ZERO,
+            layout_scale: 1.0,
             slider_drag: None,
             keyboard_focus: None,
             config: config.normalised(),
@@ -104,6 +114,12 @@ impl QuickSettingsRoot {
     }
     pub fn reset_focus(&mut self) {
         self.keyboard_focus = Some(0);
+    }
+    pub fn set_layout_text_scale(&mut self, scale: f32) {
+        self.layout_scale = f64::from(scale).clamp(1.0, 2.0);
+    }
+    fn scaled(&self, value: f64) -> f64 {
+        value * self.layout_scale
     }
     #[cfg(test)]
     pub fn config(&self) -> &QuickSettingsConfig {
@@ -126,13 +142,13 @@ impl QuickSettingsRoot {
         let Some(control) = self.config.controls.get(1).copied() else {
             return;
         };
-        let row = Self::card(panel, 1, true);
+        let row = self.card(panel, 1, true);
         let start = Point::new(row.x0 + 20.0, row.center().y);
         self.edit_drag.begin(control, 1, start.y - row.y0, start);
         let metrics = ListMetrics::uniform(
-            Self::edit_grid_top(panel),
-            Self::EDIT_ROW,
-            6.0,
+            self.edit_grid_top(panel),
+            self.scaled(Self::EDIT_ROW),
+            self.scaled(6.0),
             self.config.controls.len(),
         );
         let _ = self
@@ -213,22 +229,26 @@ impl QuickSettingsRoot {
             count.div_ceil(2)
         };
         if self.edit_mode {
-            Self::PAD * 2.0
-                + Self::HEADER
-                + Self::EDIT_HELP
-                + Self::GAP * 2.0
-                + n(rows) * Self::EDIT_ROW
-                + n(rows.saturating_sub(1)) * 6.0
-                + Self::EDIT_FOOTER
+            self.scaled(
+                Self::PAD * 2.0
+                    + Self::HEADER
+                    + Self::EDIT_HELP
+                    + Self::GAP * 2.0
+                    + n(rows) * Self::EDIT_ROW
+                    + n(rows.saturating_sub(1)) * 6.0
+                    + Self::EDIT_FOOTER,
+            )
         } else {
-            Self::PAD * 2.0
-                + Self::HEADER
-                + Self::ACTIONS
-                + Self::SLIDERS
-                + Self::POWER
-                + Self::GAP * 4.0
-                + n(rows) * Self::CARD
-                + n(rows.saturating_sub(1)) * Self::GAP
+            self.scaled(
+                Self::PAD * 2.0
+                    + Self::HEADER
+                    + Self::ACTIONS
+                    + Self::SLIDERS
+                    + Self::POWER
+                    + Self::GAP * 4.0
+                    + n(rows) * Self::CARD
+                    + n(rows.saturating_sub(1)) * Self::GAP,
+            )
         }
     }
     fn save_config(&mut self) {
@@ -242,69 +262,84 @@ impl QuickSettingsRoot {
             tracing::warn!(%error, "could not persist Quick Settings layout");
         }
     }
-    fn grid_top(panel: Rect) -> f64 {
+    fn grid_top(&self, panel: Rect) -> f64 {
         panel.y0
-            + Self::PAD
-            + Self::HEADER
-            + Self::GAP
-            + Self::ACTIONS
-            + Self::GAP
-            + Self::SLIDERS
-            + Self::GAP
+            + self.scaled(Self::PAD)
+            + self.scaled(Self::HEADER)
+            + self.scaled(Self::GAP)
+            + self.scaled(Self::ACTIONS)
+            + self.scaled(Self::GAP)
+            + self.scaled(Self::SLIDERS)
+            + self.scaled(Self::GAP)
     }
-    fn edit_grid_top(panel: Rect) -> f64 {
-        panel.y0 + Self::PAD + Self::HEADER + Self::EDIT_HELP + Self::GAP
+    fn edit_grid_top(&self, panel: Rect) -> f64 {
+        panel.y0
+            + self.scaled(Self::PAD)
+            + self.scaled(Self::HEADER)
+            + self.scaled(Self::EDIT_HELP)
+            + self.scaled(Self::GAP)
     }
-    fn card(panel: Rect, i: usize, edit: bool) -> Rect {
-        let top = Self::grid_top(panel);
+    fn card(&self, panel: Rect, i: usize, edit: bool) -> Rect {
+        let top = self.grid_top(panel);
         if edit {
-            let top = Self::edit_grid_top(panel);
-            let y = top + n(i) * (Self::EDIT_ROW + 6.0);
+            let top = self.edit_grid_top(panel);
+            let y = top + n(i) * self.scaled(Self::EDIT_ROW + 6.0);
             return Rect::new(
-                panel.x0 + Self::PAD,
+                panel.x0 + self.scaled(Self::PAD),
                 y,
-                panel.x1 - Self::PAD,
-                y + Self::EDIT_ROW,
+                panel.x1 - self.scaled(Self::PAD),
+                y + self.scaled(Self::EDIT_ROW),
             );
         }
         let col = i % 2;
         let row = i / 2;
-        let w = (panel.width() - 2.0 * Self::PAD - Self::GAP) / 2.0;
-        let x = panel.x0 + Self::PAD + n(col) * (w + Self::GAP);
-        let y = top + n(row) * (Self::CARD + Self::GAP);
-        Rect::new(x, y, x + w, y + Self::CARD)
+        let pad = self.scaled(Self::PAD);
+        let gap = self.scaled(Self::GAP);
+        let w = (panel.width() - 2.0 * pad - gap) / 2.0;
+        let x = panel.x0 + pad + n(col) * (w + gap);
+        let y = top + n(row) * self.scaled(Self::CARD + Self::GAP);
+        Rect::new(x, y, x + w, y + self.scaled(Self::CARD))
     }
-    fn control_card(panel: Rect, i: usize, count: usize) -> Rect {
+    fn control_card(&self, panel: Rect, i: usize, count: usize) -> Rect {
         let row = i / 2;
-        let y = Self::grid_top(panel) + n(row) * (Self::CARD + Self::GAP);
+        let pad = self.scaled(Self::PAD);
+        let gap = self.scaled(Self::GAP);
+        let card = self.scaled(Self::CARD);
+        let y = self.grid_top(panel) + n(row) * (card + gap);
         if count % 2 == 1 && i + 1 == count {
-            return Rect::new(
-                panel.x0 + Self::PAD,
-                y,
-                panel.x1 - Self::PAD,
-                y + Self::CARD,
-            );
+            return Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + card);
         }
-        let w = (panel.width() - 2.0 * Self::PAD - Self::GAP) / 2.0;
-        let x = panel.x0 + Self::PAD + n(i % 2) * (w + Self::GAP);
-        Rect::new(x, y, x + w, y + Self::CARD)
+        let w = (panel.width() - 2.0 * pad - gap) / 2.0;
+        let x = panel.x0 + pad + n(i % 2) * (w + gap);
+        Rect::new(x, y, x + w, y + card)
     }
     /// Compatibility geometry for integration tests; the renderer uses the
     /// current control vector above.
     pub fn toggle_geometry(panel: Rect, index: usize) -> Rect {
-        Self::card(panel, index, false)
+        Self::default().card(panel, index, false)
     }
     pub fn slider_geometry(panel: Rect, i: usize) -> (Rect, f64) {
+        Self::slider_geometry_scaled(panel, i, 1.0)
+    }
+    fn slider_geometry_for(&self, panel: Rect, i: usize) -> (Rect, f64) {
+        Self::slider_geometry_scaled(panel, i, self.layout_scale)
+    }
+    fn slider_geometry_scaled(panel: Rect, i: usize, scale: f64) -> (Rect, f64) {
         let y = panel.y0
-            + Self::PAD
-            + Self::HEADER
-            + Self::GAP
-            + Self::ACTIONS
-            + Self::GAP
-            + 12.0
-            + n(i) * 28.0;
+            + Self::PAD * scale
+            + Self::HEADER * scale
+            + Self::GAP * scale
+            + Self::ACTIONS * scale
+            + Self::GAP * scale
+            + 12.0 * scale
+            + n(i) * 28.0 * scale;
         (
-            Rect::new(panel.x0 + 52.0, y + 8.0, panel.x1 - 28.0, y + 14.0),
+            Rect::new(
+                panel.x0 + 52.0 * scale,
+                y + 8.0 * scale,
+                panel.x1 - 28.0 * scale,
+                y + 14.0 * scale,
+            ),
             y,
         )
     }
@@ -319,29 +354,31 @@ impl QuickSettingsRoot {
         } else {
             count.div_ceil(2)
         };
-        let y = Self::grid_top(panel)
-            + n(rows) * Self::CARD
-            + n(rows.saturating_sub(1)) * Self::GAP
-            + Self::GAP;
+        let y = self.grid_top(panel)
+            + n(rows) * self.scaled(Self::CARD)
+            + n(rows.saturating_sub(1)) * self.scaled(Self::GAP)
+            + self.scaled(Self::GAP);
         Rect::new(
-            panel.x0 + Self::PAD,
+            panel.x0 + self.scaled(Self::PAD),
             y,
-            panel.x1 - Self::PAD,
-            y + Self::POWER,
+            panel.x1 - self.scaled(Self::PAD),
+            y + self.scaled(Self::POWER),
         )
     }
     fn action(&self, i: usize) -> Rect {
-        let w = (self.panel.width() - 2.0 * Self::PAD - 3.0 * Self::GAP) / 4.0;
-        let x = self.panel.x0 + Self::PAD + n(i) * (w + Self::GAP);
-        let y = self.panel.y0 + Self::PAD + Self::HEADER;
-        Rect::new(x, y, x + w, y + Self::ACTIONS)
+        let pad = self.scaled(Self::PAD);
+        let gap = self.scaled(Self::GAP);
+        let w = (self.panel.width() - 2.0 * pad - 3.0 * gap) / 4.0;
+        let x = self.panel.x0 + pad + n(i) * (w + gap);
+        let y = self.panel.y0 + pad + self.scaled(Self::HEADER);
+        Rect::new(x, y, x + w, y + self.scaled(Self::ACTIONS))
     }
     fn edit_rect(&self) -> Rect {
         Rect::new(
-            self.panel.x1 - Self::PAD - 32.0,
-            self.panel.y0 + Self::PAD + 4.0,
-            self.panel.x1 - Self::PAD,
-            self.panel.y0 + Self::PAD + 36.0,
+            self.panel.x1 - self.scaled(Self::PAD + 32.0),
+            self.panel.y0 + self.scaled(Self::PAD + 4.0),
+            self.panel.x1 - self.scaled(Self::PAD),
+            self.panel.y0 + self.scaled(Self::PAD + 36.0),
         )
     }
     fn label(c: QuickSettingsControl) -> &'static str {
@@ -635,7 +672,7 @@ impl QuickSettingsRoot {
             }
         }
         for i in 0..2 {
-            let (bar, _) = Self::slider_geometry(panel, i);
+            let (bar, _) = self.slider_geometry_for(panel, i);
             if Rect::new(bar.x0 - 6., bar.y0 - 10., bar.x1 + 6., bar.y1 + 10.).contains(point) {
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
                 if i == 0 {
@@ -649,7 +686,7 @@ impl QuickSettingsRoot {
         }
         let controls = self.visible_controls(state);
         for (i, c) in controls.iter().copied().enumerate() {
-            let card = Self::control_card(panel, i, controls.len());
+            let card = self.control_card(panel, i, controls.len());
             if !card.contains(point) {
                 continue;
             }
@@ -676,28 +713,28 @@ impl QuickSettingsRoot {
         RootAction::None
     }
     fn edit_reset(&self, state: &QuickSettingsState) -> Rect {
-        let y = Self::edit_grid_top(self.panel)
-            + n(self.edit_controls(state).len()) * (Self::EDIT_ROW + 6.)
-            + Self::GAP;
+        let y = self.edit_grid_top(self.panel)
+            + n(self.edit_controls(state).len()) * self.scaled(Self::EDIT_ROW + 6.)
+            + self.scaled(Self::GAP);
         Rect::new(
-            self.panel.x0 + Self::PAD,
+            self.panel.x0 + self.scaled(Self::PAD),
             y,
-            self.panel.center().x - 4.,
-            y + Self::EDIT_FOOTER,
+            self.panel.center().x - self.scaled(4.),
+            y + self.scaled(Self::EDIT_FOOTER),
         )
     }
     fn edit_done(&self, state: &QuickSettingsState) -> Rect {
         let reset = self.edit_reset(state);
         Rect::new(
-            self.panel.center().x + 4.,
+            self.panel.center().x + self.scaled(4.),
             reset.y0,
-            self.panel.x1 - Self::PAD,
+            self.panel.x1 - self.scaled(Self::PAD),
             reset.y1,
         )
     }
     fn edit_click(&mut self, point: Point, state: &QuickSettingsState) -> RootAction {
         for (i, c) in self.edit_controls(state).iter().copied().enumerate() {
-            let row = Self::card(self.panel, i, true);
+            let row = self.card(self.panel, i, true);
             if !row.contains(point) {
                 continue;
             }
@@ -738,7 +775,7 @@ impl QuickSettingsRoot {
     ) -> bool {
         self.panel = panel;
         if let Some(i) = self.slider_drag {
-            let (bar, _) = Self::slider_geometry(panel, i);
+            let (bar, _) = self.slider_geometry_for(panel, i);
             let v = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
             if i == 0 {
                 state.brightness = v;
@@ -751,9 +788,9 @@ impl QuickSettingsRoot {
             return self.edit_drag.pointer_moved(
                 point,
                 &ListMetrics::uniform(
-                    Self::edit_grid_top(panel),
-                    Self::EDIT_ROW,
-                    6.,
+                    self.edit_grid_top(panel),
+                    self.scaled(Self::EDIT_ROW),
+                    self.scaled(6.),
                     self.edit_controls(state).len(),
                 ),
             );
@@ -826,8 +863,13 @@ impl QuickSettingsRoot {
             },
             theme.tokens.typography.scale.base,
             colors.text_primary,
-            transform
-                .pre_translate((self.panel.x0 + Self::PAD, self.panel.y0 + Self::PAD + 23.).into()),
+            transform.pre_translate(
+                (
+                    self.panel.x0 + self.scaled(Self::PAD),
+                    self.panel.y0 + self.scaled(Self::PAD + 23.),
+                )
+                    .into(),
+            ),
             None,
             TextWeight::Semibold,
         );
@@ -857,7 +899,12 @@ impl QuickSettingsRoot {
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(r.x0 + 8., r.y0 + 8., r.x1 - 8., r.y1 - 8.),
+                Rect::new(
+                    r.x0 + self.scaled(8.),
+                    r.y0 + self.scaled(8.),
+                    r.x1 - self.scaled(8.),
+                    r.y1 - self.scaled(8.),
+                ),
                 icon,
                 colors.text_primary,
                 1.5,
@@ -874,14 +921,14 @@ impl QuickSettingsRoot {
         state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
-        // Labeled destinations are deliberately first: this preserves the
-        // original shell hierarchy instead of hiding essential actions behind
-        // unexplained footer glyphs.
-        for (i, (icon, label, accessible)) in [
-            (ui::icons::Icon::Settings2, "Settings", "Open Settings"),
-            (ui::icons::Icon::Shield, "Privacy", "Privacy controls"),
-            (ui::icons::Icon::History, "History", "Notification history"),
-            (ui::icons::Icon::Power, "Power", "Power menu"),
+        // Destinations stay first, in the place established by the original
+        // compact shell, instead of being hidden behind unexplained footer
+        // glyphs.
+        for (i, (icon, accessible)) in [
+            (ui::icons::Icon::Settings2, "Open Settings"),
+            (ui::icons::Icon::Shield, "Privacy controls"),
+            (ui::icons::Icon::History, "Notification history"),
+            (ui::icons::Icon::Power, "Power menu"),
         ]
         .into_iter()
         .enumerate()
@@ -905,44 +952,36 @@ impl QuickSettingsRoot {
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(r.center().x - 9., r.y0 + 10., r.center().x + 9., r.y0 + 28.),
+                Rect::new(
+                    r.center().x - 9.,
+                    r.center().y - 9.,
+                    r.center().x + 9.,
+                    r.center().y + 9.,
+                ),
                 icon,
                 color,
                 1.5,
             );
-            let label = text.elide_to_width(
-                label,
-                theme.tokens.typography.scale.xs,
-                (r.width() - 12.) as f32,
-            );
-            let (label_w, _) = text.measure_weighted(
-                &label,
-                theme.tokens.typography.scale.xs,
-                None,
-                TextWeight::Medium,
-            );
-            text.draw_text_weighted(
-                scene,
-                &label,
-                theme.tokens.typography.scale.xs,
-                color,
-                transform
-                    .pre_translate((r.center().x - f64::from(label_w) / 2.0, r.y0 + 47.).into()),
-                None,
-                TextWeight::Medium,
-            );
+            // The name is intentionally not painted beside the glyph.  A
+            // four-up row only has ~80 px per target at a normal desktop
+            // width; text there either truncates or crowds the icon.  The
+            // button's accessible name is the canonical label and the
+            // stable semantic icon makes the visual action row scannable.
         }
         let sliders = Rect::new(
-            self.panel.x0 + Self::PAD,
-            self.panel.y0 + Self::PAD + Self::HEADER + Self::GAP + Self::ACTIONS + Self::GAP,
-            self.panel.x1 - Self::PAD,
+            self.panel.x0 + self.scaled(Self::PAD),
             self.panel.y0
-                + Self::PAD
-                + Self::HEADER
-                + Self::GAP
-                + Self::ACTIONS
-                + Self::GAP
-                + Self::SLIDERS,
+                + self.scaled(Self::PAD + Self::HEADER + Self::GAP + Self::ACTIONS + Self::GAP),
+            self.panel.x1 - self.scaled(Self::PAD),
+            self.panel.y0
+                + self.scaled(
+                    Self::PAD
+                        + Self::HEADER
+                        + Self::GAP
+                        + Self::ACTIONS
+                        + Self::GAP
+                        + Self::SLIDERS,
+                ),
         );
         Button::paint(
             scene,
@@ -954,12 +993,22 @@ impl QuickSettingsRoot {
                 .accessible_name("Brightness and volume"),
         );
         for i in 0..2 {
-            let (bar, y) = Self::slider_geometry(self.panel, i);
-            let face = Rect::new(bar.x0 - 5., y - 4., bar.x1 + 5., y + 26.);
+            let (bar, y) = self.slider_geometry_for(self.panel, i);
+            let face = Rect::new(
+                bar.x0 - self.scaled(5.),
+                y - self.scaled(4.),
+                bar.x1 + self.scaled(5.),
+                y + self.scaled(26.),
+            );
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(self.panel.x0 + 28., y + 3., self.panel.x0 + 44., y + 19.),
+                Rect::new(
+                    self.panel.x0 + self.scaled(28.),
+                    y + self.scaled(3.),
+                    self.panel.x0 + self.scaled(44.),
+                    y + self.scaled(19.),
+                ),
                 if i == 0 {
                     ui::icons::Icon::Sun
                 } else {
@@ -1011,7 +1060,12 @@ impl QuickSettingsRoot {
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(r.x0 + 12., r.y0 + 15., r.x0 + 30., r.y0 + 33.),
+            Rect::new(
+                r.x0 + self.scaled(12.),
+                r.y0 + self.scaled(15.),
+                r.x0 + self.scaled(30.),
+                r.y0 + self.scaled(33.),
+            ),
             ui::icons::Icon::Battery,
             colors.semantic.success,
             1.5,
@@ -1021,7 +1075,7 @@ impl QuickSettingsRoot {
             state.power_profile.label(),
             theme.tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((r.x0 + 42., r.y0 + 21.).into()),
+            transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(21.)).into()),
             None,
             TextWeight::Semibold,
         );
@@ -1035,13 +1089,18 @@ impl QuickSettingsRoot {
             &battery_detail,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((r.x0 + 42., r.y0 + 39.).into()),
+            transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(39.)).into()),
             None,
         );
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(r.x1 - 28., r.y0 + 17., r.x1 - 12., r.y0 + 33.),
+            Rect::new(
+                r.x1 - self.scaled(28.),
+                r.y0 + self.scaled(17.),
+                r.x1 - self.scaled(12.),
+                r.y0 + self.scaled(33.),
+            ),
             ui::icons::Icon::ChevronRight,
             colors.text_dim,
             1.5,
@@ -1060,7 +1119,7 @@ impl QuickSettingsRoot {
         c: QuickSettingsControl,
     ) {
         let colors = &theme.tokens.colors;
-        let r = Self::control_card(self.panel, i, count);
+        let r = self.control_card(self.panel, i, count);
         let on = Self::on(c, s);
         Button::paint(
             scene,
@@ -1074,7 +1133,12 @@ impl QuickSettingsRoot {
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(r.x0 + 14., r.y0 + 13., r.x0 + 32., r.y0 + 31.),
+            Rect::new(
+                r.x0 + self.scaled(14.),
+                r.y0 + self.scaled(11.),
+                r.x0 + self.scaled(32.),
+                r.y0 + self.scaled(29.),
+            ),
             Self::icon(c, s),
             if on {
                 colors.accent[5]
@@ -1088,21 +1152,21 @@ impl QuickSettingsRoot {
             Self::rendered_label(c, s),
             theme.tokens.typography.scale.sm,
             colors.text_primary,
-            transform.pre_translate((r.x0 + 14., r.y0 + 47.).into()),
+            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(43.)).into()),
             None,
             TextWeight::Semibold,
         );
         let sub = text.elide_to_width(
             Self::subline(c, s),
             theme.tokens.typography.scale.xs,
-            (r.width() - 70.) as f32,
+            (r.width() - self.scaled(70.)) as f32,
         );
         text.draw_text(
             scene,
             &sub,
             theme.tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((r.x0 + 14., r.y0 + 65.).into()),
+            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(59.)).into()),
             None,
         );
         if (matches!(c, QuickSettingsControl::Wifi) && s.radios.wifi_available)
@@ -1114,7 +1178,12 @@ impl QuickSettingsRoot {
             ui::icons::draw_icon(
                 scene,
                 transform,
-                Rect::new(r.x1 - 30., r.y0 + 16., r.x1 - 14., r.y0 + 32.),
+                Rect::new(
+                    r.x1 - self.scaled(30.),
+                    r.y0 + self.scaled(13.),
+                    r.x1 - self.scaled(14.),
+                    r.y0 + self.scaled(29.),
+                ),
                 ui::icons::Icon::ChevronRight,
                 colors.text_dim,
                 1.5,
@@ -1125,7 +1194,12 @@ impl QuickSettingsRoot {
                 transform,
                 theme,
                 &ToggleFace::new(
-                    Rect::new(r.x1 - 50., r.y0 + 14., r.x1 - 14., r.y0 + 34.),
+                    Rect::new(
+                        r.x1 - self.scaled(50.),
+                        r.y0 + self.scaled(11.),
+                        r.x1 - self.scaled(14.),
+                        r.y0 + self.scaled(31.),
+                    ),
                     on,
                 ),
             );
@@ -1148,8 +1222,8 @@ impl QuickSettingsRoot {
             colors.text_dim,
             transform.pre_translate(
                 (
-                    self.panel.x0 + Self::PAD,
-                    self.panel.y0 + Self::PAD + Self::HEADER + 14.,
+                    self.panel.x0 + self.scaled(Self::PAD),
+                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 14.),
                 )
                     .into(),
             ),
@@ -1157,14 +1231,21 @@ impl QuickSettingsRoot {
         );
         let all = self.edit_controls(state);
         let metrics = ListMetrics::uniform(
-            Self::edit_grid_top(self.panel),
-            Self::EDIT_ROW,
-            6.,
+            self.edit_grid_top(self.panel),
+            self.scaled(Self::EDIT_ROW),
+            self.scaled(6.),
             all.len(),
         );
         self.edit_drag.sync_insertion(&metrics);
         for (i, c) in all.iter().copied().enumerate() {
-            let mut r = Self::card(self.panel, i, true);
+            // The dragged control is represented by the elevated ghost
+            // below.  Painting its original row as well makes the item that
+            // reflows into the vacated slot paint on top of it, which is why
+            // a live drag could briefly show two labels in one row.
+            if self.edit_drag.from_index() == Some(i) {
+                continue;
+            }
+            let mut r = self.card(self.panel, i, true);
             r = r.with_origin((r.x0, r.y0 + self.edit_drag.item_shift(i, &metrics)));
             let present = self.config.controls.contains(&c);
             Button::paint(
@@ -1178,8 +1259,12 @@ impl QuickSettingsRoot {
             );
             // A six-dot grip is a familiar, intentional reorder affordance;
             // the old horizontal ellipsis read as accidental punctuation.
-            for x in [r.x0 + 15., r.x0 + 21.] {
-                for y in [r.center().y - 6., r.center().y, r.center().y + 6.] {
+            for x in [r.x0 + self.scaled(15.), r.x0 + self.scaled(21.)] {
+                for y in [
+                    r.center().y - self.scaled(6.),
+                    r.center().y,
+                    r.center().y + self.scaled(6.),
+                ] {
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -1189,18 +1274,23 @@ impl QuickSettingsRoot {
                     );
                 }
             }
-            let action = Rect::new(r.x1 - 82., r.y0 + 9., r.x1 - 10., r.y1 - 9.);
+            let action = Rect::new(
+                r.x1 - self.scaled(82.),
+                r.y0 + self.scaled(9.),
+                r.x1 - self.scaled(10.),
+                r.y1 - self.scaled(9.),
+            );
             let label = text.elide_to_width(
                 Self::label(c),
                 theme.tokens.typography.scale.sm,
-                (action.x0 - r.x0 - 52.).max(1.0) as f32,
+                (action.x0 - r.x0 - self.scaled(52.)).max(1.0) as f32,
             );
             text.draw_text_weighted(
                 scene,
                 &label,
                 theme.tokens.typography.scale.sm,
                 colors.text_primary,
-                transform.pre_translate((r.x0 + 42., r.y0 + 25.).into()),
+                transform.pre_translate((r.x0 + self.scaled(42.), r.y0 + self.scaled(25.)).into()),
                 None,
                 TextWeight::Medium,
             );
@@ -1233,8 +1323,8 @@ impl QuickSettingsRoot {
             Button::paint(scene, transform, text, theme, &action_face);
         }
         if let Some(ghost) = self.edit_drag.ghost_rect(
-            self.panel.x0 + Self::PAD,
-            self.panel.x1 - Self::PAD,
+            self.panel.x0 + self.scaled(Self::PAD),
+            self.panel.x1 - self.scaled(Self::PAD),
             &metrics,
         ) {
             // The floating item retains its identity, not merely a coloured
@@ -1250,11 +1340,11 @@ impl QuickSettingsRoot {
                     .accessible_name("Quick Settings control being reordered"),
             );
             if let Some(control) = self.edit_drag.dragged_id().copied() {
-                for x in [ghost.x0 + 15., ghost.x0 + 21.] {
+                for x in [ghost.x0 + self.scaled(15.), ghost.x0 + self.scaled(21.)] {
                     for y in [
-                        ghost.center().y - 6.,
+                        ghost.center().y - self.scaled(6.),
                         ghost.center().y,
-                        ghost.center().y + 6.,
+                        ghost.center().y + self.scaled(6.),
                     ] {
                         scene.fill(
                             Fill::NonZero,
@@ -1265,19 +1355,25 @@ impl QuickSettingsRoot {
                         );
                     }
                 }
-                let action =
-                    Rect::new(ghost.x1 - 82., ghost.y0 + 9., ghost.x1 - 10., ghost.y1 - 9.);
+                let action = Rect::new(
+                    ghost.x1 - self.scaled(82.),
+                    ghost.y0 + self.scaled(9.),
+                    ghost.x1 - self.scaled(10.),
+                    ghost.y1 - self.scaled(9.),
+                );
                 let label = text.elide_to_width(
                     Self::label(control),
                     theme.tokens.typography.scale.sm,
-                    (action.x0 - ghost.x0 - 52.).max(1.0) as f32,
+                    (action.x0 - ghost.x0 - self.scaled(52.)).max(1.0) as f32,
                 );
                 text.draw_text_weighted(
                     scene,
                     &label,
                     theme.tokens.typography.scale.sm,
                     colors.text_primary,
-                    transform.pre_translate((ghost.x0 + 42., ghost.y0 + 25.).into()),
+                    transform.pre_translate(
+                        (ghost.x0 + self.scaled(42.), ghost.y0 + self.scaled(25.)).into(),
+                    ),
                     None,
                     TextWeight::Medium,
                 );
@@ -1500,7 +1596,7 @@ mod tests {
             .iter()
             .position(|c| *c == QuickSettingsControl::AirplaneMode)
             .unwrap_or_default();
-        let row = QuickSettingsRoot::card(PANEL, airplane, true);
+        let row = root.card(PANEL, airplane, true);
         assert_eq!(
             root.edit_click(row.center(), &state),
             RootAction::LayoutChanged
@@ -1518,7 +1614,7 @@ mod tests {
         root.panel = PANEL;
         let mut state = QuickSettingsState::default();
         state.bluetooth_available = true;
-        let row = QuickSettingsRoot::card(PANEL, 1, true);
+        let row = root.card(PANEL, 1, true);
         let start = Point::new(row.x0 + 20.0, row.center().y);
         assert_eq!(root.edit_click(start, &state), RootAction::None);
         assert!(root.update_drag(Point::new(start.x, start.y + 80.), PANEL, &mut state));
@@ -1532,9 +1628,9 @@ mod tests {
         let state = QuickSettingsState::default();
         let panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
         for i in 0..root.control_count(&state) {
-            let r = QuickSettingsRoot::card(panel, i, false);
+            let r = root.control_card(panel, i, root.control_count(&state));
             for j in 0..i {
-                let overlap = r.intersect(QuickSettingsRoot::card(panel, j, false));
+                let overlap = r.intersect(root.control_card(panel, j, root.control_count(&state)));
                 assert!(overlap.width() <= 0.0 || overlap.height() <= 0.0);
             }
         }
@@ -1542,7 +1638,8 @@ mod tests {
     #[test]
     fn odd_control_count_uses_a_balanced_full_width_last_card() {
         let panel = Rect::new(0., 48., 400., 520.);
-        let full = QuickSettingsRoot::control_card(panel, 2, 3);
+        let root = QuickSettingsRoot::default();
+        let full = root.control_card(panel, 2, 3);
         assert_eq!(full.x0, panel.x0 + QuickSettingsRoot::PAD);
         assert_eq!(full.x1, panel.x1 - QuickSettingsRoot::PAD);
         assert_eq!(full.width(), 368.);
