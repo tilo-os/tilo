@@ -2321,6 +2321,13 @@ fn sleep_lock_frame_status(
     }
 }
 
+/// Only unlock a failed suspend when the compositor actually entered the
+/// pre-sleep state and that state created the lock. A CanSuspend denial can
+/// arrive before preparation, and must not clear a user's unrelated lock.
+fn should_unlock_after_suspend_failure(was_prepared: bool, was_locked: bool) -> bool {
+    was_prepared && !was_locked
+}
+
 /// Whether an event is the hardware power key being pressed — detected by
 /// both the logical [`NamedKey::Power`] and physical key code, keymap-independent.
 /// Translate the backend-neutral winit events into the evdev-shaped EIS
@@ -4023,7 +4030,7 @@ pub fn run() -> ! {
     // lock-overlay paints. `QOS_IDLE_BLANK_SECS`/`QOS_IDLE_LOCK_SECS` config
     // (default: blank after 5 min, no auto-lock). Power policy from
     // `settings.json`, read once at session start — the contract is the JSON on disk, not a shared crate.
-    let power_policy = qos_power_mgmt::config::load_policy();
+    let mut power_policy = qos_power_mgmt::config::load_policy();
     let mut session = SessionManager::new(
         IdleConfig::from_env().with_suspend(power_policy.idle_suspend),
         Instant::now(),
@@ -4049,6 +4056,9 @@ pub fn run() -> ! {
     // pipe must not make the ordinary synchronous/no-presenter branch issue
     // a false lock-frame acknowledgement.
     let mut sleep_lock_frame_failed = false;
+    // Whether the pre-sleep signal found an existing lock. A failed suspend
+    // may clear only a lock installed for that sleep request.
+    let mut sleep_lock_was_locked = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
@@ -4421,16 +4431,7 @@ pub fn run() -> ! {
                         match power_policy.on_power_key() {
                             Some(qos_power_mgmt::PowerAction::Suspend) => {
                                 tracing::info!(target: "qos::power", "power key: requesting suspend");
-                                for t in session.prepare_for_sleep(Instant::now()) {
-                                    apply_session_transition(
-                                        t,
-                                        backend.as_mut(),
-                                        present_pipe.as_ref(),
-                                    );
-                                }
-                                sleep_lock_frame_pending = true;
-                                sleep_lock_frame_serial = None;
-                                sleep_lock_frame_failed = false;
+                                sleep_lock_was_locked = session.is_locked();
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
@@ -4616,6 +4617,7 @@ pub fn run() -> ! {
             state.reload_keyboard_settings();
             backend.reload_input_settings();
             let policy = qos_power_mgmt::config::load_policy();
+            power_policy = policy;
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
@@ -4706,16 +4708,7 @@ pub fn run() -> ! {
                     );
                 } else {
                     tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
-                    for transition in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(
-                            transition,
-                            backend.as_mut(),
-                            present_pipe.as_ref(),
-                        );
-                    }
-                    sleep_lock_frame_pending = true;
-                    sleep_lock_frame_serial = None;
-                    sleep_lock_frame_failed = false;
+                    sleep_lock_was_locked = session.is_locked();
                     power_bridge.request_suspend();
                 }
             } else {
@@ -4736,12 +4729,34 @@ pub fn run() -> ! {
                     }
                 }
                 qos_power_mgmt::PowerSignal::PreparingForSleep => {
+                    // Preserve a lock that was already present at request
+                    // time, and also observe a manual/lid lock that arrived
+                    // while the async suspend request was in flight.
+                    sleep_lock_was_locked |= session.is_locked();
                     for t in session.prepare_for_sleep(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
+                }
+                qos_power_mgmt::PowerSignal::SuspendFailed => {
+                    let was_prepared = sleep_lock_frame_pending;
+                    sleep_lock_frame_pending = false;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                    session.cancel_suspend();
+                    // A lid/critical request can fail before it ever emits
+                    // PreparingForSleep. Only undo a lock that this pending
+                    // sleep actually installed; never unlock an unrelated
+                    // user lock when CanSuspend is refused.
+                    if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
+                        for t in session.request_unlock(Instant::now()) {
+                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        }
+                    }
+                    sleep_lock_was_locked = false;
+                    tracing::warn!(target: "qos::power", "suspend request failed; session remains awake");
                 }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
@@ -4751,6 +4766,10 @@ pub fn run() -> ! {
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
+                    sleep_lock_frame_pending = false;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                    sleep_lock_was_locked = false;
                     // A resumed panel is scanning out whatever was left in its buffers, so the next frame must be a full one.
                     outputs_dirty = false;
                     session_changed = true;
@@ -6979,6 +6998,13 @@ mod tests {
             sleep_lock_frame_status(42, 41, true),
             SleepLockFrameStatus::PresenterLost
         );
+    }
+
+    #[test]
+    fn failed_suspend_only_unlocks_a_lock_it_prepared() {
+        assert!(should_unlock_after_suspend_failure(true, false));
+        assert!(!should_unlock_after_suspend_failure(true, true));
+        assert!(!should_unlock_after_suspend_failure(false, false));
     }
 }
 
