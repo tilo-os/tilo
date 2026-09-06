@@ -1,149 +1,81 @@
-//! Calendar events and tasks as a qOS global-search source.
+//! Calendar events, tasks, and projects as a retained qOS global-search source.
 //!
-//! Every result addresses the resource tree's stable exported `open` view
-//! action. The palette therefore uses the same brokered operation as agents,
-//! accessibility and direct resource navigation; Calendar owns no parallel
-//! activation-token namespace.
+//! The catalogue is keyed by each record's canonical resource id. It retains
+//! the complete loaded Calendar corpus and delegates query paging to
+//! [`SearchCatalog`], so typing never re-walks events and a match after a long
+//! run of broad matches remains reachable through a cursor.
 
-use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::BTreeSet;
+use std::sync::{Arc, RwLock};
 
 use ui::icons::Icon;
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
+use crate::actions::CalendarCollectionResource;
 use crate::date;
 use crate::model::{Event, Model, Project, Task};
 
 /// The kind label (and result-group header) Calendar produces.
 pub const CALENDAR_KIND: &str = "Calendar";
 
-/// A long query may still have a very common three-character fragment. Bound
-/// materialization after index intersection; exact/specific queries normally
-/// reduce to just their matching records before this limit applies.
-const QUERY_CANDIDATE_LIMIT: usize = 128;
-
-#[derive(Clone, Copy)]
-enum Record {
-    Project(usize),
-    Event(usize),
-    Task(usize),
-}
-
-/// A synchronous, complete snapshot of the model plus an inverted n-gram
-/// index. `CalDAV` work remains off the palette's query path: all I/O happens
-/// before this provider is constructed, never while typing in search.
+/// A durable, complete catalogue over Calendar's loaded CRDT projection.
+///
+/// Clones retain the same `SearchCatalog`, which lets `CalendarApp` refresh it
+/// on document revisions while palette instances keep inexpensive provider
+/// handles. `indexed_ids` lets Calendar remove records deleted by a peer or an
+/// undo without reconstructing the catalogue.
+#[derive(Clone)]
 pub struct CalendarSearchProvider {
-    projects: Vec<Project>,
-    events: Vec<Event>,
-    tasks: Vec<Task>,
-    event_notes: Vec<String>,
-    task_notes: Vec<String>,
-    records: Vec<Record>,
-    /// Normalized one-, two-, and three-character grams mapped to complete
-    /// snapshot record ids. The bounded query path intersects these compact
-    /// postings rather than re-reading every event/task on each keystroke.
-    grams: HashMap<String, Vec<usize>>,
-    /// Exact normalized words retain late, specific findability without ever
-    /// walking a long substring posting on the query path.
-    words: HashMap<String, Vec<usize>>,
-    /// Test-only observable query budget; `Cell` keeps search's public
-    /// synchronous `&self` contract intact.
-    candidate_inspections: Cell<usize>,
+    catalog: SearchCatalog,
+    indexed_ids: Arc<RwLock<BTreeSet<String>>>,
 }
 
 impl CalendarSearchProvider {
+    /// Create a self-contained catalogue, primarily for small callers and
+    /// tests. The live app keeps this instance and calls [`Self::refresh`] when
+    /// its CRDT revision changes.
     pub fn new(model: &Model) -> Self {
-        let projects = model.projects.clone();
-        let events = model.events.clone();
-        let tasks = model.tasks.clone();
-        let event_len = events.len();
-        let task_len = tasks.len();
-        let mut records = Vec::with_capacity(projects.len() + events.len() + tasks.len());
-        records.extend((0..projects.len()).map(Record::Project));
-        records.extend((0..events.len()).map(Record::Event));
-        records.extend((0..tasks.len()).map(Record::Task));
-        let mut provider = Self {
-            projects,
-            events,
-            tasks,
-            event_notes: vec![String::new(); event_len],
-            task_notes: vec![String::new(); task_len],
-            records,
-            grams: HashMap::new(),
-            words: HashMap::new(),
-            candidate_inspections: Cell::new(0),
+        Self::new_with_notes(model, &std::collections::HashMap::new())
+    }
+
+    pub fn new_with_notes(
+        model: &Model,
+        notes: &std::collections::HashMap<String, String>,
+    ) -> Self {
+        let provider = Self {
+            catalog: SearchCatalog::new(CALENDAR_KIND),
+            indexed_ids: Arc::new(RwLock::new(BTreeSet::new())),
         };
-        provider.index_complete_snapshot();
+        provider.refresh(model, notes);
         provider
     }
 
-    /// The note projection joins the normal resource/search snapshot without
-    /// changing activation: a note hit still opens its owning event or task.
-    pub fn new_with_notes(model: &Model, notes: &HashMap<String, String>) -> Self {
-        let mut provider = Self::new(model);
-        provider.event_notes = provider
-            .events
-            .iter()
-            .map(|event| {
-                notes
-                    .get(&event.id.to_string())
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .collect();
-        provider.task_notes = provider
-            .tasks
-            .iter()
-            .map(|task| notes.get(&task.id.to_string()).cloned().unwrap_or_default())
-            .collect();
-        provider.grams.clear();
-        provider.words.clear();
-        provider.index_complete_snapshot();
-        provider
-    }
-
-    fn index_complete_snapshot(&mut self) {
-        for index in 0..self.records.len() {
-            let haystack = self.record_haystack(index);
-            let mut unique_grams = HashSet::new();
-            for gram in grams(&haystack) {
-                if unique_grams.insert(gram.clone()) {
-                    self.grams.entry(gram).or_default().push(index);
-                }
-            }
-            let mut unique_words = HashSet::new();
-            for word in words(&haystack) {
-                if unique_words.insert(word.clone()) {
-                    self.words.entry(word).or_default().push(index);
-                }
-            }
-        }
-    }
-
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "record ids are constructed only from these immutable vectors in new() and are never externally supplied"
-    )]
-    fn record_haystack(&self, index: usize) -> String {
-        match self.records[index] {
-            Record::Project(index) => self.projects[index].name.to_lowercase(),
-            Record::Event(index) => {
-                let event = &self.events[index];
-                format!(
-                    "{} {} {}",
-                    event.display_title(),
-                    event.location,
-                    self.event_notes[index]
-                )
-                .to_lowercase()
-            }
-            Record::Task(index) => format!(
-                "{} {}",
-                Self::task_title(&self.tasks[index]),
-                self.task_notes[index]
-            )
-            .to_lowercase(),
-        }
+    fn index_calendar(
+        &self,
+        calendar: &CalendarCollectionResource,
+        current: &mut BTreeSet<String>,
+    ) {
+        let result = SearchResult::for_action(
+            CALENDAR_KIND,
+            &calendar.label,
+            crate::actions::open_calendar_address(&calendar.id),
+        )
+        .with_subtitle(if calendar.visible {
+            "Calendar"
+        } else {
+            "Calendar · hidden"
+        })
+        .with_icon(Icon::Calendar);
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        let id = address.resource;
+        let searchable = format!("{}\0{}", calendar.label, calendar.id);
+        let _ = self.catalog.upsert(id.clone(), searchable, result);
+        current.insert(id);
     }
 
     fn event_subtitle(event: &Event) -> String {
@@ -175,111 +107,109 @@ impl CalendarSearchProvider {
         )
     }
 
-    fn indexed_candidates(&self, query: &str) -> Vec<usize> {
-        self.candidate_inspections.set(0);
-        let query_words = words(query);
-        if query_words.is_empty() {
-            return (0..self.records.len())
-                .take(DEFAULT_SEARCH_RESULT_LIMIT)
-                .collect();
-        }
-        let word_postings = query_words
-            .iter()
-            .map(|word| self.words.get(word))
-            .collect::<Option<Vec<_>>>()
-            .filter(|postings| postings.len() == query_words.len());
-        if let Some(postings) = word_postings {
-            return self.bounded_intersection(postings);
-        }
-        let grams = grams(query);
-        let postings = grams
-            .iter()
-            .map(|gram| self.grams.get(gram))
-            .collect::<Option<Vec<_>>>()
-            .filter(|postings| postings.len() == grams.len());
-        postings.map_or_else(Vec::new, |postings| self.bounded_intersection(postings))
+    fn index_project(&self, project: &Project, current: &mut BTreeSet<String>) {
+        let result = SearchResult::for_action(
+            CALENDAR_KIND,
+            &project.name,
+            crate::actions::open_project_address(project.id),
+        )
+        .with_subtitle("Task project")
+        .with_icon(Icon::Check);
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        let id = address.resource;
+        let _ = self.catalog.upsert(id.clone(), &project.name, result);
+        current.insert(id);
     }
 
-    fn bounded_intersection(&self, mut postings: Vec<&Vec<usize>>) -> Vec<usize> {
-        postings.sort_by_key(|posting| posting.len());
-        let Some(rarest) = postings.first() else {
-            return Vec::new();
+    fn index_event(&self, event: &Event, note: Option<&String>, current: &mut BTreeSet<String>) {
+        let result = SearchResult::for_action(
+            CALENDAR_KIND,
+            event.display_title(),
+            crate::actions::open_event_address(event.id),
+        )
+        .with_subtitle(Self::event_subtitle(event))
+        .with_icon(Icon::Calendar);
+        let Some(address) = result.action_address() else {
+            return;
         };
-        let mut out = Vec::new();
-        for candidate in rarest.iter().take(QUERY_CANDIDATE_LIMIT) {
-            self.candidate_inspections
-                .set(self.candidate_inspections.get().saturating_add(1));
-            if postings
-                .iter()
-                .skip(1)
-                .all(|posting| posting.binary_search(candidate).is_ok())
-            {
-                out.push(*candidate);
-            }
+        let id = address.resource;
+        let searchable = format!(
+            "{}\0{}\0{}\0{}",
+            event.display_title(),
+            event.location,
+            event.calendar_id.as_deref().unwrap_or(""),
+            note.map_or("", String::as_str),
+        );
+        let _ = self.catalog.upsert(id.clone(), searchable, result);
+        current.insert(id);
+    }
+
+    fn index_task(&self, task: &Task, note: Option<&String>, current: &mut BTreeSet<String>) {
+        let result = SearchResult::for_action(
+            CALENDAR_KIND,
+            Self::task_title(task),
+            crate::actions::open_task_address(task.id),
+        )
+        .with_subtitle(Self::task_subtitle(task))
+        .with_icon(Icon::Check);
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        let id = address.resource;
+        let searchable = format!(
+            "{}\0{}",
+            Self::task_title(task),
+            note.map_or("", String::as_str)
+        );
+        let _ = self.catalog.upsert(id.clone(), searchable, result);
+        current.insert(id);
+    }
+
+    /// Incrementally reconcile the complete loaded model into the retained
+    /// catalogue. Changed records replace only their row; absent stable ids are
+    /// removed so stale search addresses cannot outlive a peer deletion/undo.
+    pub fn refresh(&self, model: &Model, notes: &std::collections::HashMap<String, String>) {
+        self.refresh_with_calendars(model, notes, &[]);
+    }
+
+    /// Revision callers provide the live account projection too, so local and
+    /// remote collections participate in the same durable search namespace as
+    /// their events.
+    pub fn refresh_with_calendars(
+        &self,
+        model: &Model,
+        notes: &std::collections::HashMap<String, String>,
+        calendars: &[CalendarCollectionResource],
+    ) {
+        let mut current = BTreeSet::new();
+        for calendar in calendars {
+            self.index_calendar(calendar, &mut current);
         }
-        out
+        for project in &model.projects {
+            self.index_project(project, &mut current);
+        }
+        for event in &model.events {
+            self.index_event(event, notes.get(&event.id.to_string()), &mut current);
+        }
+        for task in &model.tasks {
+            self.index_task(task, notes.get(&task.id.to_string()), &mut current);
+        }
+        let mut indexed = self
+            .indexed_ids
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for removed in indexed.difference(&current) {
+            self.catalog.remove(removed);
+        }
+        *indexed = current;
     }
 
     #[cfg(test)]
-    fn candidate_inspections(&self) -> usize {
-        self.candidate_inspections.get()
+    fn stats(&self) -> ui::search::SearchCatalogStats {
+        self.catalog.stats()
     }
-
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "query candidates are postings generated from the same immutable record vector"
-    )]
-    fn result_for(&self, index: usize) -> SearchResult {
-        match self.records[index] {
-            Record::Project(index) => {
-                let project = &self.projects[index];
-                SearchResult::for_action(
-                    CALENDAR_KIND,
-                    &project.name,
-                    crate::actions::open_project_address(project.id),
-                )
-                .with_subtitle("Task project")
-                .with_icon(Icon::Check)
-            }
-            Record::Event(index) => {
-                let event = &self.events[index];
-                SearchResult::for_action(
-                    CALENDAR_KIND,
-                    event.display_title(),
-                    crate::actions::open_event_address(event.id),
-                )
-                .with_subtitle(Self::event_subtitle(event))
-                .with_icon(Icon::Calendar)
-            }
-            Record::Task(index) => {
-                let task = &self.tasks[index];
-                SearchResult::for_action(
-                    CALENDAR_KIND,
-                    Self::task_title(task),
-                    crate::actions::open_task_address(task.id),
-                )
-                .with_subtitle(Self::task_subtitle(task))
-                .with_icon(Icon::Check)
-            }
-        }
-    }
-}
-
-fn grams(value: &str) -> Vec<String> {
-    let chars = value.chars().collect::<Vec<_>>();
-    let width = chars.len().clamp(1, 3);
-    chars
-        .windows(width)
-        .map(|gram| gram.iter().collect())
-        .collect()
-}
-
-fn words(value: &str) -> Vec<String> {
-    value
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 impl SearchProvider for CalendarSearchProvider {
@@ -292,13 +222,18 @@ impl SearchProvider for CalendarSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let query = query.to_lowercase();
-        self.indexed_candidates(&query)
-            .into_iter()
-            .filter(|index| self.record_haystack(*index).contains(&query))
-            .take(limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-            .map(|index| self.result_for(index))
-            .collect()
+        self.catalog.search_limited(query, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
 }
 
@@ -313,8 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn provider_finds_events_by_title_and_location() {
-        let provider = CalendarSearchProvider::new(&seeded());
+    fn provider_finds_events_by_title_location_and_notes() {
+        let model = seeded();
+        let mut notes = std::collections::HashMap::new();
+        let event = &model.events[0];
+        notes.insert(event.id.to_string(), "private launch dossier".into());
+        let provider = CalendarSearchProvider::new_with_notes(&model, &notes);
         assert!(
             provider
                 .search("design")
@@ -325,23 +264,13 @@ mod tests {
             provider
                 .search("bright smiles")
                 .iter()
-                .any(|hit| hit.title == "Dentist"),
-            "an event remains discoverable by its location"
+                .any(|hit| hit.title == "Dentist")
         );
-    }
-
-    #[test]
-    fn provider_finds_tasks_and_addresses_their_open_actions() {
-        let model = seeded();
-        let task = model.tasks.first().expect("demo has tasks");
-        let hits = CalendarSearchProvider::new(&model).search(&task.title);
-        let hit = hits
-            .iter()
-            .find(|hit| hit.title == task.title)
-            .expect("task is found");
-        assert_eq!(
-            hit.action_address(),
-            Some(crate::actions::open_task_address(task.id))
+        assert!(
+            provider
+                .search("launch dossier")
+                .iter()
+                .any(|hit| hit.title == event.display_title())
         );
     }
 
@@ -365,45 +294,89 @@ mod tests {
     }
 
     #[test]
-    fn exact_query_finds_a_record_beyond_the_old_scan_cutoff() {
+    fn unique_late_record_is_findable_without_a_corpus_scan() {
         let mut model = seeded();
         let template = model.events[0].clone();
-        model
-            .events
-            .extend((0..(QUERY_CANDIDATE_LIMIT + 8)).map(|index| {
-                let mut event = template.clone();
-                event.title = format!("ordinary event {index}");
-                event
-            }));
-        let target = model.events.last_mut().expect("appended event");
-        target.title = "needle beyond sixty-four".into();
+        model.events.extend((0..100_001u128).map(|index| {
+            let mut event = template.clone();
+            event.id = uuid::Uuid::from_u128(index + 1);
+            event.title = format!("ordinary event {index}");
+            event
+        }));
+        model.events.last_mut().unwrap().title = "late calendar needle".into();
         let provider = CalendarSearchProvider::new(&model);
-        assert!(
-            provider
-                .search("needle beyond sixty-four")
-                .iter()
-                .any(|hit| hit.title == "needle beyond sixty-four"),
-            "the complete snapshot is indexed; record order cannot hide a specific result"
-        );
-        assert!(
-            provider.candidate_inspections() <= QUERY_CANDIDATE_LIMIT,
-            "the index lookup inspected only its fixed candidate budget"
+        let page = provider.search_page("calendar needle", None, 4, 4);
+        assert_eq!(page.inspected, 1);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "late calendar needle");
+        assert_eq!(
+            provider.stats().records,
+            model.projects.len() + model.events.len() + model.tasks.len()
         );
     }
 
     #[test]
-    fn broad_query_never_evaluates_more_than_the_candidate_budget() {
+    fn pages_bound_work_and_results_without_losing_broad_matches() {
         let mut model = seeded();
         let template = model.events[0].clone();
-        model
-            .events
-            .extend((0..(QUERY_CANDIDATE_LIMIT * 4)).map(|index| {
+        model.events = (0..257u128)
+            .map(|index| {
                 let mut event = template.clone();
-                event.title = format!("common item {index}");
+                event.id = uuid::Uuid::from_u128(index + 1);
+                event.title = format!("common calendar event {index}");
                 event
-            }));
+            })
+            .collect();
+        model.tasks.clear();
+        model.projects.clear();
         let provider = CalendarSearchProvider::new(&model);
-        let _ = provider.search("common");
-        assert!(provider.candidate_inspections() <= QUERY_CANDIDATE_LIMIT);
+        let mut cursor = None;
+        let mut seen = BTreeSet::new();
+        loop {
+            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.inspected <= 17);
+            assert!(page.results.len() <= 5);
+            seen.extend(page.results.iter().map(|result| result.action_id.clone()));
+            let Some(next) = page.next else { break };
+            cursor = Some(next);
+        }
+        assert_eq!(seen.len(), 257);
+    }
+
+    #[test]
+    fn refresh_replaces_changed_rows_and_withdraws_deleted_resources() {
+        let mut model = seeded();
+        let provider = CalendarSearchProvider::new(&model);
+        let event = model.events[0].id;
+        model.events[0].title = "revised calendar event".into();
+        provider.refresh(&model, &std::collections::HashMap::new());
+        assert!(provider.search("revised").iter().any(
+            |result| result.action_address() == Some(crate::actions::open_event_address(event))
+        ));
+        model.events.retain(|candidate| candidate.id != event);
+        provider.refresh(&model, &std::collections::HashMap::new());
+        assert!(provider.search("revised").is_empty());
+    }
+
+    #[test]
+    fn configured_calendars_are_searchable_at_their_canonical_open_addresses() {
+        let model = seeded();
+        let provider = CalendarSearchProvider::new(&model);
+        let calendars = vec![crate::actions::CalendarCollectionResource {
+            id: "account/team".into(),
+            label: "Work · Team schedule".into(),
+            color: Some(0),
+            visible: true,
+        }];
+        provider.refresh_with_calendars(&model, &std::collections::HashMap::new(), &calendars);
+        let hit = provider
+            .search("team schedule")
+            .into_iter()
+            .find(|hit| hit.title == "Work · Team schedule")
+            .expect("configured collection is searchable");
+        assert_eq!(
+            hit.action_address(),
+            Some(crate::actions::open_calendar_address("account/team"))
+        );
     }
 }

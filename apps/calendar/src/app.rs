@@ -253,9 +253,34 @@ pub struct CalendarApp {
     /// Plain-text projection of each rich note for global search. The CRDT
     /// remains canonical; this is a refreshed, local indexing cache only.
     note_search: HashMap<String, String>,
+    /// Complete durable search namespace retained across palette openings.
+    /// It is reconciled after each observed document revision, rather than
+    /// rebuilding a private corpus while a user is typing.
+    search_provider: crate::search_provider::CalendarSearchProvider,
+    search_catalog_heads: Vec<ChangeHash>,
+    /// Monotonic generation of the non-CRDT calendar collection projection.
+    /// Account configuration belongs to Settings, so collection names,
+    /// identities, colours, and visibility can change without advancing the
+    /// Automerge heads that protect events and notes.
+    calendar_projection_revision: u64,
+    /// Last observed collection projection. Comparing this small configuration
+    /// snapshot on sync catches account-state replacements as well as
+    /// Calendar's own visibility toggles, without walking the event/task note
+    /// corpus.
+    calendar_projection_snapshot: Vec<crate::actions::CalendarCollectionResource>,
+    /// Projection generation included in the retained catalogue currently
+    /// published to Ctrl+K.
+    search_catalog_projection_revision: u64,
+    #[cfg(test)]
+    note_projection_refreshes: usize,
+    #[cfg(test)]
+    search_catalog_refreshes: usize,
     today: NaiveDate,
     anchor: NaiveDate,
     view: View,
+    /// `None` shows every visible collection; a stable local/remote calendar
+    /// id is set only by the collection resource's canonical `open` action.
+    calendar_filter: Option<String>,
     list_sel: ListSel,
     selection: Option<Sel>,
     detail_open: bool,
@@ -425,6 +450,10 @@ impl CalendarApp {
         Self::build(false, Some(path))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor deliberately keeps every per-widget local state default adjacent to its field"
+    )]
     fn build(demo: bool, data_path: Option<PathBuf>) -> Self {
         let today = Local::now().date_naive();
 
@@ -445,15 +474,26 @@ impl CalendarApp {
             (Model::default(), None, accounts)
         };
         let detail_open = selection.is_some();
+        let search_provider = crate::search_provider::CalendarSearchProvider::new(&model);
 
         let task_project_choice = LocalState::new(String::new());
         let task_priority_choice = LocalState::new(String::new());
         Self {
             model,
             note_search: HashMap::new(),
+            search_provider,
+            search_catalog_heads: Vec::new(),
+            calendar_projection_revision: 0,
+            calendar_projection_snapshot: Vec::new(),
+            search_catalog_projection_revision: 0,
+            #[cfg(test)]
+            note_projection_refreshes: 0,
+            #[cfg(test)]
+            search_catalog_refreshes: 0,
             today,
             anchor: today,
             view: View::Month,
+            calendar_filter: None,
             list_sel: ListSel::Today,
             selection,
             detail_open,
@@ -1127,6 +1167,10 @@ impl CalendarApp {
     }
 
     fn refresh_note_search(&mut self, doc: &AutoCommit) {
+        #[cfg(test)]
+        {
+            self.note_projection_refreshes = self.note_projection_refreshes.saturating_add(1);
+        }
         let mut notes = HashMap::new();
         for event in &self.model.events {
             notes.insert(event.id.to_string(), CalDoc::note_text(doc, true, event.id));
@@ -1135,6 +1179,57 @@ impl CalendarApp {
             notes.insert(task.id.to_string(), CalDoc::note_text(doc, false, task.id));
         }
         self.note_search = notes;
+    }
+
+    /// The configuration-only portion of Calendar's resource/search surface.
+    /// It deliberately excludes account collapse (pure sidebar presentation)
+    /// but includes every property that can alter a collection result or its
+    /// canonical target.
+    fn calendar_collections(&self) -> Vec<crate::actions::CalendarCollectionResource> {
+        let mut calendars = vec![crate::actions::CalendarCollectionResource {
+            id: "local".to_string(),
+            label: "On this device".to_string(),
+            color: None,
+            visible: true,
+        }];
+        calendars.extend(self.accounts.all_calendars().map(|(account, calendar)| {
+            crate::actions::CalendarCollectionResource {
+                id: calendar.id.clone(),
+                label: format!("{} · {}", account.label(), calendar.name),
+                color: Some(calendar.palette().index()),
+                visible: calendar.visible,
+            }
+        }));
+        calendars
+    }
+
+    /// Advance the calendar-projection generation only when Settings-owned
+    /// collection data actually differs. This catches an in-memory account
+    /// replacement or a direct non-CRDT configuration change while keeping an
+    /// unchanged frame from rebuilding the search catalogue (or reading any
+    /// notes).
+    fn observe_calendar_projection(&mut self) {
+        let collections = self.calendar_collections();
+        if collections != self.calendar_projection_snapshot {
+            self.calendar_projection_snapshot = collections;
+            self.calendar_projection_revision = self.calendar_projection_revision.wrapping_add(1);
+        }
+    }
+
+    /// Rebuild the retained catalogue for a document revision and/or the
+    /// Settings-owned collection projection. Notes are projected only when the
+    /// document changed; a collection rename or visibility toggle reuses the
+    /// already-current note projection.
+    fn refresh_search_catalog(&mut self, heads: &[ChangeHash]) {
+        let calendars = self.calendar_projection_snapshot.clone();
+        self.search_provider
+            .refresh_with_calendars(&self.model, &self.note_search, &calendars);
+        self.search_catalog_heads = heads.to_vec();
+        self.search_catalog_projection_revision = self.calendar_projection_revision;
+        #[cfg(test)]
+        {
+            self.search_catalog_refreshes = self.search_catalog_refreshes.saturating_add(1);
+        }
     }
 
     fn seed_demo_notes(&self, doc: &mut AutoCommit) {
@@ -1353,6 +1448,10 @@ impl CalendarApp {
     /// The context Ctrl+K needs to build the calendar's resource tree: a template
     /// for a palette-created event (from the current view), and the events +
     /// tasks currently in the model.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one projection keeps resource ownership and editor destinations consistent"
+    )]
     pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
         let start = self
             .anchor
@@ -1429,6 +1528,7 @@ impl CalendarApp {
                 color: Some(calendar.palette().index()),
             }
         }));
+        let calendars = self.calendar_collections();
         let task_project_targets = self
             .model
             .projects
@@ -1443,6 +1543,7 @@ impl CalendarApp {
             events,
             tasks,
             projects,
+            calendars,
             calendar_targets,
             task_project_targets,
             can_sync: self.demo || !self.accounts.is_empty(),
@@ -2091,6 +2192,37 @@ impl CalendarApp {
     }
 
     // --- event form model edits -----------------------------------------
+
+    /// Toggle a Settings-owned collection only after its new state has been
+    /// durably written to the canonical shared account store. The demo/test
+    /// store is intentionally in-memory, but live Calendar never presents an
+    /// unsaved visibility change as successful.
+    fn toggle_calendar_visibility(&mut self, id: &str) {
+        let mut updated = self.accounts.clone();
+        let Some(calendar) = updated
+            .accounts
+            .iter_mut()
+            .flat_map(|account| account.calendars.iter_mut())
+            .find(|calendar| calendar.id == id)
+        else {
+            self.status = Some("That calendar is no longer configured".into());
+            return;
+        };
+        calendar.visible = !calendar.visible;
+
+        if !self.demo
+            && let Err(error) = updated.persist()
+        {
+            self.status = Some(format!("Couldn't save calendar visibility: {error}"));
+            return;
+        }
+
+        self.accounts = updated;
+        // Make the generation visibly stale now; `sync` will rebuild the
+        // catalogue on its next pass without projecting notes again.
+        self.observe_calendar_projection();
+        self.dirty = true;
+    }
 
     /// Every calendar an event can be filed under: the local on-device
     /// calendar plus each remote `CalDAV` collection configured in Settings
@@ -2743,11 +2875,7 @@ impl CalendarApp {
                 self.blur_editor();
             }
             Action::ToggleCalendarVisible(id) => {
-                for acc in &mut self.accounts.accounts {
-                    if let Some(cal) = acc.calendars.iter_mut().find(|c| c.id == id) {
-                        cal.visible = !cal.visible;
-                    }
-                }
+                self.toggle_calendar_visibility(&id);
             }
             Action::ToggleAccountCollapsed(id) => {
                 if let Some(acc) = self.accounts.accounts.iter_mut().find(|a| a.id == id) {
@@ -2986,6 +3114,16 @@ impl CalendarApp {
             .collect()
     }
 
+    fn event_in_selected_calendar(&self, event: &Event) -> bool {
+        self.calendar_filter.as_ref().is_none_or(|calendar| {
+            if calendar == "local" {
+                event.calendar_id.is_none()
+            } else {
+                event.calendar_id.as_deref() == Some(calendar)
+            }
+        })
+    }
+
     /// Events occurring on `date`, minus any whose source calendar is hidden.
     /// This is the single filter every view draws through, so unchecking a
     /// calendar hides its already-synced events immediately.
@@ -2994,7 +3132,10 @@ impl CalendarApp {
         self.model
             .events_on(date)
             .into_iter()
-            .filter(|e| e.visible_under(&hidden))
+            .filter(|event| {
+                self.event_in_selected_calendar(event)
+                    && (event.visible_under(&hidden) || self.calendar_filter.is_some())
+            })
             .collect()
     }
 
@@ -3006,10 +3147,11 @@ impl CalendarApp {
         date::month_grid(self.anchor)
             .into_iter()
             .filter(|date| {
-                self.model
-                    .events
-                    .iter()
-                    .any(|event| event.occurs_on(*date) && event.visible_under(&hidden))
+                self.model.events.iter().any(|event| {
+                    event.occurs_on(*date)
+                        && self.event_in_selected_calendar(event)
+                        && (event.visible_under(&hidden) || self.calendar_filter.is_some())
+                })
             })
             .collect()
     }
@@ -5161,6 +5303,23 @@ impl Widget for CalendarApp {
                 self.narrow_screen = NarrowScreen::Calendar;
                 self.blur_editor();
             }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CalendarOperation::OpenCalendar { id },
+            ) => {
+                let calendar = self
+                    .calendar_resource_ctx()
+                    .calendars
+                    .into_iter()
+                    .find(|calendar| calendar.id == id)
+                    .ok_or_else(|| "calendar no longer exists".to_string())?;
+                self.calendar_filter = Some(calendar.id);
+                self.detail_open = false;
+                self.selection = None;
+                self.narrow_screen = NarrowScreen::Calendar;
+                self.blur_editor();
+                self.status = Some(format!("Showing {}", calendar.label));
+            }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
                 self.view = View::Month;
             }
@@ -5267,12 +5426,7 @@ impl Widget for CalendarApp {
     /// Fold the calendar's events and tasks into the unified Ctrl+K palette.
     /// Every hit addresses the matching resource's exported `open` view action.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::CalendarSearchProvider::new_with_notes(
-                &self.model,
-                &self.note_search,
-            ),
-        )]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -5311,6 +5465,11 @@ impl Widget for CalendarApp {
             self.new_event(state);
         }
         self.poll_sync(state);
+        // Account/calendar configuration is Settings-owned rather than CRDT
+        // state. Observe it independently so a rename, visibility change, or
+        // collection replacement invalidates Ctrl+K even when document heads
+        // stay put.
+        self.observe_calendar_projection();
         // Reconcile the in-memory model with the document when it moved out of
         // band — a Ctrl+K palette action mutated the CRDT, or a peer's change
         // merged in — so those events/tasks show up in the views just like an
@@ -5322,10 +5481,9 @@ impl Widget for CalendarApp {
         if heads != self.model_heads {
             self.model = CalDoc::read_model(state);
             self.revalidate_selection();
-            self.model_heads = heads;
+            self.model_heads.clone_from(&heads);
         }
         self.ensure_bound(state);
-        self.refresh_note_search(state);
         // Seed the form's title/location/time widgets from the current event
         // whenever the selection changes.
         self.ensure_form_bound();
@@ -5335,6 +5493,26 @@ impl Widget for CalendarApp {
             self.open_popover(which);
         }
         self.notes_editor.sync(state, path);
+        // Binding an editor, applying a dropdown selection, or accepting a
+        // note delta can hydrate the document during this same frame. Re-read
+        // heads after those paths before deriving search state, then project
+        // every note only when the revision really advanced. An idle frame is
+        // therefore O(1), not a corpus walk over every event/task note.
+        let post_hydration_heads = state.get_heads();
+        if post_hydration_heads != self.model_heads {
+            self.model = CalDoc::read_model(state);
+            self.revalidate_selection();
+            self.model_heads.clone_from(&post_hydration_heads);
+        }
+        let document_changed = self.search_catalog_heads != post_hydration_heads;
+        let calendar_projection_changed =
+            self.search_catalog_projection_revision != self.calendar_projection_revision;
+        if document_changed {
+            self.refresh_note_search(state);
+        }
+        if document_changed || calendar_projection_changed {
+            self.refresh_search_catalog(&post_hydration_heads);
+        }
         // Persist after the editor's sync so notes edits land too. Cheap: only
         // writes when the document's heads changed since the last save.
         self.maybe_persist(state);
@@ -6330,6 +6508,8 @@ fn elide(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ROOT;
+    use qos_actions::Action as _;
     use serial_test::serial;
 
     #[test]
@@ -6357,6 +6537,163 @@ mod tests {
         assert!(!app.model.tasks.is_empty());
         assert!(app.selection.is_some());
         assert!(app.detail_open);
+    }
+
+    #[test]
+    fn retained_search_catalog_refreshes_after_crdt_revision_and_deletion() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let id = app.model.events[0].id;
+        let action = crate::actions::CalendarAction::PatchEvent {
+            id: id.to_string(),
+            patch: crate::actions::EventPatch {
+                title: Some("revision catalogue needle".into()),
+                ..crate::actions::EventPatch::default()
+            },
+        };
+        action.apply(&mut doc).expect("valid patch applies");
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            app.search_providers()[0]
+                .search("catalogue needle")
+                .iter()
+                .any(|hit| hit.action_address() == Some(crate::actions::open_event_address(id))),
+            "the retained provider observes the new CRDT revision"
+        );
+
+        crate::actions::CalendarAction::DeleteEvent {
+            id: id.to_string(),
+            remote_delete: None,
+        }
+        .apply(&mut doc)
+        .expect("valid delete applies");
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            app.search_providers()[0]
+                .search("catalogue needle")
+                .is_empty(),
+            "the next revision withdraws the deleted record"
+        );
+    }
+
+    #[test]
+    fn unchanged_sync_skips_note_projection_but_a_note_revision_refreshes_search() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let initial_projections = app.note_projection_refreshes;
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(
+            app.note_projection_refreshes, initial_projections,
+            "an unchanged frame must not walk every event/task note"
+        );
+
+        let event = app.model.events[0].id;
+        crate::actions::CalendarAction::ApplyNoteOps {
+            owner: crate::actions::NoteOwner::Event {
+                id: event.to_string(),
+            },
+            ops: vec![ui::widget::BlockEditOp::Insert {
+                block_id: Uuid::new_v4().to_string(),
+                after: None,
+                kind: "paragraph".to_string(),
+                text: "post hydration note needle".to_string(),
+            }],
+        }
+        .apply(&mut doc)
+        .expect("note action applies");
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.note_projection_refreshes, initial_projections + 1);
+        assert!(
+            app.search_providers()[0]
+                .search("hydration note needle")
+                .iter()
+                .any(|hit| hit.action_address() == Some(crate::actions::open_event_address(event)))
+        );
+    }
+
+    #[test]
+    fn non_crdt_calendar_projection_refreshes_catalog_without_reprojecting_notes() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let note_refreshes = app.note_projection_refreshes;
+        let catalog_refreshes = app.search_catalog_refreshes;
+        let calendar = app
+            .accounts
+            .accounts
+            .iter_mut()
+            .flat_map(|account| account.calendars.iter_mut())
+            .next()
+            .expect("demo has a Settings-owned calendar");
+        let id = calendar.id.clone();
+        calendar.name = "Settings reload catalogue needle".into();
+
+        // Simulate an account-state replacement: configuration changes while
+        // the Automerge document is deliberately untouched.
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(
+            app.note_projection_refreshes, note_refreshes,
+            "a non-CRDT collection change must reuse the current note projection"
+        );
+        assert_eq!(app.search_catalog_refreshes, catalog_refreshes + 1);
+        assert!(
+            app.search_providers()[0]
+                .search("reload catalogue needle")
+                .iter()
+                .any(|hit| {
+                    hit.action_address() == Some(crate::actions::open_calendar_address(&id))
+                })
+        );
+
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.note_projection_refreshes, note_refreshes);
+        assert_eq!(app.search_catalog_refreshes, catalog_refreshes + 1);
+    }
+
+    #[test]
+    fn configured_calendar_resource_is_searchable_and_selects_its_collection() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let calendar = app
+            .calendar_resource_ctx()
+            .calendars
+            .into_iter()
+            .find(|calendar| calendar.id != "local")
+            .expect("demo has a remote calendar");
+        let hit = app.search_providers()[0]
+            .search(&calendar.label)
+            .into_iter()
+            .find(|hit| {
+                hit.action_address() == Some(crate::actions::open_calendar_address(&calendar.id))
+            })
+            .expect("calendar collection is indexed by canonical address");
+        assert_eq!(hit.title, calendar.label);
+        let resource = <CalendarApp as qos_actions::ResourceProvider>::resource(
+            &app,
+            &doc,
+            &crate::actions::calendar_resource_id(&calendar.id),
+        )
+        .expect("collection resolves with a current child context");
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
+        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::OpenCalendar {
+            id: calendar.id.clone(),
+        })
+        .expect("operation serializes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("collection operation is accepted")
+        );
+        assert_eq!(app.calendar_filter.as_deref(), Some(calendar.id.as_str()));
     }
 
     #[test]
@@ -7178,12 +7515,12 @@ mod tests {
                 .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
         );
 
-        let resources = Widget::resources(&app, &state);
-        let task = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == crate::actions::task_resource_id(id))
-            .expect("selected task resource");
+        let task = <CalendarApp as qos_actions::ResourceProvider>::resource(
+            &app,
+            &state,
+            &crate::actions::task_resource_id(id),
+        )
+        .expect("selected task resource");
         let due = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
         let due_spec = task
             .actions
