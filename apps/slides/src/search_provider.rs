@@ -1,15 +1,19 @@
-//! Slides' complete, bounded global-search index.
+//! Slides' complete, cursor-paged global-search index.
 //!
-//! Every hit resolves to the same resource `View` action used by the editor,
-//! Ctrl+K and assistive technology. The snapshot indexes every deck entity;
-//! query work is bounded before result materialisation.
+//! The index retains the entire durable deck corpus, while the palette only
+//! receives bounded pages. Every row names a canonical resource action and is
+//! lazily re-resolved against the current deck before activation.
 
-use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use qos_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
+};
 
+use crate::actions::{self, ElementResource, SlideResource, SlidesResourceCtx};
 use crate::model::{Deck, Element, ElementKind, Slide};
 
 pub const SLIDE_KIND: &str = "Slides";
@@ -17,131 +21,115 @@ pub const ELEMENT_KIND: &str = "Slide elements";
 pub const TEXT_KIND: &str = "Slide text";
 pub const NOTES_KIND: &str = "Speaker notes";
 
-/// Candidate checks are bounded independently of result materialisation.
-const MAX_CANDIDATE_INSPECTIONS: usize = 512;
-
+/// A cheap-to-clone, incrementally refreshed full-deck catalogue. The app owns
+/// one instance and refreshes it only when its CRDT mirror changes; providers
+/// handed to Ctrl+K therefore share the cached postings rather than rebuilding
+/// a large index for each frame.
 #[derive(Clone)]
-enum SearchTarget {
-    Slide {
-        id: String,
-        number: usize,
-        title: String,
-    },
-    Element {
-        id: String,
-        number: usize,
-        title: String,
-        label: String,
-    },
-    Text {
-        id: String,
-        number: usize,
-        title: String,
-        text: String,
-    },
-    Notes {
-        id: String,
-        number: usize,
-        title: String,
-        notes: String,
-    },
-}
-
-#[derive(Clone)]
-struct SearchEntry {
-    haystack: String,
-    target: SearchTarget,
-}
-
-/// An immutable full-deck snapshot. Posting lists contain every matching
-/// entity; common queries intentionally use a bounded candidate window.
 pub struct SlideSearchProvider {
-    entries: Vec<SearchEntry>,
-    slide_entries: Vec<usize>,
-    postings: BTreeMap<String, BTreeSet<usize>>,
-    last_candidate_inspections: Cell<usize>,
+    catalog: SearchCatalog,
+    deck: Deck,
+    indexed_ids: BTreeSet<String>,
 }
 
 impl SlideSearchProvider {
     pub fn new(deck: &Deck) -> Self {
         let mut provider = Self {
-            entries: Vec::new(),
-            slide_entries: Vec::with_capacity(deck.slides.len()),
-            postings: BTreeMap::new(),
-            last_candidate_inspections: Cell::new(0),
+            catalog: SearchCatalog::new(SLIDE_KIND),
+            deck: Deck {
+                title: String::new(),
+                palette: crate::model::PaletteKind::Indigo,
+                slides: Vec::new(),
+            },
+            indexed_ids: BTreeSet::new(),
         };
+        provider.refresh(deck);
+        provider
+    }
+
+    /// Apply a complete deck mirror to the catalogue incrementally. Existing
+    /// ids retain their order; only changed, inserted, or removed records touch
+    /// postings. This runs off the CRDT reload boundary, never per keystroke.
+    pub fn refresh(&mut self, deck: &Deck) {
+        let mut live = BTreeSet::new();
         for (index, slide) in deck.slides.iter().enumerate() {
-            let title = Self::slide_title(slide, index);
             let number = index + 1;
-            let entry = provider.push_entry(
-                &Self::slide_haystack(slide),
-                SearchTarget::Slide {
-                    id: slide.id.clone(),
-                    number,
-                    title: title.clone(),
-                },
+            let title = Self::slide_title(slide, index);
+            self.upsert(
+                &mut live,
+                actions::slide_resource_id(&slide.id),
+                Self::slide_haystack(slide),
+                SearchResult::for_action(
+                    SLIDE_KIND,
+                    title.clone(),
+                    actions::open_slide_address(&slide.id),
+                )
+                .with_subtitle(format!("Slide {number}"))
+                .with_icon(Icon::Layers),
             );
-            provider.slide_entries.push(entry);
             for element in &slide.elements {
-                provider.push_entry(
-                    &Self::element_haystack(element),
-                    SearchTarget::Element {
-                        id: element.id.clone(),
-                        number,
-                        title: title.clone(),
-                        label: element.kind.label().to_string(),
-                    },
+                self.upsert(
+                    &mut live,
+                    actions::element_resource_id(&element.id),
+                    Self::element_haystack(element),
+                    SearchResult::for_action(
+                        ELEMENT_KIND,
+                        element.kind.label(),
+                        actions::open_element_address(&element.id),
+                    )
+                    .with_subtitle(format!("{title} · Slide {number}"))
+                    .with_icon(Icon::Layers),
                 );
                 if element.kind == ElementKind::Text && !element.text.trim().is_empty() {
-                    provider.push_entry(
+                    self.upsert(
+                        &mut live,
+                        actions::text_resource_id(&element.id),
                         &element.text,
-                        SearchTarget::Text {
-                            id: element.id.clone(),
-                            number,
-                            title: title.clone(),
-                            text: element.text.clone(),
-                        },
+                        SearchResult::for_action(
+                            TEXT_KIND,
+                            Self::preview(&element.text),
+                            actions::open_text_address(&element.id),
+                        )
+                        .with_subtitle(format!("{title} · Slide {number}"))
+                        .with_icon(Icon::FileText),
                     );
                 }
             }
             if !slide.notes.trim().is_empty() {
-                provider.push_entry(
+                self.upsert(
+                    &mut live,
+                    actions::notes_resource_id(&slide.id),
                     &slide.notes,
-                    SearchTarget::Notes {
-                        id: slide.id.clone(),
-                        number,
-                        title,
-                        notes: slide.notes.clone(),
-                    },
+                    SearchResult::for_action(
+                        NOTES_KIND,
+                        Self::preview(&slide.notes),
+                        actions::open_notes_address(&slide.id),
+                    )
+                    .with_subtitle(format!("{title} · Slide {number}"))
+                    .with_icon(Icon::FileText),
                 );
             }
         }
-        provider
+        for removed in self.indexed_ids.difference(&live) {
+            self.catalog.remove(removed);
+        }
+        self.indexed_ids = live;
+        self.deck = deck.clone();
     }
 
-    fn push_entry(&mut self, haystack: &str, target: SearchTarget) -> usize {
-        let haystack = normalize(haystack);
-        let index = self.entries.len();
-        for token in tokens(&haystack) {
-            let chars: Vec<char> = token.chars().collect();
-            // Exact tokens are useful for ranking, while every 1/2/3-gram is
-            // retained so short and mid-token substring queries remain
-            // complete without a quadratic all-substring index.
-            self.postings
-                .entry(token.clone())
-                .or_default()
-                .insert(index);
-            for width in 1..=3.min(chars.len()) {
-                for gram in chars.windows(width) {
-                    self.postings
-                        .entry(gram.iter().collect())
-                        .or_default()
-                        .insert(index);
-                }
-            }
+    fn upsert(
+        &self,
+        live: &mut BTreeSet<String>,
+        id: String,
+        text: impl AsRef<str>,
+        result: SearchResult,
+    ) {
+        // The id and action are assembled together above. Refuse an invalid
+        // record rather than offering a private navigation route if that ever
+        // changes.
+        if self.catalog.upsert(&id, text, result).is_ok() {
+            live.insert(id);
         }
-        self.entries.push(SearchEntry { haystack, target });
-        index
     }
 
     fn slide_title(slide: &Slide, index: usize) -> String {
@@ -183,87 +171,30 @@ impl SlideSearchProvider {
         format!("{} {}", element.kind.label(), element.src)
     }
 
-    fn result(entry: &SearchEntry) -> SearchResult {
-        match &entry.target {
-            SearchTarget::Slide { id, number, title } => SearchResult::for_action(
-                SLIDE_KIND,
-                title.clone(),
-                crate::actions::open_slide_address(id),
-            )
-            .with_subtitle(format!("Slide {number}"))
-            .with_icon(Icon::Layers),
-            SearchTarget::Element {
-                id,
-                number,
-                title,
-                label,
-            } => SearchResult::for_action(
-                ELEMENT_KIND,
-                label.clone(),
-                crate::actions::open_element_address(id),
-            )
-            .with_subtitle(format!("{title} · Slide {number}"))
-            .with_icon(Icon::Layers),
-            SearchTarget::Text {
-                id,
-                number,
-                title,
-                text,
-            } => SearchResult::for_action(
-                TEXT_KIND,
-                Self::preview(text),
-                crate::actions::open_text_address(id),
-            )
-            .with_subtitle(format!("{title} · Slide {number}"))
-            .with_icon(Icon::FileText),
-            SearchTarget::Notes {
-                id,
-                number,
-                title,
-                notes,
-            } => SearchResult::for_action(
-                NOTES_KIND,
-                Self::preview(notes),
-                crate::actions::open_notes_address(id),
-            )
-            .with_subtitle(format!("{title} · Slide {number}"))
-            .with_icon(Icon::FileText),
-        }
-    }
-
-    fn candidates(&self, query: &str) -> Vec<usize> {
-        let keys = query_keys(query);
-        if keys.is_empty() || keys.iter().any(|key| !self.postings.contains_key(key)) {
-            self.last_candidate_inspections.set(0);
-            return Vec::new();
-        }
-        let Some(rarest) = keys
+    fn resource_context(&self) -> SlidesResourceCtx {
+        let slides = self
+            .deck
+            .slides
             .iter()
-            .filter_map(|key| self.postings.get(key))
-            .min_by_key(|posting| posting.len())
-        else {
-            self.last_candidate_inspections.set(0);
-            return Vec::new();
-        };
-        let mut candidates = Vec::new();
-        let mut inspected = 0;
-        for candidate in rarest.iter().take(MAX_CANDIDATE_INSPECTIONS) {
-            inspected += 1;
-            if keys.iter().all(|key| {
-                self.postings
-                    .get(key)
-                    .is_some_and(|posting| posting.contains(candidate))
-            }) {
-                candidates.push(*candidate);
-            }
+            .enumerate()
+            .map(|(idx, slide)| SlideResource {
+                idx,
+                data: actions::SlideData::from_slide(slide),
+                elements: slide
+                    .z_sorted()
+                    .into_iter()
+                    .map(|element| ElementResource {
+                        id: element.id.clone(),
+                        kind: element.kind,
+                        text: element.text.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        SlidesResourceCtx {
+            deck_title: self.deck.title.clone(),
+            slides,
         }
-        self.last_candidate_inspections.set(inspected);
-        candidates
-    }
-
-    #[cfg(test)]
-    fn last_candidate_inspections(&self) -> usize {
-        self.last_candidate_inspections.get()
     }
 }
 
@@ -277,53 +208,30 @@ impl SearchProvider for SlideSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let query = normalize(query);
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        if limit == 0 {
-            return Vec::new();
-        }
-        if query.is_empty() {
-            self.last_candidate_inspections.set(0);
-            return self
-                .slide_entries
-                .iter()
-                .take(limit)
-                .filter_map(|index| self.entries.get(*index))
-                .map(Self::result)
-                .collect();
-        }
-        self.candidates(&query)
-            .into_iter()
-            .filter_map(|index| self.entries.get(index))
-            .filter(|entry| entry.haystack.contains(&query))
-            .take(limit)
-            .map(Self::result)
-            .collect()
+        self.catalog
+            .query_page(
+                query,
+                None,
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
     }
-}
 
-fn normalize(value: &str) -> String {
-    value.to_lowercase()
-}
-
-fn tokens(value: &str) -> Vec<String> {
-    value
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-fn query_keys(value: &str) -> Vec<String> {
-    let mut keys = Vec::new();
-    for token in tokens(value) {
-        let chars: Vec<char> = token.chars().collect();
-        let width = chars.len().min(3);
-        keys.extend(chars.windows(width).map(|gram| gram.iter().collect()));
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
     }
-    keys.sort_unstable();
-    keys.dedup();
-    keys
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+        actions::resolve_resource(&self.resource_context(), &address.resource)
+    }
 }
 
 #[cfg(test)]
@@ -369,76 +277,49 @@ mod tests {
                 .find(|hit| hit.kind == TEXT_KIND)
                 .unwrap()
                 .action_address(),
-            Some(crate::actions::open_text_address(&element.id))
+            Some(actions::open_text_address(&element.id))
         );
     }
 
     #[test]
-    fn empty_query_browses_every_slide_without_flooding_nested_content() {
-        let deck = crate::model::seed_deck();
-        assert_eq!(
-            SlideSearchProvider::new(&deck).search("").len(),
-            deck.slides.len()
-        );
-    }
-
-    #[test]
-    fn specific_late_partial_phrase_is_indexed_without_snapshot_truncation() {
+    fn late_match_is_reachable_through_bounded_cursor_pages() {
         let provider =
             SlideSearchProvider::new(&large_deck(4_200, "common opening nebula lantern finale"));
-        let hits = provider.search("nebula lan");
-        assert!(hits.iter().any(|hit| hit.kind == TEXT_KIND));
-        assert!(provider.last_candidate_inspections() <= MAX_CANDIDATE_INSPECTIONS);
+        let mut cursor = None;
+        let mut found = false;
+        for _ in 0..240 {
+            let page = provider.search_page("", cursor.as_ref(), 64, 64);
+            assert!(page.inspected <= 64);
+            found |= page
+                .results
+                .iter()
+                .any(|hit| hit.kind == TEXT_KIND && hit.title.contains("nebula"));
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(found, "a late durable record is eventually reachable");
     }
 
     #[test]
-    fn long_partial_token_remains_findable_past_the_prefix_index() {
-        let late_token = format!("{}needle", "a".repeat(72));
-        let provider =
-            SlideSearchProvider::new(&large_deck(4_200, &format!("common opening {late_token}")));
-        let partial = &late_token[12..68];
+    fn refresh_removes_stale_resources_instead_of_rebinding_them() {
+        let mut deck = large_deck(2, "needle");
+        let stale_id = deck.slides[1].elements[0].id.clone();
+        let mut provider = SlideSearchProvider::new(&deck);
         assert!(
             provider
-                .search(partial)
-                .iter()
-                .any(|hit| hit.kind == TEXT_KIND),
-            "a >48-character partial token finds the late indexed entity"
+                .resolve_action_resource(&actions::open_text_address(&stale_id))
+                .is_some()
         );
-        assert!(provider.last_candidate_inspections() <= MAX_CANDIDATE_INSPECTIONS);
-    }
-
-    #[test]
-    fn short_mid_token_substrings_are_not_mistaken_for_prefixes() {
-        let provider = SlideSearchProvider::new(&large_deck(
-            4_200,
-            "common opening a lantern with a violet interior",
-        ));
+        deck.slides.pop();
+        provider.refresh(&deck);
+        assert!(provider.search("needle").is_empty());
         assert!(
             provider
-                .search("tern")
-                .iter()
-                .any(|hit| hit.kind == TEXT_KIND)
+                .resolve_action_resource(&actions::open_text_address(&stale_id))
+                .is_none()
         );
-        assert!(
-            provider
-                .search("io")
-                .iter()
-                .any(|hit| hit.kind == TEXT_KIND)
-        );
-        assert!(provider.last_candidate_inspections() <= MAX_CANDIDATE_INSPECTIONS);
-    }
-
-    #[test]
-    fn broad_and_missing_queries_do_not_scan_the_complete_index() {
-        let provider =
-            SlideSearchProvider::new(&large_deck(2_000, "common opening routine material"));
-        let _ = provider.search("common");
-        assert_eq!(
-            provider.last_candidate_inspections(),
-            MAX_CANDIDATE_INSPECTIONS
-        );
-        assert!(provider.search("common missing").is_empty());
-        assert_eq!(provider.last_candidate_inspections(), 0);
     }
 
     #[test]
@@ -466,10 +347,11 @@ mod tests {
         let hit = app.search_providers()[0]
             .search("")
             .into_iter()
-            .find(|hit| hit.action_address() == Some(crate::actions::open_slide_address(slide_id)))
+            .find(|hit| hit.action_address() == Some(actions::open_slide_address(slide_id)))
             .unwrap();
         let address = hit.action_address().unwrap();
-        let encoded = qos_actions::door::encode(&app.resources(&doc), &address, None).unwrap();
+        let resource = app.resource(&doc, &address.resource).unwrap();
+        let encoded = qos_actions::door::encode(&[resource], &address, None).unwrap();
         assert!(
             app.invoke_resource_operation(
                 qos_actions::OperationKind::View,
