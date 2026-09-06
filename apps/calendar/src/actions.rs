@@ -1058,6 +1058,9 @@ pub struct CalendarResourceCtx {
     pub can_sync: bool,
     pub syncing: bool,
     pub can_export: bool,
+    /// Captured from the model's display-order tail so publishing the root
+    /// never needs to scan dynamic project children.
+    pub next_project_order: u32,
 }
 
 /// Return an explicit invalid-arguments envelope rather than silently turning
@@ -1219,7 +1222,8 @@ fn note_resource(parent_resource: &str, owner: NoteOwner) -> Resource {
     clippy::too_many_lines,
     reason = "resource publication intentionally keeps every event and task action beside its typed validator"
 )]
-pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+/// Stable calendar root without dynamic events/tasks/projects.
+pub fn calendar_root(ctx: &CalendarResourceCtx) -> Resource {
     let mut root = Resource::new("calendar.calendar", "calendar.calendar", "Calendar");
 
     root = root.with_action(
@@ -1322,13 +1326,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             }))
         },
     ));
-    let next_project_order = ctx
-        .projects
-        .iter()
-        .map(|project| project.data.order)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
+    let next_project_order = ctx.next_project_order;
     root = root.with_action(ActionSpec::prompted(
         "new-project",
         "New task project",
@@ -1349,6 +1347,11 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         },
     ));
 
+    root
+}
+
+pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = calendar_root(ctx);
     // Reserve one bounded node per visible collection context (plus an
     // unfiled-task bucket) before materialising leaves. This keeps the entire
     // eager tree bounded even when one account has an enormous history; every

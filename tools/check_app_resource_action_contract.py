@@ -374,7 +374,7 @@ def unattached_handler_entries(text: str) -> list[str]:
 def audit_search_provider_limits(
     root: Path, sources: list[tuple[Path, str]], violations: list[Violation]
 ) -> set[str]:
-    """Require every app provider to own its query/materialisation budget."""
+    """Require every app provider to own paging, work, and materialisation budgets."""
     found: set[str] = set()
     truncating_paths: set[str] = set()
     for source, raw in sources:
@@ -407,17 +407,37 @@ def audit_search_provider_limits(
                             "search_limited calls unbounded search() before applying its budget",
                         )
                     )
-                continue
-            if key in SEARCH_LIMIT_EXEMPTIONS:
-                continue
-            violations.append(
-                Violation(
-                    source,
-                    line_number(raw, match.start()),
-                    "app SearchProvider inherits the unbounded search_limited fallback; "
-                    "override it and stop scanning/materialising at the caller budget",
+            elif key not in SEARCH_LIMIT_EXEMPTIONS:
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        "app SearchProvider inherits the unbounded search_limited fallback; "
+                        "override it and stop scanning/materialising at the caller budget",
+                    )
                 )
-            )
+
+            paged = re.search(r"\bfn\s+search_page\s*\(", body)
+            if paged:
+                paged_body = brace_body(body, paged.start()) or ""
+                if re.search(r"\bself\s*\.\s*(?:search|search_limited)\s*\(", paged_body):
+                    violations.append(
+                        Violation(
+                            source,
+                            line_number(raw, match.start() + paged.start()),
+                            "search_page calls a materialising search fallback; query a retained "
+                            "catalogue with the cursor, work budget, and result limit instead",
+                        )
+                    )
+            elif key not in SEARCH_LIMIT_EXEMPTIONS:
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        "app SearchProvider inherits the non-paged search_page fallback; override "
+                        "it so broad corpora continue under a hard per-page work budget",
+                    )
+                )
     if root.resolve() == ROOT.resolve():
         app_prefixes = {
             "/".join(source.relative_to(root).as_posix().split("/")[:2]) + "/"

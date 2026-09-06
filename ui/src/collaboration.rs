@@ -13,6 +13,15 @@
 
 use uuid::Uuid;
 
+/// Hard fail-closed timeout for an RPC request waiting to be handled on the
+/// application's owner thread.  The UI never blocks for it: the Cap'n Proto
+/// shovel awaits this reply on its own `LocalSet`.  A stopped app must look
+/// unavailable to the broker rather than leaving an RPC worker pinned.
+const ACTION_DIRECTORY_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+/// A disconnected/slow UI must apply backpressure to broker callbacks rather
+/// than allow an unbounded cross-thread queue to become a memory `DoS`.
+const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
+
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
 /// zero upward; the broker never assigns this sentinel.
@@ -203,6 +212,22 @@ pub enum CollabRequest {
         request_id: u64,
         run_id: u64,
         lease: String,
+    },
+}
+
+/// A broker directory request awaiting main-thread authority.  This crosses
+/// threads as inert strings and budgets only; no widget reference or Cap'n
+/// Proto handle ever leaves the UI/collaboration boundary.
+pub enum ActionDirectoryRequest {
+    Query {
+        query: runtime_collab::ActionDirectoryQuery,
+        reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryPage>,
+    },
+    Resolve {
+        revision: String,
+        resource: String,
+        action: String,
+        reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryResolution>,
     },
 }
 
@@ -608,6 +633,12 @@ enum Backend {
 struct SdkChannel {
     outbound_tx: tokio_mpsc::UnboundedSender<SdkCommand>,
     inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
+    /// The receiver stays on the application's owner thread.  RPC servers
+    /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
+    /// widgets directly.
+    action_directory_rx: mpsc::Receiver<ActionDirectoryRequest>,
+    action_directory_tx: mpsc::SyncSender<ActionDirectoryRequest>,
+    action_directory_published: bool,
     _thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -620,6 +651,10 @@ enum SdkCommand {
         spec: RouteSpec,
         group: Box<channel_crypto::ChannelGroup>,
         reply: mpsc::SyncSender<Result<(), String>>,
+    },
+    PublishActionDirectory {
+        app_id: String,
+        requests: mpsc::SyncSender<ActionDirectoryRequest>,
     },
 }
 
@@ -1130,6 +1165,8 @@ impl CollaborationManager {
     ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
         let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<SdkCommand>();
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
+        let (action_directory_tx, action_directory_rx) =
+            mpsc::sync_channel::<ActionDirectoryRequest>(ACTION_DIRECTORY_REQUEST_QUEUE);
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
 
         // A thread we can't start is a service we can't reach — map to
@@ -1177,6 +1214,9 @@ impl CollaborationManager {
             InitStatus::Ready => Ok(SdkChannel {
                 outbound_tx,
                 inbound_rx,
+                action_directory_rx,
+                action_directory_tx,
+                action_directory_published: false,
                 _thread: Some(handle),
             }),
             InitStatus::Failed(e) => {
@@ -1247,6 +1287,40 @@ impl CollaborationManager {
                 let _ = ch.outbound_tx.send(SdkCommand::Primary(req));
             }
         }
+    }
+
+    /// Register the UI-owned pull directory on the primary broker route.
+    /// Re-registering is harmless: the broker atomically replaces the old
+    /// capability for this live connection.
+    pub fn publish_action_directory(&mut self, app_id: impl Into<String>) {
+        if let Backend::Sdk(ch) = &mut self.backend {
+            if ch.action_directory_published {
+                return;
+            }
+            if ch
+                .outbound_tx
+                .send(SdkCommand::PublishActionDirectory {
+                    app_id: app_id.into(),
+                    requests: ch.action_directory_tx.clone(),
+                })
+                .is_ok()
+            {
+                ch.action_directory_published = true;
+            }
+        }
+    }
+
+    /// Drain requests issued by the shovel-side `ActionDirectory` server. This
+    /// must be called by [`crate::app::App`] on its owner thread.
+    pub(crate) fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
+        let Backend::Sdk(ch) = &mut self.backend else {
+            return Vec::new();
+        };
+        let mut requests = Vec::new();
+        while let Ok(request) = ch.action_directory_rx.try_recv() {
+            requests.push(request);
+        }
+        requests
     }
 
     /// Join and subscribe to an additional route without publishing traffic.
@@ -1648,6 +1722,7 @@ fn run_shovel(
 // this only ever runs inside `run_shovel`'s `LocalSet` on its own thread.
 #[allow(
     clippy::future_not_send,
+    clippy::too_many_lines,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
 async fn drive_shovel(
@@ -1750,6 +1825,26 @@ async fn drive_shovel(
                 )
                 .await;
                 let _ = reply.send(result);
+            }
+            SdkCommand::PublishActionDirectory { app_id, requests } => {
+                let Some(key) = primary.as_ref() else {
+                    tracing::warn!("collab: directory published before the primary route joined");
+                    continue;
+                };
+                let Some(route) = routes.get_mut(key) else {
+                    tracing::warn!(
+                        "collab: primary route disappeared before directory publication"
+                    );
+                    continue;
+                };
+                let directory = capnp_rpc::new_client(ActionDirectoryServer { requests });
+                if let Err(error) = route
+                    .channel
+                    .publish_action_directory(&app_id, directory)
+                    .await
+                {
+                    tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
+                }
             }
         }
     }
@@ -2310,6 +2405,215 @@ fn prepare_document_payload(
             tracing::warn!(%error, "collab: MLS encryption failed; dropping mutation");
             None
         }
+    }
+}
+
+/// Shovel-thread Cap'n Proto endpoint for an application's pull directory.
+/// It deliberately contains no `Widget`, `App`, or document reference.  The
+/// only path to authority is a one-shot request answered by App's main-thread
+/// pump below.
+struct ActionDirectoryServer {
+    requests: mpsc::SyncSender<ActionDirectoryRequest>,
+}
+
+fn directory_unavailable() -> runtime_collab::ActionDirectoryResolution {
+    runtime_collab::ActionDirectoryResolution::Unavailable
+}
+
+fn write_directory_descriptor(
+    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
+    descriptor: &runtime_collab::ExportedAction,
+) {
+    out.set_resource(&descriptor.resource);
+    out.set_action(&descriptor.action);
+    out.set_resource_kind(&descriptor.resource_kind);
+    out.set_resource_label(&descriptor.resource_label);
+    out.set_action_label(&descriptor.action_label);
+    out.set_description(descriptor.description.as_deref().unwrap_or(""));
+    out.set_operation_kind(&descriptor.operation_kind);
+    out.set_params_json(&descriptor.params_json);
+    out.set_contract_json(&descriptor.contract_json);
+    let mut input = out.init_input();
+    match &descriptor.input {
+        runtime_collab::ExportedInput::None => input.set_none(()),
+        runtime_collab::ExportedInput::Text {
+            prompt,
+            placeholder,
+            wants_content,
+        } => {
+            let mut text = input.init_text();
+            text.set_prompt(prompt);
+            text.set_placeholder(placeholder);
+            text.set_wants_content(*wants_content);
+        }
+    }
+}
+
+fn write_directory_row(
+    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
+    row: &runtime_collab::ActionDirectoryRow,
+) {
+    out.set_parent_resource(&row.parent_resource);
+    out.set_resource(&row.resource);
+    out.set_resource_kind(&row.resource_kind);
+    out.set_resource_label(&row.resource_label);
+    out.set_action(row.action.as_deref().unwrap_or(""));
+    out.set_has_children(row.has_children);
+    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
+    out.set_visibility_contract_json(&row.visibility_contract_json);
+    if let Some(descriptor) = &row.descriptor {
+        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
+    }
+}
+
+#[allow(
+    refining_impl_trait,
+    reason = "capnp generated server traits accept the concrete Promise type used by every existing RPC endpoint"
+)]
+impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryServer {
+    fn query(
+        self: std::rc::Rc<Self>,
+        params: runtime_collab::collab_capnp::action_directory::QueryParams,
+        mut results: runtime_collab::collab_capnp::action_directory::QueryResults,
+    ) -> capnp::capability::Promise<(), capnp::Error> {
+        let query = match params.get().and_then(
+            runtime_collab::collab_capnp::action_directory::query_params::Reader::get_query,
+        ) {
+            Ok(query) => {
+                let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
+                    value
+                        .and_then(|value| {
+                            value
+                                .to_str()
+                                .map_err(|error| capnp::Error::failed(error.to_string()))
+                        })
+                        .map(str::to_owned)
+                };
+                match (
+                    text(query.get_revision()),
+                    query.get_cursor().map(<[u8]>::to_vec),
+                    text(query.get_needle()),
+                    text(query.get_parent_resource()),
+                ) {
+                    (Ok(revision), Ok(cursor), Ok(needle), Ok(parent_resource)) => {
+                        Ok(runtime_collab::ActionDirectoryQuery {
+                            peer_id: query.get_peer_id(),
+                            revision,
+                            cursor,
+                            needle,
+                            parent_resource,
+                            max_results: query.get_max_results(),
+                            max_bytes: query.get_max_bytes(),
+                            max_work: query.get_max_work(),
+                            max_depth: query.get_max_depth(),
+                        })
+                    }
+                    (Err(error), ..)
+                    | (_, Err(error), ..)
+                    | (_, _, Err(error), ..)
+                    | (_, _, _, Err(error)) => Err(error),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        let query = match query {
+            Ok(query) => query,
+            Err(error) => return capnp::capability::Promise::err(error),
+        };
+        let requests = self.requests.clone();
+        capnp::capability::Promise::from_future(async move {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            requests
+                .try_send(ActionDirectoryRequest::Query { query, reply })
+                .map_err(|_| {
+                    capnp::Error::failed(
+                        "application action directory is busy or unavailable".into(),
+                    )
+                })?;
+            let page = tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
+                .await
+                .map_err(|_| capnp::Error::failed("application action directory timed out".into()))?
+                .map_err(|_| {
+                    capnp::Error::failed("application action directory is unavailable".into())
+                })?;
+            let mut out = results.get().init_page();
+            out.set_revision(&page.revision);
+            out.set_next_cursor(&page.next_cursor);
+            out.set_exhausted(page.exhausted);
+            out.set_stale_cursor(page.stale_cursor);
+            out.set_budget_exhausted(page.budget_exhausted);
+            let len = u32::try_from(page.rows.len())
+                .map_err(|_| capnp::Error::failed("too many directory rows".into()))?;
+            let mut rows = out.reborrow().init_rows(len);
+            for (index, row) in page.rows.iter().enumerate() {
+                write_directory_row(
+                    rows.reborrow()
+                        .get(u32::try_from(index).unwrap_or(u32::MAX)),
+                    row,
+                );
+            }
+            Ok(())
+        })
+    }
+
+    fn resolve(
+        self: std::rc::Rc<Self>,
+        params: runtime_collab::collab_capnp::action_directory::ResolveParams,
+        mut results: runtime_collab::collab_capnp::action_directory::ResolveResults,
+    ) -> capnp::capability::Promise<(), capnp::Error> {
+        let request = params.get().and_then(|request| {
+            let text = |value: capnp::Result<capnp::text::Reader<'_>>| {
+                value
+                    .and_then(|value| {
+                        value
+                            .to_str()
+                            .map_err(|error| capnp::Error::failed(error.to_string()))
+                    })
+                    .map(str::to_owned)
+            };
+            Ok((
+                text(request.get_revision())?,
+                text(request.get_resource())?,
+                text(request.get_action())?,
+            ))
+        });
+        let (revision, resource, action) = match request {
+            Ok(request) => request,
+            Err(error) => return capnp::capability::Promise::err(error),
+        };
+        let requests = self.requests.clone();
+        capnp::capability::Promise::from_future(async move {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            let reply_value = if requests
+                .try_send(ActionDirectoryRequest::Resolve {
+                    revision,
+                    resource,
+                    action,
+                    reply,
+                })
+                .is_err()
+            {
+                directory_unavailable()
+            } else {
+                tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_else(directory_unavailable)
+            };
+            let mut out = results.get().init_resolution();
+            match reply_value {
+                runtime_collab::ActionDirectoryResolution::Found(row) => {
+                    write_directory_row(out.reborrow().init_found(), &row);
+                }
+                runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
+                runtime_collab::ActionDirectoryResolution::StaleRevision => {
+                    out.set_stale_revision(());
+                }
+                runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
+            }
+            Ok(())
+        })
     }
 }
 
