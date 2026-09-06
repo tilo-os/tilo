@@ -220,11 +220,13 @@ Then install, either way:
 
 ```bash
 # Persistent, and the one you want long term. Needs a reboot to take effect.
-sudo rpm-ostree install ./dist/rpm/build/RPMS/x86_64/qos-session-*.rpm
+sudo rpm-ostree install ./dist/rpm/build/RPMS/x86_64/qos-session-[0-9]*.rpm
 
 # Or: this boot only, no reboot. Mounts a writable overlay on /usr and unpacks
 # the same files into it. Everything under /usr is gone at the next boot.
 sudo dist/rpm/usroverlay-install.sh
+# Add `--devel` only when you explicitly need the developer session entry.
+sudo dist/rpm/usroverlay-install.sh --devel
 sudo dist/rpm/usroverlay-install.sh --uninstall
 ```
 
