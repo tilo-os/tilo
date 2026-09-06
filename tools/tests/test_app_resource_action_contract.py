@@ -97,6 +97,21 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertTrue(any("calls unbounded search" in item.reason for item in violations))
 
+    def test_durable_provider_cannot_truncate_index_before_query(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl SearchProvider for Corpus {\n"
+            " fn name(&self) -> &str { \"Corpus\" }\n"
+            " fn search(&self, q: &str) -> Vec<SearchResult> { self.search_limited(q, 32) }\n"
+            " fn search_limited(&self, _: &str, limit: usize) -> Vec<SearchResult> {\n"
+            "   self.rows.iter().take(DEFAULT_SEARCH_INDEX_LIMIT).take(limit).cloned().collect()\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("truncates its corpus" in item.reason for item in violations))
+
     def test_effect_action_without_handler_registry_fails(self):
         root = self.fixture(
             "use qos_actions::ActionSpec;\n"
