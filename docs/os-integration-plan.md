@@ -84,8 +84,13 @@ the pattern from phases 1–5 (≈80% built) holds even here. Status:
 - **Notifications** — ✅ **on main + extended.** A real `org.freedesktop.Notifications` zbus service
   (`shell/src/notifications.rs`) + shell-owned model + themed toast overlay, D-Bus round-trip tested.
   Added **history + Do-Not-Disturb** (`5e4b6e7d`).
-- **Accessibility (AT-SPI)** — ✅ **on main.** `ui/src/accesskit_bridge.rs` + `screen_reader.rs` +
-  `a11y.rs`, wired into button/link/toggle/tree_view. (Depth of coverage per-widget is the follow-up.)
+- **Accessibility (AT-SPI)** — ✅ **on main and release-gated.** `ui/src/accesskit_bridge.rs` +
+  `screen_reader.rs` + `a11y.rs` publish ordinary app windows through AccessKit; the native
+  compositor owns a parallel `accesskit_unix` endpoint for OOBE, desktop chrome and lock.
+  `at-spi2-core` is an explicit image dependency. The installed-image VM discovers the real
+  session bus, walks both provider trees and invokes the normal OOBE and Files menu actions
+  through `org.a11y.atspi.Action`, requiring the resulting live tree transitions. (Depth of
+  coverage per-widget is the follow-up.)
 - **Session-lock** — 🟡 idle/session scaffolding exists (`shell/src/compositor/idle.rs`); confirm/finish
   `ext_session_lock_v1` + a lock surface reusing the greeter's auth.
 - **Audio routing** — 🟡 PipeWire infra (screencast) + media engine + a `wpctl` settings pane exist;
