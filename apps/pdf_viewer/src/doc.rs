@@ -1,10 +1,11 @@
 //! Automerge document model for the PDF viewer's collaborative state.
 //!
 //! The rendered document (page text) is static and lives in
-//! [`crate::model::Document`]. What is *collaborative* — and therefore
-//! lives in the CRDT — is everything the user creates on top of it:
-//! annotations, threaded comments and signatures. Two peers reviewing the
-//! same PDF converge on the same markup.
+//! [`crate::model::Document`]. What is *collaborative* — and therefore lives
+//! in the CRDT — is everything the user creates on top of it: a durable page
+//! plan, annotations, threaded comments and signatures. Two peers reviewing
+//! the same PDF converge on the same intent and markup; a peer without the
+//! source bytes can still inspect the page plan but cannot rasterise it.
 //!
 //! **One document's markup, not the app's.** This is the schema of a
 //! *record* — the annotation-set record derived from the file being read
@@ -16,6 +17,7 @@
 //! ```text
 //! root
 //! ├── "meta" (Map) { title, author, seeded:bool }
+//! ├── "page-plan" (List of Map) { id, source-page }
 //! ├── "annotations" (List of Map)
 //! │     { id, page, kind, color, author, x, y, w, h, points }
 //! ├── "comments" (List of Map)
@@ -28,10 +30,51 @@
 //! it is per-peer, so two reviewers can look at different pages of the
 //! same shared markup.
 
+use std::collections::HashSet;
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch};
+
+/// A durable page-plan entry. `source_page` names the immutable original page
+/// in the opened PDF; `id` names this occurrence (duplicates therefore get a
+/// new id while retaining the same source page).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PagePlanEntry {
+    pub id: String,
+    pub source_page: usize,
+    /// `None` denotes an immutable page of the file which was opened.  A
+    /// populated value names bytes in qdoc's content-addressed store; bytes
+    /// never enter Automerge.
+    pub imported: Option<ImportedPage>,
+}
+
+/// A page occurrence from an imported payload. Dimensions are captured at
+/// authoring time so a peer can reserve an honest page-shaped placeholder
+/// before it has downloaded the blob.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ImportedPage {
+    pub hash: String,
+    pub kind: String,
+    pub page: usize,
+    pub width_milli: u32,
+    pub height_milli: u32,
+}
+
+impl ImportedPage {
+    pub const MAX_HASH_LEN: usize = 128;
+    pub fn valid(&self) -> bool {
+        self.hash.len() == 64
+            && self.hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && matches!(self.kind.as_str(), "pdf" | "image")
+            && self.page > 0
+            && self.width_milli > 0
+            && self.height_milli > 0
+            && self.width_milli <= 100_000_000
+            && self.height_milli <= 100_000_000
+    }
+}
 
 pub struct PdfDoc;
 
@@ -125,6 +168,319 @@ impl PdfDoc {
         let _ = doc.put(&m, "seeded", true);
     }
 
+    // ---- shared page plan ------------------------------------------
+
+    /// Initialise the page plan exactly once from the immutable source PDF.
+    /// Existing shared plans are never replaced on reopen. Concurrent peers can
+    /// both insert the deterministic `source-N` entries; `list_page_plan`
+    /// canonicalises those physical CRDT duplicates by durable occurrence id.
+    pub fn ensure_page_plan(doc: &mut AutoCommit, source_page_count: usize) {
+        let Some(list) = Self::list(doc, "page-plan") else {
+            return;
+        };
+        let Some(meta) = Self::meta(doc) else {
+            return;
+        };
+        if Self::get_bool(doc, &meta, "page-plan-seeded").unwrap_or(false) {
+            return;
+        }
+
+        let canonical = Self::list_page_plan(doc);
+        // Documents written before this marker use a non-empty source plan as
+        // their durable initialization signal.  Do not resurrect a source
+        // occurrence which was intentionally deleted in such a document.
+        // A plan containing imports *only*, however, can be produced when an
+        // ImportPages action arrives before this peer has seeded its immutable
+        // base source.  In that case add the deterministic base occurrences
+        // beside the imported ones before committing the marker.
+        if canonical.iter().any(|entry| entry.imported.is_none()) {
+            let _ = doc.put(&meta, "page-plan-seeded", true);
+            return;
+        }
+        let present: HashSet<String> = canonical.into_iter().map(|entry| entry.id).collect();
+        for source_page in 1..=source_page_count.max(1) {
+            let id = format!("source-{source_page}");
+            if present.contains(&id) {
+                continue;
+            }
+            let Ok(entry) = doc.insert_object(&list, doc.length(&list), ObjType::Map) else {
+                continue;
+            };
+            let _ = doc.put(&entry, "id", id);
+            let _ = doc.put(&entry, "source-page", source_page as i64);
+        }
+        let _ = doc.put(&meta, "page-plan-seeded", true);
+    }
+
+    /// Return the canonical materialised plan. The CRDT list may contain
+    /// duplicate physical maps after concurrent initialise/move operations;
+    /// each durable occurrence id appears only once, chosen by Automerge's
+    /// deterministic list order. Invalid maps do not reserve an id, so a later
+    /// valid representation can still repair a malformed concurrent entry.
+    pub fn list_page_plan(doc: &AutoCommit) -> Vec<PagePlanEntry> {
+        let Some(list) = Self::list_ro(doc, "page-plan") else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        (0..doc.length(&list))
+            .filter_map(|index| {
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, index) else {
+                    return None;
+                };
+                let id = Self::get_str(doc, &entry, "id")?;
+                let source_page = Self::get_i64(doc, &entry, "source-page")? as usize;
+                let imported = match Self::get_str(doc, &entry, "content-hash") {
+                    Some(hash) => Some(ImportedPage {
+                        hash,
+                        kind: Self::get_str(doc, &entry, "content-kind")?,
+                        page: Self::get_i64(doc, &entry, "content-page")? as usize,
+                        width_milli: Self::get_i64(doc, &entry, "page-width-milli")? as u32,
+                        height_milli: Self::get_i64(doc, &entry, "page-height-milli")? as u32,
+                    }),
+                    None => None,
+                };
+                (source_page > 0
+                    && imported.as_ref().is_none_or(ImportedPage::valid)
+                    && seen.insert(id.clone()))
+                .then_some(PagePlanEntry {
+                    id,
+                    source_page,
+                    imported,
+                })
+            })
+            .collect()
+    }
+
+    fn page_id_for_number(doc: &AutoCommit, page: usize) -> Option<String> {
+        Self::list_page_plan(doc)
+            .get(page.checked_sub(1)?)
+            .map(|entry| entry.id.clone())
+    }
+
+    fn page_number_for_id(doc: &AutoCommit, id: &str) -> Option<usize> {
+        Self::list_page_plan(doc)
+            .iter()
+            .position(|entry| entry.id == id)
+            .map(|index| index + 1)
+    }
+
+    /// Upgrade ordinal-only anchors from records written before durable page
+    /// occurrences existed. This is schema hydration, not a user edit: it runs
+    /// once after the deterministic source plan is available and preserves the
+    /// page each legacy anchor originally denoted.
+    pub fn migrate_page_anchors(doc: &mut AutoCommit) {
+        for key in ["annotations", "comments", "signatures"] {
+            let Some(list) = Self::list(doc, key) else {
+                continue;
+            };
+            for index in 0..doc.length(&list) {
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, index) else {
+                    continue;
+                };
+                if Self::get_str(doc, &entry, "page-id").is_some() {
+                    continue;
+                }
+                let page = Self::get_i64(doc, &entry, "page").unwrap_or(1) as usize;
+                if let Some(page_id) = Self::page_id_for_number(doc, page) {
+                    let _ = doc.put(&entry, "page-id", page_id);
+                }
+            }
+        }
+    }
+
+    pub fn duplicate_page_plan(
+        doc: &mut AutoCommit,
+        id: &str,
+        new_id: &str,
+        expected: &PagePlanEntry,
+    ) {
+        let Some(list) = Self::list(doc, "page-plan") else {
+            return;
+        };
+        if Self::index_of(doc, &list, new_id).is_some() {
+            return;
+        }
+        let Some(index) = Self::index_of(doc, &list, id) else {
+            return;
+        };
+        let Some(stored) = Self::list_page_plan(doc)
+            .into_iter()
+            .find(|entry| entry.id == id)
+        else {
+            return;
+        };
+        if stored.source_page != expected.source_page || stored.imported != expected.imported {
+            return;
+        }
+        let Ok(copy) = doc.insert_object(&list, index + 1, ObjType::Map) else {
+            return;
+        };
+        Self::put_page_entry(
+            doc,
+            &copy,
+            &PagePlanEntry {
+                id: new_id.to_string(),
+                ..expected.clone()
+            },
+        );
+    }
+
+    /// Insert an atomic, prevalidated batch of imported occurrences.  Invalid
+    /// action payloads are a no-op: no partially imported page plan is ever
+    /// visible to another replica.
+    pub fn import_pages(doc: &mut AutoCommit, after_id: Option<&str>, pages: &[PagePlanEntry]) {
+        const MAX_IMPORTED_PAGES: usize = 512;
+        if pages.is_empty()
+            || pages.len() > MAX_IMPORTED_PAGES
+            || pages.iter().any(|entry| {
+                entry.id.is_empty()
+                    || entry.id.len() > 160
+                    || entry.imported.as_ref().is_none_or(|p| !p.valid())
+            })
+        {
+            return;
+        }
+        let Some(list) = Self::list(doc, "page-plan") else {
+            return;
+        };
+        if pages
+            .iter()
+            .any(|entry| Self::index_of(doc, &list, &entry.id).is_some())
+        {
+            return;
+        }
+        let mut seen = HashSet::new();
+        if pages.iter().any(|entry| !seen.insert(&entry.id)) {
+            return;
+        }
+        let at = after_id
+            .and_then(|id| Self::index_of(doc, &list, id).map(|i| i + 1))
+            .unwrap_or_else(|| doc.length(&list));
+        for (at, page) in (at..).zip(pages) {
+            let Ok(map) = doc.insert_object(&list, at, ObjType::Map) else {
+                return;
+            };
+            Self::put_page_entry(doc, &map, page);
+        }
+    }
+
+    fn put_page_entry(doc: &mut AutoCommit, map: &ObjId, entry: &PagePlanEntry) {
+        let _ = doc.put(map, "id", entry.id.as_str());
+        let _ = doc.put(map, "source-page", entry.source_page as i64);
+        if let Some(imported) = &entry.imported {
+            let _ = doc.put(map, "content-hash", imported.hash.as_str());
+            let _ = doc.put(map, "content-kind", imported.kind.as_str());
+            let _ = doc.put(map, "content-page", imported.page as i64);
+            let _ = doc.put(map, "page-width-milli", i64::from(imported.width_milli));
+            let _ = doc.put(map, "page-height-milli", i64::from(imported.height_milli));
+        }
+    }
+
+    pub fn delete_page_plan(doc: &mut AutoCommit, id: &str) {
+        let Some(list) = Self::list(doc, "page-plan") else {
+            return;
+        };
+        if Self::list_page_plan(doc).len() <= 1 {
+            return;
+        }
+        for index in (0..doc.length(&list)).rev() {
+            let is_target = doc
+                .get(&list, index)
+                .ok()
+                .flatten()
+                .and_then(|(value, entry)| {
+                    matches!(value, Value::Object(ObjType::Map))
+                        .then(|| Self::get_str(doc, &entry, "id"))
+                        .flatten()
+                })
+                .is_some_and(|candidate| candidate == id);
+            if is_target {
+                let _ = doc.delete(&list, index);
+            }
+        }
+        Self::delete_page_anchors(doc, id);
+    }
+
+    /// Deleting an occurrence removes all markup attached specifically to it.
+    /// A duplicate deliberately duplicates only page content, never review
+    /// markup; users can add independent annotations to the new occurrence.
+    fn delete_page_anchors(doc: &mut AutoCommit, page_id: &str) {
+        let annotation_ids: Vec<String> = Self::list_annotations(doc)
+            .into_iter()
+            .filter(|annotation| {
+                Self::annotation_page_id(doc, &annotation.id).as_deref() == Some(page_id)
+            })
+            .map(|annotation| annotation.id)
+            .collect();
+        for id in annotation_ids {
+            Self::delete_annotation(doc, &id);
+        }
+        for key in ["comments", "signatures"] {
+            let Some(list) = Self::list(doc, key) else {
+                continue;
+            };
+            for index in (0..doc.length(&list)).rev() {
+                let anchored = doc
+                    .get(&list, index)
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, entry)| {
+                        matches!(value, Value::Object(ObjType::Map))
+                            .then(|| Self::get_str(doc, &entry, "page-id"))
+                            .flatten()
+                    })
+                    .as_deref()
+                    == Some(page_id);
+                if anchored {
+                    let _ = doc.delete(&list, index);
+                }
+            }
+        }
+    }
+
+    pub fn move_page_plan(doc: &mut AutoCommit, id: &str, after_id: Option<&str>) {
+        let Some(list) = Self::list(doc, "page-plan") else {
+            return;
+        };
+        let Some(from) = Self::index_of(doc, &list, id) else {
+            return;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), _))) = doc.get(&list, from) else {
+            return;
+        };
+        let Some(moved_entry) = Self::list_page_plan(doc)
+            .into_iter()
+            .find(|candidate| candidate.id == id)
+        else {
+            return;
+        };
+        // Remove every physical representation of this durable occurrence.
+        // Concurrent moves can each have inserted one, and leaving an older
+        // one behind would let a subsequent delete reveal a ghost page.
+        for index in (0..doc.length(&list)).rev() {
+            let is_target = doc
+                .get(&list, index)
+                .ok()
+                .flatten()
+                .and_then(|(value, entry)| {
+                    matches!(value, Value::Object(ObjType::Map))
+                        .then(|| Self::get_str(doc, &entry, "id"))
+                        .flatten()
+                })
+                .is_some_and(|candidate| candidate == id);
+            if is_target {
+                let _ = doc.delete(&list, index);
+            }
+        }
+        let to = after_id
+            .and_then(|after| Self::index_of(doc, &list, after).map(|i| i + 1))
+            .unwrap_or(0);
+        let Ok(moved) = doc.insert_object(&list, to, ObjType::Map) else {
+            return;
+        };
+        Self::put_page_entry(doc, &moved, &moved_entry);
+    }
+
     // ---- annotations ------------------------------------------------
 
     fn points_to_str(points: &[(f64, f64)]) -> String {
@@ -156,6 +512,9 @@ impl PdfDoc {
         };
         let _ = doc.put(&m, "id", a.id.as_str());
         let _ = doc.put(&m, "page", a.page as i64);
+        if let Some(page_id) = Self::page_id_for_number(doc, a.page) {
+            let _ = doc.put(&m, "page-id", page_id);
+        }
         let _ = doc.put(&m, "kind", a.kind.type_key());
         let _ = doc.put(&m, "color", a.color.key());
         let _ = doc.put(&m, "author", a.author.as_str());
@@ -186,7 +545,10 @@ impl PdfDoc {
                 continue;
             };
             let id = Self::get_str(doc, &m, "id").unwrap_or_default();
-            let page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
+            let legacy_page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
+            let page = Self::get_str(doc, &m, "page-id")
+                .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
+                .unwrap_or(legacy_page);
             let color = Swatch::parse(&Self::get_str(doc, &m, "color").unwrap_or_default());
             let author = Self::get_str(doc, &m, "author").unwrap_or_default();
             let kind = match Self::get_str(doc, &m, "kind").as_deref() {
@@ -217,6 +579,13 @@ impl PdfDoc {
             });
         }
         out
+    }
+
+    fn annotation_page_id(doc: &AutoCommit, id: &str) -> Option<String> {
+        let list = Self::list_ro(doc, "annotations")?;
+        let index = Self::index_of(doc, &list, id)?;
+        let (_, entry) = doc.get(&list, index).ok()??;
+        Self::get_str(doc, &entry, "page-id")
     }
 
     fn index_of(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
@@ -299,6 +668,9 @@ impl PdfDoc {
             let _ = doc.put(&m, "anno", a.as_str());
         }
         let _ = doc.put(&m, "page", c.page as i64);
+        if let Some(page_id) = Self::page_id_for_number(doc, c.page) {
+            let _ = doc.put(&m, "page-id", page_id);
+        }
         let _ = doc.put(&m, "author", c.author.as_str());
         let _ = doc.put(&m, "body", c.body.as_str());
         let _ = doc.put(&m, "created", c.created);
@@ -326,7 +698,10 @@ impl PdfDoc {
             };
             let id = Self::get_str(doc, &m, "id").unwrap_or_default();
             let anno_id = Self::get_str(doc, &m, "anno");
-            let page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
+            let legacy_page = Self::get_i64(doc, &m, "page").unwrap_or(1) as usize;
+            let page = Self::get_str(doc, &m, "page-id")
+                .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
+                .unwrap_or(legacy_page);
             let author = Self::get_str(doc, &m, "author").unwrap_or_default();
             let body = Self::get_str(doc, &m, "body").unwrap_or_default();
             let created = Self::get_i64(doc, &m, "created").unwrap_or(0);
@@ -442,6 +817,9 @@ impl PdfDoc {
         };
         let _ = doc.put(&m, "id", s.id.as_str());
         let _ = doc.put(&m, "page", s.page as i64);
+        if let Some(page_id) = Self::page_id_for_number(doc, s.page) {
+            let _ = doc.put(&m, "page-id", page_id);
+        }
         let _ = doc.put(&m, "x", s.rect.x);
         let _ = doc.put(&m, "y", s.rect.y);
         let _ = doc.put(&m, "w", s.rect.w);
@@ -480,7 +858,9 @@ impl PdfDoc {
             };
             out.push(Signature {
                 id: Self::get_str(doc, &m, "id").unwrap_or_default(),
-                page: Self::get_i64(doc, &m, "page").unwrap_or(1) as usize,
+                page: Self::get_str(doc, &m, "page-id")
+                    .and_then(|page_id| Self::page_number_for_id(doc, &page_id))
+                    .unwrap_or_else(|| Self::get_i64(doc, &m, "page").unwrap_or(1) as usize),
                 rect: PtRect::new(
                     Self::get_f64(doc, &m, "x").unwrap_or(0.0),
                     Self::get_f64(doc, &m, "y").unwrap_or(0.0),
@@ -812,5 +1192,113 @@ mod tests {
         assert!(!PdfDoc::is_seeded(&mut doc));
         PdfDoc::set_meta(&mut doc, "T", "A");
         assert!(PdfDoc::is_seeded(&mut doc));
+    }
+
+    #[test]
+    fn concurrent_initialisation_and_same_page_moves_converge_without_duplicate_ids() {
+        let base = AutoCommit::new().save();
+        let mut left = AutoCommit::load(&base).unwrap();
+        let mut right = AutoCommit::load(&base).unwrap();
+
+        // Both clients open the same uninitialised record before either sees
+        // the other. Their physical list insertions may both survive merge,
+        // but the materialised plan has one deterministic occurrence per id.
+        PdfDoc::ensure_page_plan(&mut left, 3);
+        PdfDoc::ensure_page_plan(&mut right, 3);
+        left.merge(&mut right).unwrap();
+        let initial = PdfDoc::list_page_plan(&left);
+        assert_eq!(initial.len(), 3);
+        assert_eq!(
+            initial
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["source-1", "source-2", "source-3"]
+        );
+
+        let checkpoint = left.save();
+        let mut a = AutoCommit::load(&checkpoint).unwrap();
+        let mut b = AutoCommit::load(&checkpoint).unwrap();
+        PdfDoc::move_page_plan(&mut a, "source-2", None);
+        PdfDoc::move_page_plan(&mut b, "source-2", Some("source-3"));
+        a.merge(&mut b).unwrap();
+        let plan = PdfDoc::list_page_plan(&a);
+        assert!(!plan.is_empty());
+        let ids: HashSet<&str> = plan.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids.len(), plan.len(), "each durable id materialises once");
+        assert_eq!(ids.len(), 3);
+        b.merge(&mut a).unwrap();
+        assert_eq!(PdfDoc::list_page_plan(&a), PdfDoc::list_page_plan(&b));
+    }
+
+    #[test]
+    fn markup_anchors_follow_a_page_occurrence_through_move_and_delete() {
+        let mut doc = AutoCommit::new();
+        PdfDoc::ensure_page_plan(&mut doc, 3);
+        let annotation = hl(1);
+        let annotation_id = annotation.id.clone();
+        PdfDoc::add_annotation(&mut doc, &annotation);
+        PdfDoc::add_comment(
+            &mut doc,
+            &Comment {
+                id: "comment-on-source-1".into(),
+                anno_id: Some(annotation_id),
+                page: 1,
+                author: "Alice".into(),
+                body: "attached".into(),
+                created: 1,
+                resolved: false,
+                replies: vec![],
+            },
+        );
+        PdfDoc::add_signature(
+            &mut doc,
+            &Signature {
+                id: "signature-on-source-1".into(),
+                page: 1,
+                rect: PtRect::new(10.0, 10.0, 100.0, 40.0),
+                signer: "Alice".into(),
+                date: "2026-01-01".into(),
+                ink: crate::model::SignatureInk::Typed,
+            },
+        );
+
+        PdfDoc::move_page_plan(&mut doc, "source-1", Some("source-3"));
+        assert_eq!(PdfDoc::list_annotations(&doc)[0].page, 3);
+        assert_eq!(PdfDoc::list_comments(&doc)[0].page, 3);
+        assert_eq!(PdfDoc::list_signatures(&doc)[0].page, 3);
+
+        PdfDoc::delete_page_plan(&mut doc, "source-1");
+        assert!(PdfDoc::list_annotations(&doc).is_empty());
+        assert!(PdfDoc::list_comments(&doc).is_empty());
+        assert!(PdfDoc::list_signatures(&doc).is_empty());
+    }
+
+    #[test]
+    fn imported_pages_are_atomic_and_keep_their_durable_identity() {
+        let mut doc = AutoCommit::new();
+        PdfDoc::ensure_page_plan(&mut doc, 2);
+        let imported = ImportedPage {
+            hash: "a".repeat(64),
+            kind: "image".into(),
+            page: 1,
+            width_milli: 612_000,
+            height_milli: 408_000,
+        };
+        let page = PagePlanEntry {
+            id: "imported-image".into(),
+            source_page: 1,
+            imported: Some(imported),
+        };
+        PdfDoc::import_pages(&mut doc, Some("source-1"), std::slice::from_ref(&page));
+        assert_eq!(PdfDoc::list_page_plan(&doc)[1], page);
+
+        // A malformed batch refuses as a whole, including the otherwise valid
+        // first entry. It cannot leave a partial shared page plan behind.
+        let mut bad = page.clone();
+        bad.id = "bad".into();
+        bad.imported.as_mut().unwrap().hash = "tampered".into();
+        PdfDoc::import_pages(&mut doc, None, &[page, bad]);
+        assert_eq!(PdfDoc::list_page_plan(&doc).len(), 3);
     }
 }

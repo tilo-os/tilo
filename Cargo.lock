@@ -10111,6 +10111,7 @@ dependencies = [
  "image",
  "pdf-extract",
  "pdfium-render",
+ "qdoc",
  "qos-actions",
  "qos-app",
  "runtime-dylib",
