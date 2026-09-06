@@ -81,6 +81,14 @@ pub enum Command {
     },
     /// Route the next window announcing `app_id` into its own group rather than a tab, via `shell::launcher::set_pending_placement` — needed because dragging between two client windows requires them in separate groups.
     PlaceNextWindow { app_id: String },
+    /// Mint the compositor-owned, single-use activation token a user-selected
+    /// host launch would receive.  The native test transport handles this
+    /// directly because token issuance deliberately requires `&mut State`.
+    /// Only available on the explicit test-control socket.
+    MintHostLaunchActivation {
+        desktop_id: String,
+        display_name: String,
+    },
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
@@ -461,6 +469,14 @@ pub fn dispatch_command<S: ControlState>(
             );
             (Response::Ok { frame: 0 }, Vec::new())
         }
+        Command::MintHostLaunchActivation { .. } => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "host activation tokens are minted by the native test transport"
+                    .to_string(),
+            },
+            Vec::new(),
+        ),
         Command::PointerMove { x, y } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::CursorMoved { x: *x, y: *y }],

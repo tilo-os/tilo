@@ -282,3 +282,101 @@ fn focused_serial_activates_matching_toplevel_once() {
         "a consumed token must not be replayable"
     );
 }
+
+/// The host-launch path mints the token on the compositor thread, while the
+/// child merely inherits its opaque standard value.  Exercise that wire path
+/// with a real Wayland client: initial adoption, activation, placement/title
+/// reconciliation, focus, single-use removal, and the later-window cleanup.
+#[test]
+#[serial_test::serial(process_env)]
+fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
+    shell::shell::launcher::clear_pending_placements();
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let activation = h
+        .bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1)
+        .expect("activation");
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .expect("xdg shell");
+    let identity = "org.example.HostToken";
+    let desktop_id = "org.example.HostToken.desktop";
+    // This is the pre-existing peer/document tab a host launch must adopt,
+    // rather than assuming the test harness's fresh workspace carries a demo
+    // group. The production tree may quite legitimately start empty.
+    let target_tab = shell::compositor::tab_binding::adopt_toplevel(
+        &mut h.state.workspace_tree,
+        0xfeed,
+        Some("org.example.Existing".to_string()),
+    );
+    let intended = shell::compositor::tab_binding::Placement::IntoTab(target_tab);
+    shell::shell::launcher::set_pending_placement_for_identities(
+        desktop_id,
+        &[identity.to_string()],
+        intended,
+    );
+    let token = h.state.issue_host_launch_activation(
+        desktop_id.to_string(),
+        "Token host application".to_string(),
+        intended,
+    );
+
+    let qh = h.queue.handle();
+    let target = compositor.create_surface(&qh, ());
+    let target_xdg = wm.get_xdg_surface(&target, &qh, ());
+    let target_top = target_xdg.get_toplevel(&qh, ());
+    target_top.set_app_id(identity.into());
+    h.pump();
+    let target_id = foreign_id(&h.state, identity);
+    assert_eq!(
+        h.state.workspace_tree.workspaces[0].strips[0].window_groups[0].tabs[0].id, target_tab,
+        "normal first adoption used the staged host placement"
+    );
+
+    // This is what a Wayland child does with its inherited
+    // XDG_ACTIVATION_TOKEN after mapping its toplevel.
+    activation.activate(token.clone(), &target);
+    h.pump();
+    assert_eq!(
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree),
+        Some(target_id),
+        "activation focuses the actual mapped host surface"
+    );
+    assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
+    let tab = h
+        .state
+        .workspace_tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|tab| {
+            matches!(
+                &tab.tile,
+                shell::shell::state::TileContent::Foreign { surface_id, .. } if *surface_id == target_id
+            )
+        })
+        .expect("activated host surface remains represented by one tab");
+    assert_eq!(tab.id, target_tab, "relocation kept the claimed target tab");
+    assert_eq!(tab.title, "Token host application");
+    assert_eq!(h.state.xdg_activation_state.tokens().count(), 0);
+    assert!(
+        shell::shell::launcher::placement_for_toplevel(identity, target_id.wrapping_add(1))
+            .is_none(),
+        "activation consumed the desktop-id placement note before another window can claim it"
+    );
+
+    activation.activate(token, &target);
+    h.pump();
+    assert_eq!(
+        shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree),
+        Some(target_id),
+        "the consumed host token cannot be replayed"
+    );
+    shell::shell::launcher::clear_pending_placements();
+}

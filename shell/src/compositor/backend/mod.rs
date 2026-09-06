@@ -162,6 +162,10 @@ pub enum BackendEvent {
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.
     ModifiersChanged(Modifiers),
+    /// The backend lost the ability to promise matching releases for keys it
+    /// previously reported (keyboard unplug, VT pause, or keymap replacement).
+    /// The compositor must retire its seat state before accepting new input.
+    InputStateReset,
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
