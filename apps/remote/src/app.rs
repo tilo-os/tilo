@@ -41,7 +41,7 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
-use crate::session::{SessionStatus, can_attempt_live};
+use crate::session::{SessionStatus, TransportReadiness, can_attempt_live, transport_readiness};
 use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
 use crate::vnc::{VncConfig, VncInput, VncSession};
@@ -56,6 +56,14 @@ enum LiveSession {
     Vnc(VncSession),
     Qos(QosSession),
     Error(String),
+    /// A saved profile that cannot start in this process. This is a distinct
+    /// state from a failed connection: no socket was opened and no credential
+    /// was sent. Keeping it explicit lets the UI offer an honest recovery path
+    /// instead of a blank row or a misleading retry button.
+    Unavailable {
+        readiness: TransportReadiness,
+        kind: ConnectionKind,
+    },
     /// A fixed status with no transport, for `--shots`/preview rendering of
     /// the composed connecting/failed/closed surfaces. Never on the live path.
     Preview(SessionStatus),
@@ -68,6 +76,9 @@ impl LiveSession {
             LiveSession::Vnc(s) => s.status(),
             LiveSession::Qos(s) => s.status.clone(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
+            LiveSession::Unavailable { readiness, kind } => {
+                SessionStatus::Unavailable(readiness.detail(*kind).into())
+            }
             LiveSession::Preview(s) => s.clone(),
         }
     }
@@ -501,7 +512,11 @@ impl RemoteApp {
             "session-rdp" => {
                 self.dev_preview_session(
                     ConnectionKind::Rdp,
-                    SessionStatus::Failed("RDP is not available in qOS yet".into()),
+                    SessionStatus::Unavailable(
+                        TransportReadiness::BackendUnavailable
+                            .detail(ConnectionKind::Rdp)
+                            .into(),
+                    ),
                 );
             }
             "session-qos" => {
@@ -708,27 +723,22 @@ impl RemoteApp {
     }
 
     /// Open the session surface for a connection. qOS always uses its real
-    /// shell-broker transport; SSH/VNC require `REMOTE_LIVE_SESSIONS`. Every
-    /// live path tracks real state (connecting → connected, or an honest
-    /// error), never a fabricated terminal or desktop.
+    /// shell-broker transport; SSH/VNC require the explicit live-session
+    /// capability. A missing capability or RDP backend gets a first-class
+    /// recovery surface — no socket is opened, and it is not misreported as a
+    /// connection failure.
     fn open_session(&mut self, id: ConnectionId) {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
-        // Older documents may contain unavailable RDP profiles. Keep them
-        // editable, but never make an unavailable transport look connectable.
-        if !c.kind.can_attempt() {
-            self.selected = Some(id);
-            return;
-        }
         self.session_for = Some(id);
         self.fullscreen = false;
         self.fb_image = None;
         self.fb_canvas = None;
         self.vnc_buttons = 0;
         self.live = None;
-        let can_connect = can_attempt_live(c.kind);
-        if can_connect {
+        let readiness = transport_readiness(c.kind);
+        if readiness.can_connect() {
             let live = self.start_live(&c);
             self.live = Some(live);
             // Record the attempt in "last used"; presence is only marked
@@ -736,6 +746,11 @@ impl RemoteApp {
             if let Some(m) = self.workspace.get_mut(id) {
                 m.last_used = "just now".into();
             }
+        } else {
+            self.live = Some(LiveSession::Unavailable {
+                readiness,
+                kind: c.kind,
+            });
         }
         self.screen = Screen::Session { id };
     }
@@ -1566,7 +1581,9 @@ impl Widget for RemoteApp {
                             qos_actions::ActionOutput::default(),
                         )))
                     }
-                    Some(SessionStatus::Failed(message)) => Err(message),
+                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
+                        Err(message)
+                    }
                     Some(SessionStatus::Closed) | None => {
                         Err("remote transport did not start".into())
                     }
@@ -1629,6 +1646,17 @@ impl Widget for RemoteApp {
                         retryable: false,
                     },
                 },
+                Some(SessionStatus::Unavailable(message)) => {
+                    qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "remote.transport_unavailable".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    }
+                }
                 Some(SessionStatus::Closed) | None => qos_actions::InvocationUpdate::Failed {
                     invocation,
                     error: qos_actions::ActionFailure {
@@ -2216,6 +2244,14 @@ impl Widget for RemoteApp {
                         .with_hashed_key("remote.form.protocol")
                         .with_children(protocol),
                 );
+                if self.draft.kind == ConnectionKind::Rdp {
+                    children.push(
+                        AccessNode::new(Role::StaticText)
+                            .with_name("Legacy RDP profile. RDP has no client backend in this build; select SSH, VNC, or qOS to migrate this profile.")
+                            .with_live(Politeness::Polite)
+                            .with_hashed_key("remote.form.legacy-rdp"),
+                    );
+                }
                 if self.draft.kind == ConnectionKind::Qos {
                     children.push(
                         AccessNode::new(Role::List)
@@ -2349,6 +2385,9 @@ impl Widget for RemoteApp {
                     Some(SessionStatus::Connected) => "Connected".to_string(),
                     Some(SessionStatus::Closed) => "Session ended".to_string(),
                     Some(SessionStatus::Failed(error)) => format!("Connection failed: {error}"),
+                    Some(SessionStatus::Unavailable(detail)) => {
+                        format!("Not available: {detail}")
+                    }
                 };
                 let mut children = vec![
                     AccessNode::new(Role::Heading { level: 1 })
@@ -2403,6 +2442,13 @@ impl Widget for RemoteApp {
                         "Retry connection",
                         format!("remote.connection:{id}:connect"),
                         self.action_bounds(Action::Connect(id)),
+                    ));
+                }
+                if matches!(status, Some(SessionStatus::Unavailable(_))) {
+                    children.push(button(
+                        "Edit connection",
+                        format!("remote.connection:{id}:edit"),
+                        self.action_bounds(Action::EditConnection(id)),
                     ));
                 }
                 children.push(button(
@@ -3584,7 +3630,8 @@ impl RemoteApp {
                 row.center().y + 16.0,
             )
         };
-        let can_connect = can_attempt_live(c.kind);
+        let readiness = transport_readiness(c.kind);
+        let can_connect = readiness.can_connect();
         if can_connect {
             self.draw_button(
                 scene,
@@ -3596,13 +3643,11 @@ impl RemoteApp {
                 true,
             );
             self.push_hit(connect, Action::Connect(c.id));
+        } else {
+            Self::draw_readiness_badge(scene, transform, text_renderer, theme, connect, readiness);
         }
 
-        let edit = if can_connect {
-            Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1)
-        } else {
-            Rect::new(row.x1 - 88.0, connect.y0, row.x1 - 12.0, connect.y1)
-        };
+        let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
         self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
         self.push_hit(edit, Action::EditConnection(c.id));
 
@@ -3657,6 +3702,47 @@ impl RemoteApp {
             TextWeight::Semibold,
         );
         w
+    }
+
+    /// Small, non-interactive readiness marker for profiles that cannot be
+    /// connected from this process. It keeps the restriction visible at the
+    /// point of decision instead of hiding it in a disabled palette row.
+    fn draw_readiness_badge(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        readiness: TransportReadiness,
+    ) {
+        let tokens = &theme.tokens;
+        let (color, label) = match readiness {
+            TransportReadiness::Ready => return,
+            TransportReadiness::NeedsLiveSessionCapability => {
+                (tokens.colors.semantic.warning, "Needs access")
+            }
+            TransportReadiness::BackendUnavailable => (tokens.colors.neutral[5], "Not supported"),
+        };
+        let badge = RoundedRect::from_rect(rect, 8.0);
+        scene.fill(Fill::NonZero, transform, color.at_alpha(0.12), None, &badge);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            color.at_alpha(0.75),
+            None,
+            &badge,
+        );
+        let (tw, _) = text_renderer.measure_weighted(label, 11.5, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            11.5,
+            color,
+            transform
+                * Affine::translate((rect.center().x - f64::from(tw) / 2.0, rect.center().y - 7.0)),
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     /// Generic button using the shared immediate-mode face while this canvas
@@ -3767,6 +3853,15 @@ impl RemoteApp {
 
         let y =
             self.draw_form_kind_selector(scene, transform, text_renderer, theme, card_x, card_w, y);
+        let y = self.draw_form_legacy_transport_notice(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card_x,
+            card_w,
+            y,
+        );
         let y =
             self.draw_form_qos_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
         let y = self.draw_form_name_field(
@@ -3888,6 +3983,62 @@ impl RemoteApp {
         }
         y += 56.0;
         y
+    }
+
+    /// Legacy RDP profiles are deliberately editable rather than discarded.
+    /// Make their migration path explicit: the selector offers only real
+    /// backends, so choosing SSH, VNC, or qOS replaces the unavailable kind.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "this small drawing section receives the same scene/render context and geometry cursor as the adjacent form sections"
+    )]
+    fn draw_form_legacy_transport_notice(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card_x: f64,
+        card_w: f64,
+        y: f64,
+    ) -> f64 {
+        if self.draft.kind != ConnectionKind::Rdp {
+            return y;
+        }
+        let tokens = &theme.tokens;
+        let note = Rect::new(card_x, y, card_x + card_w, y + 54.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.semantic.warning.at_alpha(0.12),
+            None,
+            &RoundedRect::from_rect(note, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.semantic.warning.at_alpha(0.75),
+            None,
+            &RoundedRect::from_rect(note, 8.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Legacy RDP profile",
+            12.0,
+            tokens.colors.semantic.warning,
+            transform * Affine::translate((note.x0 + 12.0, note.y0 + 9.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            "RDP has no client backend here. Select SSH, VNC, or qOS to migrate this profile.",
+            11.5,
+            tokens.colors.text_dim,
+            transform * Affine::translate((note.x0 + 12.0, note.y0 + 29.0)),
+            Some((card_w - 24.0) as f32),
+        );
+        y + 66.0
     }
 
     /// `draw_form`'s qOS device picker — a no-op (returns `y` unchanged) for
@@ -4410,6 +4561,7 @@ impl RemoteApp {
                     "Your saved connection is unchanged.".to_string(),
                 ],
                 StatusTone::Neutral,
+                false,
             );
             return;
         };
@@ -4438,6 +4590,7 @@ impl RemoteApp {
                     title,
                     &[detail.to_string()],
                     StatusTone::Pending,
+                    false,
                 );
             }
             SessionStatus::Failed(err) => {
@@ -4454,6 +4607,30 @@ impl RemoteApp {
                         "This is the real error — nothing is simulated.".to_string(),
                     ],
                     StatusTone::Error,
+                    false,
+                );
+            }
+            SessionStatus::Unavailable(detail) => {
+                let recovery = match c.kind {
+                    ConnectionKind::Rdp => {
+                        "Edit this saved profile to use SSH, VNC, or qOS device control."
+                    }
+                    ConnectionKind::Ssh | ConnectionKind::Vnc => {
+                        "Use qOS device control now, or install Remote with live network and host-key trust access."
+                    }
+                    ConnectionKind::Qos => "No connection was attempted.",
+                };
+                self.draw_status_session(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    content,
+                    &c,
+                    "Connection not available",
+                    &[detail, recovery.to_string()],
+                    StatusTone::Neutral,
+                    true,
                 );
             }
             SessionStatus::Closed => {
@@ -4467,6 +4644,7 @@ impl RemoteApp {
                     "Session ended",
                     &["The remote closed the session.".to_string()],
                     StatusTone::Neutral,
+                    false,
                 );
             }
             SessionStatus::Connected => {
@@ -4512,6 +4690,7 @@ impl RemoteApp {
         title: &str,
         body: &[String],
         tone: StatusTone,
+        show_edit: bool,
     ) {
         let tokens = &theme.tokens;
         let accent = match tone {
@@ -4540,7 +4719,17 @@ impl RemoteApp {
             body,
             y,
         );
-        self.draw_status_session_actions(scene, transform, text_renderer, theme, card, tone, c, y);
+        self.draw_status_session_actions(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            card,
+            tone,
+            c,
+            y,
+            show_edit,
+        );
     }
 
     /// `draw_status_session`'s full-surface backdrop and centred card
@@ -4752,16 +4941,19 @@ impl RemoteApp {
         tone: StatusTone,
         c: &Connection,
         y: f64,
+        show_edit: bool,
     ) {
         let mid = card.center().x;
-        // Retry only makes sense after a real failure; the gated/ended states
-        // just return to the list.
+        // Retry only makes sense after a real failure. An unavailable saved
+        // profile gets a direct edit recovery instead; it must never look as
+        // though retrying would somehow install an RDP backend or grant a
+        // denied sandbox capability.
         let can_retry = matches!(tone, StatusTone::Error);
         let btn_h = 38.0;
         let back_w = 132.0;
         let retry_w = 104.0;
         let gap = 12.0;
-        let group_w = if can_retry {
+        let group_w = if can_retry || show_edit {
             back_w + gap + retry_w
         } else {
             back_w
@@ -4779,6 +4971,20 @@ impl RemoteApp {
                 false,
             );
             self.push_hit(retry, Action::Connect(c.id));
+            bx += retry_w + gap;
+        }
+        if show_edit {
+            let edit = Rect::new(bx, y, bx + retry_w, y + btn_h);
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                edit,
+                "Edit profile",
+                false,
+            );
+            self.push_hit(edit, Action::EditConnection(c.id));
             bx += retry_w + gap;
         }
         let back = Rect::new(bx, y, bx + back_w, y + btn_h);
@@ -5703,10 +5909,10 @@ mod tests {
     }
 
     #[test]
-    fn connect_ssh_shows_honest_not_connected_session() {
-        // Default build has no live transport: Connect opens the session
-        // screen but does NOT fabricate a terminal or open a transport — an
-        // honest "not connected" state, never a faked shell.
+    fn connect_ssh_explains_the_missing_live_capability_without_opening_a_socket() {
+        // Default build has no live transport: Connect opens an explicit
+        // unavailable surface, not a fabricated terminal or an ambiguous
+        // "not connected" screen.
         let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
@@ -5717,14 +5923,17 @@ mod tests {
             .id;
         app.apply(Action::Connect(id), &mut doc());
         assert_eq!(app.screen, Screen::Session { id });
-        assert!(
-            app.live.is_none(),
-            "no live transport → no session object, no fabricated terminal"
-        );
+        assert!(matches!(
+            app.live,
+            Some(LiveSession::Unavailable {
+                readiness: TransportReadiness::NeedsLiveSessionCapability,
+                kind: ConnectionKind::Ssh,
+            })
+        ));
     }
 
     #[test]
-    fn connect_vnc_has_no_live_session_when_gated() {
+    fn connect_vnc_explains_the_missing_live_capability_without_opening_a_socket() {
         let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
@@ -5734,10 +5943,13 @@ mod tests {
             .unwrap()
             .id;
         app.apply(Action::Connect(id), &mut doc());
-        assert!(
-            app.live.is_none(),
-            "gated build opens no framebuffer transport"
-        );
+        assert!(matches!(
+            app.live,
+            Some(LiveSession::Unavailable {
+                readiness: TransportReadiness::NeedsLiveSessionCapability,
+                kind: ConnectionKind::Vnc,
+            })
+        ));
     }
 
     #[test]
@@ -6013,7 +6225,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_transport_cannot_open_a_session() {
+    fn unavailable_transport_opens_an_editable_recovery_surface() {
         let mut app = RemoteApp::new_demo();
         let mut state = AutoCommit::new();
         let id = app
@@ -6022,9 +6234,34 @@ mod tests {
 
         app.apply(Action::Connect(id), &mut state);
 
-        assert_eq!(app.screen, Screen::List);
-        assert_eq!(app.selected, Some(id));
-        assert!(app.live.is_none());
+        assert_eq!(app.screen, Screen::Session { id });
+        assert!(matches!(
+            app.live,
+            Some(LiveSession::Unavailable {
+                readiness: TransportReadiness::BackendUnavailable,
+                kind: ConnectionKind::Rdp,
+            })
+        ));
+    }
+
+    #[test]
+    fn unavailable_connect_operation_reports_a_distinct_non_retryable_result() {
+        let mut app = RemoteApp::new_demo();
+        let invocation = qos_actions::InvocationId::new();
+        app.live = Some(LiveSession::Unavailable {
+            readiness: TransportReadiness::BackendUnavailable,
+            kind: ConnectionKind::Rdp,
+        });
+        app.pending_resource_operation = Some(PendingResourceOperation::Connect { invocation });
+
+        let update = app
+            .poll_resource_operation(invocation, false, &doc(), &automerge::ROOT)
+            .expect("unavailable transport reaches a terminal operation result");
+        assert!(matches!(
+            update,
+            qos_actions::InvocationUpdate::Failed { error, .. }
+                if error.code == "remote.transport_unavailable" && !error.retryable
+        ));
     }
 
     #[test]
