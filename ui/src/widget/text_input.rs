@@ -3786,6 +3786,9 @@ impl Widget for TextInput {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
+    fn wants_tab_input(&self) -> bool {
+        self.tab_spaces.is_some()
+    }
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if !self.is_focused || self.effectively_disabled() {
             return None;
@@ -4566,12 +4569,9 @@ impl TextInput {
             } else {
                 TextPosition::new(prev_char_boundary(&self.text, self.cursor_pos))
             };
-        // A plain arrow with a selection collapses to the selection edge
-        // rather than moving one char past it (native editor behaviour).
-        if !shift
-            && !ctrl
-            && let Some((s, _)) = self.selection_range()
-        {
+        // An unmodified or Ctrl-arrow with a selection collapses to the
+        // selection edge rather than moving past it (native editor behaviour).
+        if !shift && let Some((s, _)) = self.selection_range() {
             self.cursor_pos = s;
             self.caret_affinity = TextAffinity::Before;
             self.selection_anchor = None;
@@ -4597,10 +4597,7 @@ impl TextInput {
             } else {
                 TextPosition::new(next_char_boundary(&self.text, self.cursor_pos))
             };
-        if !shift
-            && !ctrl
-            && let Some((_, e)) = self.selection_range()
-        {
+        if !shift && let Some((_, e)) = self.selection_range() {
             self.cursor_pos = e;
             self.caret_affinity = TextAffinity::Before;
             self.selection_anchor = None;
@@ -6638,6 +6635,72 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_arrow_collapses_a_selection_before_moving_by_word() {
+        let mut ti = TextInput::local().with_initial_value("hello world foo");
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        ti.set_selection(3, 12);
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowLeft),
+            mods(true, false),
+        );
+        assert_eq!(
+            ti.cursor_pos(),
+            3,
+            "Ctrl+Left collapses to the selection start"
+        );
+        assert_eq!(ti.selection_range(), None);
+
+        ti.set_selection(3, 12);
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowRight),
+            mods(true, false),
+        );
+        assert_eq!(
+            ti.cursor_pos(),
+            12,
+            "Ctrl+Right collapses to the selection end"
+        );
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
+    fn repeated_backspace_and_delete_press_events_keep_editing() {
+        let mut doc = AutoCommit::new();
+        let mut backspace = TextInput::local().with_initial_value("abcd");
+        backspace.set_focus(true);
+        let first = named_key_event(NamedKey::Backspace);
+        let mut repeat = named_key_event(NamedKey::Backspace);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
+            event.repeat = true;
+        }
+        drive(&mut backspace, &mut doc, &first, mods(false, false));
+        drive(&mut backspace, &mut doc, &repeat, mods(false, false));
+        assert_eq!(
+            backspace.value(),
+            "ab",
+            "held Backspace deletes on repeat events"
+        );
+
+        let mut delete = TextInput::local().with_initial_value("abcd");
+        delete.set_focus(true);
+        delete.set_cursor_pos(0);
+        let first = named_key_event(NamedKey::Delete);
+        let mut repeat = named_key_event(NamedKey::Delete);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut repeat {
+            event.repeat = true;
+        }
+        drive(&mut delete, &mut doc, &first, mods(false, false));
+        drive(&mut delete, &mut doc, &repeat, mods(false, false));
+        assert_eq!(delete.value(), "cd", "held Delete deletes on repeat events");
+    }
+
+    #[test]
     fn shift_ctrl_arrow_extends_selection_by_word() {
         let mut ti = TextInput::local().with_initial_value("hello world foo");
         ti.set_focus(true);
@@ -6792,6 +6855,21 @@ mod tests {
         drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false)); // select all
         drive(&mut ti, &mut doc, &char_key_event("Z"), mods(false, false)); // type over it
         assert_eq!(ti.value(), "Z", "typing over a full selection replaces it");
+    }
+
+    #[test]
+    fn key_text_preserves_shift_and_german_layout_characters() {
+        let mut ti = TextInput::local();
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        // `KeyEvent::text` is the layout/IME-resolved text. The widget must
+        // insert it verbatim rather than reconstructing ASCII from a physical
+        // key, which would lose Shift and German/AltGr punctuation.
+        for text in ["A", "Ä", "@", "?"] {
+            drive(&mut ti, &mut doc, &char_key_event(text), mods(false, false));
+        }
+        assert_eq!(ti.value(), "AÄ@?");
     }
 
     #[test]

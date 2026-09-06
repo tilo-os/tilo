@@ -4392,6 +4392,20 @@ impl App {
         modal_rect.is_none() || self.focus_trap_active
     }
 
+    /// Tab normally belongs to the host's focus order. A focused editor-like
+    /// widget may explicitly claim it first (for indentation or completion),
+    /// without broadening that exception to arbitrary widgets or escaping an
+    /// active focus trap.
+    fn focused_widget_wants_tab_input(&self) -> bool {
+        self.focused_node
+            .and_then(|node| self.node_map.get(&node).copied())
+            .is_some_and(|widget| {
+                // `node_map` owns pointers into the retained widget tree and
+                // remains valid until the next layout rebuild.
+                unsafe { (*widget).wants_tab_input() }
+            })
+    }
+
     fn focus_tab(&mut self, shift: bool) -> bool {
         let len = self.focusable_order.len();
         if len == 0 {
@@ -7043,6 +7057,7 @@ impl AppHandler {
         }
 
         if !handled
+            && !app.focused_widget_wants_tab_input()
             && app.keyboard_nav_allowed(modal_rect)
             && let WindowEvent::KeyboardInput {
                 event:
