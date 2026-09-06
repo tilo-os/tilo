@@ -51,7 +51,7 @@ impl Harness {
                     let handoff = br#"{"protocol":1,"app_id":"dev.qos.store"}"#;
                     stream.write_all(b"QAH1").await?;
                     stream
-                        .write_all(&(handoff.len() as u32).to_be_bytes())
+                        .write_all(&u32::try_from(handoff.len())?.to_be_bytes())
                         .await?;
                     stream.write_all(handoff).await?;
                     return Ok(client_for(stream));

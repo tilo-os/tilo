@@ -418,6 +418,10 @@ impl app_host::Server for AppHostServer {
         }
     }
 
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
     fn launch_desktop(
         self: capnp::capability::Rc<Self>,
         params: app_host::LaunchDesktopParams,
@@ -446,6 +450,10 @@ impl app_host::Server for AppHostServer {
         }
     }
 
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
     fn flatpak(
         self: capnp::capability::Rc<Self>,
         params: app_host::FlatpakParams,
@@ -501,6 +509,10 @@ impl app_host::Server for AppHostServer {
         }
     }
 
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
     fn remote(
         self: capnp::capability::Rc<Self>,
         params: app_host::RemoteParams,
