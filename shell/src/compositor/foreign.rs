@@ -2705,6 +2705,172 @@ mod tests {
         );
     }
 
+    /// Duplicate cleanup is a document mutation, not a cosmetic `retain` on
+    /// the current frame.  A later document update previously put the second
+    /// app card back because it was never removed from the replicated list.
+    #[test]
+    fn duplicate_cleanup_replicates_and_does_not_reappear_after_resync() {
+        let surface = 34;
+        let mut source = WorkspaceTree::bootstrap_demo();
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.photos".into()),
+        );
+        source.seed_doc_from_cache();
+        let mut rendered = source.clone();
+
+        let twin = foreign_tabs_anywhere(&rendered)
+            .into_iter()
+            .find(|tab| tab.surface_id == surface)
+            .expect("the source foreign tab");
+        let group = rendered
+            .active_workspace_mut()
+            .and_then(|workspace| workspace.strips.first_mut())
+            .and_then(|strip| strip.window_groups.first_mut())
+            .expect("the group the tab was adopted into");
+        group.tabs.push(crate::shell::state::Tab {
+            id: twin.tab_id + 2_000_000,
+            title: twin.title,
+            tile: ShellTile::Foreign {
+                app_id: twin.app_id,
+                surface_id: twin.surface_id,
+            },
+        });
+        rendered.seed_doc_from_cache();
+        let mut stale_replica = rendered.clone();
+        let before_cleanup = rendered.current_heads();
+
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, surface), 1);
+
+        let deletion = rendered.export_changes_since(&before_cleanup);
+        stale_replica
+            .apply_changes(&deletion)
+            .expect("the document deletion applies to a stale replica");
+        assert_eq!(
+            tabs_for_surface(&stale_replica, surface),
+            1,
+            "a later resync must not restore the duplicate application"
+        );
+    }
+
+    /// A real session can receive a room revision while a local external app
+    /// is mapping.  The revision may have been authored from before a close,
+    /// so this covers the complete ordering rather than each operation in
+    /// isolation: pointer/keyboard routes close and reorder the durable
+    /// topology; the protocol side maps one foreign surface; then a stale
+    /// peer revision and a normal restart run.
+    #[test]
+    fn stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app() {
+        use crate::compositor::tab_binding::{Placement, open_hosted_app, remove_tab};
+        use crate::shell::state::AppKind;
+
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let strip_id = source.workspaces[0].strips[0].id;
+
+        // Build a three-window shared baseline. The app that is closed is a
+        // symbolic hosted app, so its deletion is an actual room-document
+        // mutation. The app launched later is deliberately a foreign
+        // Wayland surface and therefore remains process-local.
+        let closed_tab = open_hosted_app(
+            &mut source,
+            AppKind::Other("Close fixture".into()),
+            "Close fixture",
+            Placement::NewGroup,
+        );
+        let reorder_tab = open_hosted_app(
+            &mut source,
+            AppKind::Other("Reorder fixture".into()),
+            "Reorder fixture",
+            Placement::NewGroup,
+        );
+        let closed_group = group_for_tab(&source, closed_tab);
+        let reordered_group = group_for_tab(&source, reorder_tab);
+        source.seed_doc_from_cache();
+        let base_heads = source.current_heads();
+        let bootstrap = source.export_changes_since(&[]);
+
+        let mut rendered = WorkspaceTree::default();
+        rendered
+            .apply_changes(&bootstrap)
+            .expect("rendered tree accepts its shared baseline");
+        rendered.persist_path = Some(state_path.clone());
+        rendered.flush_to_disk();
+
+        // This is the durable close route used by both the close button and
+        // Super+W after their event handlers resolve the exact tab.
+        assert!(
+            remove_tab(&mut rendered, closed_tab),
+            "the closed app must leave the rendered document"
+        );
+        assert!(
+            rendered.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != closed_group),
+            "closing the only tab removes the whole group"
+        );
+
+        // Meanwhile a peer still based on the old document reorders another
+        // group. Its change contains the now-closed group in its old list,
+        // which is the regression that used to resurrect windows.
+        assert!(source.reorder_group_within_strip(strip_id, reordered_group, 0));
+        let stale_revision = source.export_changes_since(&base_heads);
+        rendered
+            .apply_changes(&stale_revision)
+            .expect("a later peer revision applies");
+        assert!(
+            rendered.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != closed_group),
+            "a stale reorder must not bring the closed group back"
+        );
+
+        // A conventional host application maps after that room revision.
+        // It belongs to the protocol tree, then reconciliation makes exactly
+        // one chrome tab for its surface.
+        let surface = 0x51_000;
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("org.example.ExternalEditor".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "one mapped external surface must produce exactly one tab"
+        );
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "reconciliation is idempotent once the external app is present"
+        );
+
+        // A state round-trip may not revive the closed group; live Wayland
+        // surfaces intentionally do not survive a compositor restart because
+        // their surface ids belong to the old process.
+        rendered.flush_to_disk();
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("the post-revision layout restarts cleanly");
+        assert!(
+            restarted.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != closed_group),
+            "restart must not revive the closed group"
+        );
+        assert_eq!(
+            tabs_for_surface(&restarted, surface),
+            0,
+            "a dead process-local surface must not be restored after restart"
+        );
+        assert_active_groups_are_valid(&restarted);
+    }
+
     /// How many tabs anywhere in `tree` show `surface` — walks the tree the chrome renders from, so a duplicate is counted where it'd draw.
     fn tabs_for_surface(tree: &WorkspaceTree, surface: SurfaceId) -> usize {
         tree.workspaces
@@ -2716,6 +2882,35 @@ mod tests {
                 matches!(&t.tile, ShellTile::Foreign { surface_id, .. } if *surface_id == surface)
             })
             .count()
+    }
+
+    fn group_for_tab(tree: &WorkspaceTree, tab_id: u64) -> u64 {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .find(|group| group.tabs.iter().any(|tab| tab.id == tab_id))
+            .map(|group| group.id)
+            .expect("the fixture tab belongs to one group")
+    }
+
+    fn assert_active_groups_are_valid(tree: &WorkspaceTree) {
+        for (workspace, strip_id) in &tree.active_strip {
+            let Some(strip) = tree
+                .workspaces
+                .iter()
+                .find(|candidate| candidate.id == *workspace)
+                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == *strip_id))
+            else {
+                panic!("active workspace points to a missing strip");
+            };
+            if let Some(group_id) = tree.active_group_for(*strip_id) {
+                assert!(
+                    strip.window_groups.iter().any(|group| group.id == group_id),
+                    "active strip points to a deleted group"
+                );
+            }
+        }
     }
 
     /// Detach the tab showing `surface` from wherever it is, so a test can put it somewhere else.
