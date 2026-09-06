@@ -452,9 +452,13 @@ impl Core {
             let sugg: Vec<Suggestion> = self
                 .search_results
                 .iter()
-                .map(|r| {
-                    Suggestion::labelled(result_value(r), r.name.clone()).with_detail(r.subtitle())
-                })
+                // A compact field can show either a long place name or a
+                // right-aligned region, but not both reliably: a long name
+                // would paint into the detail column. Keep the useful
+                // disambiguator in one bounded label instead, so Paris,
+                // France and Paris, Texas remain distinguishable at every
+                // responsive width.
+                .map(|r| Suggestion::labelled(result_value(r), result_label(r)))
                 .collect();
             self.search.set_suggestions(sugg);
             self.search.set_status(None);
@@ -3758,6 +3762,13 @@ fn aqi_band_color(aqi: f64, theme: &Theme) -> Color {
 /// exact place (two cities named "Paris" stay distinct).
 fn result_value(loc: &SavedLocation) -> String {
     format!("{}, {}", loc.name, loc.subtitle())
+}
+
+/// The single visible autocomplete label. Keeping location context in the
+/// same text run prevents a long city name from colliding with a separate
+/// right-aligned detail column in a narrow search overlay.
+fn result_label(loc: &SavedLocation) -> String {
+    format!("{} — {}", loc.name, loc.subtitle())
 }
 
 #[cfg(test)]
