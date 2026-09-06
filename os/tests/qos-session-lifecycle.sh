@@ -32,8 +32,10 @@ grep -Fqx 'Exec=/usr/libexec/qos-session --backend drm' \
 grep -Fqx 'Exec=/usr/libexec/qos-session --backend drm --enable-peer-sync' \
   "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
 grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
-grep -Fq './os/dev/vm.sh keys tab tab ret' "$release_workflow"
-grep -Fq './os/dev/vm.sh keys tab spc' "$release_workflow"
+# First-use actions are now driven through the installed AT-SPI endpoint;
+# keeping stale blind-keyboard assertions here made the FUSE lane reject the
+# stronger accessibility release gate before any filesystem test could run.
+grep -Fq './os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh oobe-actions' "$release_workflow"
 grep -Fq './os/dev/vm.sh keys tab ret' "$release_workflow"
 grep -Fq 'identity ceremony did not produce the certified chain' "$release_workflow"
 
