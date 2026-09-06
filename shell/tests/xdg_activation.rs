@@ -6,6 +6,7 @@
     reason = "test harness failures are assertions"
 )]
 
+use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
@@ -14,7 +15,9 @@ use smithay::reexports::wayland_server::Display;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 
 #[derive(Default)]
 struct Client {
@@ -22,6 +25,9 @@ struct Client {
     completed_tokens: usize,
     token: Option<String>,
     keyboard_serial: Option<u32>,
+    popup_configures: Vec<(i32, i32, i32, i32)>,
+    repositioned: Vec<u32>,
+    popup_done: usize,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -105,11 +111,37 @@ impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
     }
 }
 
+impl Dispatch<xdg_popup::XdgPopup, ()> for Client {
+    fn event(
+        state: &mut Self,
+        _: &xdg_popup::XdgPopup,
+        event: xdg_popup::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            xdg_popup::Event::Configure {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                state.popup_configures.push((x, y, width, height));
+            }
+            xdg_popup::Event::Repositioned { token } => state.repositioned.push(token),
+            xdg_popup::Event::PopupDone => state.popup_done += 1,
+            _ => {}
+        }
+    }
+}
+
 delegate_noop!(Client: ignore xdg_activation_v1::XdgActivationV1);
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
+delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
 
 struct Harness {
     display: Display<shell::compositor::state::State>,
@@ -226,7 +258,7 @@ fn focused_serial_activates_matching_toplevel_once() {
         .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
         .expect("compositor");
     let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
         .expect("xdg shell");
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
@@ -301,7 +333,7 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
         .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
         .expect("compositor");
     let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1)
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
         .expect("xdg shell");
     let identity = "org.example.HostToken";
     let desktop_id = "org.example.HostToken.desktop";
@@ -379,4 +411,156 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
         "the consumed host token cannot be replayed"
     );
     shell::shell::launcher::clear_pending_placements();
+}
+
+#[test]
+fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
+        .expect("xdg shell");
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+
+    let parent = compositor.create_surface(&qh, ());
+    let parent_xdg = wm.get_xdg_surface(&parent, &qh, ());
+    let parent_top = parent_xdg.get_toplevel(&qh, ());
+    parent_top.set_app_id("org.example.MenuOwner".into());
+    h.pump();
+    let parent_id = foreign_id(&h.state, "org.example.MenuOwner");
+    h.state.set_client_keyboard_focus(Some(parent_id));
+    h.pump();
+    let serial = h.client.keyboard_serial.expect("focused parent serial");
+
+    let positioner = wm.create_positioner(&qh, ());
+    positioner.set_size(300, 120);
+    positioner.set_anchor_rect(290, 10, 10, 20);
+    let popup_surface = compositor.create_surface(&qh, ());
+    let popup_xdg = wm.get_xdg_surface(&popup_surface, &qh, ());
+    let popup = popup_xdg.get_popup(Some(&parent_xdg), &positioner, &qh, ());
+    h.pump();
+    popup.grab(&seat, serial);
+    h.pump();
+    assert!(
+        h.state
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed())
+    );
+    assert!(
+        h.state
+            .seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.is_grabbed())
+    );
+    assert_eq!(
+        h.state.xdg_popup_count(),
+        1,
+        "popup is transient compositor state"
+    );
+    assert_eq!(
+        h.state
+            .workspace_tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .filter(|tab| matches!(&tab.tile, shell::shell::state::TileContent::Foreign { .. }))
+            .count(),
+        1,
+        "popup never becomes a workspace tab"
+    );
+
+    h.state
+        .set_output_layout(&[shell::compositor::backend::Output::new(
+            shell::compositor::backend::OutputId(0),
+            (1920, 1080),
+            1.0,
+        )]);
+    let parent_rect = vello::kurbo::Rect::new(100.0, 100.0, 400.0, 300.0);
+    let visible = h
+        .state
+        .layout_xdg_popups(&HashMap::from([(parent_id, parent_rect)]));
+    h.pump();
+    let (_, _, rect) = visible.first().expect("popup receives a desktop rect");
+    assert!(
+        rect.x1 > parent_rect.x1,
+        "menu may extend beyond parent within output"
+    );
+    assert!(
+        !h.client.popup_configures.is_empty(),
+        "popup configure reached client"
+    );
+
+    let repositioner = wm.create_positioner(&qh, ());
+    repositioner.set_size(160, 100);
+    repositioner.set_anchor_rect(0, 0, 10, 10);
+    popup.reposition(&repositioner, 77);
+    h.pump();
+    let _ = h
+        .state
+        .layout_xdg_popups(&HashMap::from([(parent_id, parent_rect)]));
+    h.pump();
+    assert_eq!(h.client.repositioned, vec![77]);
+
+    // A submenu is a popup whose parent is the already-grabbed popup.  It is
+    // accepted in protocol order, and the same outside press closes both.
+    let child_positioner = wm.create_positioner(&qh, ());
+    child_positioner.set_size(80, 60);
+    child_positioner.set_anchor_rect(0, 0, 10, 10);
+    let child_surface = compositor.create_surface(&qh, ());
+    let child_xdg = wm.get_xdg_surface(&child_surface, &qh, ());
+    let child_popup = child_xdg.get_popup(Some(&popup_xdg), &child_positioner, &qh, ());
+    h.pump();
+    child_popup.grab(&seat, serial);
+    h.pump();
+    assert_eq!(h.state.xdg_popup_count(), 2, "nested popup is tracked");
+
+    h.state.forward_client_pointer_motion((900.0, 700.0), None);
+    assert!(h.state.forward_client_pointer_button(272, true));
+    h.pump();
+    assert_eq!(
+        h.client.popup_done, 2,
+        "outside press dismisses nested popup grab tree"
+    );
+}
+
+#[test]
+fn real_xdg_title_change_distinguishes_same_app_windows() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h
+        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+        .expect("compositor");
+    let wm = h
+        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
+        .expect("xdg shell");
+    let qh = h.queue.handle();
+    for title in ["draft-a.md", "draft-b.md"] {
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_app_id("org.example.Writer".into());
+        toplevel.set_title(title.into());
+    }
+    h.pump();
+    let titles = h
+        .state
+        .workspace_tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .filter_map(|tab| matches!(&tab.tile, shell::shell::state::TileContent::Foreign { app_id, .. } if app_id == "org.example.Writer").then_some(tab.title.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(titles, vec!["draft-a.md", "draft-b.md"]);
 }
