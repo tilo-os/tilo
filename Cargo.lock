@@ -8263,9 +8263,11 @@ name = "logs"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "qos-actions",
  "qos-app",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "taffy",
  "vello",
@@ -8700,6 +8702,7 @@ dependencies = [
  "qos-actions",
  "qos-app",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "sysinfo",
  "taffy",
