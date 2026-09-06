@@ -1895,10 +1895,75 @@ impl ChatApp {
     /// its unread badge stays cleared and doesn't reappear once the user
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
-    pub(crate) fn mark_active_read(&self, doc: &mut AutoCommit) {
-        if !self.active_channel.is_empty() {
-            ChatDoc::mark_read(doc, &self.active_channel, &self.me.id);
+    pub(crate) fn mark_active_read(&mut self, doc: &mut AutoCommit) {
+        if self.active_channel.is_empty() {
+            return;
         }
+        let count = ChatDoc::top_level_count(doc, &self.active_channel) as i64;
+        if count <= ChatDoc::read_watermark(doc, &self.active_channel, &self.me.id) {
+            return;
+        }
+        // Read state is a durable collaboration fact.  It is authored through
+        // the same action host as palette "Mark as read", not a side write
+        // that peers/history cannot account for.  The carried count makes the
+        // replay independent of messages arriving after the person viewed it.
+        let action = actions::mark_read_action(&self.active_channel, &self.me.id, count);
+        self.perform_action(doc, &action);
+        if let Some(channel) = self
+            .channels
+            .iter_mut()
+            .find(|channel| channel.id == self.active_channel)
+        {
+            channel.unread = 0;
+        }
+    }
+
+    fn reveal_workspace_resource(&mut self, workspace: String) -> Result<(), String> {
+        if !self.workspaces.iter().any(|item| item.id == workspace) {
+            return Err("workspace no longer exists".into());
+        }
+        self.active_ws = workspace;
+        self.active_channel.clear();
+        self.inbox_open = false;
+        self.thread_open = None;
+        self.revealed_message = None;
+        self.revealed_person = None;
+        self.scroll = 0.0;
+        self.focus = Focus::Main;
+        Ok(())
+    }
+
+    fn reveal_category_resource(
+        &mut self,
+        workspace: String,
+        category: &str,
+    ) -> Result<(), String> {
+        let Some(category_id) = self
+            .categories
+            .iter()
+            .find(|item| item.id == category && item.workspace == workspace)
+            .map(|item| item.id.clone())
+        else {
+            return Err("category no longer exists".into());
+        };
+        self.active_ws = workspace;
+        self.active_channel = self
+            .channels
+            .iter()
+            .filter(|channel| {
+                channel.workspace == self.active_ws
+                    && channel.category == category_id
+                    && channel.kind == model::ChannelKind::Text
+            })
+            .min_by_key(|channel| channel.order)
+            .map_or_else(String::new, |channel| channel.id.clone());
+        self.inbox_open = false;
+        self.thread_open = None;
+        self.revealed_message = None;
+        self.revealed_person = None;
+        self.scroll = 0.0;
+        self.focus = Focus::Main;
+        Ok(())
     }
 
     /// The members roster shown in the right flap when no thread is open: every
@@ -2356,6 +2421,16 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     let x0 = win.x0 + f.0 * win.width();
     let y0 = win.y0 + f.1 * win.height();
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
+}
+
+fn chat_navigation_kind(kind: qos_actions::OperationKind) -> Result<bool, String> {
+    match kind {
+        qos_actions::OperationKind::Document => Ok(false),
+        qos_actions::OperationKind::View => Ok(true),
+        qos_actions::OperationKind::Effect => {
+            Err("Chat navigation requires a View operation".into())
+        }
+    }
 }
 
 impl Widget for ChatApp {
@@ -2911,6 +2986,7 @@ impl Widget for ChatApp {
     /// activation path.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::ChatSearchProvider::new(
+            &self.categories,
             &self.channels,
             &self.workspaces,
             &self.search_messages,
@@ -2930,16 +3006,16 @@ impl Widget for ChatApp {
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if !chat_navigation_kind(kind)? {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        if kind != qos_actions::OperationKind::View {
-            return Err("Chat navigation requires a View operation".into());
-        }
         match operation {
+            crate::actions::ChatOperation::OpenWorkspace { workspace } => {
+                self.reveal_workspace_resource(workspace)?;
+            }
             crate::actions::ChatOperation::OpenChannel { workspace, channel } => {
                 if !self
                     .channels
@@ -2957,6 +3033,10 @@ impl Widget for ChatApp {
                 self.scroll = 0.0;
                 self.focus = Focus::Main;
             }
+            crate::actions::ChatOperation::OpenCategory {
+                workspace,
+                category,
+            } => self.reveal_category_resource(workspace, &category)?,
             crate::actions::ChatOperation::RevealMessage {
                 workspace,
                 channel,
