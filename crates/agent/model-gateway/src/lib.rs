@@ -82,6 +82,12 @@ pub fn available() -> bool {
 
 /// Send a request over the launcher-provided service fd. The fd is duplicated
 /// for each RPC so a short-lived helper cannot close the parent app's channel.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Unavailable`] when the launcher service descriptor or
+/// gateway connection is unavailable, [`ClientError::Protocol`] for malformed
+/// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
 pub fn request(request: Request) -> Result<Response, ClientError> {
     let fd = std::env::var(SERVICE_FD_ENV)
         .ok()
@@ -138,6 +144,12 @@ pub fn plan(
         .ok_or_else(|| ClientError::Protocol("gateway returned no provider response".into()))
 }
 
+/// Query whether the profile has a secret stored by the isolated gateway.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway cannot be reached or rejects or
+/// malforms the response.
 pub fn secret_configured(profile_id: &str) -> Result<bool, ClientError> {
     Ok(request(Request::SecretStatus {
         profile_id: profile_id.to_string(),
@@ -146,6 +158,12 @@ pub fn secret_configured(profile_id: &str) -> Result<bool, ClientError> {
     .unwrap_or(false))
 }
 
+/// Store a profile API key in the isolated gateway.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway cannot be reached, rejects the
+/// update, or returns a malformed response.
 pub fn set_api_key(profile_id: &str, api_key: String) -> Result<(), ClientError> {
     request(Request::SetApiKey {
         profile_id: profile_id.to_string(),
@@ -154,6 +172,12 @@ pub fn set_api_key(profile_id: &str, api_key: String) -> Result<(), ClientError>
     Ok(())
 }
 
+/// Remove a profile API key from the isolated gateway.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] when the gateway cannot be reached, rejects the
+/// update, or returns a malformed response.
 pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
     request(Request::RemoveApiKey {
         profile_id: profile_id.to_string(),
@@ -161,6 +185,12 @@ pub fn remove_api_key(profile_id: &str) -> Result<(), ClientError> {
     Ok(())
 }
 
+/// Write one size-bounded JSON frame to a gateway stream.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Protocol`] when serialization fails or the frame is
+/// too large, and [`ClientError::Unavailable`] when writing fails.
 pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), ClientError> {
     let body = Zeroizing::new(
         serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
@@ -181,6 +211,12 @@ pub fn write_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(
     stream.flush().map_err(|_| ClientError::Unavailable)
 }
 
+/// Read and decode one size-bounded JSON frame from a gateway stream.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Unavailable`] when reading fails and
+/// [`ClientError::Protocol`] for an invalid length or payload.
 pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result<T, ClientError> {
     let mut length = [0_u8; 4];
     stream
