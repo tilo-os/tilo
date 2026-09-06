@@ -29,7 +29,7 @@
 //! is represented by UUID-addressed block operations in an action. The shared
 //! widget only computes those operations; it never writes the document itself.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,16 @@ pub fn page_resource_id(page: PageId) -> String {
 
 pub fn block_resource_id(page: PageId, block_id: &str) -> String {
     format!("notes.block:{page}:{block_id}")
+}
+
+/// Parse an opaque stable block resource id without accepting a nearby page
+/// or block after a collaborative deletion/reorder.
+pub fn parse_block_resource_id(id: &str) -> Option<(PageId, &str)> {
+    let (page, block) = id.strip_prefix("notes.block:")?.split_once(':')?;
+    if block.is_empty() {
+        return None;
+    }
+    Some((page.parse().ok()?, block))
 }
 
 pub fn open_page_address(page: PageId) -> ActionAddress {
@@ -366,16 +376,6 @@ fn immediate_spec(id: &str, label: &str, action: &NotesAction) -> ActionSpec {
     }
 }
 
-/// The next `order` among `parent`'s children (append position).
-fn next_order(pages: &[PageMeta], parent: Option<PageId>) -> u32 {
-    pages
-        .iter()
-        .filter(|p| p.parent == parent)
-        .map(|p| p.order)
-        .max()
-        .map_or(0, |o| o + 1)
-}
-
 /// Build a view-operation spec from Notes' serializable operation enum.
 ///
 /// Resource publication is best-effort: should a future operation become
@@ -393,8 +393,61 @@ fn view_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Opt
     .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
 }
 
-/// Build one page resource and, recursively, its child pages.
+/// Resource snapshots are intentionally bounded: agents and the action palette
+/// receive useful nearby context, then resolve a stable page id lazily through
+/// [`ResourceProvider::resource`] when they need a deeper or later sibling.
+const RESOURCE_PAGE_SNAPSHOT_LIMIT: usize = 128;
+const RESOURCE_PAGE_SNAPSHOT_DEPTH: usize = 6;
+
+/// Index a durable page list once before building its contextual resource
+/// snapshot. This avoids the old recursive `pages.iter().filter(...)` scan at
+/// every node (quadratic for a wide notebook).
+struct PageResourceIndex<'a> {
+    children: HashMap<Option<PageId>, Vec<&'a PageMeta>>,
+    next_orders: HashMap<Option<PageId>, u32>,
+}
+
+impl<'a> PageResourceIndex<'a> {
+    fn new(pages: &'a [PageMeta]) -> Self {
+        let mut children: HashMap<Option<PageId>, Vec<&PageMeta>> = HashMap::new();
+        let mut next_orders = HashMap::new();
+        for page in pages {
+            children.entry(page.parent).or_default().push(page);
+            let next = next_orders.entry(page.parent).or_insert(0);
+            *next = (*next).max(page.order.saturating_add(1));
+        }
+        for siblings in children.values_mut() {
+            siblings.sort_by_key(|page| page.order);
+        }
+        Self {
+            children,
+            next_orders,
+        }
+    }
+
+    fn children_of(&self, parent: Option<PageId>) -> &[&'a PageMeta] {
+        self.children.get(&parent).map_or(&[], Vec::as_slice)
+    }
+
+    fn next_order(&self, parent: Option<PageId>) -> u32 {
+        self.next_orders.get(&parent).copied().unwrap_or(0)
+    }
+}
+
+/// Build one page resource and a bounded contextual slice of its descendants.
 pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
+    let index = PageResourceIndex::new(pages);
+    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    page_resource_from_index(m, &index, 0, &mut remaining)
+}
+
+fn page_resource_from_index(
+    m: &PageMeta,
+    index: &PageResourceIndex<'_>,
+    depth: usize,
+    remaining: &mut usize,
+) -> Resource {
+    *remaining = remaining.saturating_sub(1);
     let mut res = Resource::new(page_resource_id(m.id), "notes.page", page_label(m));
 
     if let Some(open) = view_operation_spec(
@@ -430,7 +483,7 @@ pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     // New child — prompted; the child id is minted once at commit time and the
     // append position is resolved from the current tree.
     let parent = m.id;
-    let order = next_order(pages, Some(m.id));
+    let order = index.next_order(Some(m.id));
     res = res.with_action(ActionSpec::prompted(
         "new-child",
         "New child page",
@@ -444,11 +497,21 @@ pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
         },
     ));
 
-    // Child pages, in tree order.
-    let mut children: Vec<&PageMeta> = pages.iter().filter(|p| p.parent == Some(m.id)).collect();
-    children.sort_by_key(|p| p.order);
-    for child in children {
-        res = res.with_child(page_resource(child, pages));
+    // Child pages are sorted in the index. Omitted siblings/deeper descendants
+    // remain available by their durable id through `resource()`; we never
+    // publish an unbounded eager tree.
+    if depth < RESOURCE_PAGE_SNAPSHOT_DEPTH {
+        for child in index.children_of(Some(m.id)) {
+            if *remaining == 0 {
+                break;
+            }
+            res = res.with_child(page_resource_from_index(
+                child,
+                index,
+                depth.saturating_add(1),
+                remaining,
+            ));
+        }
     }
     res
 }
@@ -504,7 +567,8 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     // Notebook-level: create a new root page. The uuid is minted once when the
     // title argument is committed, then baked into the envelope, so replay stays
     // deterministic.
-    let order = next_order(&ctx.pages, None);
+    let index = PageResourceIndex::new(&ctx.pages);
+    let order = index.next_order(None);
     notebook = notebook.with_action(ActionSpec::prompted(
         "new-page",
         "New page",
@@ -518,10 +582,12 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         },
     ));
 
-    let mut roots: Vec<&PageMeta> = ctx.pages.iter().filter(|p| p.parent.is_none()).collect();
-    roots.sort_by_key(|p| p.order);
-    for root in roots {
-        notebook = notebook.with_child(page_resource(root, &ctx.pages));
+    let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    for root in index.children_of(None) {
+        if remaining == 0 {
+            break;
+        }
+        notebook = notebook.with_child(page_resource_from_index(root, &index, 0, &mut remaining));
     }
 
     vec![notebook]
@@ -543,12 +609,18 @@ impl ResourceProvider for crate::app::NotesApp {
         {
             return Some(page_resource(page, &ctx.pages));
         }
-        ctx.blocks.iter().find_map(|(page, blocks)| {
-            blocks
-                .iter()
-                .find(|block| block_resource_id(*page, &block.id) == id)
-                .and_then(|block| block_resource(*page, block))
-        })
+        let (page, block_id) = parse_block_resource_id(id)?;
+        ctx.pages
+            .iter()
+            .any(|candidate| candidate.id == page)
+            .then_some(())?;
+        // Blocks are intentionally resolved from the durable document only on
+        // demand. The open resource snapshot therefore stays bounded even for
+        // notebooks with millions of blocks, and a stale id refuses cleanly.
+        NotesDoc::page_block_snapshots(doc, page)
+            .into_iter()
+            .find(|(candidate, _)| candidate == block_id)
+            .and_then(|(id, text)| block_resource(page, &NoteBlockResource { id, text }))
     }
 }
 
@@ -748,6 +820,67 @@ mod tests {
                 .is_none()
         );
         assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
+    }
+
+    #[test]
+    fn wide_and_deep_page_resources_are_bounded_but_lazily_resolvable() {
+        let mut pages = Vec::new();
+        let root = Uuid::new_v4();
+        pages.push(PageMeta {
+            id: root,
+            title: "root".into(),
+            parent: None,
+            order: 0,
+        });
+        let mut parent = root;
+        for depth in 0..(RESOURCE_PAGE_SNAPSHOT_DEPTH + 4) {
+            let id = Uuid::new_v4();
+            pages.push(PageMeta {
+                id,
+                title: format!("deep-{depth}"),
+                parent: Some(parent),
+                order: 0,
+            });
+            parent = id;
+        }
+        for order in 0..(RESOURCE_PAGE_SNAPSHOT_LIMIT + 40) {
+            pages.push(PageMeta {
+                id: Uuid::new_v4(),
+                title: format!("wide-{order}"),
+                parent: None,
+                order: (order + 1) as u32,
+            });
+        }
+        let ctx = NotesResourceCtx {
+            pages: pages.clone(),
+            blocks: HashMap::new(),
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        fn count(resource: &Resource) -> usize {
+            1 + resource.children.iter().map(count).sum::<usize>()
+        }
+        assert!(
+            count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
+            "notebook context must remain bounded"
+        );
+        let late = pages.last().expect("late page");
+        let lazy = page_resource(late, &pages);
+        assert_eq!(lazy.id.as_str(), page_resource_id(late.id));
+        assert!(
+            lazy.actions.iter().any(|action| action.id == "open"),
+            "an omitted page remains addressable by its stable id"
+        );
+    }
+
+    #[test]
+    fn stable_block_resource_ids_refuse_malformed_or_empty_targets() {
+        let page = Uuid::new_v4();
+        assert_eq!(
+            parse_block_resource_id(&block_resource_id(page, "block-1")),
+            Some((page, "block-1"))
+        );
+        assert!(parse_block_resource_id("notes.block:not-a-uuid:block").is_none());
+        assert!(parse_block_resource_id(&format!("notes.block:{page}:")).is_none());
     }
 
     /// Deleting a page through its action removes the page *and* its whole

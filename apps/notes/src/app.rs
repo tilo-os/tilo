@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -87,6 +87,10 @@ pub struct NotesApp {
     status_bubble: ui::StatusBubble,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
+    /// Shot-only override for the real save progress/failure presentation.
+    /// Notes opens its workspace synchronously, so this does not alter live
+    /// loading behavior or introduce a second production state source.
+    shots_save_status: Option<SaveStatus>,
     shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
@@ -181,6 +185,10 @@ pub struct NotesApp {
     /// Search/resource snapshot keyed by each block's durable Automerge Text
     /// object id, refreshed from the collaborative document on every sync.
     search_blocks: HashMap<PageId, Vec<crate::actions::NoteBlockResource>>,
+    /// Durable document heads used as the retained search catalogue revision.
+    /// In the normal no-edit frame this avoids snapshotting every page/block
+    /// just to rediscover the catalogue has not changed.
+    search_heads: Option<Vec<ChangeHash>>,
     /// Retained complete catalogue; Ctrl+K receives a cheap handle instead of
     /// rebuilding/cloning every page and block at open time.
     search_provider: crate::search_provider::NoteSearchProvider,
@@ -267,6 +275,7 @@ impl NotesApp {
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             shots_status: false,
+            shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
             sidebar_node: None,
@@ -300,6 +309,7 @@ impl NotesApp {
             known_in_doc: std::collections::HashSet::new(),
             pending_block_reveal: None,
             search_blocks: HashMap::new(),
+            search_heads: None,
             search_provider,
         };
         app.refresh_link_pages();
@@ -341,7 +351,9 @@ impl NotesApp {
             .page_saver
             .as_ref()
             .map_or(SaveStatus::Saved, super::storage::PageSaver::status);
-        let save_status = combine_save_status(workspace_status, page_status);
+        let save_status = self
+            .shots_save_status
+            .unwrap_or_else(|| combine_save_status(workspace_status, page_status));
         let changed = self.status.set_state(StatusBarState {
             save_status,
             page_path: path,
@@ -361,6 +373,16 @@ impl NotesApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
         self.status_bubble.poke(std::time::Instant::now());
+    }
+
+    /// `--shots`: capture an actual save-state presentation deterministically,
+    /// without depending on a timing-sensitive filesystem failure.
+    pub fn set_save_status_for_shots(&mut self, status: SaveStatus) {
+        self.shots_save_status = Some(status);
+        let mut state = self.status.state().clone();
+        state.save_status = status;
+        let _ = self.status.set_state(state);
+        self.arm_status_bubble_for_shots();
     }
 
     /// Draw the transient floating status bubble at the bottom-right of the
@@ -467,24 +489,7 @@ impl NotesApp {
     /// span in every block. Returns the page id of the first link
     /// covering that pixel, or `None` if the click missed.
     fn link_under_last_mouse(&self) -> Option<PageId> {
-        let p = self.last_mouse;
-        for b in self.main.editor().blocks() {
-            let rect = b.line.get_rect();
-            if !rect.contains(p) {
-                continue;
-            }
-            // The pixel-precise byte lookup uses the inner
-            // TextInput's per-char advance cache. We need a theme to
-            // resolve padding; conservatively use the dark theme
-            // (the editor cells render in plain-chrome mode where
-            // padding_x is zero, so this is a no-op anyway).
-            let theme = ui::theme::Theme::dark();
-            let byte = b.line.byte_for_pixel_x(&theme, p.x);
-            if let Some(id) = ui::widget::rich_text_line::link_at_byte(b.line.marks(), byte) {
-                return Some(id);
-            }
-        }
-        None
+        self.main.editor().link_at_point(self.last_mouse)
     }
 
     /// Paint the narrow-mode top bar: a drawer-toggle (hamburger)
@@ -832,15 +837,18 @@ impl NotesApp {
     pub(crate) fn notes_resource_ctx(&self) -> crate::actions::NotesResourceCtx {
         crate::actions::NotesResourceCtx {
             pages: self.workspace.pages().to_vec(),
-            blocks: self.searchable_blocks(),
+            // The palette snapshot does not eagerly materialize block
+            // resources. ResourceProvider::resource resolves a requested
+            // stable block id from the durable document, after stale checks.
+            blocks: HashMap::new(),
         }
     }
 
-    fn searchable_blocks(&self) -> HashMap<PageId, Vec<crate::actions::NoteBlockResource>> {
-        self.search_blocks.clone()
-    }
-
-    fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
+    fn refresh_search_blocks(&mut self, doc: &mut AutoCommit) {
+        let heads = doc.get_heads();
+        if self.search_heads.as_ref() == Some(&heads) {
+            return;
+        }
         self.search_blocks = self
             .workspace
             .pages()
@@ -855,6 +863,7 @@ impl NotesApp {
             .collect();
         self.search_provider
             .update(&self.workspace, &self.search_blocks);
+        self.search_heads = Some(heads);
     }
 
     /// Snapshot every page's metadata by id, for the pre/post diff that turns an
@@ -1523,6 +1532,10 @@ impl Widget for NotesApp {
         self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
+        // Synthetic accessibility buttons do not pass through handle_event;
+        // drain their retained UUID operations here through the same action
+        // host/history path as pointer and keyboard edits.
+        self.drain_block_ops(state);
         self.refresh_search_blocks(state);
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
             && self.bound_page == Some(*page)
@@ -2586,6 +2599,17 @@ mod tests {
         // user action they dispatch.
         let _ = Widget::take_committed_action(&mut app);
         (app, state, tmp, welcome)
+    }
+
+    #[test]
+    fn unchanged_document_heads_skip_full_search_snapshot_work() {
+        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+        // Prove the fast path before asking NotesDoc for every page's block
+        // list: a matching durable revision leaves the retained snapshot as-is.
+        app.search_blocks.clear();
+        app.search_heads = Some(state.doc.get_heads());
+        app.refresh_search_blocks(&mut state.doc);
+        assert!(app.search_blocks.is_empty());
     }
 
     /// One source of truth: the sidebar's Delete event, dispatched through the
