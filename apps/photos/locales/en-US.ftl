@@ -16,3 +16,7 @@ photos-open-failed = That file is not an image this app can read
 photos-crop-noop = Zoom in first — cropping to the whole photograph would change nothing
 photos-empty-title = No photograph open
 photos-empty-body = Open an image to view and adjust it.
+photos-app = Photos
+photos-tools = Photo tools
+photos-image = Photograph
+photos-image-help = Scroll to zoom and drag to pan the photograph.
