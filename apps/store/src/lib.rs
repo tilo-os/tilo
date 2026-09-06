@@ -70,6 +70,7 @@ pub mod installed;
 pub mod model;
 pub mod moderation_client;
 pub mod registry_client;
+pub mod search_provider;
 pub mod shots;
 pub mod sources;
 pub mod widgets;

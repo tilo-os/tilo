@@ -25,7 +25,8 @@ use uuid::Uuid;
 
 use crate::media::{self, Hydration};
 use crate::model::{
-    Clip, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
+    Clip, ClipEffect, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind,
+    Transition,
 };
 
 pub struct VideoDoc;
@@ -213,8 +214,8 @@ impl VideoDoc {
         let _ = doc.put(&obj, "fade_out", c.fade_out);
         let _ = doc.put(&obj, "transition_duration", c.transition_duration);
         // The effects stack is an ordered list; store it as a compact JSON
-        // string (the whole clip is written atomically by the action model, so
-        // a scalar string is the simplest faithful representation).
+        // string. Existing clips update this one key through an optimistic
+        // field patch, while initial/full clip writes use the same encoding.
         let _ = doc.put(
             &obj,
             "effects",
@@ -269,6 +270,90 @@ impl VideoDoc {
         }
         let _ = doc.put(&obj, "sound_split", c.sound_split);
         let _ = doc.put(&obj, "link_follows", c.link_follows);
+    }
+
+    /// Replace only one clip's ordered effect value. Effect-instance actions
+    /// use this rather than a whole-clip upsert so a concurrent trim, title,
+    /// grade, or marker write cannot be overwritten by an old stack control.
+    /// Returns `false` when the target clip has gone away; importantly, this
+    /// never materialises a new map for a stale id.
+    pub fn set_clip_effects(doc: &mut AutoCommit, id: Uuid, effects: &[ClipEffect]) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        doc.put(
+            &clip,
+            "effects",
+            serde_json::to_string(effects).unwrap_or_else(|_| "[]".to_string()),
+        )
+        .is_ok()
+    }
+
+    /// Replace one existing clip scalar without materialising a stale clip map.
+    /// The action layer owns the allowlist; this primitive only provides the
+    /// narrow CRDT write used after that validation.
+    pub fn set_existing_clip_number(doc: &mut AutoCommit, id: Uuid, key: &str, value: f64) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        doc.put(&clip, key, value).is_ok()
+    }
+
+    /// String-backed structured fields (transform, key, mask, animation and
+    /// markers) have independent CRDT keys, so a field action never rewrites
+    /// its clip's timeline geometry or effect stack.
+    pub fn set_existing_clip_text(doc: &mut AutoCommit, id: Uuid, key: &str, value: &str) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        doc.put(&clip, key, value).is_ok()
+    }
+
+    pub fn set_existing_clip_bool(doc: &mut AutoCommit, id: Uuid, key: &str, value: bool) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        doc.put(&clip, key, value).is_ok()
+    }
+
+    /// Replace one existing clip's palette slot without changing its scalar
+    /// representation: palette is read as an Automerge integer, not a float.
+    pub fn set_existing_clip_u8(doc: &mut AutoCommit, id: Uuid, key: &str, value: u8) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        doc.put(&clip, key, i64::from(value)).is_ok()
+    }
+
+    /// Replace or clear the membership key of an existing clip. `None` is a
+    /// deletion rather than an empty sentinel, preserving the document's
+    /// compatibility meaning for projects predating linked clips.
+    pub fn set_existing_clip_link(doc: &mut AutoCommit, id: Uuid, value: Option<&str>) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return false;
+        };
+        match value {
+            Some(value) => doc.put(&clip, "link", value).is_ok(),
+            None => doc.delete(&clip, "link").is_ok(),
+        }
     }
 
     pub fn remove_clip(doc: &mut AutoCommit, id: Uuid) {
@@ -449,7 +534,7 @@ impl VideoDoc {
                 let (Some(track), Some(media)) = (track, media) else {
                     continue;
                 };
-                p.clips.push(Clip {
+                let mut clip = Clip {
                     id,
                     track,
                     media,
@@ -514,7 +599,13 @@ impl VideoDoc {
                     // the group. True there, because a clip that has a group
                     // at all was linked when it was written.
                     link_follows: Self::get_bool_or(doc, &obj, "link_follows", true),
-                });
+                };
+                // Projects written before effect instances had ids receive
+                // deterministic compatibility ids in the projection. A later
+                // normal clip write persists them; loading alone remains a
+                // pure read and therefore cannot surprise a collaborator.
+                clip.ensure_effect_ids();
+                p.clips.push(clip);
             }
         }
 
@@ -1203,10 +1294,12 @@ mod tests {
             let c = p.clip_mut(cid).unwrap();
             c.effects = vec![
                 ClipEffect {
+                    id: Uuid::new_v4(),
                     kind: EffectKind::Sepia,
                     amount: 0.6,
                 },
                 ClipEffect {
+                    id: Uuid::new_v4(),
                     kind: EffectKind::Invert,
                     amount: 1.0,
                 },
@@ -1223,6 +1316,53 @@ mod tests {
         assert_eq!(effects[0].kind, EffectKind::Sepia);
         assert!((effects[0].amount - 0.6).abs() < 1e-9);
         assert_eq!(effects[1].kind, EffectKind::Invert);
+    }
+
+    #[test]
+    fn legacy_effect_stack_gets_deterministic_ids_and_a_normal_write_persists_them() {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let clip_id = VideoDoc::load_project(&doc).clips[0].id;
+        let clips = VideoDoc::map(&mut doc, "clips");
+        let Some((Value::Object(ObjType::Map), clip)) =
+            doc.get(&clips, clip_id.to_string()).expect("read clip")
+        else {
+            panic!("fixture clip is a map");
+        };
+        doc.put(
+            &clip,
+            "effects",
+            r#"[{"kind":"Sepia","amount":0.6},{"kind":"Sepia","amount":0.8}]"#,
+        )
+        .expect("write legacy effects");
+
+        let first = VideoDoc::load_project(&doc);
+        let second = VideoDoc::load_project(&doc);
+        let ids = first
+            .clip(clip_id)
+            .expect("loaded clip")
+            .effects
+            .iter()
+            .map(|effect| effect.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.iter().all(|id| !id.is_nil()));
+        assert_ne!(ids[0], ids[1]);
+        assert_eq!(
+            second
+                .clip(clip_id)
+                .expect("same legacy clip")
+                .effects
+                .iter()
+                .map(|effect| effect.id)
+                .collect::<Vec<_>>(),
+            ids,
+            "read-only migration is deterministic across peers",
+        );
+
+        VideoDoc::upsert_clip(&mut doc, first.clip(clip_id).expect("migrated clip"));
+        let saved = VideoDoc::get_str(&doc, &clip, "effects").expect("stored effects");
+        assert!(saved.contains("\"id\""), "a normal edit writes durable ids");
     }
 
     #[test]
