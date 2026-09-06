@@ -1,16 +1,22 @@
 //! Stable resource/action addresses exported by Weather.
 //!
-//! Saved locations are collaborative document resources, while choosing which
-//! forecast to show is presentation-only. Search, agents, accessibility and
+//! Saved locations, their order, and the selected saved location are
+//! collaborative document resources. Search, agents, accessibility and
 //! in-app navigation therefore address the same exported `open` [`View`]
-//! operation. Network refresh remains a separate [`Effect`] operation.
+//! operation, while the `select` document action retains the durable choice.
+//! Network refresh remains a separate [`Effect`] operation.
 //!
 //! [`View`]: qos_actions::OperationKind::View
 //! [`Effect`]: qos_actions::OperationKind::Effect
 
-use qos_actions::ActionAddress;
+use automerge::AutoCommit;
+use qos_actions::{Action, ActionAddress, ActionError, ActionRegistry, ExecutionLocus};
+use serde::{Deserialize, Serialize};
 
-use crate::model::LocationId;
+use crate::doc::WeatherDoc;
+use crate::model::{LocationId, SavedLocation};
+
+pub const WEATHER_ACTION_TYPE: &str = "weather.action";
 
 /// Widget-local operation type used to reveal one saved forecast.
 pub const OPEN_LOCATION_OPERATION: &str = "weather.open-location";
@@ -27,9 +33,94 @@ pub fn open_location_address(id: LocationId) -> ActionAddress {
     ActionAddress::new(location_resource_id(id), "open")
 }
 
+/// Durable saved-location mutations. Forecast and air-quality responses are
+/// external cache effects and intentionally do not appear here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum WeatherAction {
+    AddLocation { location: SavedLocation },
+    RemoveLocation { id: String },
+    SelectLocation { id: String },
+    SetLocationOrder { ids: Vec<String> },
+}
+
+impl Action for WeatherAction {
+    fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
+        // A pre-action document from the first Weather schema has an ordered
+        // `locations` list. Promote it before adding/removing so an upgrade
+        // cannot hide a user's existing saved places.
+        WeatherDoc::migrate_legacy_locations(doc);
+        match self {
+            Self::AddLocation { location } => {
+                WeatherDoc::upsert_location(doc, location);
+            }
+            Self::RemoveLocation { id } => {
+                if let Ok(id) = id.parse::<LocationId>() {
+                    WeatherDoc::remove_location(doc, id);
+                }
+            }
+            Self::SelectLocation { id } => {
+                if let Ok(id) = id.parse::<LocationId>() {
+                    WeatherDoc::select_location(doc, id);
+                }
+            }
+            Self::SetLocationOrder { ids } => {
+                let ids: Vec<LocationId> = ids.iter().filter_map(|id| id.parse().ok()).collect();
+                WeatherDoc::set_location_order(doc, &ids);
+            }
+        }
+        Ok(())
+    }
+
+    fn locus(&self) -> ExecutionLocus {
+        ExecutionLocus::ClientLocal
+    }
+}
+
+pub fn register(registry: &mut ActionRegistry) {
+    registry.register::<WeatherAction>(WEATHER_ACTION_TYPE);
+}
+
+/// Serialize a Weather mutation for direct replay tests and integrations that
+/// do not own a widget `ActionHost`.
+pub fn encode(action: &WeatherAction) -> qos_actions::EncodedAction {
+    qos_actions::EncodedAction::encode(WEATHER_ACTION_TYPE, action).unwrap_or_else(|_| {
+        qos_actions::EncodedAction {
+            type_id: WEATHER_ACTION_TYPE.to_string(),
+            payload: Vec::new(),
+        }
+    })
+}
+
+pub fn remove_location_action(id: LocationId) -> WeatherAction {
+    WeatherAction::RemoveLocation { id: id.to_string() }
+}
+
+pub fn select_location_action(id: LocationId) -> WeatherAction {
+    WeatherAction::SelectLocation { id: id.to_string() }
+}
+
+pub fn location_order_action(ids: &[LocationId]) -> WeatherAction {
+    WeatherAction::SetLocationOrder {
+        ids: ids.iter().map(ToString::to_string).collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::default();
+        register(&mut registry);
+        registry
+    }
+
+    fn seeded_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        WeatherDoc::write_model(&mut doc, &crate::sample::sample_model());
+        doc.commit();
+        doc
+    }
 
     #[test]
     fn saved_location_addresses_are_stable_and_unique() {
@@ -42,6 +133,114 @@ mod tests {
         assert_eq!(
             open_location_address(first),
             ActionAddress::new(location_resource_id(first), "open")
+        );
+    }
+
+    #[test]
+    fn location_mutations_replay_byte_identically_on_a_peer() {
+        let mut first = seeded_doc();
+        let bytes = first.save();
+        let mut second = AutoCommit::load(&bytes).unwrap();
+        let existing = WeatherDoc::read_model(&first).locations[0].id;
+        let added = SavedLocation::new(
+            "Auckland",
+            "Auckland",
+            "New Zealand",
+            "NZ",
+            -36.8485,
+            174.7633,
+            "Pacific/Auckland",
+        );
+        let actions = [
+            WeatherAction::AddLocation {
+                location: added.clone(),
+            },
+            WeatherAction::SelectLocation {
+                id: added.id.to_string(),
+            },
+            WeatherAction::SetLocationOrder {
+                ids: vec![added.id.to_string(), existing.to_string()],
+            },
+            WeatherAction::RemoveLocation {
+                id: existing.to_string(),
+            },
+        ];
+
+        for action in actions {
+            let envelope = qos_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+            qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        }
+
+        assert_eq!(first.get_heads(), second.get_heads());
+        let model = WeatherDoc::read_model(&second);
+        assert_eq!(
+            model.locations.first().map(|location| location.id),
+            Some(added.id)
+        );
+        assert_eq!(
+            model.selected_location().map(|location| location.id),
+            Some(added.id)
+        );
+        assert!(
+            !model
+                .locations
+                .iter()
+                .any(|location| location.id == existing)
+        );
+    }
+
+    #[test]
+    fn independently_added_keyed_locations_survive_document_merge() {
+        let mut base = seeded_doc();
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).unwrap();
+        let mut right = AutoCommit::load(&bytes).unwrap();
+        let berlin = SavedLocation::new(
+            "Berlin",
+            "Berlin",
+            "Germany",
+            "DE",
+            52.52,
+            13.405,
+            "Europe/Berlin",
+        );
+        let tokyo = SavedLocation::new(
+            "Tokyo",
+            "Tokyo",
+            "Japan",
+            "JP",
+            35.6762,
+            139.6503,
+            "Asia/Tokyo",
+        );
+
+        WeatherAction::AddLocation {
+            location: berlin.clone(),
+        }
+        .apply(&mut left)
+        .unwrap();
+        WeatherAction::AddLocation {
+            location: tokyo.clone(),
+        }
+        .apply(&mut right)
+        .unwrap();
+        left.commit();
+        right.commit();
+        let right_changes = right.get_changes(&base.get_heads());
+        left.apply_changes(right_changes).unwrap();
+
+        let merged = WeatherDoc::read_model(&left);
+        assert!(
+            merged
+                .locations
+                .iter()
+                .any(|location| location.id == berlin.id)
+        );
+        assert!(
+            merged
+                .locations
+                .iter()
+                .any(|location| location.id == tokyo.id)
         );
     }
 }
