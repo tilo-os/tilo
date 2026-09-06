@@ -20,7 +20,7 @@
 //! * **Pull** — bounded RFC 6578 `sync-collection` REPORTs use the durable token
 //!   for each collection. Unsupported/invalid tokens fall back to one bounded,
 //!   authoritative `calendar-query`, followed by `sync-token` discovery.
-//!   Href + ETag are retained as server identity/revision; XML is parsed rather
+//!   Href + `ETag` are retained as server identity/revision; XML is parsed rather
 //!   than scraped, and tokens commit only after reconciliation.
 //!
 //! * **Push/delete** — crash-safe outboxes drain with conditional `If-Match` or
@@ -268,7 +268,7 @@ pub fn hrefs_equal(left: &str, right: &str) -> bool {
     fn absolute_path(value: &str) -> Option<&str> {
         value
             .split_once("://")
-            .and_then(|(_, rest)| rest.find('/').map(|index| &rest[index..]))
+            .and_then(|(_, rest)| rest.find('/').and_then(|index| rest.get(index..)))
     }
     if left == right {
         return true;
@@ -929,7 +929,7 @@ mod live {
                     });
                 }
                 Ok(response) if response.status().as_u16() == 412 => {
-                    result.conflicts.push((job.event.id, request.url))
+                    result.conflicts.push((job.event.id, request.url));
                 }
                 Ok(response) => result.failures.push((
                     job.event.id,
@@ -999,10 +999,10 @@ mod live {
                 Ok(response)
                     if response.status().is_success() || response.status().as_u16() == 404 =>
                 {
-                    result.confirmed.push(job.id)
+                    result.confirmed.push(job.id);
                 }
                 Ok(response) if response.status().as_u16() == 412 => {
-                    result.conflicts.push((job.id, url))
+                    result.conflicts.push((job.id, url));
                 }
                 Ok(response) => result
                     .failures
@@ -1039,15 +1039,16 @@ mod live {
 
     #[cfg(test)]
     mod tests {
+        type Response = (u16, Vec<(&'static str, &'static str)>, String);
+
+        use std::fmt::Write as _;
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
         use std::sync::mpsc;
 
         use super::*;
 
-        fn serve(
-            responses: Vec<(u16, Vec<(&'static str, &'static str)>, String)>,
-        ) -> (String, mpsc::Receiver<String>) {
+        fn serve(responses: Vec<Response>) -> (String, mpsc::Receiver<String>) {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake CalDAV server");
             let address = listener.local_addr().expect("fake server address");
             let (tx, rx) = mpsc::channel();
@@ -1091,7 +1092,7 @@ mod live {
                         body.len()
                     );
                     for (name, value) in headers {
-                        response.push_str(&format!("{name}: {value}\r\n"));
+                        let _ = write!(response, "{name}: {value}\r\n");
                     }
                     response.push_str("\r\n");
                     response.push_str(&body);
