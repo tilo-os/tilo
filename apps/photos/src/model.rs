@@ -44,6 +44,26 @@ impl Rect01 {
             && (self.h - 1.0).abs() < 1e-6
     }
 
+    /// Whether this is a real crop contained in the original image.
+    ///
+    /// Unlike [`Self::clamped`], this validates an external command instead
+    /// of silently changing its meaning. A durable action must either replay
+    /// exactly what its author requested or be refused everywhere.
+    pub fn is_valid_selection(&self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.w.is_finite()
+            && self.h.is_finite()
+            && self.x >= 0.0
+            && self.y >= 0.0
+            && self.w > 0.0
+            && self.h > 0.0
+            && self.x <= 1.0
+            && self.y <= 1.0
+            && self.x + self.w <= 1.0
+            && self.y + self.h <= 1.0
+    }
+
     /// Clamp into the unit square, keeping a non-negative extent. A rect
     /// arriving from a peer is untrusted input like any other.
     #[must_use]

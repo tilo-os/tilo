@@ -55,9 +55,19 @@ pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PhotosOperation {
-    Open { path: Option<String> },
+    /// Bring the addressed photograph forward without changing its pixels.
+    ///
+    /// This is the safe canonical activation used by global search. The host
+    /// has already routed the request to the Photos instance that publishes
+    /// the resource, so accepting it is enough to reveal the current view.
+    View,
+    Open {
+        path: Option<String>,
+    },
     Copy,
-    Save { path: Option<String> },
+    Save {
+        path: Option<String>,
+    },
 }
 
 /// Decode an operation payload owned by the Photos app.
@@ -79,7 +89,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let spec =
         ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, op).ok()?;
     Some(match op {
-        PhotosOperation::Open { .. } | PhotosOperation::Copy => {
+        PhotosOperation::View | PhotosOperation::Open { .. } | PhotosOperation::Copy => {
             spec.retry_policy(RetryPolicy::Idempotent)
         }
         PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
@@ -110,26 +120,27 @@ impl PhotosAction {
         }
     }
 
-    /// The edit state this action produces.
-    fn edits(&self) -> Edits {
+    /// The edit state this action produces, after rejecting malformed durable
+    /// input rather than coercing it into a different edit.
+    fn edits(&self) -> Result<Edits, ActionError> {
         match self {
             Self::SetEdits {
                 crop,
                 rotate_quarters,
-            } => Edits {
-                // Clamp on the way in: a payload from a peer is untrusted, and
-                // a crop rect outside the unit square would otherwise index
-                // outside the buffer on the next render.
-                crop: crop.clamped(),
-                rotate_quarters: rotate_quarters % 4,
-            },
+            } if crop.is_valid_selection() && *rotate_quarters < 4 => Ok(Edits {
+                crop: *crop,
+                rotate_quarters: *rotate_quarters,
+            }),
+            Self::SetEdits { .. } => Err(ActionError::Refused(
+                "photo edits must name a non-empty crop inside the image and a quarter turn from 0 to 3".into(),
+            )),
         }
     }
 }
 
 impl Action for PhotosAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        PhotosDoc::set_edits(doc, &self.edits());
+        PhotosDoc::set_edits(doc, &self.edits()?);
         Ok(())
     }
 
@@ -193,18 +204,27 @@ pub fn parse_crop_arg(arg: &str) -> Option<Rect01> {
     if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
         return None;
     }
-    if *w <= 0.0 || *h <= 0.0 {
+    // Refuse rather than clamp an out-of-range rectangle. Clamping `1,1,1,1`
+    // used to produce a zero-area crop which later became an arbitrary
+    // single pixel; a caller gets either the rectangle it requested or no
+    // action at all.
+    if *x < 0.0
+        || *y < 0.0
+        || *w <= 0.0
+        || *h <= 0.0
+        || *x > 1.0
+        || *y > 1.0
+        || *x + *w > 1.0
+        || *y + *h > 1.0
+    {
         return None;
     }
-    Some(
-        Rect01 {
-            x: *x,
-            y: *y,
-            w: *w,
-            h: *h,
-        }
-        .clamped(),
-    )
+    Some(Rect01 {
+        x: *x,
+        y: *y,
+        w: *w,
+        h: *h,
+    })
 }
 
 /// Publishes the open photograph and the edits it supports.
@@ -231,7 +251,12 @@ impl ResourceProvider for PhotosResources {
         // and its facts cannot drift apart.
         let id = resource_id(&image);
 
-        let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name)
+        let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
+        if let Some(spec) = operation("view", "View photograph", &PhotosOperation::View) {
+            resource =
+                resource.with_action(spec.with_description("Bring this photograph into view"));
+        }
+        resource = resource
             .with_action(
                 immediate_photos_spec("rotate-right", "Rotate right", edits.rotated_right())
                     .with_description("Turn the photograph a quarter turn clockwise"),
@@ -504,6 +529,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "view",
                 "rotate-right",
                 "rotate-left",
                 "crop",
@@ -591,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_crop_payload_from_a_peer_is_clamped_before_it_reaches_the_document() {
+    fn a_malformed_crop_payload_from_a_peer_is_refused_without_mutating_the_document() {
         let mut doc = doc_with_image();
         PhotosAction::SetEdits {
             crop: Rect01 {
@@ -603,11 +629,12 @@ mod tests {
             rotate_quarters: 250,
         }
         .apply(&mut doc)
-        .unwrap();
+        .expect_err("malformed durable edits must be refused");
         let e = PhotosDoc::edits(&doc);
-        assert!(e.crop.x >= 0.0 && e.crop.y >= 0.0);
-        assert!(e.crop.x + e.crop.w <= 1.0 + 1e-9, "{:?}", e.crop);
-        assert!(e.rotate_quarters < 4);
+        assert!(
+            e.is_identity(),
+            "a refused action changed the document: {e:?}"
+        );
     }
 
     #[test]
@@ -624,6 +651,7 @@ mod tests {
             parse_crop_arg("0,0,0,0").is_none(),
             "an empty crop is refused"
         );
+        assert!(parse_crop_arg("1,1,1,1").is_none(), "a crop must fit");
     }
 
     /// A prompted crop that cannot be parsed must leave the photograph alone
@@ -693,5 +721,33 @@ mod tests {
         assert_eq!(open.params()[0].name.as_ref(), "path");
         let copy = res[0].actions.iter().find(|a| a.id == "copy").unwrap();
         assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
+        let view = res[0].actions.iter().find(|a| a.id == "view").unwrap();
+        assert_eq!(view.contract.retry, RetryPolicy::Idempotent);
+    }
+
+    #[test]
+    fn every_published_action_has_a_valid_machine_readable_contract() {
+        fn check(resource: &Resource) {
+            for action in &resource.actions {
+                assert!(
+                    action.contract.validate_declaration().is_empty(),
+                    "{} on {} has an invalid contract: {:?}",
+                    action.id,
+                    resource.id.0,
+                    action.contract.validate_declaration()
+                );
+            }
+            for child in &resource.children {
+                check(child);
+            }
+        }
+
+        let empty = AutoCommit::new();
+        for resource in PhotosResources.resources(&empty) {
+            check(&resource);
+        }
+        for resource in PhotosResources.resources(&doc_with_image()) {
+            check(&resource);
+        }
     }
 }
