@@ -714,6 +714,14 @@ impl Mailbox {
             None => {}
         }
     }
+
+    /// Remove a hydrated message without applying the usual first-delete
+    /// move-to-Trash affordance. Used when a replicated purge tombstone is
+    /// reconciled from the document.
+    pub fn purge(&mut self, id: MessageId) {
+        self.messages.remove(&id);
+        self.order.retain(|candidate| *candidate != id);
+    }
 }
 
 #[cfg(test)]

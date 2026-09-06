@@ -55,6 +55,13 @@ pub enum EngineRequest {
         message: Box<Message>,
         to: Folder,
     },
+    /// Permanently delete one message from its current server mailbox. The live
+    /// backend uses UID STORE + UID EXPUNGE so unrelated `\\Deleted` messages
+    /// are never swept up by a broad mailbox expunge.
+    Purge {
+        account: AccountConfig,
+        message: Box<Message>,
+    },
     /// Submit a draft via SMTP.
     Send {
         account: AccountConfig,
@@ -79,6 +86,7 @@ impl EngineRequest {
             | EngineRequest::Fetch { account, .. }
             | EngineRequest::StoreFlag { account, .. }
             | EngineRequest::Move { account, .. }
+            | EngineRequest::Purge { account, .. }
             | EngineRequest::Send { account, .. } => account.email.clone(),
             EngineRequest::OAuthAuthorize { account_id, .. } => account_id.clone(),
         }
@@ -116,6 +124,15 @@ pub trait MailEngine: Send {
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>);
 }
 
+fn report_engine_error(out: &Sender<EngineEvent>, context: &str, result: Result<(), String>) {
+    if let Err(message) = result {
+        let _ = out.send(EngineEvent::Error {
+            context: context.into(),
+            message,
+        });
+    }
+}
+
 /// The default, offline backend. It validates sends by building real MIME and
 /// reports the wire size, and acknowledges connect/fetch without touching the
 /// network. Live IMAP/SMTP is the `live`-feature backend below.
@@ -139,7 +156,9 @@ impl MailEngine for StubEngine {
                     messages: Vec::new(),
                 });
             }
-            EngineRequest::StoreFlag { .. } | EngineRequest::Move { .. } => {
+            EngineRequest::StoreFlag { .. }
+            | EngineRequest::Move { .. }
+            | EngineRequest::Purge { .. } => {
                 // No-op offline; flags persist in the local CRDT.
             }
             EngineRequest::OAuthAuthorize { account_id, .. } => {
@@ -301,6 +320,13 @@ pub mod live {
                 .block_on(move_message(account, message, to, &creds, tls))
         }
 
+        fn handle_purge(&self, account: &AccountConfig, message: &Message) -> Result<(), String> {
+            let creds = resolve_auth(account)?;
+            let tls = self.tls.clone();
+            self.rt
+                .block_on(purge_message(account, message, &creds, tls))
+        }
+
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
             let creds = resolve_auth(account)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
@@ -383,6 +409,9 @@ pub mod live {
                             message: e,
                         });
                     }
+                }
+                EngineRequest::Purge { account, message } => {
+                    super::report_engine_error(out, "purge", self.handle_purge(&account, &message));
                 }
                 EngineRequest::Send { account, draft } => {
                     match self.handle_send(&account, &draft) {
@@ -735,6 +764,33 @@ pub mod live {
             .uid_mv(uid.to_string(), to.imap_name())
             .await
             .map_err(|e| e.to_string())?;
+        let _ = session.logout().await;
+        Ok(())
+    }
+
+    /// Permanently delete exactly one UID. UID EXPUNGE deliberately avoids the
+    /// dangerous plain EXPUNGE fallback, which could remove messages another
+    /// client marked `\\Deleted` concurrently.
+    async fn purge_message(
+        account: &AccountConfig,
+        message: &Message,
+        creds: &AuthCreds,
+        tls: Arc<rustls::ClientConfig>,
+    ) -> Result<(), String> {
+        let (mailbox, _) = mailbox_and_search(message.folder);
+        let mut session = connect_session(account, creds, tls).await?;
+        session.select(mailbox).await.map_err(|e| e.to_string())?;
+        let uid = find_uid(&mut session, message).await?;
+        let deleted = session
+            .uid_store(uid.to_string(), "+FLAGS.SILENT (\\Deleted)")
+            .await
+            .map_err(|e| e.to_string())?;
+        let _: Vec<_> = deleted.try_collect().await.map_err(|e| e.to_string())?;
+        let expunged = session
+            .uid_expunge(uid.to_string())
+            .await
+            .map_err(|e| format!("server cannot safely expunge this message: {e}"))?;
+        let _: Vec<_> = expunged.try_collect().await.map_err(|e| e.to_string())?;
         let _ = session.logout().await;
         Ok(())
     }
