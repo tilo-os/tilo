@@ -4611,8 +4611,10 @@ impl TextInput {
         *handled = true;
     }
 
-    fn handle_home(&mut self, shift: bool, handled: &mut bool) {
-        let target = if self.multiline_shaped
+    fn handle_home(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
+        let target = if ctrl {
+            0
+        } else if self.multiline_shaped
             && let Some(layout) = &self.single_layout
         {
             let (home, _) = layout.visual_line_edges(self.text_to_layout_byte(self.cursor_pos));
@@ -4627,8 +4629,10 @@ impl TextInput {
         *handled = true;
     }
 
-    fn handle_end(&mut self, shift: bool, handled: &mut bool) {
-        let target = if self.multiline_shaped
+    fn handle_end(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
+        let target = if ctrl {
+            self.text.len()
+        } else if self.multiline_shaped
             && let Some(layout) = &self.single_layout
         {
             let (_, end) = layout.visual_line_edges(self.text_to_layout_byte(self.cursor_pos));
@@ -4828,8 +4832,8 @@ impl TextInput {
                 self.move_vertical(true, shift);
                 *handled = true;
             }
-            Key::Named(NamedKey::Home) => self.handle_home(shift, handled),
-            Key::Named(NamedKey::End) => self.handle_end(shift, handled),
+            Key::Named(NamedKey::Home) => self.handle_home(shift, ctrl, handled),
+            Key::Named(NamedKey::End) => self.handle_end(shift, ctrl, handled),
             Key::Named(NamedKey::Enter) => self.handle_enter_key(shift, state, obj_id, handled),
             Key::Named(NamedKey::Tab) if self.tab_spaces.is_some() => {
                 self.handle_tab_key(shift, state, obj_id, handled);
@@ -6709,6 +6713,46 @@ mod tests {
             ti.selection_range(),
             Some((0, 11)),
             "shift+Home selects to line start"
+        );
+    }
+
+    #[test]
+    fn ctrl_home_end_move_and_extend_across_multiline_document() {
+        let mut ti = ml_input("first\nsecond\nthird", 400.0, 200.0);
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(8); // middle of the second visual line
+
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Home),
+            mods(true, false),
+        );
+        assert_eq!(ti.cursor_pos(), 0, "Ctrl+Home reaches document start");
+
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::End),
+            mods(true, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, ti.value().len())),
+            "Ctrl+Shift+End selects through the whole document"
+        );
+
+        ti.set_cursor_pos(8);
+        drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Home),
+            mods(true, true),
+        );
+        assert_eq!(
+            ti.selection_range(),
+            Some((0, 8)),
+            "Ctrl+Shift+Home selects back to document start"
         );
     }
 

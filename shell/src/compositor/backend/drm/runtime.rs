@@ -76,10 +76,17 @@ impl KeyRepeat {
         delay: std::time::Duration,
         rate: u32,
     ) {
+        // `wl_keyboard.repeat_info` uses rate 0 to mean disabled. Keep the
+        // in-process/native path on the same contract: coercing it to 1 Hz
+        // would make a deliberately disabled Backspace repeat once a second.
+        if rate == 0 {
+            self.cancel();
+            return;
+        }
         self.held = Some(HeldRepeat {
             keycode,
             next: now.checked_add(delay).unwrap_or(now),
-            interval: std::time::Duration::from_secs_f64(1.0 / f64::from(rate.max(1))),
+            interval: std::time::Duration::from_secs_f64(1.0 / f64::from(rate)),
         });
     }
 
@@ -967,6 +974,11 @@ impl DrmDispatchState {
             }
             InputEvent::DeviceRemoved { device } => {
                 tracing::info!(device = device.name(), "DRM input: device removed");
+                // libinput cannot deliver a release after the keyboard that
+                // owned the key disappears. Never let a held editing key keep
+                // firing into whichever field receives focus next.
+                self.key_repeat.cancel();
+                self.slow_pending.clear();
                 self.devices.retain(|d| *d != device);
             }
             _ => {}
@@ -3172,6 +3184,31 @@ mod tests {
             repeat
                 .due(start + std::time::Duration::from_secs(1))
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn key_repeat_rate_zero_is_disabled_and_transient_loss_cancels() {
+        let start = std::time::Instant::now();
+        let key = xkb::Keycode::new(22); // evdev KEY_BACKSPACE + 8
+        let mut repeat = KeyRepeat::default();
+
+        repeat.press(key, start, std::time::Duration::ZERO, 0);
+        assert!(
+            repeat
+                .due(start + std::time::Duration::from_secs(2))
+                .is_empty(),
+            "rate 0 is the protocol-level disabled value, not a 1 Hz repeat"
+        );
+
+        repeat.press(key, start, std::time::Duration::ZERO, 30);
+        assert_eq!(repeat.due(start), [key]);
+        repeat.cancel();
+        assert!(
+            repeat
+                .due(start + std::time::Duration::from_secs(2))
+                .is_empty(),
+            "seat/device loss must retire a held destructive key"
         );
     }
 
