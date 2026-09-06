@@ -780,6 +780,10 @@ impl PdfApp {
 
     /// The no-document surface: a document glyph, a short line of guidance,
     /// and — if the last open failed — the reason.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the empty state keeps its visual and accessible affordances together"
+    )]
     fn draw_empty_state(
         &self,
         scene: &mut Scene,
@@ -835,9 +839,20 @@ impl PdfApp {
             );
         }
 
-        let (title, sub) = match &self.load_error {
-            Some(err) => ("Couldn't open this document", err.as_str()),
-            None => ("No document open", "Choose a PDF to start reading."),
+        let (title, sub, sub_color) = match &self.load_error {
+            // A file-open failure is a durable state, not a low-priority hint:
+            // use the semantic error ink so it remains legible in both dark
+            // and high-contrast palettes.
+            Some(err) => (
+                "Couldn't open this document",
+                err.as_str(),
+                c.semantic.danger,
+            ),
+            None => (
+                "No document open",
+                "Choose a PDF to start reading.",
+                theme.text_dim,
+            ),
         };
         let (tw, _) = tr.measure(title, 16.0, None);
         tr.draw_text_weighted(
@@ -854,7 +869,7 @@ impl PdfApp {
             scene,
             sub,
             12.5,
-            theme.text_dim,
+            sub_color,
             base * Affine::translate((cx - f64::from(sw) / 2.0, cy + 58.0)),
             Some((canvas.width() - 80.0) as f32),
         );
@@ -947,6 +962,8 @@ impl PdfApp {
                 self.selected_anno.as_deref(),
             );
 
+            self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
+
             // Raster backend: draw search-hit + selection bands over the page
             // image, using the real glyph geometry so they land on the text.
             if self.raster.is_some() {
@@ -1002,6 +1019,58 @@ impl PdfApp {
         // kernel so they match the other document apps (they appear only when
         // the content overflows the viewport on that axis).
         self.viewport.draw_scrollbars(scene, base, theme);
+    }
+
+    /// Cover a page-shaped imported occurrence whose verified blob has not
+    /// arrived yet. Keeping this separate from ordinary page rendering makes
+    /// the unavailable state impossible to mistake for nearby source content.
+    fn draw_import_placeholder(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        origin: Point,
+        page_index: usize,
+    ) {
+        let Some(state) = self
+            .raster
+            .as_ref()
+            .and_then(|raster| raster.page_blob_state(page_index))
+        else {
+            return;
+        };
+        let label = match state {
+            qdoc::blobstore::BlobState::Pending => "Imported page content is loading…",
+            qdoc::blobstore::BlobState::Unavailable | qdoc::blobstore::BlobState::Resolved => {
+                "Imported page content is unavailable"
+            }
+        };
+        let page_rect = Rect::new(
+            origin.x,
+            origin.y,
+            origin.x + self.pw() * self.zoom(),
+            origin.y + self.ph() * self.zoom(),
+        );
+        scene.fill(
+            Fill::NonZero,
+            base,
+            Color::from_rgba8(32, 38, 50, 188),
+            None,
+            &page_rect,
+        );
+        tr.draw_text_weighted(
+            scene,
+            label,
+            14.0,
+            theme.tokens.colors.text_primary,
+            base * Affine::translate((
+                page_rect.x0 + 24.0,
+                f64::midpoint(page_rect.y0, page_rect.y1),
+            )),
+            None,
+            TextWeight::Medium,
+        );
     }
 
     /// Draw the raster text-layer overlays for one page: every search hit as a
