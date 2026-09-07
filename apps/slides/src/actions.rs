@@ -46,6 +46,13 @@
 //! payload is refused before it changes the document, so it cannot create a
 //! successful-looking history entry that silently did nothing.
 
+#![allow(
+    clippy::expect_used,
+    clippy::missing_errors_doc,
+    clippy::needless_pass_by_value,
+    reason = "the operation builder deliberately owns a serializable value; enum serialization cannot fail for these derived primitive payloads"
+)]
+
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
@@ -451,6 +458,28 @@ pub enum SlidesAction {
 const MAX_DECK_SLIDES: usize = 10_000;
 const MAX_ELEMENTS_PER_SLIDE: usize = 10_000;
 const MAX_TEXT_CHARS: usize = 100_000;
+pub const MAX_TOTAL_SLIDES: usize = 1_000;
+pub const MAX_TOTAL_ELEMENTS: usize = 20_000;
+pub const MAX_TOTAL_TEXT_CHARS: usize = 2_000_000;
+pub const MAX_TOTAL_ASSET_REFS: usize = 2_048;
+
+pub fn deck_within_aggregate_limits(deck: &crate::model::Deck) -> bool {
+    if deck.slides.len() > MAX_TOTAL_SLIDES {
+        return false;
+    }
+    let mut elements = 0_usize;
+    let mut text = deck.title.chars().count();
+    let mut assets = 0_usize;
+    for slide in &deck.slides {
+        elements = elements.saturating_add(slide.elements.len());
+        text = text.saturating_add(slide.notes.chars().count());
+        for element in &slide.elements {
+            text = text.saturating_add(element.text.chars().count());
+            assets = assets.saturating_add(usize::from(element.kind == ElementKind::Image));
+        }
+    }
+    elements <= MAX_TOTAL_ELEMENTS && text <= MAX_TOTAL_TEXT_CHARS && assets <= MAX_TOTAL_ASSET_REFS
+}
 
 fn refused(reason: &str) -> ActionError {
     ActionError::Refused(reason.to_string())
@@ -532,6 +561,8 @@ fn validate_element(data: &ElementData) -> Result<(), ActionError> {
     }
     if data.text.chars().count() > MAX_TEXT_CHARS
         || data.src.len() > 4_096
+        || (data.kind == "image" && !crate::assets::is_asset_id(&data.src))
+        || (data.kind != "image" && !data.src.is_empty())
         || !exact_paint(&data.fill, true)
         || (!STROKE_ROLES.contains(&data.stroke.as_str()) && !exact_paint(&data.stroke, true))
         || !exact_align(&data.align)
@@ -594,6 +625,11 @@ impl Action for SlidesAction {
                     {
                         return Err(refused("new element id already exists"));
                     }
+                }
+                let mut projected = deck;
+                projected.slides.insert(*at, slide.to_slide());
+                if !deck_within_aggregate_limits(&projected) {
+                    return Err(refused("deck aggregate limit would be exceeded"));
                 }
                 SlidesDoc::insert_slide(doc, *at, &slide.to_slide());
             }
@@ -667,6 +703,15 @@ impl Action for SlidesAction {
                     .any(|existing| existing.elements.iter().any(|live| live.id == element.id))
                 {
                     return Err(refused("element id already exists"));
+                }
+                let mut projected = deck;
+                let target = projected
+                    .slides
+                    .get_mut(*slide)
+                    .ok_or_else(|| refused("the target slide no longer exists"))?;
+                target.elements.push(element.to_element());
+                if !deck_within_aggregate_limits(&projected) {
+                    return Err(refused("deck aggregate limit would be exceeded"));
                 }
                 SlidesDoc::add_element(doc, *slide, &element.to_element());
             }
@@ -782,9 +827,9 @@ fn restack_z(doc: &Doc, slide: usize, front: bool) -> Option<i64> {
     let mut zs: Vec<i64> = s.elements.iter().map(|e| e.z).collect();
     zs.sort_unstable();
     if front {
-        Some(zs.last().copied().unwrap_or(0) + 1)
+        zs.last().copied()?.checked_add(1)
     } else {
-        Some(zs.first().copied().unwrap_or(0) - 1)
+        zs.first().copied()?.checked_sub(1)
     }
 }
 
@@ -1650,6 +1695,25 @@ mod tests {
             );
             assert_eq!(doc.get_heads(), before, "a refused action is atomic");
         }
+    }
+
+    #[test]
+    fn aggregate_slide_limit_refuses_atomically_at_the_boundary() {
+        let mut deck = crate::model::starter_deck();
+        deck.slides = (0..MAX_TOTAL_SLIDES)
+            .map(|_| crate::model::Slide::new(Layout::Blank))
+            .collect();
+        let mut doc = AutoCommit::new();
+        SlidesDoc::seed(&mut doc, &deck);
+        let before = doc.save();
+        let action =
+            insert_slide_action(deck.slides.len(), &crate::model::Slide::new(Layout::Blank));
+        assert!(action.apply(&mut doc).is_err());
+        assert_eq!(
+            doc.save(),
+            before,
+            "a refused aggregate action writes nothing"
+        );
     }
 
     #[test]

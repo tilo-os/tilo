@@ -9,8 +9,9 @@
 //! selection, mode — is per-peer and stays local.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::PathBuf;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -54,6 +55,9 @@ use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
 
 /// Logical pixels scrolled per mouse-wheel line notch.
 const WHEEL_LINE_PX: f64 = 48.0;
+/// Compressed presentation bytes are bounded before opening the ZIP.  Archive
+/// member and aggregate expansion limits live beside the ODP/PPTX readers.
+const MAX_PRESENTATION_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 fn image_open_request() -> PickRequest {
     PickRequest::open("Insert image", "Insert")
@@ -77,12 +81,113 @@ fn presentation_filter() -> FileFilter {
         .glob("*.pptx")
 }
 
+fn read_presentation_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    file.take((MAX_PRESENTATION_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "presentation file is larger than 64 MiB",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn load_presentation_from_path(path: &std::path::Path) -> Result<Deck, String> {
+    let bytes = read_presentation_file(path).map_err(|error| error.to_string())?;
+    if is_pptx(path) {
+        crate::pptx::read_pptx(&bytes).map_err(|error| error.to_string())
+    } else {
+        crate::odp::read_odp(&bytes).map_err(|error| error.to_string())
+    }
+}
+
+fn save_presentation_to_path(deck: &Deck, path: &std::path::Path) -> Result<(), String> {
+    let (path, bytes) = if is_pptx(path) {
+        (
+            path.to_path_buf(),
+            crate::pptx::write_pptx(deck).map_err(|error| error.to_string())?,
+        )
+    } else {
+        (
+            ensure_odp_ext(path),
+            crate::odp::write_odp(deck).map_err(|error| error.to_string())?,
+        )
+    };
+    std::fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DocOutcome {
     Open(PathBuf),
     Save(PathBuf),
     Cancelled,
     Failed(String),
+}
+
+/// The archive parser and ZIP writer never run on a compositor/sync frame.
+/// Generation tags make an old open/save result inert after cancellation or a
+/// subsequent request has taken ownership of the document lifecycle.
+enum DocumentJob {
+    Open {
+        generation: u64,
+        path: PathBuf,
+    },
+    Save {
+        generation: u64,
+        path: PathBuf,
+        deck: Deck,
+    },
+}
+
+enum DocumentJobResult {
+    Open {
+        generation: u64,
+        result: Result<Deck, String>,
+    },
+    Save {
+        generation: u64,
+        result: Result<(), String>,
+    },
+}
+
+struct DocumentWorker {
+    tx: SyncSender<DocumentJob>,
+    rx: Receiver<DocumentJobResult>,
+}
+
+impl DocumentWorker {
+    fn new() -> Result<Self, String> {
+        let (tx, jobs) = std::sync::mpsc::sync_channel(1);
+        let (results, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("slides-document-io".into())
+            .spawn(move || {
+                while let Ok(job) = jobs.recv() {
+                    let result = match job {
+                        DocumentJob::Open { generation, path } => DocumentJobResult::Open {
+                            generation,
+                            result: load_presentation_from_path(&path),
+                        },
+                        DocumentJob::Save {
+                            generation,
+                            path,
+                            deck,
+                        } => DocumentJobResult::Save {
+                            generation,
+                            result: save_presentation_to_path(&deck, &path),
+                        },
+                    };
+                    if results.send(result).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map(|_| Self { tx, rx })
+            .map_err(|error| format!("could not start presentation I/O worker: {error}"))
+    }
 }
 
 struct DocPortalChannel {
@@ -552,6 +657,12 @@ pub struct SlidesApp {
     /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
     /// the deck bytes to write once the user names a destination.
     doc_portal_rx: Option<DocPortalChannel>,
+    /// Bounded parser/serializer worker. A missing worker is an explicit
+    /// visible failure rather than a synchronous fallback on the UI thread.
+    document_worker: Option<DocumentWorker>,
+    document_worker_error: Option<String>,
+    next_document_generation: u64,
+    active_document_generation: Option<u64>,
     resource_file: Option<(bool, std::path::PathBuf)>,
     resource_invocation: Option<qos_actions::InvocationId>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
@@ -637,6 +748,10 @@ impl SlidesApp {
 
     fn build(deck: Deck) -> Self {
         let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
+        let (document_worker, document_worker_error) = match DocumentWorker::new() {
+            Ok(worker) => (Some(worker), None),
+            Err(error) => (None, Some(error)),
+        };
         SlidesApp {
             deck,
             rect: Rect::ZERO,
@@ -679,6 +794,10 @@ impl SlidesApp {
             toolbar_tools: ToolbarTools::default(),
             portal_rx: None,
             doc_portal_rx: None,
+            document_worker,
+            document_worker_error,
+            next_document_generation: 0,
+            active_document_generation: None,
             resource_file: None,
             resource_invocation: None,
             completed_resource_invocation: None,
@@ -911,7 +1030,9 @@ impl SlidesApp {
     /// dedicated slide.
     fn apply_scenario_image(&mut self) {
         if let Some(path) = write_demo_image() {
-            let src = path.to_string_lossy().to_string();
+            let Some(src) = crate::assets::import_asset_file(&path) else {
+                return;
+            };
             self.images.load_blocking(&src);
             let mut s = Slide::new(Layout::TitleContent);
             s.add(
@@ -939,7 +1060,7 @@ impl SlidesApp {
                 .with(|element| element.bold = true),
         );
         slide.add(Element::image(
-            "/tmp/qos-slides-intentionally-loading-image.png",
+            "asset:blake3:0000000000000000000000000000000000000000000000000000000000000000",
             96.0,
             200.0,
             1088.0,
@@ -1058,13 +1179,20 @@ impl SlidesApp {
         if let Some(deck) = SlidesDoc::load(doc)
             && deck != self.deck
         {
+            if !actions::deck_within_aggregate_limits(&deck) {
+                self.io_toast = Some((
+                    "Shared presentation exceeds safe limits; update was not materialized".into(),
+                    ToastKind::Error,
+                ));
+                return;
+            }
             self.deck = deck;
             self.search_provider.refresh(&self.deck);
             // Bump only for an actual local/remote/undo deck change. `sync`
             // runs per frame, so equality here keeps both the settled-slide
             // cache and the complete search catalogue cold while a talk is
             // simply being presented.
-            self.deck_rev = self.deck_rev.wrapping_add(1);
+            self.bump_deck_revision();
         }
         if self.deck.slides.is_empty() {
             self.cur_slide = 0;
@@ -2494,7 +2622,7 @@ impl SlidesApp {
 
     /// Drain a completed `.odp` open/save request, loading or writing the deck.
     /// Called once per frame from [`Widget::sync`].
-    fn drain_doc_portal(&mut self, doc: &mut AutoCommit) {
+    fn drain_doc_portal(&mut self, _doc: &mut AutoCommit) {
         let Some(rx) = self.doc_portal_rx.as_ref() else {
             return;
         };
@@ -2504,37 +2632,31 @@ impl SlidesApp {
                 match outcome {
                     DocOutcome::Open(path) => {
                         let power_point = is_pptx(&path);
-                        let success = self.load_presentation(doc, &path);
-                        self.io_toast = Some(if success {
-                            (
-                                (if power_point {
-                                    "PowerPoint opened · slides, text, shapes and pictures imported"
-                                } else {
-                                    "Presentation opened"
-                                })
-                                .into(),
-                                ToastKind::Success,
-                            )
-                        } else {
-                            ("Could not open the presentation".into(), ToastKind::Error)
-                        });
-                        self.finish_resource_file(
-                            success,
-                            (!success).then(|| "presentation could not be opened".into()),
-                        );
+                        if !self.queue_document_open(path) {
+                            self.io_toast = Some((
+                                "Could not start presentation import".into(),
+                                ToastKind::Error,
+                            ));
+                            self.finish_resource_file(
+                                false,
+                                Some("presentation import could not be started".into()),
+                            );
+                        } else if power_point {
+                            self.io_toast =
+                                Some(("Opening PowerPoint presentation…".into(), ToastKind::Info));
+                        }
                     }
                     DocOutcome::Save(path) => {
-                        let power_point = is_pptx(&path);
-                        let success = self.save_presentation(&path);
-                        self.io_toast = Some(if success {
-                            ((if power_point { "PowerPoint saved · animations and master themes aren't exported" } else { "Presentation saved" }).into(), ToastKind::Success)
-                        } else {
-                            ("Could not save the presentation".into(), ToastKind::Error)
-                        });
-                        self.finish_resource_file(
-                            success,
-                            (!success).then(|| "presentation could not be saved".into()),
-                        );
+                        if !self.queue_document_save(path) {
+                            self.io_toast = Some((
+                                "Could not start presentation export".into(),
+                                ToastKind::Error,
+                            ));
+                            self.finish_resource_file(
+                                false,
+                                Some("presentation export could not be started".into()),
+                            );
+                        }
                     }
                     DocOutcome::Cancelled => self.finish_resource_file(false, None),
                     DocOutcome::Failed(reason) => {
@@ -2579,6 +2701,150 @@ impl SlidesApp {
         });
     }
 
+    fn next_document_generation(&mut self) -> Option<u64> {
+        let next = self.next_document_generation.checked_add(1)?;
+        self.next_document_generation = next;
+        Some(next)
+    }
+
+    fn queue_document_open(&mut self, path: PathBuf) -> bool {
+        let Some(generation) = self.next_document_generation() else {
+            return false;
+        };
+        let Some(worker) = self.document_worker.as_ref() else {
+            self.io_toast = Some((
+                self.document_worker_error
+                    .clone()
+                    .unwrap_or_else(|| "presentation I/O is unavailable".into()),
+                ToastKind::Error,
+            ));
+            return false;
+        };
+        let queued = worker.tx.try_send(DocumentJob::Open { generation, path });
+        match queued {
+            Ok(()) => {
+                self.active_document_generation = Some(generation);
+                true
+            }
+            Err(TrySendError::Full(_)) => false,
+            Err(TrySendError::Disconnected(_)) => {
+                self.document_worker = None;
+                self.document_worker_error =
+                    Some("presentation I/O worker stopped unexpectedly".into());
+                false
+            }
+        }
+    }
+
+    fn queue_document_save(&mut self, path: PathBuf) -> bool {
+        if !actions::deck_within_aggregate_limits(&self.deck) {
+            self.io_toast = Some((
+                "Presentation exceeds the safe export limit".into(),
+                ToastKind::Error,
+            ));
+            return false;
+        }
+        let Some(generation) = self.next_document_generation() else {
+            return false;
+        };
+        let Some(worker) = self.document_worker.as_ref() else {
+            self.io_toast = Some((
+                self.document_worker_error
+                    .clone()
+                    .unwrap_or_else(|| "presentation I/O is unavailable".into()),
+                ToastKind::Error,
+            ));
+            return false;
+        };
+        let queued = worker.tx.try_send(DocumentJob::Save {
+            generation,
+            path,
+            deck: self.deck.clone(),
+        });
+        match queued {
+            Ok(()) => {
+                self.active_document_generation = Some(generation);
+                true
+            }
+            Err(TrySendError::Full(_)) => false,
+            Err(TrySendError::Disconnected(_)) => {
+                self.document_worker = None;
+                self.document_worker_error =
+                    Some("presentation I/O worker stopped unexpectedly".into());
+                false
+            }
+        }
+    }
+
+    fn apply_loaded_deck(&mut self, doc: &mut AutoCommit, deck: Deck) {
+        SlidesDoc::seed(doc, &deck);
+        self.deck = deck;
+        self.bump_deck_revision();
+        self.cur_slide = 0;
+        self.sel = None;
+        self.editing_text = false;
+        self.editing_notes = false;
+        self.presentation.invalidate_cache();
+        self.mark();
+        self.reload(doc);
+    }
+
+    fn drain_document_worker(&mut self, doc: &mut AutoCommit) {
+        let Some(received) = self
+            .document_worker
+            .as_ref()
+            .map(|worker| worker.rx.try_recv())
+        else {
+            return;
+        };
+        let result = match received {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.document_worker = None;
+                let error = "presentation I/O worker stopped unexpectedly".to_string();
+                self.document_worker_error = Some(error.clone());
+                self.active_document_generation = None;
+                self.io_toast = Some((error.clone(), ToastKind::Error));
+                self.finish_resource_file(false, Some(error));
+                return;
+            }
+        };
+        let generation = match &result {
+            DocumentJobResult::Open { generation, .. }
+            | DocumentJobResult::Save { generation, .. } => *generation,
+        };
+        if self.active_document_generation != Some(generation) {
+            return;
+        }
+        self.active_document_generation = None;
+        match result {
+            DocumentJobResult::Open {
+                result: Ok(deck), ..
+            } => {
+                self.apply_loaded_deck(doc, deck);
+                self.io_toast = Some(("Presentation opened".into(), ToastKind::Success));
+                self.finish_resource_file(true, None);
+            }
+            DocumentJobResult::Save { result: Ok(()), .. } => {
+                self.io_toast = Some(("Presentation saved".into(), ToastKind::Success));
+                self.finish_resource_file(true, None);
+            }
+            DocumentJobResult::Open {
+                result: Err(error), ..
+            }
+            | DocumentJobResult::Save {
+                result: Err(error), ..
+            } => {
+                self.io_toast = Some((
+                    "Could not process the presentation".into(),
+                    ToastKind::Error,
+                ));
+                self.finish_resource_file(false, Some(error));
+            }
+        }
+    }
+
     /// Load a `.odp` from disk, replacing the deck in the shared document so
     /// undo/redo and collaboration see the whole swap as one change.
     #[cfg(test)]
@@ -2586,8 +2852,9 @@ impl SlidesApp {
         self.load_presentation(doc, path)
     }
 
+    #[cfg(test)]
     fn load_presentation(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
-        let Ok(bytes) = std::fs::read(path) else {
+        let Ok(bytes) = read_presentation_file(path) else {
             return false;
         };
         let deck = if is_pptx(path) {
@@ -2600,7 +2867,7 @@ impl SlidesApp {
         };
         SlidesDoc::seed(doc, &deck);
         self.deck = deck;
-        self.deck_rev = self.deck_rev.wrapping_add(1);
+        self.bump_deck_revision();
         self.cur_slide = 0;
         self.sel = None;
         self.editing_text = false;
@@ -2611,6 +2878,19 @@ impl SlidesApp {
         true
     }
 
+    /// Advance the render-cache generation without letting a wrapping integer
+    /// accidentally make a newly loaded deck look like an old cached frame.
+    /// The practically unreachable boundary still has an explicit, safe
+    /// outcome: drop caches before beginning a fresh generation.
+    fn bump_deck_revision(&mut self) {
+        if let Some(next) = self.deck_rev.checked_add(1) {
+            self.deck_rev = next;
+        } else {
+            self.deck_rev = 0;
+            self.presentation.invalidate_cache();
+        }
+    }
+
     /// Serialise the current deck to a `.odp` at `path` (adding the extension
     /// if the host didn't).
     #[cfg(test)]
@@ -2618,6 +2898,7 @@ impl SlidesApp {
         self.save_presentation(path)
     }
 
+    #[cfg(test)]
     fn save_presentation(&self, path: &std::path::Path) -> bool {
         if is_pptx(path) {
             return match crate::pptx::write_pptx(&self.deck) {
@@ -2666,10 +2947,13 @@ impl SlidesApp {
     /// Place the picked image on the current slide and kick off its background
     /// decode so the picture is ready by the time it paints.
     fn insert_image_from_path(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let src = path.to_string_lossy().to_string();
-        if src.is_empty() {
+        let Some(src) = crate::assets::import_asset_file(path) else {
+            self.io_toast = Some((
+                "Could not import image (it may be too large or invalid)".into(),
+                ToastKind::Error,
+            ));
             return;
-        }
+        };
         // Start decoding now (off the UI thread) so the first paint already has
         // pixels, or a graceful loading/failed state if it can't be read.
         let _ = self.images.get(&src);
@@ -4834,6 +5118,12 @@ impl Widget for SlidesApp {
         if kind == qos_actions::OperationKind::Document {
             return Ok(false);
         }
+        // Keep the registered wire type on the canonical dispatch path.  This
+        // is both a cheap rejection of foreign operation payloads and makes
+        // the runtime registry auditable independently from the decoder.
+        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
+            return Ok(false);
+        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
@@ -4924,6 +5214,9 @@ impl Widget for SlidesApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
+            return Ok(None);
+        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
@@ -4973,6 +5266,9 @@ impl Widget for SlidesApp {
             self.resource_invocation = None;
             self.resource_file = None;
             self.doc_portal_rx = None;
+            // A worker may still finish after cancellation. Its generation is
+            // no longer authoritative, so `drain_document_worker` drops it.
+            self.active_document_generation = None;
             return Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("presentation file operation cancelled".into()),
@@ -4990,15 +5286,17 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if let Some((save, file)) = self.resource_file.take() {
-            let success = if save {
-                self.save_presentation(&file)
+            let queued = if save {
+                self.queue_document_save(file)
             } else {
-                self.load_presentation(state, &file)
+                self.queue_document_open(file)
             };
-            self.finish_resource_file(
-                success,
-                (!success).then(|| "presentation file operation failed".into()),
-            );
+            if !queued {
+                self.finish_resource_file(
+                    false,
+                    Some("presentation file operation could not be started".into()),
+                );
+            }
         }
         if !self.seeded {
             if SlidesDoc::is_empty(state) {
@@ -5010,6 +5308,7 @@ impl Widget for SlidesApp {
         self.drain_portal(state);
         // Fold in a completed `.odp` open/save.
         self.drain_doc_portal(state);
+        self.drain_document_worker(state);
         self.reload(state);
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
@@ -7073,7 +7372,7 @@ impl SlidesApp {
         let next = match &self.sel {
             Some(cur) => {
                 let i = ids.iter().position(|x| x == cur).unwrap_or(usize::MAX);
-                let next_i = i.wrapping_add(1) % ids.len();
+                let next_i = i.checked_add(1).map_or(0, |next| next % ids.len());
                 ids.get(next_i).unwrap_or(first).clone()
             }
             None => first.clone(),
@@ -7088,6 +7387,17 @@ impl SlidesApp {
 mod tests {
     use super::*;
     use crate::model::{Deck, ElementKind, Layout, PaletteKind, Slide};
+
+    fn wait_for_document_job(app: &mut SlidesApp, doc: &mut AutoCommit) {
+        for _ in 0..100 {
+            app.drain_document_worker(doc);
+            if app.active_document_generation.is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        panic!("background presentation operation did not settle");
+    }
 
     fn app_with(slide: Slide) -> SlidesApp {
         let mut a = SlidesApp::new();
@@ -8055,7 +8365,7 @@ mod tests {
     fn image_store_decodes_a_real_png_and_fails_gracefully() {
         use crate::assets::{ImageState, ImageStore};
         let path = write_png("slides-unit-decode.png", 8, 6);
-        let key = path.to_string_lossy().to_string();
+        let key = crate::assets::import_asset_file(&path).expect("fixture imports as an asset");
         let store = ImageStore::new();
         store.load_blocking(&key);
         match store.get(&key) {
@@ -8068,10 +8378,21 @@ mod tests {
             }
             _ => panic!("a real PNG must decode to Ready"),
         }
-        store.load_blocking("/no/such/file/anywhere.png");
+        store.load_blocking(
+            "asset:blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        );
         assert!(
-            matches!(store.get("/no/such/file/anywhere.png"), ImageState::Failed),
-            "a missing file resolves to Failed, not a panic"
+            matches!(
+                store.get(
+                    "asset:blake3:0000000000000000000000000000000000000000000000000000000000000000"
+                ),
+                ImageState::Failed
+            ),
+            "a missing asset resolves to Failed, not a panic"
+        );
+        assert!(
+            matches!(store.get(&path.to_string_lossy()), ImageState::Failed),
+            "a peer-supplied local path is never opened"
         );
     }
 
@@ -8118,10 +8439,13 @@ mod tests {
             ElementKind::Image,
             "the inserted element is an image"
         );
+        assert!(
+            crate::assets::is_asset_id(&el.src),
+            "only a portable asset id enters the CRDT"
+        );
         assert_eq!(
-            el.src,
-            path.to_string_lossy(),
-            "the chosen path is persisted as its src"
+            crate::assets::read_asset(&el.src).as_deref(),
+            Some(&std::fs::read(&path).unwrap()[..])
         );
         assert_eq!(
             app.sel.as_deref(),
@@ -8392,11 +8716,12 @@ mod tests {
         crate::doc::SlidesDoc::seed(&mut doc, &opened.deck);
         opened.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path.clone())));
         opened.drain_doc_portal(&mut doc);
+        wait_for_document_job(&mut opened, &mut doc);
         assert_eq!(opened.deck.title, app.deck.title);
         assert_eq!(opened.deck.slides.len(), app.deck.slides.len());
         assert!(matches!(
             opened.io_toast.as_ref(),
-            Some((message, ToastKind::Success)) if message.contains("text, shapes and pictures")
+            Some((message, ToastKind::Success)) if message.contains("Presentation opened")
         ));
         let _ = std::fs::remove_file(path);
     }
@@ -8414,6 +8739,7 @@ mod tests {
         app.reload(&doc);
         app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path)));
         app.drain_doc_portal(&mut doc);
+        wait_for_document_job(&mut app, &mut doc);
         assert!(
             app.doc_portal_rx.is_none(),
             "a resolved request clears the channel"
@@ -8441,6 +8767,55 @@ mod tests {
             )),
         )));
         app.drain_doc_portal(&mut doc);
+        wait_for_document_job(&mut app, &mut doc);
+        assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
+    }
+
+    #[test]
+    fn cancelled_document_job_cannot_apply_a_stale_open_result() {
+        let mut imported = crate::model::seed_deck();
+        imported.title = "stale import".into();
+        let path = std::env::temp_dir().join(format!("slides-stale-{}.odp", uuid::Uuid::new_v4()));
+        std::fs::write(&path, crate::odp::write_odp(&imported).unwrap()).unwrap();
+        let mut app = SlidesApp::new();
+        let original = app.deck.title.clone();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        assert!(app.queue_document_open(path.clone()));
+        // This is the same state transition `poll_resource_operation` performs
+        // when a caller cancels the accepted invocation.
+        app.active_document_generation = None;
+        for _ in 0..100 {
+            app.drain_document_worker(&mut doc);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(app.deck.title, original, "stale parser completion is inert");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn disconnected_document_worker_settles_the_accepted_resource_operation() {
+        let mut app = SlidesApp::new();
+        let mut doc = AutoCommit::new();
+        crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
+        // Keep a sender for future queue attempts, but give the app a result
+        // channel whose producing worker has already gone away.
+        let (tx, _jobs) = std::sync::mpsc::sync_channel(1);
+        let (results, rx) = std::sync::mpsc::sync_channel(1);
+        drop(results);
+        app.document_worker = Some(DocumentWorker { tx, rx });
+        app.resource_invocation = Some(qos_actions::InvocationId::new());
+        app.active_document_generation = Some(7);
+
+        app.drain_document_worker(&mut doc);
+
+        assert!(app.document_worker.is_none());
+        assert!(app.active_document_generation.is_none());
+        assert!(app.resource_invocation.is_none());
+        assert!(matches!(
+            app.completed_resource_invocation,
+            Some(qos_actions::InvocationUpdate::Failed { .. })
+        ));
         assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
     }
 
