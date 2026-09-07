@@ -8,6 +8,7 @@ exclude = [
     "crates/doc/qdoc-codec-markdown-wasm",
     "vendor/vello",
     "vendor/vello_encoding",
+    "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/winit",
 ]
