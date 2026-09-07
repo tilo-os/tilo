@@ -260,6 +260,10 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
         "{mode:?}: starts unscrolled"
     );
 
+    // A wheel event contains no pointer position.  Put the cursor in the
+    // viewport first, exactly as the window host does before a user wheels.
+    h.cursor(viewport.center().x, viewport.center().y);
+
     // One wheel notch down must move the list.
     h.wheel(3.0);
     h.relayout();

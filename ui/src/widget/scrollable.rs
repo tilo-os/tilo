@@ -287,6 +287,18 @@ impl Scrollable {
         self
     }
 
+    /// Seed the most recent pointer position when rebuilding a retained view.
+    ///
+    /// Mouse wheel and button events do not carry a position.  A parent that
+    /// recreates its scrollable every frame must therefore carry its last
+    /// cursor into the replacement, otherwise a still click or wheel after a
+    /// rebuild is incorrectly treated as being outside the viewport.
+    #[must_use]
+    pub fn with_cursor(mut self, cursor: Point) -> Self {
+        self.last_cursor = cursor;
+        self
+    }
+
     /// Pass the bar's footprint (thickness + margins, ~12-14px) for a clean
     /// gutter.
     #[must_use]
