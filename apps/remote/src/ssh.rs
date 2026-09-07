@@ -13,7 +13,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -22,10 +21,19 @@ use russh::client;
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, load_secret_key};
 use russh::{ChannelMsg, Disconnect};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
 use crate::session::SessionStatus;
 use crate::vt::VtGrid;
+
+/// Keep the UI responsive under a stalled SSH transport without allowing a
+/// key-repeat storm or a hostile peer to accumulate unbounded process memory.
+/// These queues intentionally apply backpressure at the transport boundary.
+const SSH_INPUT_QUEUE_CAPACITY: usize = 256;
+const SSH_OUTPUT_QUEUE_CAPACITY: usize = 128;
+/// Agent-supplied `send-text` is useful for commands, not bulk file transfer.
+/// Bounding it keeps a single invocation from monopolising the PTY worker.
+pub const MAX_SSH_INPUT_BYTES: usize = 64 * 1024;
 
 /// How to authenticate an SSH connection. Secrets live only here, in
 /// volatile memory — never in the connection document.
@@ -333,7 +341,7 @@ pub struct SshSession {
     grid: VtGrid,
     status: Arc<Mutex<SessionStatus>>,
     output_rx: Receiver<Vec<u8>>,
-    input_tx: UnboundedSender<InputMessage>,
+    input_tx: Sender<InputMessage>,
     host_key_issue: Arc<Mutex<Option<HostKeyIssue>>>,
     // Kept so the worker thread isn't detached-orphaned; on drop the input
     // channel closes, which tells the worker to disconnect.
@@ -351,8 +359,8 @@ impl SshSession {
     /// background worker thread.
     pub fn connect(cfg: SshConfig) -> anyhow::Result<SshSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
-        let (output_tx, output_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-        let (input_tx, input_rx) = unbounded_channel::<InputMessage>();
+        let (output_tx, output_rx) = channel::<Vec<u8>>(SSH_OUTPUT_QUEUE_CAPACITY);
+        let (input_tx, input_rx) = channel::<InputMessage>(SSH_INPUT_QUEUE_CAPACITY);
         let grid = VtGrid::new(cfg.cols as usize, cfg.rows as usize);
         let host_key_issue = Arc::new(Mutex::new(None));
 
@@ -426,8 +434,13 @@ impl SshSession {
     }
 
     /// Send keystrokes to the remote PTY.
-    pub fn send_input(&self, bytes: Vec<u8>) {
-        let _ = self.input_tx.send(InputMessage { bytes, ack: None });
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when input is empty, too large, the bounded queue is
+    /// full, or the session worker has stopped.
+    pub fn send_input(&self, bytes: Vec<u8>) -> Result<(), String> {
+        self.queue_input(InputMessage { bytes, ack: None })
     }
 
     /// Queue bytes and receive an acknowledgement only after russh has
@@ -442,13 +455,31 @@ impl SshSession {
         bytes: Vec<u8>,
     ) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.input_tx
-            .send(InputMessage {
-                bytes,
-                ack: Some(tx),
-            })
-            .map_err(|_| "SSH session input channel is closed".to_string())?;
+        self.queue_input(InputMessage {
+            bytes,
+            ack: Some(tx),
+        })?;
         Ok(rx)
+    }
+
+    fn queue_input(&self, message: InputMessage) -> Result<(), String> {
+        if message.bytes.is_empty() {
+            return Err("SSH input cannot be empty".into());
+        }
+        if message.bytes.len() > MAX_SSH_INPUT_BYTES {
+            return Err(format!(
+                "SSH input exceeds the {} KiB per-operation limit",
+                MAX_SSH_INPUT_BYTES / 1024
+            ));
+        }
+        self.input_tx
+            .try_send(message)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    "SSH input is busy; wait for the remote session to catch up".into()
+                }
+                TrySendError::Closed(_) => "SSH session input channel is closed".into(),
+            })
     }
 }
 
@@ -509,8 +540,8 @@ async fn run_session(
     cfg: SshConfig,
     status: Arc<Mutex<SessionStatus>>,
     host_key_issue: Arc<Mutex<Option<HostKeyIssue>>>,
-    output_tx: std::sync::mpsc::Sender<Vec<u8>>,
-    mut input_rx: tokio::sync::mpsc::UnboundedReceiver<InputMessage>,
+    output_tx: Sender<Vec<u8>>,
+    mut input_rx: Receiver<InputMessage>,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(3600)),
@@ -580,7 +611,11 @@ async fn run_session(
         tokio::select! {
             msg = channel.wait() => match msg {
                 Some(ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }) => {
-                    if output_tx.send(data.to_vec()).is_err() { break; }
+                    // Awaiting bounded output capacity deliberately slows the
+                    // SSH read loop when the UI cannot consume output. This is
+                    // real backpressure rather than silently dropping terminal
+                    // bytes or growing an unbounded queue.
+                    if output_tx.send(data.to_vec()).await.is_err() { break; }
                 }
                 Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
