@@ -33,6 +33,40 @@ pub struct Backend {
     last_plan: Vec<String>,
 }
 
+/// An argv-preserving system invocation. Display text is kept separate from
+/// execution so a rich rule remains one argument even though it contains
+/// spaces and quotes. Never rebuild argv by splitting a display string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Invocation {
+    program: &'static str,
+    args: Vec<String>,
+}
+
+impl Invocation {
+    fn new(program: &'static str, args: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            program,
+            args: args.into_iter().collect(),
+        }
+    }
+
+    fn display(&self) -> String {
+        let args = self
+            .args
+            .iter()
+            .map(|arg| {
+                if arg.contains(char::is_whitespace) {
+                    format!("'{}'", arg.replace('\'', "'\\\"'\\\"'"))
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{} {args}", self.program)
+    }
+}
+
 impl Backend {
     /// Inspect the environment and decide the operating mode.
     pub fn detect() -> Self {
@@ -60,7 +94,10 @@ impl Backend {
     /// Generate the full `firewall-cmd` plan for `cfg` without running it.
     /// Stores the plan in `last_plan` and returns a reference to it.
     pub fn plan(&mut self, cfg: &FirewallConfig) -> &[String] {
-        self.last_plan = plan_commands(cfg);
+        self.last_plan = build_invocations(cfg).map_or_else(
+            |error| vec![format!("Blocked: invalid configuration — {error}")],
+            |plan| plan.iter().map(Invocation::display).collect(),
+        );
         &self.last_plan
     }
 
@@ -74,26 +111,47 @@ impl Backend {
     /// a non-zero status — execution stops at that command, and anything
     /// after it in the plan is not run.
     pub fn apply(&mut self, cfg: &FirewallConfig) -> Result<(), String> {
-        let plan = plan_commands(cfg);
-        self.last_plan.clone_from(&plan);
+        let plan = build_invocations(cfg)?;
+        self.last_plan = plan.iter().map(Invocation::display).collect();
         if self.mode == Mode::DryRun {
             return Ok(());
         }
-        for line in &plan {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let Some((bin, args)) = parts.split_first() else {
-                continue;
-            };
-            let status = Command::new(bin)
-                .args(args)
-                .status()
-                .map_err(|e| format!("spawn {bin}: {e}"))?;
-            if !status.success() {
-                return Err(format!("`{line}` exited with {status}"));
+        for invocation in &plan {
+            let output = Command::new(invocation.program)
+                .args(&invocation.args)
+                .output()
+                .map_err(|error| format!("could not start {}: {error}", invocation.program))?;
+            if !output.status.success() {
+                return Err(command_failure(invocation, &output));
             }
         }
         Ok(())
     }
+}
+
+fn command_failure(invocation: &Invocation, output: &std::process::Output) -> String {
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let guidance = if detail.contains("Access denied")
+        || detail.contains("not authorized")
+        || detail.contains("Authorization")
+    {
+        " Check your administrator authorization, then retry."
+    } else if detail.contains("not running") || detail.contains("Failed to connect") {
+        " firewalld is not running; start it and use Refresh before retrying."
+    } else {
+        " The live firewall was left at its last confirmed state; inspect the service and retry."
+    };
+    format!(
+        "{} failed ({}): {}.{}",
+        invocation.display(),
+        output.status,
+        if detail.is_empty() {
+            "no diagnostic returned"
+        } else {
+            &detail
+        },
+        guidance
+    )
 }
 
 /// Whether `firewall-cmd` is resolvable on `$PATH`.
@@ -269,54 +327,113 @@ fn quoted_after(hay: &str, needle: &str) -> Option<String> {
 /// Build the ordered list of `firewall-cmd` commands that would realise
 /// `cfg`. Pure — no IO — so it is unit-testable.
 pub fn plan_commands(cfg: &FirewallConfig) -> Vec<String> {
-    let mut out = Vec::new();
-
-    out.push(format!(
-        "firewall-cmd --set-default-zone={}",
-        cfg.default_zone.name()
-    ));
-    if cfg.panic_mode {
-        out.push("firewall-cmd --panic-on".to_string());
-    } else {
-        out.push("firewall-cmd --panic-off".to_string());
-    }
-
-    for z in &cfg.zones {
-        plan_zone(z, &mut out);
-    }
-
-    out.push("firewall-cmd --reload".to_string());
-    out
+    build_invocations(cfg).map_or_else(
+        |error| vec![format!("Blocked: invalid configuration — {error}")],
+        |plan| plan.iter().map(Invocation::display).collect(),
+    )
 }
 
-fn plan_zone(z: &Zone, out: &mut Vec<String>) {
-    let zone = z.kind.name();
-    for iface in &z.interfaces {
-        out.push(format!(
-            "firewall-cmd --permanent --zone={zone} --change-interface={iface}"
-        ));
+/// Build a safe argv plan. The representation is intentionally private: users
+/// see a readable plan, while execution receives the exact original arguments.
+fn build_invocations(cfg: &FirewallConfig) -> Result<Vec<Invocation>, String> {
+    cfg.validate()?;
+    if !cfg.enabled {
+        return Ok(vec![Invocation::new(
+            "systemctl",
+            ["stop".to_string(), "firewalld".to_string()],
+        )]);
     }
-    if z.masquerade {
-        out.push(format!(
-            "firewall-cmd --permanent --zone={zone} --add-masquerade"
-        ));
+
+    let mut out = vec![Invocation::new(
+        "systemctl",
+        ["start".to_string(), "firewalld".to_string()],
+    )];
+    out.push(firewall_cmd([format!(
+        "--set-default-zone={}",
+        cfg.default_zone.name()
+    )]));
+    out.push(firewall_cmd([if cfg.panic_mode {
+        "--panic-on".to_string()
+    } else {
+        "--panic-off".to_string()
+    }]));
+    for zone in &cfg.zones {
+        plan_zone_args(zone, &mut out);
     }
-    for svc in &z.services {
-        out.push(format!(
-            "firewall-cmd --permanent --zone={zone} --add-service={svc}"
-        ));
+    out.push(firewall_cmd(["--reload".to_string()]));
+    Ok(out)
+}
+
+fn firewall_cmd(args: impl IntoIterator<Item = String>) -> Invocation {
+    Invocation::new("firewall-cmd", args)
+}
+
+fn plan_zone_args(zone: &Zone, out: &mut Vec<Invocation>) {
+    let name = zone.kind.name();
+    for iface in &zone.interfaces {
+        out.push(firewall_cmd([
+            "--permanent".to_string(),
+            format!("--zone={name}"),
+            format!("--change-interface={iface}"),
+        ]));
     }
-    for r in &z.rules {
-        if !r.enabled {
-            continue;
+    if zone.masquerade {
+        out.push(firewall_cmd([
+            "--permanent".to_string(),
+            format!("--zone={name}"),
+            "--add-masquerade".to_string(),
+        ]));
+    }
+    for service in &zone.services {
+        out.push(firewall_cmd([
+            "--permanent".to_string(),
+            format!("--zone={name}"),
+            format!("--add-service={service}"),
+        ]));
+    }
+    for rule in &zone.rules {
+        if rule.enabled {
+            out.push(rule_invocation(
+                name,
+                &rule.matcher,
+                rule.action,
+                &rule.source,
+            ));
         }
-        out.push(rich_rule(zone, &r.matcher, r.action, &r.source));
     }
+}
+
+fn rule_invocation(zone: &str, matcher: &Matcher, action: Action, source: &str) -> Invocation {
+    let has_source = !source.trim().is_empty();
+    if action == Action::Allow
+        && !has_source
+        && let Matcher::Port { port, proto } = matcher
+    {
+        return firewall_cmd([
+            "--permanent".to_string(),
+            format!("--zone={zone}"),
+            format!("--add-port={port}/{}", proto.label()),
+        ]);
+    }
+    firewall_cmd([
+        "--permanent".to_string(),
+        format!("--zone={zone}"),
+        format!(
+            "--add-rich-rule={}",
+            rich_rule_body(matcher, action, source)
+        ),
+    ])
 }
 
 /// Render a single rule as either a simple `--add-port` (allow, anywhere,
 /// port matcher) or a full firewalld rich-rule string otherwise.
+#[cfg(test)]
 fn rich_rule(zone: &str, matcher: &Matcher, action: Action, source: &str) -> String {
+    let invocation = rule_invocation(zone, matcher, action, source);
+    invocation.display()
+}
+
+fn rich_rule_body(matcher: &Matcher, action: Action, source: &str) -> String {
     use std::fmt::Write as _;
 
     let has_source = !source.trim().is_empty();
@@ -325,10 +442,7 @@ fn rich_rule(zone: &str, matcher: &Matcher, action: Action, source: &str) -> Str
         && !has_source
         && let Matcher::Port { port, proto } = matcher
     {
-        return format!(
-            "firewall-cmd --permanent --zone={zone} --add-port={port}/{}",
-            proto.label()
-        );
+        return format!("port port=\"{port}\" protocol=\"{}\" accept", proto.label());
     }
 
     let mut rule = String::from("rule family=\"ipv4\"");
@@ -348,7 +462,7 @@ fn rich_rule(zone: &str, matcher: &Matcher, action: Action, source: &str) -> Str
         Action::Deny => "reject",
     };
     let _ = write!(rule, " {verb}");
-    format!("firewall-cmd --permanent --zone={zone} --add-rich-rule='{rule}'")
+    rule
 }
 
 #[cfg(test)]
@@ -360,9 +474,10 @@ mod tests {
     fn plan_sets_default_zone_and_reloads() {
         let cfg = crate::sample::sample_config();
         let plan = plan_commands(&cfg);
-        assert_eq!(
-            plan.first().unwrap(),
-            "firewall-cmd --set-default-zone=public"
+        assert_eq!(plan.first().unwrap(), "systemctl start firewalld");
+        assert!(
+            plan.iter()
+                .any(|line| line == "firewall-cmd --set-default-zone=public")
         );
         assert_eq!(plan.last().unwrap(), "firewall-cmd --reload");
     }
@@ -419,8 +534,27 @@ mod tests {
         let mut z = Zone::new(ZoneKind::External, Target::Default);
         z.masquerade = true;
         let mut out = Vec::new();
-        plan_zone(&z, &mut out);
-        assert!(out.iter().any(|l| l.contains("--add-masquerade")));
+        plan_zone_args(&z, &mut out);
+        assert!(
+            out.iter()
+                .any(|invocation| invocation.args.iter().any(|arg| arg == "--add-masquerade"))
+        );
+    }
+
+    #[test]
+    fn rich_rule_is_one_argument_at_execution_time() {
+        let invocation = rule_invocation(
+            "public",
+            &Matcher::Port {
+                port: "3389".into(),
+                proto: Proto::Tcp,
+            },
+            Action::Deny,
+            "10.0.0.0/8",
+        );
+        assert_eq!(invocation.program, "firewall-cmd");
+        assert_eq!(invocation.args.len(), 3);
+        assert!(invocation.args[2].starts_with("--add-rich-rule=rule family="));
     }
 
     const LIST_ALL: &str = "\
