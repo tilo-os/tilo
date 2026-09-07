@@ -63,6 +63,15 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         if args.has("--scan-first") {
             std::env::set_var("CAMERA_SCAN_FIRST", "1");
         }
+        if let Some(state) = args.value("--camera-state") {
+            std::env::set_var("CAMERA_SHOT_CAMERA_STATE", state);
+        }
+        // Sample timestamps and relative labels must be byte-for-byte stable
+        // across offscreen renders. A caller can still override this fixed
+        // fixture clock explicitly when it needs a particular reference time.
+        if args.shots.is_some() && std::env::var_os("CAMERA_SHOT_NOW").is_none() {
+            std::env::set_var("CAMERA_SHOT_NOW", "1800000000");
+        }
     }
 
     let disk = args.has("--disk") || std::env::var_os("CAMERA_SHOTS_DISK").is_some();
@@ -105,7 +114,14 @@ pub fn main() {
         &LaunchSpec::new("dev.qos.camera", camera::app_root)
             .shot_handler(render_shot)
             .allowed_flags(&["--select", "--scan-first", "--disk"])
-            .allowed_options(&["--screen", "--dir", "--scroll", "--width", "--height"])
+            .allowed_options(&[
+                "--screen",
+                "--dir",
+                "--scroll",
+                "--width",
+                "--height",
+                "--camera-state",
+            ])
             .allowed_live_options(&["--emit-photos"])
             .command_handler(command)
             .configure_app(|app| camera::actions::register(app.action_registry_mut())),
