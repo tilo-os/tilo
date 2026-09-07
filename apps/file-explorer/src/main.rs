@@ -701,8 +701,13 @@ fn apply_post_layout_scenario(
 ) {
     match scenario {
         Some("menu") => {
-            // Right-click context menu + the "New File" template flyout, anchored
-            // in the content pane.
+            // The toolbar's actual ⋯ menu: the capture proves it is anchored
+            // directly below and right-aligned to its visible trigger.
+            widget.debug_show_view_menu();
+        }
+        Some("context-menu") => {
+            // Separate right-click fixture. Its location is a real pointer
+            // anchor in the content pane, deliberately away from toolbar ⋯.
             widget.debug_show_templates_menu(Point::new(f64::from(w) * 0.45, f64::from(h) * 0.34));
         }
         Some("reorder") => {
@@ -785,7 +790,15 @@ fn render_shot_to_png(
     let theme = std::env::var("QOS_SHOTS_THEME")
         .ok()
         .and_then(|n| Theme::named(&n))
-        .unwrap_or_else(Theme::dark);
+        .unwrap_or_else(Theme::dark)
+        // The live host supplies this through its accessibility settings. The
+        // offscreen seam also needs it so visual review can prove that the
+        // narrow places drawer and transient status surface settle without a
+        // fade/slide. Deliberately accept only an explicit opt-in value.
+        .with_reduce_motion(matches!(
+            std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
+            Ok("1" | "true" | "TRUE")
+        ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
