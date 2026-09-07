@@ -480,6 +480,17 @@ fn article_blocks(
     summary: &str,
     blocks: Vec<ContentBlock>,
 ) {
+    let lower = title.to_lowercase();
+    let tags = [
+        lower.contains("rust").then_some("rust"),
+        (lower.contains("design") || lower.contains("crdt")).then_some("design"),
+        (lower.contains("space") || lower.contains("galax") || lower.contains("knot"))
+            .then_some("science"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect();
     s.insert_article_dedup(Article {
         id: Uuid::new_v4(),
         feed_id,
@@ -491,6 +502,7 @@ fn article_blocks(
         blocks,
         read,
         starred,
+        tags,
     });
 }
 
