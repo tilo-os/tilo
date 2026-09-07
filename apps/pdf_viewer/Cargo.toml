@@ -39,6 +39,7 @@ pdf-extract = "0.12.0"
 # Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
 # the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
 image = { workspace = true, features = ["png", "jpeg"] }
+tempfile.workspace = true
 # Host-native file open/save through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
@@ -51,7 +52,6 @@ image = { workspace = true, features = ["png", "jpeg"] }
 serial_test.workspace = true
 # Two real files on disk, so "open a second document" is the real thing rather
 # than the same path twice.
-tempfile.workspace = true
 
 [lints]
 workspace = true
