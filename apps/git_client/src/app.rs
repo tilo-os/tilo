@@ -186,11 +186,13 @@ pub struct GitClientApp {
     // Click regions emitted by the last draw, used for hit-testing the
     // next click. Boxed closures keep geometry out of the event handler.
     change_hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
+    change_semantic_hits: Vec<(Rect, ChangesHit)>,
     diff_hunk_buttons: Vec<diffview::HunkButton>,
     /// Hit rect for the diff-header "Discard file" button (worktree side only).
     discard_file_rect: Rect,
     history_rows: Vec<Rect>,
     panel_hits: Vec<Box<dyn Fn(Point) -> Option<PanelHit>>>,
+    panel_semantic_hits: Vec<(Rect, PanelHit)>,
     tab_rects: Vec<(Screen, Rect)>,
 }
 
@@ -338,10 +340,12 @@ impl GitClientApp {
             new_branch_button: Rect::ZERO,
             last_mouse: Point::ZERO,
             change_hits: Vec::new(),
+            change_semantic_hits: Vec::new(),
             diff_hunk_buttons: Vec::new(),
             discard_file_rect: Rect::ZERO,
             history_rows: Vec::new(),
             panel_hits: Vec::new(),
+            panel_semantic_hits: Vec::new(),
             tab_rects: Vec::new(),
         }
     }
@@ -820,14 +824,10 @@ impl GitClientApp {
         );
     }
 
-    /// The label for the open-repository resource Ctrl+K publishes, or `None`
-    /// when no repository is open (the empty state) so the palette shows
-    /// nothing to act on.
-    pub(crate) fn resource_repo_label(&self) -> Option<String> {
-        if self.awaiting_repo {
-            return None;
-        }
-        Some(self.model.name.clone())
+    /// Borrow the current external repository projection for the bounded
+    /// resource catalogue. Presentation-only state is intentionally excluded.
+    pub(crate) fn resource_model(&self) -> Option<&RepoModel> {
+        (!self.awaiting_repo).then_some(&self.model)
     }
 
     /// The last preference [`EncodedAction`](qos_actions::EncodedAction) an
@@ -1184,8 +1184,14 @@ impl GitClientApp {
         if reveal <= 0.001 {
             return;
         }
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.5) as f32);
-        scene.fill(Fill::NonZero, t, scrim, None, &body);
+        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.86) as f32);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            scrim,
+            None,
+            &Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, body.y1),
+        );
     }
 
     fn draw_changes(
@@ -1216,6 +1222,7 @@ impl GitClientApp {
                 &msg,
             );
             self.change_hits = out.hits;
+            self.change_semantic_hits = out.semantic_hits;
             // Position and draw the commit-message TextInput in the reserved
             // rect — the toolkit input owns its frame, text, caret and
             // selection so editing is a first-class ui component.
@@ -1223,6 +1230,7 @@ impl GitClientApp {
             self.commit_input.draw(scene, t, tr, theme, presence);
         } else {
             self.change_hits.clear();
+            self.change_semantic_hits.clear();
             self.commit_input.apply_layout_external(Rect::ZERO);
         }
     }
@@ -1537,8 +1545,9 @@ impl GitClientApp {
         presence: &PresenceCtx,
         body: Rect,
     ) {
-        self.panel_hits =
-            PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
+        let panels = PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
+        self.panel_hits = panels.hits;
+        self.panel_semantic_hits = panels.semantic_hits;
         // New-branch creator: a compact labelled input + button drawn in the
         // toolbar's centre band, between the branch status (left) and the
         // fetch/pull/push cluster (right). Only meaningful for a real repo.
@@ -1825,11 +1834,19 @@ impl GitClientApp {
                 Screen::History => FLAP_W,
                 _ => CHANGES_COL_W,
             };
-            let on_sidebar = pos.x <= self.rect.x0 + col_w;
-            if !on_sidebar {
+            if pos.y < self.rect.y0 + APPBAR_H {
+                return;
+            }
+            if pos.x > self.rect.x0 + col_w {
                 self.flap.close();
                 return;
             }
+            match self.screen {
+                Screen::Changes => self.handle_changes_click(pos),
+                Screen::History => self.handle_history_click(pos),
+                Screen::Panels => {}
+            }
+            return;
         }
         // Tabs.
         for (screen, rect) in &self.tab_rects {
@@ -2101,40 +2118,51 @@ impl GitClientApp {
             targets.push(button(
                 "git.navigation-toggle",
                 self.hamburger_rect,
-                "Show repository navigation".into(),
+                if self.flap_open() {
+                    "Hide repository navigation"
+                } else {
+                    "Show repository navigation"
+                }
+                .into(),
             ));
         }
-        targets.extend(self.tab_rects.iter().map(|(screen, rect)| {
-            let label = TABS
-                .iter()
-                .find(|(candidate, _)| candidate == screen)
-                .map_or("Repository view", |(_, label)| *label);
-            (
-                match screen {
-                    Screen::Changes => "git.screen.changes",
-                    Screen::History => "git.screen.history",
-                    Screen::Panels => "git.screen.branches",
-                }
-                .to_string(),
-                *rect,
-                AccessNode::new(Role::Tab)
-                    .with_name(label)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(*screen == self.screen),
-                    )
-                    .with_bounds(*rect),
-            )
-        }));
-        if self.settings_seg.area() > 0.0 {
+        // An open compact flap is a modal navigation surface: the visual
+        // scrim, pointer routing, keyboard routing and semantic tree must all
+        // agree that obscured detail/app-bar controls are temporarily inert.
+        let overlay_modal = self.layout_mode() == SplitLayout::Overlay && self.flap_open();
+        if !overlay_modal {
+            targets.extend(self.tab_rects.iter().map(|(screen, rect)| {
+                let label = TABS
+                    .iter()
+                    .find(|(candidate, _)| candidate == screen)
+                    .map_or("Repository view", |(_, label)| *label);
+                (
+                    match screen {
+                        Screen::Changes => "git.screen.changes",
+                        Screen::History => "git.screen.history",
+                        Screen::Panels => "git.screen.branches",
+                    }
+                    .to_string(),
+                    *rect,
+                    AccessNode::new(Role::Tab)
+                        .with_name(label)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(*screen == self.screen),
+                        )
+                        .with_bounds(*rect),
+                )
+            }));
+        }
+        if !overlay_modal && self.settings_seg.area() > 0.0 {
             targets.push(button(
                 "git.diff-layout",
                 self.settings_seg,
                 "Diff layout".into(),
             ));
         }
-        if self.settings_syn.area() > 0.0 {
+        if !overlay_modal && self.settings_syn.area() > 0.0 {
             targets.push(button(
                 "git.syntax-highlight",
                 self.settings_syn,
@@ -2142,14 +2170,105 @@ impl GitClientApp {
             ));
         }
         match self.screen {
-            Screen::Changes if self.commit_input.get_rect().area() > 0.0 => targets.push((
-                "git.commit-message".into(),
-                self.commit_input.get_rect(),
-                self.commit_input
-                    .accessibility()
-                    .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name("Commit message"))
-                    .with_bounds(self.commit_input.get_rect()),
-            )),
+            Screen::Changes if self.commit_input.get_rect().area() > 0.0 => {
+                for (rect, hit) in &self.change_semantic_hits {
+                    if matches!(hit, ChangesHit::FocusMessage) {
+                        continue;
+                    }
+                    let (target, name, role, selected) = match hit {
+                        ChangesHit::SelectFile(area, row) => {
+                            let list = match area {
+                                ChangeArea::Staged => &self.model.staged,
+                                ChangeArea::Unstaged => &self.model.unstaged,
+                                ChangeArea::Untracked => &self.model.untracked,
+                            };
+                            let Some(change) = list.get(*row) else {
+                                continue;
+                            };
+                            (
+                                format!("git.change.open:{area:?}:{}", change.path),
+                                format!("Open {} diff, {}", change.path, change.kind.badge()),
+                                Role::ListItem,
+                                self.selected_change == Some((*area, *row)),
+                            )
+                        }
+                        ChangesHit::ToggleStage(area, row) => {
+                            let verb = if *area == ChangeArea::Staged {
+                                "Unstage"
+                            } else {
+                                "Stage"
+                            };
+                            let list = match area {
+                                ChangeArea::Staged => &self.model.staged,
+                                ChangeArea::Unstaged => &self.model.unstaged,
+                                ChangeArea::Untracked => &self.model.untracked,
+                            };
+                            let Some(change) = list.get(*row) else {
+                                continue;
+                            };
+                            (
+                                format!("git.change.{verb}:{area:?}:{}", change.path),
+                                format!("{verb} {}", change.path),
+                                Role::Button,
+                                false,
+                            )
+                        }
+                        ChangesHit::StageAll => (
+                            "git.changes.stage-all".into(),
+                            "Stage all changes".into(),
+                            Role::Button,
+                            false,
+                        ),
+                        ChangesHit::UnstageAll => (
+                            "git.changes.unstage-all".into(),
+                            "Unstage all changes".into(),
+                            Role::Button,
+                            false,
+                        ),
+                        ChangesHit::Commit => (
+                            "git.changes.commit".into(),
+                            "Commit staged changes".into(),
+                            Role::Button,
+                            false,
+                        ),
+                        ChangesHit::FocusMessage => continue,
+                    };
+                    targets.push((
+                        target,
+                        *rect,
+                        AccessNode::new(role)
+                            .with_name(name)
+                            .with_state(AccessState::new().focusable(true).selected(selected))
+                            .with_bounds(*rect),
+                    ));
+                }
+                targets.push((
+                    "git.commit-message".into(),
+                    self.commit_input.get_rect(),
+                    self.commit_input
+                        .accessibility()
+                        .unwrap_or_else(|| {
+                            AccessNode::new(Role::TextInput).with_name("Commit message")
+                        })
+                        .with_bounds(self.commit_input.get_rect()),
+                ));
+                if !overlay_modal {
+                    for hunk in &self.diff_hunk_buttons {
+                        let label = match hunk.action {
+                            diffview::HunkAction::Toggle if self.selected_is_staged() => {
+                                "Unstage hunk"
+                            }
+                            diffview::HunkAction::Toggle => "Stage hunk",
+                            diffview::HunkAction::Discard => "Discard hunk",
+                        };
+                        targets.push(button(
+                            &format!("git.hunk:{}:{:?}", hunk.hunk, hunk.action),
+                            hunk.rect,
+                            label.into(),
+                        ));
+                    }
+                }
+            }
             Screen::History => {
                 for (index, rect) in self.history_rows.iter().enumerate() {
                     if let Some(commit) = self.model.commits.get(index) {
@@ -2172,6 +2291,32 @@ impl GitClientApp {
                 }
             }
             Screen::Panels => {
+                for (rect, hit) in &self.panel_semantic_hits {
+                    let (target, label) = match hit {
+                        PanelHit::Remote(RemoteAction::Fetch) => {
+                            ("git.remote.fetch".into(), "Fetch from remote".into())
+                        }
+                        PanelHit::Remote(RemoteAction::Pull) => {
+                            ("git.remote.pull".into(), "Pull from remote".into())
+                        }
+                        PanelHit::Remote(RemoteAction::Push) => {
+                            ("git.remote.push".into(), "Push to remote".into())
+                        }
+                        PanelHit::Branch(BranchAction::Checkout(name)) => (
+                            format!("git.branch.checkout:{name}"),
+                            format!("Check out {name}"),
+                        ),
+                        PanelHit::Branch(BranchAction::Delete(name)) => (
+                            format!("git.branch.delete:{name}"),
+                            format!("Delete {name}"),
+                        ),
+                        PanelHit::Branch(BranchAction::StashApply(index)) => (
+                            format!("git.stash.apply:{index}"),
+                            format!("Apply stash {index}"),
+                        ),
+                    };
+                    targets.push(button(&target, *rect, label));
+                }
                 if self.new_branch_input.area() > 0.0 {
                     targets.push((
                         "git.new-branch-name".into(),
@@ -2194,7 +2339,7 @@ impl GitClientApp {
             }
             Screen::Changes => {}
         }
-        if self.discard_file_rect.area() > 0.0 {
+        if !overlay_modal && self.discard_file_rect.area() > 0.0 {
             targets.push(button(
                 "git.discard-file",
                 self.discard_file_rect,
@@ -2329,6 +2474,19 @@ impl Widget for GitClientApp {
             Screen::Changes => self.draw_changes(scene, tr, transform, theme, presence, body),
             Screen::History => self.draw_history(scene, tr, transform, theme, body),
             Screen::Panels => self.draw_panels(scene, tr, transform, theme, presence, body),
+        }
+        if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
+            self.draw_hamburger(
+                scene,
+                transform,
+                theme,
+                Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1,
+                    self.rect.y0 + APPBAR_H,
+                ),
+            );
         }
     }
 
@@ -2481,6 +2639,10 @@ impl Widget for GitClientApp {
         self.actions.take_committed()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive typed protocol match keeps publication-to-handler coverage auditable"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -2507,6 +2669,43 @@ impl Widget for GitClientApp {
             ) => {
                 self.switch_screen(Screen::Panels);
             }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::GitClientOperation::OpenChange { area, path },
+            ) => {
+                let area = match area.as_str() {
+                    "staged" => ChangeArea::Staged,
+                    "unstaged" => ChangeArea::Unstaged,
+                    "untracked" => ChangeArea::Untracked,
+                    _ => return Err("unknown change area".into()),
+                };
+                let list = match area {
+                    ChangeArea::Staged => &self.model.staged,
+                    ChangeArea::Unstaged => &self.model.unstaged,
+                    ChangeArea::Untracked => &self.model.untracked,
+                };
+                let index = list
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "changed file no longer exists".to_string())?;
+                self.switch_screen(Screen::Changes);
+                self.selected_change = Some((area, index));
+                self.diff_scroll = 0.0;
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::GitClientOperation::OpenCommit { id },
+            ) => {
+                let index = self
+                    .model
+                    .commits
+                    .iter()
+                    .position(|commit| commit.id == id)
+                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
+                self.switch_screen(Screen::History);
+                self.selected_commit = index;
+                self.detail_scroll = 0.0;
+            }
             (qos_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
                 self.stage_all();
             }
@@ -2515,6 +2714,61 @@ impl Widget for GitClientApp {
                 crate::actions::GitClientOperation::UnstageAll,
             ) => {
                 self.unstage_all();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::StageFile { path },
+            ) => {
+                let found = self
+                    .model
+                    .unstaged
+                    .iter()
+                    .position(|change| change.path == path)
+                    .map(|index| (ChangeArea::Unstaged, index))
+                    .or_else(|| {
+                        self.model
+                            .untracked
+                            .iter()
+                            .position(|change| change.path == path)
+                            .map(|index| (ChangeArea::Untracked, index))
+                    })
+                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
+                self.toggle_stage(found.0, found.1);
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::UnstageFile { path },
+            ) => {
+                let index = self
+                    .model
+                    .staged
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "file is no longer staged".to_string())?;
+                self.toggle_stage(ChangeArea::Staged, index);
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::DiscardFile { path },
+            ) => {
+                let found = self
+                    .model
+                    .unstaged
+                    .iter()
+                    .position(|change| change.path == path)
+                    .map(|index| (ChangeArea::Unstaged, index))
+                    .or_else(|| {
+                        self.model
+                            .untracked
+                            .iter()
+                            .position(|change| change.path == path)
+                            .map(|index| (ChangeArea::Untracked, index))
+                    })
+                    .ok_or_else(|| "file has no worktree changes".to_string())?;
+                if self.repo_path.is_none() {
+                    return Err("discard is unavailable in the demonstration repository".into());
+                }
+                self.discard_file(found.0, found.1);
             }
             (
                 qos_actions::OperationKind::Effect,
@@ -2529,7 +2783,79 @@ impl Widget for GitClientApp {
                 self.commit_input.set_text(&message);
                 self.do_commit();
             }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::CreateBranch { name },
+            ) => {
+                if name.trim().is_empty() {
+                    return Err("branch name cannot be empty".into());
+                }
+                if self.repo_path.is_none() {
+                    return Err("branch creation requires a real repository".into());
+                }
+                self.branch_input.set_text(&name);
+                self.create_new_branch();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::CheckoutBranch { name },
+            ) => self.apply_branch_action(BranchAction::Checkout(name)),
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::DeleteBranch { name },
+            ) => self.apply_branch_action(BranchAction::Delete(name)),
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::ApplyStash { index },
+            ) => self.apply_branch_action(BranchAction::StashApply(index)),
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::SaveStash { message },
+            ) => {
+                let path = self
+                    .repo()
+                    .ok_or_else(|| "stashing requires a real repository".to_string())?;
+                crate::repo::stash_save(&path, &message).map_err(|error| error.to_string())?;
+                self.last_error = None;
+                self.reload();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::Fetch { remote },
+            ) => {
+                let path = self
+                    .repo()
+                    .ok_or_else(|| "fetch requires a real repository".to_string())?;
+                crate::repo::fetch(&path, Some(&remote)).map_err(|error| error.to_string())?;
+                self.last_error = None;
+                self.reload();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::Pull { remote },
+            ) => {
+                let path = self
+                    .repo()
+                    .ok_or_else(|| "pull requires a real repository".to_string())?;
+                crate::repo::pull(&path, Some(&remote)).map_err(|error| error.to_string())?;
+                self.last_error = None;
+                self.reload();
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::GitClientOperation::Push { remote },
+            ) => {
+                let path = self
+                    .repo()
+                    .ok_or_else(|| "push requires a real repository".to_string())?;
+                crate::repo::push(&path, Some(&remote)).map_err(|error| error.to_string())?;
+                self.last_error = None;
+                self.reload();
+            }
             _ => return Err("operation kind does not match Git operation".into()),
+        }
+        if let Some(error) = &self.last_error {
+            return Err(error.clone());
         }
         Ok(true)
     }
@@ -2700,7 +3026,11 @@ impl GitClientApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the widget event contract and modal/global/list keyboard layers are kept together"
+    )]
     fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -2755,6 +3085,30 @@ impl GitClientApp {
             && self.flap_open()
         {
             self.flap.close();
+            *handled = true;
+            return;
+        }
+
+        if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
+            match (&ev.logical_key, self.screen) {
+                (Key::Named(NamedKey::ArrowDown), Screen::History) => {
+                    if self.selected_commit + 1 < self.model.commits.len() {
+                        self.selected_commit += 1;
+                        self.detail_scroll = 0.0;
+                    }
+                }
+                (Key::Named(NamedKey::ArrowUp), Screen::History) => {
+                    self.selected_commit = self.selected_commit.saturating_sub(1);
+                    self.detail_scroll = 0.0;
+                }
+                (Key::Named(NamedKey::ArrowDown), Screen::Changes) => {
+                    self.select_next_change(1);
+                }
+                (Key::Named(NamedKey::ArrowUp), Screen::Changes) => {
+                    self.select_next_change(-1);
+                }
+                _ => {}
+            }
             *handled = true;
             return;
         }
@@ -2919,6 +3273,34 @@ mod tests {
         assert!(
             app.flap_open(),
             "clicks on the list column keep the flap open"
+        );
+    }
+
+    #[test]
+    fn open_overlay_hides_and_blocks_background_controls() {
+        let mut app = app_at(680.0, Screen::Changes);
+        app.flap.snap(true);
+        app.hamburger_rect = Rect::new(12.0, 12.0, 44.0, 44.0);
+        app.tab_rects = vec![(Screen::History, Rect::new(100.0, 12.0, 180.0, 44.0))];
+        app.settings_seg = Rect::new(450.0, 12.0, 560.0, 44.0);
+        let semantic = app.accessibility_targets();
+        assert!(
+            semantic
+                .iter()
+                .any(|(target, _, _)| target == "git.navigation-toggle")
+        );
+        assert!(
+            semantic
+                .iter()
+                .all(|(target, _, _)| target != "git.screen.history" && target != "git.diff-layout"),
+            "obscured app-bar controls must not remain in the screen-reader tree"
+        );
+
+        app.handle_click(Point::new(140.0, 28.0), &mut AutoCommit::new());
+        assert_eq!(app.screen, Screen::Changes, "covered tab click is consumed");
+        assert!(
+            app.flap_open(),
+            "covered app-bar click does not dismiss the drawer"
         );
     }
 
