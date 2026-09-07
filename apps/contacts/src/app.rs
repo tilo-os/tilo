@@ -85,6 +85,12 @@ fn contacts_export_request(current_name: &str) -> PickRequest {
 
 const TOOLBAR_H: f64 = 48.0;
 const ROW_H: f64 = 62.0;
+/// A contacts book can be shared with a directory service and contain many
+/// thousands of people.  The in-memory model is intentionally complete (so
+/// search and exact resource resolution remain truthful), but the hand-drawn
+/// list only needs rows near the viewport.  Keeping a small overscan window
+/// bounds geometry, paint work and the accessibility subtree on large books.
+const LIST_OVERSCAN_ROWS: usize = 4;
 
 /// How long an action toast ("Saved", "Contact deleted", …) stays on screen
 /// before it fades away on its own. The host loop is kept awake (via
@@ -721,6 +727,13 @@ pub struct ContactsApp {
     list_rect: Rect,
     detail_rect: Rect,
     list_body: Rect,
+    /// Number of records matching the current search/filter.  This is kept
+    /// separately from `list_rows`, which is the bounded viewport window.
+    visible_row_count: usize,
+    /// Absolute index in the filtered/sorted result set of `list_rows[0]`.
+    /// It preserves correct assistive-technology positions after virtualising
+    /// the hand-drawn list.
+    list_row_start: usize,
     list_rows: Vec<(ContactId, Rect)>,
     /// The first-run call to action painted inside an empty list. Keeping its
     /// geometry here gives pointer and assistive activation the same route as
@@ -849,6 +862,8 @@ impl ContactsApp {
             list_rect: Rect::ZERO,
             detail_rect: Rect::ZERO,
             list_body: Rect::ZERO,
+            visible_row_count: 0,
+            list_row_start: 0,
             list_rows: Vec::new(),
             empty_action_rect: Rect::ZERO,
             empty_action_focused: false,
@@ -1004,6 +1019,16 @@ impl ContactsApp {
                 );
             self.popup = Some(Popup::ContextMenu { target: id, anchor });
         }
+    }
+
+    /// Open the durable group filter for `--shots`.  This gives visual
+    /// regression review a direct state for the group workflow rather than
+    /// relying on a pointer interaction unavailable to the one-frame runner.
+    pub fn shots_show_group_filter(&mut self) {
+        self.popup = Some(Popup::GroupFilter {
+            anchor: self.hit.group,
+        });
+        self.dirty = true;
     }
 
     /// Ids currently visible after search + group filter, in sort order.
@@ -1379,9 +1404,30 @@ impl ContactsApp {
             return;
         };
         self.selected = Some(id);
+        self.scroll_list_index_into_view(next, ids.len());
         self.detail_scroll = 0.0;
         self.dirty = true;
         self.relayout = true;
+    }
+
+    /// Keep keyboard selection discoverable.  The list's physical rows are
+    /// virtualised, so moving the selection beyond the viewport must also move
+    /// the viewport before the next layout creates that row.
+    fn scroll_list_index_into_view(&mut self, index: usize, total: usize) {
+        if total == 0 || self.list_body.height() <= 0.0 {
+            return;
+        }
+        let row_top = index as f64 * ROW_H;
+        let row_bottom = row_top + ROW_H;
+        let viewport_top = self.list_scroll;
+        let viewport_bottom = viewport_top + self.list_body.height();
+        if row_top < viewport_top {
+            self.list_scroll = row_top;
+        } else if row_bottom > viewport_bottom {
+            self.list_scroll = row_bottom - self.list_body.height();
+        }
+        let max_scroll = (total as f64 * ROW_H - self.list_body.height()).max(0.0);
+        self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
     }
 
     /// Live Import action: open the host's native multi-select file chooser
@@ -1915,14 +1961,32 @@ impl ContactsApp {
             self.list_rect.y1,
         );
 
-        // Clamp + compute row rects.
+        // Clamp + compute only the viewport window of row rects.  Do not make
+        // one Rect per contact here: large shared books should stay equally
+        // responsive whether they contain ten people or ten thousand.
         let ids = self.visible_ids();
+        self.visible_row_count = ids.len();
         let content_h = ids.len() as f64 * ROW_H;
         let max_scroll = (content_h - self.list_body.height()).max(0.0);
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
         self.list_rows.clear();
-        let mut ry = self.list_body.y0 - self.list_scroll;
-        for id in ids {
+        let first_visible = (self.list_scroll / ROW_H).floor().max(0.0) as usize;
+        let visible_rows = (self.list_body.height() / ROW_H).ceil().max(1.0) as usize;
+        let start = first_visible
+            .saturating_sub(LIST_OVERSCAN_ROWS)
+            .min(ids.len());
+        let end = first_visible
+            .saturating_add(visible_rows)
+            .saturating_add(LIST_OVERSCAN_ROWS)
+            .min(ids.len());
+        self.list_row_start = start;
+        let mut ry = self.list_body.y0 - self.list_scroll + start as f64 * ROW_H;
+        for id in ids
+            .iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .copied()
+        {
             let rr = Rect::new(self.list_body.x0, ry, self.list_body.x1, ry + ROW_H);
             self.list_rows.push((id, rr));
             ry += ROW_H;
@@ -2309,6 +2373,16 @@ impl ContactsApp {
         }
 
         // Overlays.
+        // `--shots` scenarios are configured after document sync but before
+        // the first layout pass, so their group-menu anchor starts as ZERO.
+        // Resolve that one deferred anchor now that `layout` has produced the
+        // real chip rectangle.  Live interaction always supplies the rect at
+        // activation time, so this is otherwise a harmless no-op.
+        if matches!(self.popup, Some(Popup::GroupFilter { anchor }) if anchor == Rect::ZERO) {
+            self.popup = Some(Popup::GroupFilter {
+                anchor: self.hit.group,
+            });
+        }
         if let Some(popup) = &self.popup {
             self.draw_popup(scene, transform, tr, theme, popup);
         }
@@ -5024,8 +5098,13 @@ impl Widget for ContactsApp {
             .with_name("Contact actions")
             .with_children(toolbar_actions);
 
-        let visible = self.visible_ids();
-        let list_children = if visible.is_empty() && self.store.is_empty() {
+        // `list_rows` is deliberately only the viewport + a tiny overscan
+        // window.  Mirror that in the semantic tree: exposing every one of a
+        // large directory's rows would undo the rendering bound and can stall
+        // an assistive client.  Positions still describe the full result set,
+        // and global search / canonical resource resolution reach every exact
+        // contact outside this window.
+        let list_children = if self.visible_row_count == 0 && self.store.is_empty() {
             vec![
                 AccessNode::new(Role::Button)
                     .with_name("Create contact")
@@ -5039,32 +5118,28 @@ impl Widget for ContactsApp {
                     ),
             ]
         } else {
-            visible
+            self.list_rows
                 .iter()
                 .enumerate()
-                .filter_map(|(index, id)| {
+                .filter_map(|(offset, (id, bounds))| {
                     let contact = self.store.get(*id)?;
-                    let bounds = self
-                        .list_rows
-                        .iter()
-                        .find_map(|(row_id, rect)| (*row_id == *id).then_some(*rect));
-                    let mut node = AccessNode::new(Role::ListItem)
-                        .with_name(contact.display_name())
-                        .with_optional_value(
-                            (!contact.subtitle().is_empty()).then(|| contact.subtitle()),
-                        )
-                        .with_action_target(format!("contacts.select:{id}"))
-                        .with_position(index + 1, visible.len())
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .selected(self.selected == Some(*id)),
-                        )
-                        .with_children(Vec::new());
-                    if let Some(bounds) = bounds {
-                        node = node.with_bounds(bounds);
-                    }
-                    Some(node)
+                    let index = self.list_row_start + offset;
+                    Some(
+                        AccessNode::new(Role::ListItem)
+                            .with_name(contact.display_name())
+                            .with_optional_value(
+                                (!contact.subtitle().is_empty()).then(|| contact.subtitle()),
+                            )
+                            .with_action_target(format!("contacts.select:{id}"))
+                            .with_position(index + 1, self.visible_row_count)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(self.selected == Some(*id)),
+                            )
+                            .with_bounds(*bounds)
+                            .with_children(Vec::new()),
+                    )
                 })
                 .collect()
         };
@@ -10156,6 +10231,70 @@ mod tests {
                 name_rect.width(),
             );
         }
+    }
+
+    #[test]
+    fn large_books_virtualize_rows_and_keep_keyboard_selection_in_view() {
+        // The CRDT/search model may legitimately hold an imported company
+        // directory.  Layout and accessibility must scale with the viewport,
+        // not with the directory's total cardinality.
+        let mut h = Harness::new(900, 640);
+        h.app.store.contacts = (0..1_000)
+            .map(|index| Contact {
+                id: uuid::Uuid::new_v4(),
+                first: format!("Directory {index:04}"),
+                ..Contact::default()
+            })
+            .collect();
+        h.app.selected = h.app.store.contacts.first().map(|contact| contact.id);
+        h.relayout();
+
+        let viewport_capacity = (h.app.list_body.height() / ROW_H).ceil() as usize;
+        assert_eq!(h.app.visible_row_count, 1_000);
+        assert!(
+            h.app.list_rows.len() <= viewport_capacity + LIST_OVERSCAN_ROWS * 2,
+            "only viewport rows and bounded overscan are materialized"
+        );
+
+        h.app.move_selection(40);
+        h.relayout();
+        let selected = h.app.selected.expect("selection remains available");
+        assert!(
+            h.app.list_rows.iter().any(|(id, _)| *id == selected),
+            "keyboard selection scrolls itself into the virtualized viewport"
+        );
+
+        let tree = h.app.accessibility().expect("semantic tree is present");
+        let list = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("contacts list is exposed");
+        assert_eq!(list.children.len(), h.app.list_rows.len());
+        assert!(
+            list.children.len() < h.app.visible_row_count,
+            "accessibility mirrors the bounded viewport rather than allocating every row"
+        );
+        let selected_row = list
+            .children
+            .iter()
+            .find(|node| node.state.selected)
+            .expect("selected row is in the semantic viewport");
+        assert_eq!(selected_row.pos_in_set, Some(41));
+        assert_eq!(selected_row.set_size, Some(1_000));
+    }
+
+    #[test]
+    fn group_filter_shot_defers_its_anchor_until_layout_exists() {
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        app.shots_show_group_filter();
+        drive_frame(&mut app, 1_280, 800);
+        assert!(matches!(
+            app.popup,
+            Some(Popup::GroupFilter { anchor }) if anchor == app.hit.group && anchor != Rect::ZERO
+        ));
     }
 
     #[test]
