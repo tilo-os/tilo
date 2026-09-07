@@ -16076,6 +16076,7 @@ dependencies = [
  "peniko",
  "png 0.18.1",
  "skrifa 0.42.1",
+ "smallvec",
  "static_assertions",
  "thiserror 2.0.18",
  "vello_encoding",
@@ -16097,8 +16098,6 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd38937516fa4b47423d9255bb5e4a65e839ec9d57c38c4af6189ce56bf46b7"
 dependencies = [
  "bytemuck",
  "log",

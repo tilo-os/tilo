@@ -180,6 +180,12 @@ impl Widget for Stack {
             .collect()
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for child in &self.children {
+            visitor(child.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.children
             .iter_mut()
