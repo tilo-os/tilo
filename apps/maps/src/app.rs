@@ -184,6 +184,11 @@ pub struct MapsApp {
     /// the model to the CRDT once — after [`PERSIST_DEBOUNCE`] of quiet — rather
     /// than serialising the whole model every frame.
     persist_deadline: Option<Instant>,
+    /// A committed `MapsAction::CommitSearch` received from the shared document.
+    /// It is intentionally a one-shot UI effect: the action persists only the
+    /// deterministic search intent, while local/offline and live providers
+    /// resolve results after the document has converged.
+    pending_shared_search: Option<String>,
 
     // networking
     net_tx: Sender<NetMsg>,
@@ -551,6 +556,7 @@ impl MapsApp {
             loaded: false,
             dirty: true,
             persist_deadline: None,
+            pending_shared_search: None,
             net_tx,
             net_rx,
             pending: 0,
@@ -4640,15 +4646,41 @@ impl Widget for MapsApp {
             self.loaded = true;
             self.dirty = false;
             self.persist_deadline = None;
-        } else if self.dirty && self.persist_deadline.is_none_or(|d| Instant::now() >= d) {
-            // The view has settled (or a non-gesture change had no deadline):
-            // flush the whole model once. Coalescing lives in `mark_dirty`.
-            MapsDoc::save(state, &self.model);
-            self.dirty = false;
-            self.persist_deadline = None;
+        } else if self.dirty {
+            if self.persist_deadline.is_none_or(|d| Instant::now() >= d) {
+                // The view has settled (or a non-gesture change had no deadline):
+                // flush the whole model once. Coalescing lives in `mark_dirty`.
+                MapsDoc::save(state, &self.model);
+                self.dirty = false;
+                self.persist_deadline = None;
+            }
+        } else if let Some(shared) = MapsDoc::load(state)
+            && shared != self.model
+        {
+            // A palette/agent/peer action mutates the CRDT outside this
+            // widget's pointer path. Adopt it before our next ordinary model
+            // mirror so we never overwrite a remote action with stale local
+            // state. A newly committed search is then resolved below through
+            // the same `run_search` path as Enter in the visible search box.
+            let committed_search = shared.query != self.model.query
+                && shared
+                    .recents
+                    .first()
+                    .is_some_and(|recent| recent.eq_ignore_ascii_case(&shared.query));
+            self.model = shared;
+            if committed_search && !self.model.query.trim().is_empty() {
+                self.pending_shared_search = Some(self.model.query.clone());
+            }
         }
         self.endpoints
             .sync_queries(&self.model.origin_query, &self.model.dest_query);
+        if let Some(query) = self.pending_shared_search.take() {
+            // Do not leave a stale type-ahead popup floating over results that
+            // arrived from another collaborator or an agent action.
+            self.search.dismiss_results();
+            query.clone_into(&mut self.model.query);
+            self.run_search();
+        }
         if let Some(effect) = self.endpoints.take_due_search(Instant::now()) {
             self.apply_endpoint_effect(effect);
         }
@@ -5074,23 +5106,33 @@ impl Widget for MapsApp {
             root.actions
                 .push(spec.with_contract(ActionContract::view()));
         }
-        for place in self.model.places.iter().filter(|place| place.saved) {
-            if let Some(resource) = root
-                .children
-                .iter_mut()
-                .find(|resource| resource.id.0 == format!("maps.place:{}", place.id))
-            {
-                for (id, label, type_id) in [
-                    ("open", "Open place", "maps.open-place"),
-                    ("directions", "Get directions", "maps.directions"),
-                ] {
-                    if let Ok(spec) =
-                        ActionSpec::operation(id, label, OperationKind::View, type_id, &place.id)
-                    {
-                        resource
-                            .actions
-                            .insert(0, spec.with_contract(ActionContract::view()));
-                    }
+        // Saved places and committed search results are both first-class map
+        // resources. Give each the same agent-drivable Open/Directions view
+        // operations, keyed by its stable place id rather than list position.
+        for resource in root.children.iter_mut().filter(|resource| {
+            matches!(resource.kind.as_str(), "maps.place" | "maps.search-result")
+        }) {
+            let prefix = if resource.kind == "maps.place" {
+                "maps.place:"
+            } else {
+                "maps.search-result:"
+            };
+            let Some(place_id) = resource.id.0.strip_prefix(prefix) else {
+                continue;
+            };
+            if self.model.place(place_id).is_none() {
+                continue;
+            }
+            for (id, label, type_id) in [
+                ("open", "Open place", "maps.open-place"),
+                ("directions", "Get directions", "maps.directions"),
+            ] {
+                if let Ok(spec) =
+                    ActionSpec::operation(id, label, OperationKind::View, type_id, &place_id)
+                {
+                    resource
+                        .actions
+                        .insert(0, spec.with_contract(ActionContract::view()));
                 }
             }
         }
