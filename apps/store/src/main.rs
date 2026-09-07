@@ -59,6 +59,7 @@ fn main() {
                 "wide",
                 "narrow",
                 "detail",
+                "remotes",
                 "progress",
                 "error",
                 "moderation",
