@@ -433,6 +433,12 @@ impl Document {
         crate::model::materialize_comments(&self.doc, &self.c)
     }
 
+    /// Materialize the durable replies below one comment, in canonical id
+    /// order. An old comment without a reply map simply has no replies.
+    pub fn comment_replies(&self, comment_id: &str) -> Vec<crate::snapshot::CommentReplyView> {
+        crate::model::materialize_comment_replies(&self.doc, &self.c, comment_id)
+    }
+
     pub fn add_comment(
         &mut self,
         block_id: &str,
@@ -460,6 +466,24 @@ impl Document {
         self.as_mut()
             .add_comment_mark(block_id, start, end, comment_id);
         self.doc.commit();
+    }
+
+    /// Add a one-paragraph reply to an existing comment thread. Returns `None`
+    /// when a concurrent deletion removed the parent comment before this write.
+    pub fn add_comment_reply(
+        &mut self,
+        comment_id: &str,
+        author: &str,
+        date: &str,
+        text: &str,
+    ) -> Option<String> {
+        let id = self
+            .as_mut()
+            .add_comment_reply(comment_id, author, date, text);
+        if id.is_some() {
+            self.doc.commit();
+        }
+        id
     }
 
     pub fn insert_comment_block(
@@ -998,6 +1022,30 @@ mod tests {
             2,
             "both comments present after merge"
         );
+    }
+
+    #[test]
+    fn concurrent_comment_replies_converge_without_replacing_each_other() {
+        let mut a = Document::new();
+        let p = a.insert_block(None, "paragraph");
+        a.splice_text(&p, 0, 0, "shared text");
+        let comment = a.add_comment(&p, 0, 6, "Ada", "Please review");
+        let mut b = a.fork();
+
+        let ar = a
+            .add_comment_reply(&comment, "Bea", "2026-09-07", "Looks good")
+            .expect("comment exists on A");
+        let br = b
+            .add_comment_reply(&comment, "Cy", "2026-09-08", "One suggestion")
+            .expect("comment exists on B");
+        a.merge(&mut b);
+        b.merge(&mut a);
+
+        assert_eq!(a.materialize(), b.materialize(), "thread must converge");
+        let replies = a.comment_replies(&comment);
+        assert_eq!(replies.len(), 2);
+        assert!(replies.iter().any(|reply| reply.id == ar));
+        assert!(replies.iter().any(|reply| reply.id == br));
     }
 
     #[test]
