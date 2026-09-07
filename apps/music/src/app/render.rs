@@ -110,6 +110,106 @@ impl SearchResultsView {
 /// as a prev/next swipe rather than a tap.
 const BAR_SWIPE_PX: f64 = 56.0;
 
+/// Keep the active-screen accessibility snapshot useful without cloning an
+/// unbounded library into AccessKit/AT-SPI on every frame.  Global search uses
+/// the paged resource provider; this tree represents what a person can
+/// currently browse in the app and deliberately follows the same bounded
+/// materialisation rule.
+pub(super) const ACCESSIBLE_PAGE_LIMIT: usize = 100;
+
+fn accessible_track(
+    lib: &crate::model::Library,
+    track: &crate::model::Track,
+    position: usize,
+    total: usize,
+) -> ui::a11y::AccessNode {
+    use ui::a11y::{AccessNode, AccessState, Role};
+
+    let liked = lib.is_liked(&track.id);
+    let downloaded = matches!(lib.cache_state(&track.id), CacheState::Cached);
+    AccessNode::new(Role::ListItem)
+        .with_name(&track.title)
+        .with_description(format!(
+            "{}; {}; {}",
+            lib.artist_name(&track.artist_id),
+            lib.album_title(&track.album_id),
+            ui::format::timecode(u64::from(track.duration_s))
+        ))
+        .with_position(position, total)
+        .with_children(vec![
+            AccessNode::new(Role::Button)
+                .with_name(format!("Play {}", track.title))
+                .with_action_target(format!("music.play-track.{}", track.id)),
+            AccessNode::new(Role::ToggleButton)
+                .with_name(format!("Like {}", track.title))
+                .with_state(AccessState::new().checked(liked))
+                .with_action_target(format!("music.toggle-like.{}", track.id)),
+            AccessNode::new(Role::ToggleButton)
+                .with_name(format!("Keep {} offline", track.title))
+                .with_state(AccessState::new().checked(downloaded))
+                .with_action_target(format!("music.toggle-download.{}", track.id)),
+        ])
+}
+
+fn accessible_album(
+    lib: &crate::model::Library,
+    album: &crate::model::Album,
+    position: usize,
+    total: usize,
+) -> ui::a11y::AccessNode {
+    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_name(&album.title)
+        .with_description(format!(
+            "{}; {}",
+            lib.artist_name(&album.artist_id),
+            album.year
+        ))
+        .with_position(position, total)
+        .with_action_target(format!("music.open-album.{}", album.id))
+}
+
+fn accessible_artist(
+    artist: &crate::model::Artist,
+    position: usize,
+    total: usize,
+) -> ui::a11y::AccessNode {
+    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_name(&artist.name)
+        .with_description(format!(
+            "{}; {} monthly listeners",
+            artist.genre, artist.monthly_listeners
+        ))
+        .with_position(position, total)
+        .with_action_target(format!("music.open-artist.{}", artist.id))
+}
+
+fn accessible_playlist(
+    playlist: &crate::model::Playlist,
+    position: usize,
+    total: usize,
+) -> ui::a11y::AccessNode {
+    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_name(&playlist.name)
+        .with_description(format!("{} songs", playlist.track_ids.len()))
+        .with_position(position, total)
+        .with_action_target(format!("music.open-playlist.{}", playlist.id))
+}
+
+fn accessible_result_playlist(
+    playlist: &crate::backend::PlaylistHit,
+    position: usize,
+    total: usize,
+) -> ui::a11y::AccessNode {
+    ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_name(&playlist.title)
+        .with_description(format!(
+            "{}; {} songs",
+            playlist.subtitle, playlist.track_count
+        ))
+        .with_position(position, total)
+        .with_action_target(format!("music.open-playlist.{}", playlist.id))
+}
+
 // Vertical-center a single text line of `size` within a row of height `h`.
 fn vy(top: f64, h: f64, size: f32) -> f64 {
     top + (h - f64::from(size) * 1.25) / 2.0
@@ -656,10 +756,15 @@ impl Widget for MusicApp {
         "MusicApp"
     }
 
-    /// The music library is custom-painted, including its transport.  Export
-    /// the now-playing state and the four controls that are useful without a
-    /// pointer; activating one calls the exact same local `Action` reducer as
-    /// a rendered button or keyboard shortcut.
+    /// The music library is custom-painted, so it must also publish the full
+    /// active screen explicitly.  Navigation, search, content rows and the
+    /// player all route to the exact same reducers as pointer/keyboard input.
+    /// Large collections are capped here; the canonical resource/search layer
+    /// remains paged and resolves every later item lazily by stable id.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the semantic tree intentionally mirrors every Music view in one exhaustive match; splitting it would separate accessibility coverage from the view enum it audits"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let current = self
@@ -674,18 +779,45 @@ impl Widget for MusicApp {
         let controls = vec![
             AccessNode::new(Role::Button)
                 .with_name("Previous track")
+                .with_description("Shortcut: left arrow")
                 .with_action_target("music.previous"),
             AccessNode::new(Role::ToggleButton)
                 .with_name("Play or pause")
+                .with_description("Shortcut: space")
                 .with_action_target("music.toggle-play")
                 .with_state(AccessState::new().checked(self.pb.playing)),
             AccessNode::new(Role::Button)
                 .with_name("Next track")
+                .with_description("Shortcut: right arrow")
                 .with_action_target("music.next"),
             AccessNode::new(Role::ToggleButton)
+                .with_name("Shuffle")
+                .with_state(AccessState::new().checked(self.pb.shuffle))
+                .with_action_target("music.toggle-shuffle"),
+            AccessNode::new(Role::Button)
+                .with_name("Repeat mode")
+                .with_value(self.pb.repeat.as_str())
+                .with_action_target("music.cycle-repeat"),
+            AccessNode::new(Role::ToggleButton)
                 .with_name("Mute")
+                .with_description("Shortcut: M")
                 .with_action_target("music.toggle-mute")
                 .with_state(AccessState::new().checked(self.pb.volume == 0)),
+            AccessNode::new(Role::Slider)
+                .with_name("Playback position")
+                .with_value(ui::format::timecode((self.playhead_ms / 1000.0) as u64))
+                .with_description("Increment or decrement by five percent")
+                .with_action_target("music.seek"),
+            AccessNode::new(Role::Slider)
+                .with_name("Volume")
+                .with_value(format!("{}%", self.pb.volume))
+                .with_action_target("music.volume"),
+            AccessNode::new(Role::Button)
+                .with_name("Open queue")
+                .with_action_target("music.nav.queue"),
+            AccessNode::new(Role::Button)
+                .with_name("Open lyrics")
+                .with_action_target("music.nav.lyrics"),
         ];
         let player_status = if let Some(error) = &self.playback_error {
             error.clone()
@@ -706,6 +838,52 @@ impl Widget for MusicApp {
                     .busy(self.active_resolve_request.is_some()),
             )
             .with_children(controls);
+        let selected_nav = |id: &str| {
+            matches!(
+                (&self.view, id),
+                (View::Home, "home")
+                    | (View::Songs, "songs")
+                    | (View::Albums, "albums")
+                    | (View::Artists, "artists")
+                    | (View::Playlists, "playlists")
+                    | (View::Downloads, "downloads")
+                    | (View::Liked, "liked")
+                    | (View::Search, "search")
+                    | (View::Queue, "queue")
+                    | (View::Lyrics, "lyrics")
+            )
+        };
+        let navigation = AccessNode::new(Role::List)
+            .with_name("Music navigation")
+            .with_children(
+                crate::actions::NAVIGATION_VIEWS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (id, label))| {
+                        AccessNode::new(Role::ListItem)
+                            .with_name(*label)
+                            .with_position(index + 1, crate::actions::NAVIGATION_VIEWS.len())
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(selected_nav(id)),
+                            )
+                            .with_action_target(format!("music.nav.{id}"))
+                    })
+                    .collect(),
+            );
+
+        let search = AccessNode::new(Role::TextInput)
+            .with_name("Search songs, albums, artists, and playlists")
+            .with_description("Shortcut: slash or Control F")
+            .with_value(self.search_input.value())
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(Widget::is_focused(&self.search_input)),
+            )
+            .with_action_target("music.search");
+
         let mut page_content = Vec::new();
         // The custom-painted empty-state button is page content, not a
         // transport control. Give it a separate semantic group and route it to
@@ -740,8 +918,263 @@ impl Widget for MusicApp {
                     ]),
             );
         }
-        let mut children = vec![player];
-        children.extend(page_content);
+
+        let page_name = match &self.view {
+            View::Home => "Home".to_string(),
+            View::Songs => "Songs".to_string(),
+            View::Albums => "Albums".to_string(),
+            View::Artists => "Artists".to_string(),
+            View::Playlists => "Playlists".to_string(),
+            View::Downloads => "Downloads".to_string(),
+            View::Liked => "Liked Songs".to_string(),
+            View::Search => "Search results".to_string(),
+            View::Queue => "Queue".to_string(),
+            View::Lyrics => "Lyrics".to_string(),
+            View::Album(id) => self.lib.album_title(id).to_string(),
+            View::Artist(id) => self.lib.artist_name(id).to_string(),
+            View::Playlist(id) => self
+                .lib
+                .playlists
+                .iter()
+                .find(|playlist| playlist.id == *id)
+                .map_or_else(|| "Playlist".to_string(), |playlist| playlist.name.clone()),
+        };
+
+        let mut list_items = Vec::new();
+        match &self.view {
+            View::Songs => {
+                let items = self.lib.tracks_sorted();
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, track)| accessible_track(&self.lib, track, index + 1, total)),
+                );
+            }
+            View::Downloads => {
+                let items = self.lib.downloaded_tracks();
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, track)| accessible_track(&self.lib, track, index + 1, total)),
+                );
+            }
+            View::Liked => {
+                let items = self
+                    .lib
+                    .liked
+                    .iter()
+                    .filter_map(|id| self.lib.track(id))
+                    .collect::<Vec<_>>();
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, track)| accessible_track(&self.lib, track, index + 1, total)),
+                );
+            }
+            View::Queue => {
+                let items = self
+                    .pb
+                    .queue
+                    .iter()
+                    .filter_map(|id| self.lib.track(id))
+                    .collect::<Vec<_>>();
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, track)| accessible_track(&self.lib, track, index + 1, total)),
+                );
+            }
+            View::Album(id) => {
+                let items = self.lib.album_tracks(id);
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, track)| accessible_track(&self.lib, track, index + 1, total)),
+                );
+            }
+            View::Artist(id) => {
+                let items = self.lib.artist_albums(id);
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, album)| accessible_album(&self.lib, album, index + 1, total)),
+                );
+            }
+            View::Playlist(id) => {
+                if let Some(playlist) = self
+                    .lib
+                    .playlists
+                    .iter()
+                    .find(|playlist| playlist.id == *id)
+                {
+                    let items = playlist
+                        .track_ids
+                        .iter()
+                        .filter_map(|track| self.lib.track(track))
+                        .collect::<Vec<_>>();
+                    let total = items.len();
+                    list_items.extend(
+                        items
+                            .into_iter()
+                            .take(ACCESSIBLE_PAGE_LIMIT)
+                            .enumerate()
+                            .map(|(index, track)| {
+                                accessible_track(&self.lib, track, index + 1, total)
+                            }),
+                    );
+                }
+            }
+            View::Albums => {
+                let items = self.lib.albums_sorted();
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, album)| accessible_album(&self.lib, album, index + 1, total)),
+                );
+            }
+            View::Artists => {
+                let items = self.lib.artists_sorted();
+                let total = items.len();
+                list_items.extend(
+                    items
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, artist)| accessible_artist(artist, index + 1, total)),
+                );
+            }
+            View::Playlists => {
+                let total = self.lib.playlists.len();
+                list_items.extend(
+                    self.lib
+                        .playlists
+                        .iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, playlist)| accessible_playlist(playlist, index + 1, total)),
+                );
+            }
+            View::Home => {
+                let albums = self.lib.albums_sorted();
+                let total = self.lib.playlists.len() + albums.len();
+                list_items.extend(
+                    self.lib
+                        .playlists
+                        .iter()
+                        .enumerate()
+                        .map(|(index, playlist)| accessible_playlist(playlist, index + 1, total)),
+                );
+                let used = list_items.len();
+                list_items.extend(
+                    albums
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT.saturating_sub(used))
+                        .enumerate()
+                        .map(|(index, album)| {
+                            accessible_album(&self.lib, album, used + index + 1, total)
+                        }),
+                );
+            }
+            View::Search => {
+                let results = self.lib.search(self.search_input.value());
+                let live_playlists = self
+                    .live_bundle
+                    .as_ref()
+                    .filter(|(query, _)| query == self.search_input.value())
+                    .map_or(&[][..], |(_, bundle)| bundle.playlists.as_slice());
+                let total = results.tracks.len()
+                    + results.albums.len()
+                    + results.artists.len()
+                    + live_playlists.len();
+                list_items.extend(
+                    results
+                        .tracks
+                        .iter()
+                        .filter_map(|id| self.lib.track(id))
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, track)| accessible_track(&self.lib, track, index + 1, total)),
+                );
+                let used = list_items.len();
+                list_items.extend(
+                    results
+                        .albums
+                        .iter()
+                        .filter_map(|id| self.lib.album(id))
+                        .take(ACCESSIBLE_PAGE_LIMIT.saturating_sub(used))
+                        .enumerate()
+                        .map(|(index, album)| {
+                            accessible_album(&self.lib, album, used + index + 1, total)
+                        }),
+                );
+                let used = list_items.len();
+                list_items.extend(
+                    live_playlists
+                        .iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT.saturating_sub(used))
+                        .enumerate()
+                        .map(|(index, playlist)| {
+                            accessible_result_playlist(playlist, used + index + 1, total)
+                        }),
+                );
+                let used = list_items.len();
+                list_items.extend(
+                    results
+                        .artists
+                        .iter()
+                        .filter_map(|id| self.lib.artist(id))
+                        .take(ACCESSIBLE_PAGE_LIMIT.saturating_sub(used))
+                        .enumerate()
+                        .map(|(index, artist)| accessible_artist(artist, used + index + 1, total)),
+                );
+            }
+            View::Lyrics => {
+                page_content.extend(
+                    self.lyrics
+                        .iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT)
+                        .enumerate()
+                        .map(|(index, line)| {
+                            AccessNode::new(Role::Paragraph)
+                                .with_name(&line.text)
+                                .with_position(index + 1, self.lyrics.len())
+                        }),
+                );
+            }
+        }
+        if !list_items.is_empty() {
+            page_content.push(
+                AccessNode::new(Role::List)
+                    .with_name(format!("{page_name} items"))
+                    .with_children(list_items),
+            );
+        }
+        let page = AccessNode::new(Role::TabPanel)
+            .with_name(page_name)
+            .with_children(page_content);
+
+        let children = vec![navigation, search, page, player];
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -750,6 +1183,10 @@ impl Widget for MusicApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all synthetic Music targets are validated and routed together so no assistive action bypasses the normal reducer"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -757,6 +1194,50 @@ impl Widget for MusicApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if target == "music.search" {
+            match action {
+                ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
+                    self.dispatch(Action::FocusSearch, state);
+                    return true;
+                }
+                ui::a11y::Action::SetValue(value) => {
+                    let value = value.chars().take(512).collect::<String>();
+                    self.on_focus_search();
+                    self.search_input.set_text(&value);
+                    self.search_cache = None;
+                    self.search_edit_at = Some(Instant::now());
+                    self.scroll = 0.0;
+                    self.dirty = true;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+        if target == "music.seek" {
+            let delta = match action {
+                ui::a11y::Action::Increment => 0.05,
+                ui::a11y::Action::Decrement => -0.05,
+                _ => return false,
+            };
+            let duration = self.current_duration_ms() as f64;
+            let fraction = if duration > 0.0 {
+                (self.playhead_ms / duration + delta).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            self.dispatch(Action::SeekFrac(fraction), state);
+            return true;
+        }
+        if target == "music.volume" {
+            let delta = match action {
+                ui::a11y::Action::Increment => 0.05,
+                ui::a11y::Action::Decrement => -0.05,
+                _ => return false,
+            };
+            let fraction = (f64::from(self.pb.volume) / 100.0 + delta).clamp(0.0, 1.0);
+            self.dispatch(Action::VolumeFrac(fraction), state);
+            return true;
+        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -767,10 +1248,58 @@ impl Widget for MusicApp {
             "music.previous" => Action::Prev,
             "music.toggle-play" => Action::TogglePlay,
             "music.next" => Action::Next,
+            "music.toggle-shuffle" => Action::ToggleShuffle,
+            "music.cycle-repeat" => Action::CycleRepeat,
             "music.toggle-mute" => Action::ToggleMute,
             "music.empty-search" => Action::Nav(View::Search),
             "music.retry-search" => Action::RetrySearch,
-            _ => return false,
+            _ => {
+                if let Some(id) = target.strip_prefix("music.nav.") {
+                    let Some(view) = Self::top_level_view(id) else {
+                        return false;
+                    };
+                    Action::Nav(view)
+                } else if let Some(id) = target.strip_prefix("music.play-track.") {
+                    if self.lib.track(id).is_none() {
+                        return false;
+                    }
+                    Action::Play {
+                        queue: vec![id.to_string()],
+                        index: 0,
+                    }
+                } else if let Some(id) = target.strip_prefix("music.toggle-like.") {
+                    if self.lib.track(id).is_none() {
+                        return false;
+                    }
+                    Action::ToggleLike(id.to_string())
+                } else if let Some(id) = target.strip_prefix("music.toggle-download.") {
+                    if self.lib.track(id).is_none() {
+                        return false;
+                    }
+                    Action::ToggleDownload(id.to_string())
+                } else if let Some(id) = target.strip_prefix("music.open-album.") {
+                    if self.lib.album(id).is_none() {
+                        return false;
+                    }
+                    Action::Nav(View::Album(id.to_string()))
+                } else if let Some(id) = target.strip_prefix("music.open-artist.") {
+                    if self.lib.artist(id).is_none() {
+                        return false;
+                    }
+                    Action::Nav(View::Artist(id.to_string()))
+                } else if let Some(id) = target.strip_prefix("music.open-playlist.") {
+                    let known_local = self.lib.playlists.iter().any(|playlist| playlist.id == id);
+                    let known_live = self.live_bundle.as_ref().is_some_and(|(_, bundle)| {
+                        bundle.playlists.iter().any(|playlist| playlist.id == id)
+                    });
+                    if !known_local && !known_live {
+                        return false;
+                    }
+                    Action::Nav(View::Playlist(id.to_string()))
+                } else {
+                    return false;
+                }
+            }
         };
         self.dispatch(action, state);
         true
@@ -778,6 +1307,10 @@ impl Widget for MusicApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip_at(self.mouse)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -820,6 +1353,38 @@ fn frac_in(r: Rect, x: f64) -> f64 {
 }
 
 impl MusicApp {
+    /// Hover labels for icon-only controls. Text-labelled rows and navigation
+    /// deliberately return `None`; repeating their visible label would add
+    /// noise rather than information.
+    fn tooltip_at(&self, point: Point) -> Option<&str> {
+        self.hits
+            .iter()
+            .rev()
+            .find(|hit| hit.rect.contains(point))
+            .and_then(|hit| match &hit.action {
+                Action::Back => Some("Back"),
+                Action::TogglePlay => Some(if self.pb.playing { "Pause" } else { "Play" }),
+                Action::Next => Some("Next track"),
+                Action::Prev => Some("Previous track"),
+                Action::ToggleShuffle => Some("Shuffle"),
+                Action::CycleRepeat => Some("Change repeat mode"),
+                Action::ToggleMute => Some(if self.pb.volume == 0 {
+                    "Unmute"
+                } else {
+                    "Mute"
+                }),
+                Action::ToggleVolumePopover => Some("Volume"),
+                Action::ToggleDownload(_) => Some("Keep offline"),
+                Action::ToggleLike(_) => Some("Like song"),
+                Action::ToggleQueue => Some("Show or hide queue"),
+                Action::ToggleSidebar => Some("Show or hide navigation"),
+                Action::BeginNewPlaylist => Some("New playlist"),
+                Action::FocusSearch if self.search_pill_rect.width() < 100.0 => Some("Search"),
+                Action::Nav(View::Lyrics) => Some("Open lyrics"),
+                _ => None,
+            })
+    }
+
     pub(super) fn hit_test(&self, p: Point) -> Option<Action> {
         for h in self.hits.iter().rev() {
             if h.rect.contains(p) {
@@ -2892,13 +3457,15 @@ impl MusicApp {
         dl_x: f64,
     ) {
         let title_col = if is_current { c.accent } else { c.text };
-        let title = elide(
-            tr,
-            &tk.title,
-            14.0,
-            TextWeight::Medium,
-            album_x - text_x - 16.0,
-        );
+        // The album column is useful on a desktop table, but at compact widths
+        // it used to remain nominally enabled and squeeze the actual song
+        // title down to a handful of characters.  Treat the metadata column as
+        // one responsive unit: when it cannot leave a genuinely readable title
+        // beside the trailing controls, give that space back to title/artist.
+        let album_visible = show_album && right - text_x >= 560.0 && right - album_x > 80.0;
+        let text_right = if album_visible { album_x } else { dl_x - 28.0 };
+        let text_width = (text_right - text_x - 16.0).max(0.0);
+        let title = elide(tr, &tk.title, 14.0, TextWeight::Medium, text_width);
         draw_text(
             tr,
             scene,
@@ -2911,13 +3478,7 @@ impl MusicApp {
             TextWeight::Medium,
             None,
         );
-        let artist = elide(
-            tr,
-            &tk.artist,
-            12.0,
-            TextWeight::Regular,
-            album_x - text_x - 16.0,
-        );
+        let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, text_width);
         draw_text(
             tr,
             scene,
@@ -2931,7 +3492,7 @@ impl MusicApp {
             None,
         );
 
-        if show_album && right - album_x > 80.0 {
+        if album_visible {
             let al = elide(
                 tr,
                 &tk.album,
