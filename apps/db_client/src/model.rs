@@ -305,6 +305,31 @@ pub enum Cell {
 }
 
 impl Cell {
+    pub const MAX_RETAINED_TEXT_BYTES: usize = 16 * 1024;
+    #[allow(
+        clippy::string_slice,
+        reason = "end is moved back to a validated UTF-8 boundary"
+    )]
+    pub fn bounded_text(value: String) -> Self {
+        if value.len() <= Self::MAX_RETAINED_TEXT_BYTES {
+            return Self::Text(value);
+        }
+        let mut end = Self::MAX_RETAINED_TEXT_BYTES;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        Self::Text(format!("{}… [truncated]", &value[..end]))
+    }
+
+    /// Approximate owned payload retained by this cell. Blob payloads are not
+    /// kept, only their size metadata, so they consume no result-data budget.
+    pub fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Text(value) => value.len(),
+            Self::Integer(_) | Self::Real(_) => std::mem::size_of::<i64>(),
+            Self::Null | Self::Blob(_) => 0,
+        }
+    }
     /// Display string for the grid. NULL renders the literal token; callers
     /// style it dim+italic.
     pub fn display(&self) -> String {
@@ -354,12 +379,21 @@ pub struct QueryResult {
     /// True when the statement returned a row set (SELECT/PRAGMA), false for
     /// DML/DDL.
     pub is_select: bool,
+    /// True when collection stopped at the app's bounded result limit. The
+    /// grid can stay responsive without pretending the server returned only
+    /// these rows.
+    pub truncated: bool,
 }
 
 impl QueryResult {
     pub fn message(&self) -> String {
         if self.is_select {
-            format!("{} rows · {:.1} ms", self.rows.len(), self.elapsed_ms)
+            format!(
+                "{} rows{} · {:.1} ms",
+                self.rows.len(),
+                if self.truncated { "+" } else { "" },
+                self.elapsed_ms
+            )
         } else {
             let n = self.rows_affected.unwrap_or(0);
             format!("{n} rows affected · {:.1} ms", self.elapsed_ms)
@@ -386,6 +420,16 @@ mod tests {
         assert_eq!(Cell::Real(3.0).display(), "3.0");
         assert_eq!(Cell::Real(3.50).display(), "3.5");
         assert_eq!(Cell::Null.display(), "NULL");
+    }
+
+    #[test]
+    fn bounded_text_refuses_hostile_cells() {
+        let Cell::Text(value) = Cell::bounded_text("x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99))
+        else {
+            unreachable!()
+        };
+        assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
+        assert!(value.ends_with("… [truncated]"));
     }
 
     #[test]
