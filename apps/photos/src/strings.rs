@@ -62,6 +62,7 @@ mod tests {
             "photos-reset",
             "photos-copy",
             "photos-save",
+            "photos-more",
             "photos-edited",
             "photos-copied",
             "photos-copy-failed",

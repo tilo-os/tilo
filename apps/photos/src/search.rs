@@ -16,6 +16,7 @@ use ui::search::{
     SearchResult,
 };
 
+use crate::actions::{folder_resource_id, person_resource_id};
 use crate::doc::PhotosDoc;
 
 /// Search group label for Photos results.
@@ -70,7 +71,7 @@ impl PhotosSearchProvider {
             ))
             .with_icon(Icon::Image);
             let searchable = format!(
-                "{}\0photos.photo\0{} x {} pixels\0open\0favorite\0clockwise\0{}",
+                "{}\0photos.photo\0{} x {} pixels\0open\0favorite\0clockwise\0{}\0{}\0{}\0{}\0{}",
                 photo.image.name,
                 photo.image.width,
                 photo.image.height,
@@ -78,7 +79,11 @@ impl PhotosSearchProvider {
                     "favorite"
                 } else {
                     "not favorite"
-                }
+                },
+                photo.folder.as_deref().unwrap_or_default(),
+                photo.people.join(" "),
+                photo.tags.join(" "),
+                photo.captured_at.as_deref().unwrap_or_default(),
             );
             let _ = provider
                 .catalog
@@ -101,7 +106,54 @@ impl PhotosSearchProvider {
                 .catalog
                 .upsert(album.id.clone(), searchable, result);
         }
+        provider.index_metadata_views(&library);
         provider
+    }
+
+    /// Folder and person resources are virtual, but their ids and open
+    /// actions are still canonical. Index them separately to keep the main
+    /// photo/album catalogue construction readable and bounded.
+    fn index_metadata_views(&self, library: &crate::model::PhotoLibrary) {
+        let mut folders = std::collections::BTreeMap::<String, usize>::new();
+        let mut people = std::collections::BTreeMap::<String, usize>::new();
+        for photo in &library.photos {
+            if let Some(folder) = &photo.folder {
+                *folders.entry(folder.clone()).or_default() += 1;
+            }
+            for person in &photo.people {
+                *people.entry(person.clone()).or_default() += 1;
+            }
+        }
+        for (folder, count) in folders {
+            let id = folder_resource_id(&folder);
+            let result = SearchResult::for_action(
+                PHOTO_SEARCH_KIND,
+                &folder,
+                ActionAddress::new(&id, "open"),
+            )
+            .with_subtitle(format!("Folder · {count} photographs"))
+            .with_icon(Icon::Folder);
+            let _ = self.catalog.upsert(
+                id,
+                format!("{folder}\0photos.folder\0folder\0{count} photographs\0open"),
+                result,
+            );
+        }
+        for (person, count) in people {
+            let id = person_resource_id(&person);
+            let result = SearchResult::for_action(
+                PHOTO_SEARCH_KIND,
+                &person,
+                ActionAddress::new(&id, "open"),
+            )
+            .with_subtitle(format!("Person · {count} photographs"))
+            .with_icon(Icon::Image);
+            let _ = self.catalog.upsert(
+                id,
+                format!("{person}\0photos.person\0person\0{count} photographs\0open"),
+                result,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -278,5 +330,44 @@ mod tests {
             .resource(&doc, &address.resource)
             .expect("the late stable album id resolves lazily");
         assert!(resource.actions.iter().any(|action| action.id == "open"));
+    }
+
+    #[test]
+    fn metadata_search_hits_resolve_to_the_same_folder_and_person_resources() {
+        let mut doc = open_doc("harbour.png");
+        let mut library = PhotosDoc::library(&doc);
+        let photo = library.photos.first_mut().expect("opening imports a photo");
+        photo.folder = Some("旅行-夏".into());
+        photo.people = vec!["Élodie".into()];
+        photo.tags = vec!["golden-hour".into()];
+        photo.captured_at = Some("2026-09-07".into());
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let provider = PhotosSearchProvider::new(&doc);
+        for (query, expected_resource) in [
+            ("旅行-夏", crate::actions::folder_resource_id("旅行-夏")),
+            ("ÉLODIE", crate::actions::person_resource_id("Élodie")),
+            ("golden-hour", library.photos[0].id.clone()),
+            ("2026-09-07", library.photos[0].id.clone()),
+        ] {
+            let hit = provider
+                .search(query)
+                .into_iter()
+                .find(|hit| {
+                    hit.action_address()
+                        .is_some_and(|address| address.resource == expected_resource)
+                })
+                .unwrap_or_else(|| panic!("missing canonical search hit for {query}"));
+            let address = hit.action_address().unwrap();
+            let resource = PhotosResources
+                .resource(&doc, &address.resource)
+                .unwrap_or_else(|| panic!("{query} hit points outside the resource tree"));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            );
+        }
     }
 }
