@@ -4626,7 +4626,7 @@ impl TextInput {
         let previous_text = self.text.clone();
         let obj_id = self.resolve_text_obj(state, root);
         if let Some(paste) = primary {
-            let cleaned = self.clean_pasted_text(&paste);
+            let cleaned = self.clean_pasted_text(paste);
             if !cleaned.is_empty() {
                 self.insert_str(&cleaned, state, obj_id.as_ref());
             }
