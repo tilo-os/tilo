@@ -151,12 +151,24 @@ enum Action {
     EditConnection(ConnectionId),
     /// Connect to a saved machine (opens its session surface).
     Connect(ConnectionId),
+    /// Ask before opening a live session from the canvas UI. Resource actions
+    /// receive the same confirmation from the shell; this keeps mouse,
+    /// keyboard, and assistive-technology paths equally explicit.
+    RequestConnect(ConnectionId),
     /// Select a row without connecting (shows the detail rail).
     SelectRow(ConnectionId),
     /// Toggle the favorite star on a row.
     ToggleFavorite(ConnectionId),
-    /// Delete a saved connection.
-    Delete(ConnectionId),
+    /// Ask before removing a shared saved profile from the canvas UI.
+    RequestDelete(ConnectionId),
+    /// Ask before adding the freshly observed SSH host key to device-private trust.
+    RequestTrustSshHostKey(ConnectionId),
+    /// Ask before forgetting a device-private SSH host-key pin.
+    RequestForgetSshHostKey(ConnectionId),
+    /// Execute the currently visible, revalidated confirmation.
+    ConfirmPending,
+    /// Dismiss the currently visible confirmation without doing anything.
+    CancelPending,
     /// Focus a named text field on the form (or the search box).
     FocusField(Field),
     /// Pick a protocol kind in the form.
@@ -370,6 +382,50 @@ struct QosDevice {
     online: bool,
 }
 
+/// A local, deliberate confirmation for actions whose resource contract is
+/// privileged or destructive.  Only an id and a non-secret target snapshot
+/// are retained: secrets are neither rendered nor copied into UI state.
+#[derive(Clone, Debug)]
+enum PendingConfirmation {
+    Connect {
+        id: ConnectionId,
+        target: String,
+    },
+    Delete {
+        id: ConnectionId,
+        target: String,
+    },
+    TrustSshHostKey {
+        id: ConnectionId,
+        target: String,
+        observed: crate::ssh::HostKeyIdentity,
+    },
+    ForgetSshHostKey {
+        id: ConnectionId,
+        target: String,
+    },
+}
+
+impl PendingConfirmation {
+    fn id(&self) -> ConnectionId {
+        match self {
+            Self::Connect { id, .. }
+            | Self::Delete { id, .. }
+            | Self::TrustSshHostKey { id, .. }
+            | Self::ForgetSshHostKey { id, .. } => *id,
+        }
+    }
+
+    fn target(&self) -> &str {
+        match self {
+            Self::Connect { target, .. }
+            | Self::Delete { target, .. }
+            | Self::TrustSshHostKey { target, .. }
+            | Self::ForgetSshHostKey { target, .. } => target,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (session scale/fullscreen, \
@@ -439,6 +495,12 @@ pub struct RemoteApp {
     /// on-screen affordances and the Ctrl+K palette share one replayable path.
     actions: ui::ActionHost,
     pending_resource_operation: Option<PendingResourceOperation>,
+    /// Canvas-side confirmation mirroring resource-action policy. This is
+    /// private view state and never replicated with the connection profile.
+    pending_confirmation: Option<PendingConfirmation>,
+    /// Short local status after a confirmation is cancelled by revalidation.
+    /// It deliberately contains no credential material.
+    notice: Option<String>,
 
     /// Eased open/closed state of the primary navigation rail. On a wide
     /// window the rail is docked and open; on a narrow window it collapses
@@ -463,6 +525,204 @@ pub struct RemoteApp {
 }
 
 impl RemoteApp {
+    /// A short local outcome message for cancelled/revalidated actions. This
+    /// intentionally stays out of the document and contains no secret data.
+    fn draw_notice(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        message: &str,
+    ) {
+        let tokens = &theme.tokens;
+        let max_w = (self.rect.width() - 32.0).min(520.0);
+        let rect = Rect::new(
+            self.rect.x1 - max_w - 16.0,
+            self.rect.y1 - 70.0,
+            self.rect.x1 - 16.0,
+            self.rect.y1 - 16.0,
+        );
+        let card = RoundedRect::from_rect(rect, 10.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.semantic.warning.at_alpha(0.18),
+            None,
+            &card,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.semantic.warning,
+            None,
+            &card,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Action needs review",
+            12.5,
+            tokens.colors.text_primary,
+            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 9.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            message,
+            12.0,
+            tokens.colors.text_dim,
+            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 27.0)),
+            Some((rect.width() - 24.0) as f32),
+        );
+    }
+
+    /// Canvas counterpart to the shell's resource-action confirmation. It
+    /// states the scope in plain language and makes cancel the safe default.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a compact modal keeps its visual copy, geometry, and action targets together"
+    )]
+    fn draw_confirmation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(pending) = self.pending_confirmation.clone() else {
+            return;
+        };
+        let tokens = &theme.tokens;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(0, 0, 0, 255).at_alpha(0.62),
+            None,
+            &self.rect,
+        );
+        let connection = self.workspace.get(pending.id());
+        let name = connection.map_or("this saved connection", |c| c.name.as_str());
+        let is_delete = matches!(pending, PendingConfirmation::Delete { .. });
+        let (title, detail, primary) = match &pending {
+            PendingConfirmation::Delete { .. } => (
+                format!("Delete {name}?"),
+                "This removes the shared saved profile from Remote. It does not modify the remote machine.".to_string(),
+                "Delete",
+            ),
+            PendingConfirmation::Connect { .. } => (
+                format!("Connect to {name}?"),
+                "This opens a live remote session. Remote will recheck the saved target and access before anything is sent.".to_string(),
+                "Connect",
+            ),
+            PendingConfirmation::TrustSshHostKey { observed, .. } => (
+                format!("Trust SSH key for {name}?"),
+                format!("Verify this out of band before trusting: {} {}. This pin is private to this device.", observed.algorithm, observed.fingerprint),
+                "Trust key",
+            ),
+            PendingConfirmation::ForgetSshHostKey { .. } => (
+                format!("Forget SSH key for {name}?"),
+                "This removes only this device's saved host-key pin. Reconnect to inspect and explicitly trust a replacement key.".to_string(),
+                "Forget key",
+            ),
+        };
+        let w = 460.0_f64.min((self.rect.width() - 32.0).max(280.0));
+        let card_rect = Rect::new(
+            self.rect.center().x - w / 2.0,
+            self.rect.center().y - 112.0,
+            self.rect.center().x + w / 2.0,
+            self.rect.center().y + 112.0,
+        );
+        let card = RoundedRect::from_rect(card_rect, 14.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &card,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tokens.colors.border_focus,
+            None,
+            &card,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &title,
+            18.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((card_rect.x0 + 24.0, card_rect.y0 + 28.0)),
+            Some((card_rect.width() - 48.0) as f32),
+            TextWeight::Bold,
+        );
+        if let Some(connection) = connection {
+            text_renderer.draw_text(
+                scene,
+                &connection.address(),
+                12.5,
+                tokens.colors.text_dim,
+                transform * Affine::translate((card_rect.x0 + 24.0, card_rect.y0 + 58.0)),
+                Some((card_rect.width() - 48.0) as f32),
+            );
+        }
+        text_renderer.draw_text(
+            scene,
+            &detail,
+            13.0,
+            tokens.colors.text_dim,
+            transform * Affine::translate((card_rect.x0 + 24.0, card_rect.y0 + 92.0)),
+            Some((card_rect.width() - 48.0) as f32),
+        );
+        let cancel = Rect::new(
+            card_rect.x1 - 244.0,
+            card_rect.y1 - 58.0,
+            card_rect.x1 - 132.0,
+            card_rect.y1 - 18.0,
+        );
+        let confirm = Rect::new(
+            card_rect.x1 - 120.0,
+            card_rect.y1 - 58.0,
+            card_rect.x1 - 18.0,
+            card_rect.y1 - 18.0,
+        );
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            cancel,
+            "Cancel",
+            false,
+        );
+        if is_delete {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(confirm, "Delete")
+                    .hovered(confirm.contains(self.pointer))
+                    .text_size(13.0)
+                    .weight(TextWeight::Semibold)
+                    .danger(),
+            );
+        } else {
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                confirm,
+                primary,
+                true,
+            );
+        }
+        self.push_hit(cancel, Action::CancelPending);
+        self.push_hit(confirm, Action::ConfirmPending);
+    }
+
     /// The live app: starts empty. Only the user's real saved connections
     /// (held in the shared document, persisted across sessions) appear — no
     /// fabricated machines are ever written into the CRDT.
@@ -512,6 +772,8 @@ impl RemoteApp {
             seeded: false,
             actions: ui::ActionHost::new(),
             pending_resource_operation: None,
+            pending_confirmation: None,
+            notice: None,
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
@@ -581,6 +843,35 @@ impl RemoteApp {
                     SessionStatus::Failed("Connection refused".into()),
                 );
             }
+            "confirm-connect" => {
+                if let Some(id) = self.first_of_kind(ConnectionKind::Qos) {
+                    self.request_connect(id);
+                }
+            }
+            "confirm-delete" => {
+                if let Some(id) = self
+                    .workspace
+                    .connections()
+                    .first()
+                    .map(|connection| connection.id)
+                {
+                    self.request_delete(id);
+                }
+            }
+            "confirm-ssh-trust" => {
+                if let Some(id) = self.first_of_kind(ConnectionKind::Ssh)
+                    && let Some(connection) = self.workspace.get(id)
+                {
+                    self.pending_confirmation = Some(PendingConfirmation::TrustSshHostKey {
+                        id,
+                        target: Self::confirmation_target(connection),
+                        observed: crate::ssh::HostKeyIdentity {
+                            algorithm: "ssh-ed25519".into(),
+                            fingerprint: "SHA256:DemoFingerprintForVisualReviewOnly".into(),
+                        },
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -633,14 +924,21 @@ impl RemoteApp {
             Action::Connect(id) => {
                 self.open_session(id);
             }
+            Action::RequestConnect(id) => self.request_connect(id),
             Action::SelectRow(id) => {
                 self.selected = Some(id);
             }
             Action::ToggleFavorite(id) => {
                 self.toggle_favorite(id, state);
             }
-            Action::Delete(id) => {
-                self.delete_connection(id, state);
+            Action::RequestDelete(id) => self.request_delete(id),
+            Action::RequestTrustSshHostKey(id) => self.request_trust_ssh_host_key(id),
+            Action::RequestForgetSshHostKey(id) => self.request_forget_ssh_host_key(id),
+            Action::ConfirmPending => self.confirm_pending(state),
+            Action::CancelPending => {
+                self.pending_confirmation = None;
+                self.notice =
+                    Some("Action cancelled. No connection or profile was changed.".into());
             }
             Action::FocusField(f) => {
                 self.focus_field(f);
@@ -764,6 +1062,182 @@ impl RemoteApp {
         }
     }
 
+    /// Stable, non-secret identity used to revalidate an on-screen confirmation
+    /// after a collaborator may have edited the shared profile.
+    fn confirmation_target(connection: &Connection) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            connection.kind.tag(),
+            connection.host,
+            connection.port,
+            connection.user,
+            connection.auth.label()
+        )
+    }
+
+    fn request_connect(&mut self, id: ConnectionId) {
+        let Some(connection) = self.workspace.get(id) else {
+            self.notice = Some("That saved connection no longer exists.".into());
+            return;
+        };
+        if !connection_readiness(connection).can_connect() {
+            self.open_session(id);
+            return;
+        }
+        self.notice = None;
+        self.pending_confirmation = Some(PendingConfirmation::Connect {
+            id,
+            target: Self::confirmation_target(connection),
+        });
+        self.blur_field();
+    }
+
+    fn request_delete(&mut self, id: ConnectionId) {
+        let Some(connection) = self.workspace.get(id) else {
+            self.notice = Some("That saved connection no longer exists.".into());
+            return;
+        };
+        self.notice = None;
+        self.pending_confirmation = Some(PendingConfirmation::Delete {
+            id,
+            target: Self::confirmation_target(connection),
+        });
+        self.blur_field();
+    }
+
+    fn ssh_host_key_issue(&self, id: ConnectionId) -> Option<crate::ssh::HostKeyIssue> {
+        match (&self.live, self.session_for) {
+            (Some(LiveSession::Ssh(session)), Some(session_id)) if session_id == id => {
+                session.host_key_issue()
+            }
+            _ => None,
+        }
+    }
+
+    fn request_trust_ssh_host_key(&mut self, id: ConnectionId) {
+        let Some(connection) = self.workspace.get(id) else {
+            return;
+        };
+        let Some(crate::ssh::HostKeyIssue::FirstContact { observed }) = self.ssh_host_key_issue(id)
+        else {
+            self.notice = Some("No new SSH host key is waiting for trust. Changed keys must be forgotten before they can be reviewed again.".into());
+            return;
+        };
+        self.pending_confirmation = Some(PendingConfirmation::TrustSshHostKey {
+            id,
+            target: Self::confirmation_target(connection),
+            observed,
+        });
+    }
+
+    fn request_forget_ssh_host_key(&mut self, id: ConnectionId) {
+        let Some(connection) = self.workspace.get(id) else {
+            return;
+        };
+        if !matches!(
+            self.ssh_host_key_issue(id),
+            Some(crate::ssh::HostKeyIssue::Changed { .. })
+        ) {
+            self.notice = Some("Only a currently changed SSH host key can be forgotten. Reconnect to revalidate this target first.".into());
+            return;
+        }
+        self.pending_confirmation = Some(PendingConfirmation::ForgetSshHostKey {
+            id,
+            target: Self::confirmation_target(connection),
+        });
+    }
+
+    /// Revalidate against the current shared projection immediately before a
+    /// network attempt or deletion. A late collaborator edit changes neither
+    /// the target nor the document unexpectedly; the user must review it.
+    fn confirm_pending(&mut self, state: &mut AutoCommit) {
+        let Some(pending) = self.pending_confirmation.take() else {
+            return;
+        };
+        let id = pending.id();
+        let Some(connection) = self.workspace.get(id) else {
+            self.notice = Some("The saved connection was removed before confirmation.".into());
+            return;
+        };
+        if Self::confirmation_target(connection) != pending.target() {
+            self.notice = Some(
+                "This connection changed while confirmation was open. Review the current profile, then try again."
+                    .into(),
+            );
+            return;
+        }
+        match pending {
+            PendingConfirmation::Connect { .. } => {
+                // `open_session` repeats transport/profile readiness at the I/O
+                // boundary, so an expired capability cannot race confirmation.
+                self.open_session(id);
+            }
+            PendingConfirmation::Delete { .. } => self.delete_connection(id, state),
+            PendingConfirmation::TrustSshHostKey { observed, .. } => {
+                let current = self.ssh_host_key_issue(id);
+                if !matches!(current, Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
+                {
+                    self.notice = Some(
+                        "The observed SSH host key changed before it was trusted. Review it again."
+                            .into(),
+                    );
+                    return;
+                }
+                let path = match crate::ssh::default_known_hosts_path() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.notice = Some(format!(
+                            "Could not use private SSH host-key storage: {error}"
+                        ));
+                        return;
+                    }
+                };
+                match crate::ssh::trust_host_key(
+                    &path,
+                    &connection.host,
+                    connection.port,
+                    &observed,
+                ) {
+                    Ok(()) => self.open_session(id),
+                    Err(error) => {
+                        self.notice = Some(format!("Could not save SSH host-key trust: {error}"));
+                    }
+                }
+            }
+            PendingConfirmation::ForgetSshHostKey { .. } => {
+                if !matches!(
+                    self.ssh_host_key_issue(id),
+                    Some(crate::ssh::HostKeyIssue::Changed { .. })
+                ) {
+                    self.notice = Some("The SSH host key is no longer the changed key you approved for removal. Reconnect to review it again.".into());
+                    return;
+                }
+                let path = match crate::ssh::default_known_hosts_path() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.notice = Some(format!(
+                            "Could not use private SSH host-key storage: {error}"
+                        ));
+                        return;
+                    }
+                };
+                match crate::ssh::forget_host_key(&path, &connection.host, connection.port) {
+                    Ok(true) => {
+                        self.notice = Some("Forgot the local SSH host-key pin. Reconnect to review the next key before trusting it.".into());
+                        self.disconnect_session();
+                    }
+                    Ok(false) => {
+                        self.notice =
+                            Some("No local SSH host-key pin was found for this target.".into());
+                    }
+                    Err(error) => {
+                        self.notice = Some(format!("Could not forget SSH host-key trust: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
     /// `true` while the rail is (resolved) open at the current layout.
     fn rail_open(&self) -> bool {
         self.rail.is_open(self.rail_layout)
@@ -832,6 +1306,14 @@ impl RemoteApp {
     fn start_live(&mut self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
+                let known_hosts_path = match crate::ssh::default_known_hosts_path() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        return LiveSession::Error(format!(
+                            "SSH host-key trust is unavailable: {error}"
+                        ));
+                    }
+                };
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
                 let auth = match crate::ssh::resolve_auth(
                     prefer_key,
@@ -853,6 +1335,7 @@ impl RemoteApp {
                     auth,
                     cols: 80,
                     rows: 24,
+                    known_hosts_path,
                 }) {
                     Ok(s) => LiveSession::Ssh(Box::new(s)),
                     Err(e) => LiveSession::Error(e.to_string()),
@@ -1562,9 +2045,12 @@ impl Widget for RemoteApp {
                     if session.status() == SessionStatus::Connected
             );
             if let Some(workspace) = resources.first_mut() {
-                workspace
-                    .children
-                    .push(crate::actions::session_resource(connection, can_send_text));
+                let host_key_issue = self.ssh_host_key_issue(id);
+                workspace.children.push(crate::actions::session_resource(
+                    connection,
+                    can_send_text,
+                    host_key_issue.as_ref(),
+                ));
             }
         }
         resources
@@ -1638,6 +2124,48 @@ impl Widget for RemoteApp {
                     }
                     _ => return Err("text input requires a connected SSH terminal".to_string()),
                 }
+            }
+            crate::actions::RemoteOperation::TrustSshHostKey {
+                connection_id,
+                observed,
+            } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
+                {
+                    return Err(
+                        "the observed SSH host key is stale; reconnect to inspect the current key"
+                            .into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
+                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(
+                    self.ssh_host_key_issue(connection_id),
+                    Some(crate::ssh::HostKeyIssue::Changed { .. })
+                ) {
+                    return Err(
+                        "only the currently observed changed SSH host key can be forgotten".into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
+                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
+                self.disconnect_session();
             }
         }
         Ok(true)
@@ -1723,7 +2251,9 @@ impl Widget for RemoteApp {
                 });
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            crate::actions::RemoteOperation::Disconnect { .. } => {
+            crate::actions::RemoteOperation::Disconnect { .. }
+            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
+            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
                 if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
                     return Ok(None);
                 }
@@ -1910,6 +2440,10 @@ impl Widget for RemoteApp {
         self.rail.reconcile(self.rail_layout);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root compositor intentionally keeps screen, notice, rail, and modal stacking in one ordering contract"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -2007,6 +2541,18 @@ impl Widget for RemoteApp {
             ),
         }
 
+        if let Some(notice) = self.notice.clone() {
+            self.draw_notice(scene, transform, text_renderer, theme, &notice);
+        }
+
+        // A confirmation is always top-most, including an immersive session.
+        // It is drawn after content so its hit regions cannot be obscured by a
+        // terminal/framebuffer that may be receiving continuous updates.
+        if self.pending_confirmation.is_some() {
+            self.draw_confirmation(scene, transform, text_renderer, theme);
+            return;
+        }
+
         if immersive {
             return;
         }
@@ -2016,7 +2562,10 @@ impl Widget for RemoteApp {
         // the top-left of the content to summon the rail.
         if overlay {
             if reveal > 0.001 {
-                let scrim = Color::from_rgba8(0, 0, 0, 255).at_alpha((reveal * 0.5) as f32);
+                // The rail is only 64px wide: retain enough separation to
+                // signal a temporary overlay without reducing the underlying
+                // connection list to disabled-looking contrast.
+                let scrim = Color::from_rgba8(0, 0, 0, 255).at_alpha((reveal * 0.26) as f32);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
             }
             self.draw_hamburger(scene, transform, text_renderer, theme);
@@ -2078,7 +2627,9 @@ impl Widget for RemoteApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.handle_cursor_moved_pos(p, event, state, &ctx);
             }
-            WindowEvent::MouseWheel { delta, .. } if matches!(self.screen, Screen::List) => {
+            WindowEvent::MouseWheel { delta, .. }
+                if self.pending_confirmation.is_none() && matches!(self.screen, Screen::List) =>
+            {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
                     MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
@@ -2091,7 +2642,8 @@ impl Widget for RemoteApp {
                 *handled = true;
             }
             WindowEvent::MouseInput { state, button, .. }
-                if self.qos_pointer_target(self.pointer).is_some() =>
+                if self.pending_confirmation.is_none()
+                    && self.qos_pointer_target(self.pointer).is_some() =>
             {
                 let button = match button {
                     MouseButton::Left => Some(272),
@@ -2115,7 +2667,8 @@ impl Widget for RemoteApp {
             // A press/release over the live VNC canvas is injected into the
             // remote desktop rather than hit-testing the local chrome.
             WindowEvent::MouseInput { state, button, .. }
-                if self.vnc_pointer_target(self.pointer).is_some() =>
+                if self.pending_confirmation.is_none()
+                    && self.vnc_pointer_target(self.pointer).is_some() =>
             {
                 self.handle_vnc_mouse_input(*state, *button);
                 *handled = true;
@@ -2151,7 +2704,8 @@ impl Widget for RemoteApp {
                         ..
                     },
                 ..
-            } if matches!(self.live.as_ref(), Some(LiveSession::Qos(session)) if session.status == SessionStatus::Connected)
+            } if self.pending_confirmation.is_none()
+                && matches!(self.live.as_ref(), Some(LiveSession::Qos(session)) if session.status == SessionStatus::Connected)
                 && !(self.fullscreen && *code == KeyCode::Escape) =>
             {
                 if let Some(keycode) = Self::qos_keycode(*code) {
@@ -2280,7 +2834,7 @@ impl Widget for RemoteApp {
                         actions.push(button(
                             "Connect",
                             format!("remote.connection:{id}:connect"),
-                            self.action_bounds(Action::Connect(id)),
+                            self.action_bounds(Action::RequestConnect(id)),
                         ));
                     }
                     let readiness = connection_readiness(connection);
@@ -2500,7 +3054,7 @@ impl Widget for RemoteApp {
                     form_actions.push(button(
                         "Delete connection",
                         format!("remote.connection:{id}:delete"),
-                        self.action_bounds(Action::Delete(id)),
+                        self.action_bounds(Action::RequestDelete(id)),
                     ));
                 }
                 children.push(
@@ -2578,7 +3132,7 @@ impl Widget for RemoteApp {
                     children.push(button(
                         "Retry connection",
                         format!("remote.connection:{id}:connect"),
-                        self.action_bounds(Action::Connect(id)),
+                        self.action_bounds(Action::RequestConnect(id)),
                     ));
                 }
                 if matches!(status, Some(SessionStatus::Unavailable(_))) {
@@ -2603,11 +3157,73 @@ impl Widget for RemoteApp {
             }
         };
 
+        let mut root_children = vec![nav, content];
+        if let Some(pending) = self.pending_confirmation.as_ref() {
+            let name = self
+                .workspace
+                .get(pending.id())
+                .map_or("this saved connection", |connection| {
+                    connection.name.as_str()
+                });
+            let (title, detail, primary) = match pending {
+                PendingConfirmation::Delete { .. } => (
+                    format!("Delete {name}?"),
+                    "This removes the shared saved profile, not the remote machine.".to_string(),
+                    "Delete",
+                ),
+                PendingConfirmation::Connect { .. } => (
+                    format!("Connect to {name}?"),
+                    "The target and access are rechecked before a remote session opens.".to_string(),
+                    "Connect",
+                ),
+                PendingConfirmation::TrustSshHostKey { observed, .. } => (
+                    format!("Trust SSH key for {name}?"),
+                    format!(
+                        "Verify {} {} out of band. This device-private trust is checked again before connecting.",
+                        observed.algorithm, observed.fingerprint
+                    ),
+                    "Trust key",
+                ),
+                PendingConfirmation::ForgetSshHostKey { .. } => (
+                    format!("Forget SSH key for {name}?"),
+                    "Remove this device-private pin, then reconnect to inspect a replacement key before trusting it.".to_string(),
+                    "Forget key",
+                ),
+            };
+            root_children.push(
+                AccessNode::new(Role::Dialog)
+                    .with_name(title)
+                    .with_description(detail)
+                    .with_bounds(self.rect)
+                    .with_state(AccessState::new().modal(true).focusable(true))
+                    .with_children(vec![
+                        button(
+                            "Cancel",
+                            "remote.confirmation.cancel".into(),
+                            self.action_bounds(Action::CancelPending),
+                        ),
+                        button(
+                            primary,
+                            "remote.confirmation.confirm".into(),
+                            self.action_bounds(Action::ConfirmPending),
+                        ),
+                    ]),
+            );
+        }
+        if let Some(notice) = self.notice.as_ref() {
+            root_children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(notice.clone())
+                    .with_live(Politeness::Polite)
+                    .with_hashed_key("remote.action.notice"),
+            );
+        }
+
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Remote")
                 .with_bounds(self.rect)
-                .with_children(vec![nav, content]),
+                .with_children(root_children),
         )
     }
 
@@ -2619,6 +3235,15 @@ impl Widget for RemoteApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        if self.pending_confirmation.is_some() {
+            let routed = match (target, action) {
+                ("remote.confirmation.cancel", A11yAction::Activate) => Action::CancelPending,
+                ("remote.confirmation.confirm", A11yAction::Activate) => Action::ConfirmPending,
+                _ => return false,
+            };
+            self.apply(routed, state);
+            return true;
+        }
         if let Some(name) = target.strip_prefix("remote.field:") {
             let Some(field) = Field::from_target_name(name) else {
                 return false;
@@ -2678,8 +3303,8 @@ impl Widget for RemoteApp {
                     Action::ToggleFavorite(id)
                 }
                 ("edit", A11yAction::Activate) => Action::EditConnection(id),
-                ("connect", A11yAction::Activate) => Action::Connect(id),
-                ("delete", A11yAction::Activate) => Action::Delete(id),
+                ("connect", A11yAction::Activate) => Action::RequestConnect(id),
+                ("delete", A11yAction::Activate) => Action::RequestDelete(id),
                 _ => return false,
             };
             self.apply(routed, state);
@@ -2755,9 +3380,14 @@ impl RemoteApp {
             self.pointer = p;
             self.dirty = true; // hover feedback
             // Stream pointer motion to a live remote desktop.
-            self.forward_vnc_pointer(p);
-            if let Some((x, y)) = self.qos_pointer_target(p) {
-                self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion { x, y });
+            if self.pending_confirmation.is_none() {
+                self.forward_vnc_pointer(p);
+                if let Some((x, y)) = self.qos_pointer_target(p) {
+                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                        x,
+                        y,
+                    });
+                }
             }
         }
         let tip = self
@@ -2834,6 +3464,23 @@ impl RemoteApp {
         ctx: &EventRouteCtx<'_>,
     ) {
         let p = self.pointer;
+
+        // A pending privileged/destructive action is modal. Never allow a
+        // click through it to connect, send input, or mutate a profile.
+        if self.pending_confirmation.is_some() {
+            if let Some(action) = self
+                .hits
+                .iter()
+                .rev()
+                .find(|hit| hit.rect.contains(p))
+                .map(|hit| hit.action)
+                && matches!(action, Action::ConfirmPending | Action::CancelPending)
+            {
+                self.apply(action, state);
+            }
+            *handled = true;
+            return;
+        }
 
         // Scrim dismissal: when the rail is an open overlay, a press
         // on the dimmed content (outside the rail itself, and not on
@@ -2927,6 +3574,15 @@ impl RemoteApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        if self.pending_confirmation.is_some() {
+            match key {
+                Key::Named(NamedKey::Escape) => self.apply(Action::CancelPending, state),
+                Key::Named(NamedKey::Enter) => self.apply(Action::ConfirmPending, state),
+                _ => return,
+            }
+            *handled = true;
+            return;
+        }
         if self.handle_key_global_shortcut(key, mods, state, handled) {
             return;
         }
@@ -3061,7 +3717,7 @@ impl RemoteApp {
                     Screen::Form { .. } => self.apply(Action::SaveForm, state),
                     Screen::List => {
                         if let Some(id) = self.selected {
-                            self.apply(Action::Connect(id), state);
+                            self.apply(Action::RequestConnect(id), state);
                         }
                     }
                     Screen::Session { .. } => {}
@@ -3785,7 +4441,7 @@ impl RemoteApp {
                 "Connect",
                 true,
             );
-            self.push_hit(connect, Action::Connect(c.id));
+            self.push_hit(connect, Action::RequestConnect(c.id));
         } else {
             Self::draw_readiness_badge(scene, transform, text_renderer, theme, connect, readiness);
         }
@@ -4605,7 +5261,7 @@ impl RemoteApp {
                 None,
                 TextWeight::Semibold,
             );
-            self.push_hit(del, Action::Delete(id));
+            self.push_hit(del, Action::RequestDelete(id));
         }
     }
 
@@ -5117,12 +5773,25 @@ impl RemoteApp {
         // profile gets a direct edit recovery instead; it must never look as
         // though retrying would somehow install an RDP backend or grant a
         // denied sandbox capability.
-        let can_retry = matches!(tone, StatusTone::Error);
+        let host_key_recovery = if c.kind == ConnectionKind::Ssh {
+            match self.ssh_host_key_issue(c.id) {
+                Some(crate::ssh::HostKeyIssue::FirstContact { .. }) => {
+                    Some(("Trust key", Action::RequestTrustSshHostKey(c.id)))
+                }
+                Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
+                    Some(("Forget key", Action::RequestForgetSshHostKey(c.id)))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let can_retry = matches!(tone, StatusTone::Error) && host_key_recovery.is_none();
         let btn_h = 38.0;
         let back_w = 132.0;
         let retry_w = 104.0;
         let gap = 12.0;
-        let group_w = if can_retry || show_edit {
+        let group_w = if can_retry || show_edit || host_key_recovery.is_some() {
             back_w + gap + retry_w
         } else {
             back_w
@@ -5139,7 +5808,21 @@ impl RemoteApp {
                 "Retry",
                 false,
             );
-            self.push_hit(retry, Action::Connect(c.id));
+            self.push_hit(retry, Action::RequestConnect(c.id));
+            bx += retry_w + gap;
+        }
+        if let Some((label, action)) = host_key_recovery {
+            let recover = Rect::new(bx, y, bx + retry_w, y + btn_h);
+            self.draw_button(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                recover,
+                label,
+                false,
+            );
+            self.push_hit(recover, action);
             bx += retry_w + gap;
         }
         if show_edit {
@@ -6127,9 +6810,82 @@ mod tests {
         let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
         let count = app.workspace.connections().len();
-        app.apply(Action::Delete(id), &mut doc());
+        app.apply(Action::RequestDelete(id), &mut doc());
+        app.apply(Action::ConfirmPending, &mut doc());
         assert_eq!(app.workspace.connections().len(), count - 1);
         assert!(app.workspace.get(id).is_none());
+    }
+
+    #[test]
+    fn canvas_connect_requires_confirmation_before_opening_a_broker_route() {
+        let mut app = RemoteApp::new_demo();
+        let id = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection")
+            .id;
+
+        app.apply(Action::RequestConnect(id), &mut doc());
+
+        assert!(matches!(
+            app.pending_confirmation,
+            Some(PendingConfirmation::Connect { id: pending, .. }) if pending == id
+        ));
+        assert!(app.live.is_none(), "no route is opened before confirmation");
+        assert!(
+            app.collab_outbox.is_empty(),
+            "no control request is queued before confirmation"
+        );
+    }
+
+    #[test]
+    fn confirmation_revalidates_a_collaboratively_changed_target() {
+        let mut app = RemoteApp::new_demo();
+        let id = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|connection| connection.kind == ConnectionKind::Qos)
+            .expect("demo qOS connection")
+            .id;
+        app.apply(Action::RequestConnect(id), &mut doc());
+        app.workspace.get_mut(id).expect("profile").host =
+            iroh::SecretKey::generate().public().to_string();
+
+        app.apply(Action::ConfirmPending, &mut doc());
+
+        assert!(
+            app.live.is_none(),
+            "changed target must not be used after confirmation"
+        );
+        assert!(
+            app.collab_outbox.is_empty(),
+            "no route is opened for stale confirmation"
+        );
+        assert!(
+            app.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("changed"))
+        );
+    }
+
+    #[test]
+    fn confirmation_is_a_modal_accessibility_surface() {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 960.0, 700.0);
+        let id = app.workspace.connections()[0].id;
+        app.apply(Action::RequestDelete(id), &mut doc());
+        let tree = app.accessibility().expect("confirmation semantics");
+        let confirm =
+            find_semantic_target(&tree, "remote.confirmation.confirm").expect("confirm action");
+        assert_eq!(confirm.name.as_deref(), Some("Delete"));
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| node.role == Role::Dialog && node.state.modal)
+        );
     }
 
     #[test]
@@ -6397,7 +7153,8 @@ mod tests {
         app.sync(&mut state, &automerge::ROOT);
         let id = app.workspace.connections()[0].id;
 
-        app.apply(Action::Delete(id), &mut state);
+        app.apply(Action::RequestDelete(id), &mut state);
+        app.apply(Action::ConfirmPending, &mut state);
 
         assert!(
             RemoteDoc::list(&state).iter().all(|c| c.id != id),
