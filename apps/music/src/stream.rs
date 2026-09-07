@@ -25,13 +25,24 @@ use crate::backend::{
 pub enum StreamRequest {
     /// Run a real multi-type YouTube-Music search (songs, albums, artists,
     /// playlists + a top result) in one call.
-    Search(String),
+    Search { query: String, request_id: u64 },
     /// A deep per-type "see all" search for the given filter tab.
-    SearchMore { query: String, kind: SearchKind },
+    SearchMore {
+        query: String,
+        kind: SearchKind,
+        request_id: u64,
+    },
     /// Resolve a directly-playable audio URL for `video_id`. `track_id` is the
     /// app's library id, echoed back so the result can be correlated with the
     /// track that is (still) current when it lands.
-    Resolve { track_id: String, video_id: String },
+    Resolve {
+        track_id: String,
+        video_id: String,
+        /// Caller-owned monotonic identity. The app accepts a response only
+        /// when it still matches its newest request, preventing A→B→A from
+        /// adopting the first (stale) A response.
+        request_id: u64,
+    },
     /// Fetch the real Home page (charts / new releases / top artists).
     Home,
     /// Fetch a real artist page by `YouTube` channel id.
@@ -50,21 +61,42 @@ pub enum StreamUpdate {
     /// Real multi-type search results for a query (the mixed "All" bundle).
     SearchResults {
         query: String,
+        request_id: u64,
         bundle: Box<SearchBundle>,
+    },
+    /// A search could not be completed. This is a terminal response with the
+    /// original request identity, not an unstructured log note, so the UI can
+    /// clear its busy state and offer a retry for the exact query.
+    SearchUnavailable {
+        query: String,
+        request_id: u64,
+        error: String,
     },
     /// A deep per-type "see all" result for a filter tab.
     SearchMore {
         query: String,
         kind: SearchKind,
+        request_id: u64,
         bundle: Box<SearchBundle>,
+    },
+    SearchMoreUnavailable {
+        query: String,
+        kind: SearchKind,
+        request_id: u64,
+        error: String,
     },
     /// A track's audio stream resolved to a playable URL.
     Resolved {
         track_id: String,
+        request_id: u64,
         stream: Box<ResolvedStream>,
     },
     /// A resolve attempt failed (offline, geo-blocked, PoToken-gated, …).
-    ResolveFailed { track_id: String, error: String },
+    ResolveFailed {
+        track_id: String,
+        request_id: u64,
+        error: String,
+    },
     /// The real Home page landed.
     Home { content: Box<HomeContent> },
     /// The Home fetch could not complete (offline build, geo-block, network
@@ -89,6 +121,7 @@ pub enum StreamUpdate {
 pub struct StreamWorker {
     tx: Sender<StreamRequest>,
     rx: Receiver<StreamUpdate>,
+    startup_error: Option<String>,
 }
 
 impl StreamWorker {
@@ -116,27 +149,52 @@ impl StreamWorker {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
-        if let Err(error) = std::thread::Builder::new()
+        let startup_error = std::thread::Builder::new()
             .name("music-stream".into())
             .spawn(move || run_worker(&req_rx, &up_tx, force_offline))
-        {
-            tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
-        }
+            .err()
+            .map(|error| {
+                tracing::error!(target: "music::stream", %error, "could not spawn streaming worker");
+                format!("could not start music worker: {error}")
+            });
 
         Self {
             tx: req_tx,
             rx: up_rx,
+            startup_error,
         }
     }
 
-    /// Queue a request. Fire-and-forget; a dead worker is silently ignored.
-    pub fn request(&self, req: StreamRequest) {
-        let _ = self.tx.send(req);
+    /// Queue a request. A failed worker is explicit so callers can settle
+    /// loading UI rather than spinning forever behind an undeliverable job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when worker startup failed or its receiving thread has
+    /// exited before the request could be delivered.
+    pub fn request(&self, req: StreamRequest) -> Result<(), String> {
+        if let Some(error) = &self.startup_error {
+            return Err(error.clone());
+        }
+        self.tx
+            .send(req)
+            .map_err(|error| format!("music worker is unavailable: {error}"))
     }
 
     /// Non-blocking drain of any updates ready this frame.
     pub fn poll(&self) -> Vec<StreamUpdate> {
         self.rx.try_iter().collect()
+    }
+
+    #[cfg(test)]
+    fn unavailable_for_test() -> Self {
+        let (tx, _request_rx) = std::sync::mpsc::channel::<StreamRequest>();
+        let (_update_tx, rx) = std::sync::mpsc::channel::<StreamUpdate>();
+        Self {
+            tx,
+            rx,
+            startup_error: Some("test worker startup failure".to_string()),
+        }
     }
 }
 
@@ -163,45 +221,70 @@ fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, fo
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive worker protocol match keeps each request and its terminal update adjacent"
+)]
 fn handle_request(
     backend: &dyn MusicBackend,
     up_tx: &Sender<StreamUpdate>,
     request: StreamRequest,
 ) {
     match request {
-        StreamRequest::Search(query) => match backend.search_all(&query) {
+        StreamRequest::Search { query, request_id } => match backend.search_all(&query) {
             Ok(bundle) => {
                 let _ = up_tx.send(StreamUpdate::SearchResults {
                     query,
+                    request_id,
                     bundle: Box::new(bundle),
                 });
             }
             Err(e) => {
-                let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
+                let _ = up_tx.send(StreamUpdate::SearchUnavailable {
+                    query,
+                    request_id,
+                    error: e.to_string(),
+                });
             }
         },
-        StreamRequest::SearchMore { query, kind } => match backend.search_more(&query, kind) {
+        StreamRequest::SearchMore {
+            query,
+            kind,
+            request_id,
+        } => match backend.search_more(&query, kind) {
             Ok(bundle) => {
                 let _ = up_tx.send(StreamUpdate::SearchMore {
                     query,
                     kind,
+                    request_id,
                     bundle: Box::new(bundle),
                 });
             }
             Err(e) => {
-                let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
+                let _ = up_tx.send(StreamUpdate::SearchMoreUnavailable {
+                    query,
+                    kind,
+                    request_id,
+                    error: e.to_string(),
+                });
             }
         },
-        StreamRequest::Resolve { track_id, video_id } => match backend.resolve_audio(&video_id) {
+        StreamRequest::Resolve {
+            track_id,
+            video_id,
+            request_id,
+        } => match backend.resolve_audio(&video_id) {
             Ok(stream) => {
                 let _ = up_tx.send(StreamUpdate::Resolved {
                     track_id,
+                    request_id,
                     stream: Box::new(stream),
                 });
             }
             Err(e) => {
                 let _ = up_tx.send(StreamUpdate::ResolveFailed {
                     track_id,
+                    request_id,
                     error: e.to_string(),
                 });
             }
@@ -265,7 +348,9 @@ mod tests {
         w.request(StreamRequest::Resolve {
             track_id: "tk_x".into(),
             video_id: "synthetic".into(),
-        });
+            request_id: 1,
+        })
+        .expect("worker request is accepted");
 
         // Drain with a bounded wait — the worker replies on its own thread. A
         // `live` build first probes the rangeable-source instances (a bounded
@@ -297,5 +382,17 @@ mod tests {
             failed_or_resolved,
             "resolve produced a terminal update, no hang"
         );
+    }
+
+    #[test]
+    fn unavailable_worker_rejects_enqueue_instead_of_silently_losing_work() {
+        let worker = StreamWorker::unavailable_for_test();
+        let error = worker
+            .request(StreamRequest::Search {
+                query: "anything".into(),
+                request_id: 1,
+            })
+            .expect_err("startup failure must be surfaced to the caller");
+        assert!(error.contains("startup failure"));
     }
 }
