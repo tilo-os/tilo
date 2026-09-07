@@ -50,6 +50,8 @@ struct HitRegion {
 /// so the column reserves the space rather than painting the text itself).
 pub struct ChangesDraw {
     pub hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
+    /// Exact visible controls/rows for the synthetic accessibility tree.
+    pub semantic_hits: Vec<(Rect, ChangesHit)>,
     pub commit_input: Rect,
 }
 
@@ -142,6 +144,10 @@ impl ChangesColumn {
 
         // Build closures that resolve a click to a hit. Returned as a
         // boxed list so the app can route without knowing geometry.
+        let semantic_hits = regions
+            .iter()
+            .map(|region| (region.rect, region.hit.clone()))
+            .collect();
         let hits = regions
             .into_iter()
             .map(|r| {
@@ -154,7 +160,11 @@ impl ChangesColumn {
                 }) as Box<dyn Fn(Point) -> Option<ChangesHit>>
             })
             .collect();
-        ChangesDraw { hits, commit_input }
+        ChangesDraw {
+            hits,
+            semantic_hits,
+            commit_input,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
