@@ -14,6 +14,18 @@
 //! baseline every RFB server can speak.
 
 use std::io::{self, Read};
+use std::sync::Arc;
+
+/// Hard ceilings for data supplied by an untrusted RFB peer. They are generous
+/// enough for a 4K desktop while preventing malformed geometry/text metadata
+/// from allocating gigabytes on the transport worker.
+pub const MAX_FRAMEBUFFER_PIXELS: usize = 16_777_216; // 4096 × 4096
+const MAX_SERVER_NAME_BYTES: usize = 16 * 1024;
+const MAX_RECTANGLES_PER_UPDATE: u16 = 4_096;
+const MAX_RRE_SUBRECTS: u32 = 1_000_000;
+/// RRE's background and all subrectangles each have independent work limits.
+/// A peer cannot turn a few bytes of coordinates into billions of pixel loops.
+const MAX_RRE_PAINTED_PIXELS: usize = MAX_FRAMEBUFFER_PIXELS;
 
 /// RFB rectangle encodings we advertise + decode.
 pub mod encoding {
@@ -160,6 +172,13 @@ impl ServerInit {
         let mut fmt = [0u8; 16];
         fmt.copy_from_slice(&head[4..20]);
         let name_len = u32::from_be_bytes([head[20], head[21], head[22], head[23]]) as usize;
+        if name_len > MAX_SERVER_NAME_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "RFB server name exceeds the 16 KiB limit",
+            ));
+        }
+        validate_framebuffer_size(width, height)?;
         let mut name_buf = vec![0u8; name_len];
         r.read_exact(&mut name_buf)?;
         Ok(Self {
@@ -177,19 +196,30 @@ impl ServerInit {
 pub struct Framebuffer {
     pub width: u16,
     pub height: u16,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     /// Bumped on every applied update so the UI knows to re-upload the image.
     pub generation: u64,
 }
 
 impl Framebuffer {
     pub fn new(width: u16, height: u16) -> Self {
+        // Callers that decode network data validate dimensions before this
+        // constructor. Keeping a safe, bounded fallback makes direct fixture
+        // construction non-panicking too.
+        let pixels = usize::from(width)
+            .checked_mul(usize::from(height))
+            .filter(|pixels| *pixels <= MAX_FRAMEBUFFER_PIXELS)
+            .unwrap_or(0);
         Self {
             width,
             height,
-            data: vec![0u8; width as usize * height as usize * 4],
+            data: Arc::new(vec![0u8; pixels.saturating_mul(4)]),
             generation: 0,
         }
+    }
+
+    fn make_writable(&mut self) {
+        let _ = Arc::make_mut(&mut self.data);
     }
 
     fn put_pixel(&mut self, x: u16, y: u16, rgba: [u8; 4]) {
@@ -197,7 +227,8 @@ impl Framebuffer {
             return;
         }
         let idx = (y as usize * self.width as usize + x as usize) * 4;
-        let Some(slot) = self.data.get_mut(idx..idx + 4) else {
+        let Some(slot) = Arc::get_mut(&mut self.data).and_then(|data| data.get_mut(idx..idx + 4))
+        else {
             return;
         };
         slot.copy_from_slice(&rgba);
@@ -260,10 +291,29 @@ pub fn decode_framebuffer_update(
     fb: &mut Framebuffer,
     fmt: &PixelFormat,
 ) -> io::Result<u16> {
+    let next_generation = fb.generation.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RFB framebuffer generation exhausted",
+        )
+    })?;
     let mut head = [0u8; 3];
     r.read_exact(&mut head)?; // 1 pad byte + u16 rectangle count
     let count = u16::from_be_bytes([head[1], head[2]]);
+    if count > MAX_RECTANGLES_PER_UPDATE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RFB update has too many rectangles",
+        ));
+    }
     let bpp = fmt.bytes_per_pixel();
+    if !(1..=4).contains(&bpp) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid RFB pixel format",
+        ));
+    }
+    fb.make_writable();
     for _ in 0..count {
         let rect = RectHeader::read(r)?;
         match rect.encoding {
@@ -278,7 +328,7 @@ pub fn decode_framebuffer_update(
             }
         }
     }
-    fb.generation = fb.generation.wrapping_add(1);
+    fb.generation = next_generation;
     Ok(count)
 }
 
@@ -289,7 +339,14 @@ fn decode_raw(
     rect: RectHeader,
     bpp: usize,
 ) -> io::Result<()> {
-    let mut pixels = vec![0u8; rect.w as usize * rect.h as usize * bpp];
+    let bytes = usize::from(rect.w)
+        .checked_mul(usize::from(rect.h))
+        .and_then(|pixels| pixels.checked_mul(bpp))
+        .filter(|bytes| *bytes <= MAX_FRAMEBUFFER_PIXELS.saturating_mul(4))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "RFB raw rectangle is too large")
+        })?;
+    let mut pixels = vec![0u8; bytes];
     r.read_exact(&mut pixels)?;
     let mut i = 0;
     for dy in 0..rect.h {
@@ -301,7 +358,7 @@ fn decode_raw(
                 ));
             };
             let rgba = fmt.decode_pixel(px);
-            fb.put_pixel(rect.x + dx, rect.y + dy, rgba);
+            fb.put_pixel(rect.x.saturating_add(dx), rect.y.saturating_add(dy), rgba);
             i += bpp;
         }
     }
@@ -314,10 +371,19 @@ fn decode_copy_rect(r: &mut impl Read, fb: &mut Framebuffer, rect: RectHeader) -
     let src_x = u16::from_be_bytes([b[0], b[1]]);
     let src_y = u16::from_be_bytes([b[2], b[3]]);
     // Snapshot the source region first so overlapping copies are correct.
-    let mut buf = Vec::with_capacity(rect.w as usize * rect.h as usize);
+    let pixels = usize::from(rect.w)
+        .checked_mul(usize::from(rect.h))
+        .filter(|pixels| *pixels <= MAX_FRAMEBUFFER_PIXELS)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "RFB copy rectangle is too large",
+            )
+        })?;
+    let mut buf = Vec::with_capacity(pixels);
     for dy in 0..rect.h {
         for dx in 0..rect.w {
-            buf.push(fb.get_pixel(src_x + dx, src_y + dy));
+            buf.push(fb.get_pixel(src_x.saturating_add(dx), src_y.saturating_add(dy)));
         }
     }
     let mut i = 0;
@@ -329,7 +395,7 @@ fn decode_copy_rect(r: &mut impl Read, fb: &mut Framebuffer, rect: RectHeader) -
                     "copy-rect source buffer too short",
                 ));
             };
-            fb.put_pixel(rect.x + dx, rect.y + dy, pixel);
+            fb.put_pixel(rect.x.saturating_add(dx), rect.y.saturating_add(dy), pixel);
             i += 1;
         }
     }
@@ -346,16 +412,18 @@ fn decode_rre(
     let mut head = [0u8; 4];
     r.read_exact(&mut head)?;
     let subrects = u32::from_be_bytes(head);
+    if subrects > MAX_RRE_SUBRECTS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RFB RRE update has too many subrectangles",
+        ));
+    }
+    checked_rect_pixels(rect.w, rect.h, "RRE background rectangle")?;
     let mut bg = vec![0u8; bpp];
     r.read_exact(&mut bg)?;
     let bg_rgba = fmt.decode_pixel(&bg);
-    // Fill the whole rectangle with the background first.
-    for dy in 0..rect.h {
-        for dx in 0..rect.w {
-            fb.put_pixel(rect.x + dx, rect.y + dy, bg_rgba);
-        }
-    }
-    // Then paint each subrectangle.
+    // Decode and bound every subrectangle before any paint loops. This keeps
+    // malformed later geometry from doing expensive partial background work.
     let mut sub = vec![0u8; bpp + 8];
     let bad_subrect = || {
         io::Error::new(
@@ -363,6 +431,8 @@ fn decode_rre(
             "RRE subrectangle buffer too short",
         )
     };
+    let mut painted_subrect_pixels = 0usize;
+    let mut pending_subrects = Vec::with_capacity(subrects as usize);
     for _ in 0..subrects {
         r.read_exact(&mut sub)?;
         let color_bytes = sub.get(..bpp).ok_or_else(bad_subrect)?;
@@ -375,11 +445,64 @@ fn decode_rre(
         let sy = u16::from_be_bytes([coord[2], coord[3]]);
         let sw = u16::from_be_bytes([coord[4], coord[5]]);
         let sh = u16::from_be_bytes([coord[6], coord[7]]);
+        let subrect_pixels = checked_rect_pixels(sw, sh, "RRE subrectangle")?;
+        painted_subrect_pixels = painted_subrect_pixels
+            .checked_add(subrect_pixels)
+            .filter(|pixels| *pixels <= MAX_RRE_PAINTED_PIXELS)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "RRE subrectangles exceed the pixel work limit",
+                )
+            })?;
+        pending_subrects.push((color, sx, sy, sw, sh));
+    }
+    // Fill the whole rectangle with the background first.
+    for dy in 0..rect.h {
+        for dx in 0..rect.w {
+            fb.put_pixel(
+                rect.x.saturating_add(dx),
+                rect.y.saturating_add(dy),
+                bg_rgba,
+            );
+        }
+    }
+    // Then paint each already-bounded subrectangle.
+    for (color, sx, sy, sw, sh) in pending_subrects {
         for dy in 0..sh {
             for dx in 0..sw {
-                fb.put_pixel(rect.x + sx + dx, rect.y + sy + dy, color);
+                fb.put_pixel(
+                    rect.x.saturating_add(sx).saturating_add(dx),
+                    rect.y.saturating_add(sy).saturating_add(dy),
+                    color,
+                );
             }
         }
+    }
+    Ok(())
+}
+
+fn checked_rect_pixels(width: u16, height: u16, label: &str) -> io::Result<usize> {
+    usize::from(width)
+        .checked_mul(usize::from(height))
+        .filter(|pixels| *pixels <= MAX_RRE_PAINTED_PIXELS)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{label} exceeds the pixel work limit"),
+            )
+        })
+}
+
+fn validate_framebuffer_size(width: u16, height: u16) -> io::Result<()> {
+    let pixels = usize::from(width)
+        .checked_mul(usize::from(height))
+        .filter(|pixels| *pixels > 0 && *pixels <= MAX_FRAMEBUFFER_PIXELS);
+    if pixels.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RFB framebuffer dimensions exceed the 16 megapixel limit",
+        ));
     }
     Ok(())
 }
@@ -604,7 +727,7 @@ mod tests {
         let f = PixelFormat::rgb888();
         let mut fb = Framebuffer::new(2, 1);
         // Seed (0,0) red.
-        fb.data[0..4].copy_from_slice(&[255, 0, 0, 255]);
+        Arc::make_mut(&mut fb.data)[0..4].copy_from_slice(&[255, 0, 0, 255]);
         // CopyRect: copy the 1x1 region at src (0,0) to dst (1,0).
         let mut msg = vec![0u8, 0, 1];
         msg.extend_from_slice(&1u16.to_be_bytes()); // dst x = 1
@@ -653,6 +776,86 @@ mod tests {
         assert_eq!((si.width, si.height), (800, 600));
         assert_eq!(si.name, "test");
         assert_eq!(si.format, PixelFormat::rgb888());
+    }
+
+    #[test]
+    fn oversized_server_geometry_is_rejected_before_allocation() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+        bytes.extend_from_slice(&PixelFormat::rgb888().to_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        assert!(ServerInit::read(&mut Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
+    fn overflowing_rectangle_coordinates_do_not_panic() {
+        let f = PixelFormat::rgb888();
+        let mut fb = Framebuffer::new(2, 2);
+        let mut msg = vec![0u8, 0, 1];
+        msg.extend_from_slice(&u16::MAX.to_be_bytes());
+        msg.extend_from_slice(&u16::MAX.to_be_bytes());
+        msg.extend_from_slice(&2u16.to_be_bytes());
+        msg.extend_from_slice(&2u16.to_be_bytes());
+        msg.extend_from_slice(&encoding::RAW.to_be_bytes());
+        msg.extend_from_slice(&[0u8; 16]);
+        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_ok());
+    }
+
+    #[test]
+    fn exhausted_framebuffer_generation_fails_without_reuse() {
+        let f = PixelFormat::rgb888();
+        let mut fb = Framebuffer::new(1, 1);
+        fb.generation = u64::MAX;
+        let before = Arc::clone(&fb.data);
+        let mut msg = vec![0u8, 0, 1];
+        msg.extend_from_slice(&0u16.to_be_bytes());
+        msg.extend_from_slice(&0u16.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg.extend_from_slice(&encoding::RAW.to_be_bytes());
+        msg.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
+        assert_eq!(fb.generation, u64::MAX);
+        assert!(Arc::ptr_eq(&fb.data, &before));
+    }
+
+    #[test]
+    fn rre_rejects_oversized_background_before_painting() {
+        let f = PixelFormat::rgb888();
+        let mut fb = Framebuffer::new(2, 2);
+        let mut msg = vec![0u8, 0, 1];
+        msg.extend_from_slice(&0u16.to_be_bytes());
+        msg.extend_from_slice(&0u16.to_be_bytes());
+        msg.extend_from_slice(&u16::MAX.to_be_bytes());
+        msg.extend_from_slice(&u16::MAX.to_be_bytes());
+        msg.extend_from_slice(&encoding::RRE.to_be_bytes());
+        msg.extend_from_slice(&0u32.to_be_bytes());
+        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
+        assert_eq!(&fb.data[..], &[0; 16]);
+    }
+
+    #[test]
+    fn rre_rejects_cumulative_subrectangle_pixel_work_before_painting() {
+        let f = PixelFormat::rgb888();
+        let mut fb = Framebuffer::new(2, 2);
+        let mut msg = vec![0u8, 0, 1];
+        msg.extend_from_slice(&0u16.to_be_bytes());
+        msg.extend_from_slice(&0u16.to_be_bytes());
+        msg.extend_from_slice(&4096u16.to_be_bytes());
+        msg.extend_from_slice(&4096u16.to_be_bytes());
+        msg.extend_from_slice(&encoding::RRE.to_be_bytes());
+        msg.extend_from_slice(&2u32.to_be_bytes());
+        msg.extend_from_slice(&[0, 0, 0, 0]);
+        for _ in 0..2 {
+            msg.extend_from_slice(&[0, 0, 0, 0]);
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&0u16.to_be_bytes());
+            msg.extend_from_slice(&4096u16.to_be_bytes());
+            msg.extend_from_slice(&4096u16.to_be_bytes());
+        }
+        assert!(decode_framebuffer_update(&mut Cursor::new(msg), &mut fb, &f).is_err());
+        assert_eq!(&fb.data[..], &[0; 16]);
     }
 
     #[test]
