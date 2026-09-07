@@ -22,7 +22,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde_json.workspace = true
