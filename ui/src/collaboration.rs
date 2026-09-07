@@ -5,7 +5,8 @@
 //!
 //! The manager delegates to the `runtime-collab` Cap'n Proto SDK on a
 //! shovel thread it owns, bridging winit-side `send` / `poll` to the SDK
-//! over a pair of unbounded mpsc channels. On
+//! over a pair of bounded mpsc channels. Durable traffic fails the bridge
+//! closed on overload; only transient presence may be shed. On
 //! [`runtime_portal::NotAvailable`] it enters "disabled" mode instead of
 //! panicking — `poll()` returns empty, `send()` is a no-op, no thread is
 //! spawned.
@@ -33,6 +34,8 @@ use collab_types::SignedOp;
 use crate::presence::PresenceKey;
 
 use runtime_portal::RawFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -44,6 +47,18 @@ use tokio::task::LocalSet;
 /// Every step before the report is a local syscall, so reaching this means
 /// something upstream is wedged.
 const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Maximum number of UI-to-shovel commands waiting behind a slow broker.
+/// This deliberately caps commands, rather than bytes, because the protocol
+/// already bounds its payloads at each broker boundary.
+const SDK_COMMAND_QUEUE: usize = 256;
+/// Maximum number of shovel-to-UI events waiting behind a busy event loop.
+const SDK_EVENT_QUEUE: usize = 256;
+/// Aggregate retained payload budget for each cross-thread queue. This is
+/// independent of the item-count cap because a single document snapshot or
+/// invocation argument may be large.
+const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Inert, app-owned resume projection sent only to the local shell.
 ///
@@ -630,21 +645,21 @@ enum Backend {
     Disabled,
     /// Talking Cap'n Proto to `runtime-collab`. The shovel thread owns
     /// the SDK client + subscriptions; winit-side send / poll bridge
-    /// through unbounded mpsc pairs.
+    /// through bounded mpsc pairs.
     Sdk(SdkChannel),
 }
 
-/// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions
-/// are unbounded — the winit side drains fully each non-blocking
-/// `poll()`, the tokio side always awaits `.recv()` — so neither has an
-/// upper bound in normal operation.
+/// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
+/// bounded. Durable overflow makes the bridge unavailable rather than
+/// silently losing a document, action, or invocation transition.
 ///
 /// Dropping the manager drops `outbound_tx`; the shovel thread's
 /// `.recv()` then yields `None` and the thread exits. `_thread` is kept
 /// only so the `JoinHandle` isn't detached.
 struct SdkChannel {
-    outbound_tx: tokio_mpsc::UnboundedSender<SdkCommand>,
-    inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
+    outbound_tx: tokio_mpsc::Sender<QueuedSdkCommand>,
+    inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
+    state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
     /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
     /// widgets directly.
@@ -668,6 +683,634 @@ enum SdkCommand {
         app_id: String,
         requests: mpsc::SyncSender<ActionDirectoryRequest>,
     },
+}
+
+impl SdkCommand {
+    /// Presence is visual, short-lived state. All other frames represent a
+    /// durable state change, an ordered request, or a lifecycle result.
+    fn is_transient_presence(&self) -> bool {
+        matches!(
+            self,
+            Self::Primary(CollabRequest::Presence { .. })
+                | Self::ToRoute(_, CollabRequest::Presence { .. })
+        )
+    }
+}
+
+/// Checked byte meter for queue admission. `None` means a size computation
+/// overflowed and is treated exactly like durable overload.
+#[derive(Default)]
+struct ByteMeter(Option<usize>);
+
+impl ByteMeter {
+    fn add(&mut self, bytes: usize) {
+        self.0 = self.0.and_then(|total| total.checked_add(bytes));
+    }
+
+    fn add_product(&mut self, count: usize, bytes_each: usize) {
+        self.0 = self.0.and_then(|total| {
+            count
+                .checked_mul(bytes_each)
+                .and_then(|bytes| total.checked_add(bytes))
+        });
+    }
+
+    fn string_capacity(&mut self, value: &String) {
+        self.add(value.capacity());
+    }
+
+    fn bytes(&mut self, value: &Vec<u8>) {
+        self.add(value.capacity());
+    }
+
+    fn finish(self) -> Option<usize> {
+        self.0
+    }
+}
+
+fn json_bytes(value: &serde_json::Value, meter: &mut ByteMeter) {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+        serde_json::Value::String(value) => meter.string_capacity(value),
+        serde_json::Value::Array(values) => {
+            meter.add_product(values.capacity(), std::mem::size_of::<serde_json::Value>());
+            for value in values {
+                json_bytes(value, meter);
+            }
+        }
+        serde_json::Value::Object(values) => json_map_bytes(values, meter),
+    }
+}
+
+fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &mut ByteMeter) {
+    // `serde_json::Map` is a BTreeMap unless preserve_order is
+    // enabled. Charge a deliberately conservative node allowance so
+    // either representation remains within this budget.
+    meter.add_product(values.len(), 512);
+    for (key, value) in values {
+        meter.string_capacity(key);
+        json_bytes(value, meter);
+    }
+}
+
+/// Count a serializable opaque nested value without constructing a second
+/// payload copy. Direct `String`/`Vec` owners still use capacities above;
+/// this covers nested action/context representations whose concrete shape is
+/// intentionally owned by `qos-actions`.
+fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("serialized size overflow"))?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        meter.add(counter.0);
+    } else {
+        meter.0 = None;
+    }
+}
+
+fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
+    meter.string_capacity(&action.resource);
+    meter.string_capacity(&action.action);
+    meter.string_capacity(&action.resource_kind);
+    meter.string_capacity(&action.resource_label);
+    meter.string_capacity(&action.action_label);
+    if let Some(description) = &action.description {
+        meter.string_capacity(description);
+    }
+    meter.string_capacity(&action.operation_kind);
+    meter.string_capacity(&action.params_json);
+    meter.string_capacity(&action.contract_json);
+    if let ExportedInput::Text {
+        prompt,
+        placeholder,
+        ..
+    } = &action.input
+    {
+        meter.string_capacity(prompt);
+        meter.string_capacity(placeholder);
+    }
+}
+
+fn request_bytes(request: &CollabRequest) -> Option<usize> {
+    let mut meter = ByteMeter(Some(std::mem::size_of::<CollabRequest>()));
+    match request {
+        CollabRequest::Hello {
+            app_id,
+            record,
+            handle,
+            ..
+        } => {
+            meter.string_capacity(app_id);
+            if let Some(record) = record {
+                meter.string_capacity(record);
+            }
+            if let Some(handle) = handle {
+                meter.string_capacity(handle);
+            }
+        }
+        CollabRequest::DocumentSnapshot { data } | CollabRequest::DocumentIncremental { data } => {
+            meter.bytes(data);
+        }
+        CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
+        CollabRequest::Presence { key, payload } => {
+            serialized_bytes(key, &mut meter);
+            presence_payload_bytes(payload, &mut meter);
+        }
+        CollabRequest::FetchScrollback { .. }
+        | CollabRequest::OpenWorkspaceControl { .. }
+        | CollabRequest::CloseWorkspaceControl { .. }
+        | CollabRequest::PublishedInvocationStatus { .. }
+        | CollabRequest::CancelPublishedInvocation { .. } => {}
+        CollabRequest::PublishActions { app_id, actions } => {
+            meter.string_capacity(app_id);
+            meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
+            for action in actions {
+                exported_action_bytes(action, &mut meter);
+            }
+        }
+        CollabRequest::ReportContinuation {
+            app_id, metadata, ..
+        } => {
+            meter.string_capacity(app_id);
+            meter.bytes(metadata);
+        }
+        CollabRequest::ClearContinuation { app_id }
+        | CollabRequest::LaunchPublishedApplication { app_id, .. } => meter.string_capacity(app_id),
+        CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
+        CollabRequest::CompleteInvocation { code, message, .. } => {
+            meter.string_capacity(code);
+            meter.string_capacity(message);
+        }
+        CollabRequest::UpdateInvocation { update, .. } => serialized_bytes(update, &mut meter),
+        CollabRequest::RecordLocalEffect { address, update } => {
+            meter.string_capacity(&address.resource);
+            meter.string_capacity(&address.action);
+            serialized_bytes(update, &mut meter);
+        }
+        CollabRequest::InvokePublishedAction {
+            resource,
+            action,
+            arguments,
+            confirmation,
+            ..
+        } => {
+            meter.string_capacity(resource);
+            meter.string_capacity(action);
+            json_map_bytes(arguments, &mut meter);
+            json_bytes(confirmation, &mut meter);
+        }
+        CollabRequest::ReportTaskRun { lease, update, .. } => {
+            meter.string_capacity(lease);
+            serialized_bytes(update, &mut meter);
+        }
+        CollabRequest::InvokeTaskAction {
+            lease,
+            resource,
+            action,
+            arguments,
+            ..
+        } => {
+            meter.string_capacity(lease);
+            meter.string_capacity(resource);
+            meter.string_capacity(action);
+            json_map_bytes(arguments, &mut meter);
+        }
+        CollabRequest::TaskRunCancellation { lease, .. } => meter.string_capacity(lease),
+    }
+    meter.finish()
+}
+
+fn command_bytes(command: &SdkCommand) -> Option<usize> {
+    match command {
+        SdkCommand::Primary(request) => request_bytes(request),
+        SdkCommand::ToRoute(route, request) => {
+            let mut meter = ByteMeter(request_bytes(request));
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            meter.finish()
+        }
+        SdkCommand::Join(route) => {
+            let mut meter = ByteMeter(Some(std::mem::size_of::<SdkCommand>()));
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            meter.finish()
+        }
+        SdkCommand::PrimaryReady(_) => Some(std::mem::size_of::<SdkCommand>()),
+        // `ChannelGroup` intentionally hides its OpenMLS allocation graph,
+        // so it cannot offer an exact capacity probe without widening the
+        // crypto API. Installation is synchronous and requires `&mut self`,
+        // which permits at most one group transfer at a time. Reserving the
+        // entire command budget encodes that single-owner exception: no other
+        // bridge payload may queue alongside it, while the group itself was
+        // already allocated by the caller before entering this bridge.
+        SdkCommand::InstallEncryption { .. } => Some(SDK_COMMAND_QUEUE_BYTES),
+        SdkCommand::PublishActionDirectory { app_id, .. } => {
+            std::mem::size_of::<SdkCommand>().checked_add(app_id.capacity())
+        }
+    }
+}
+
+fn presence_payload_bytes(payload: &PresencePayload, meter: &mut ByteMeter) {
+    if let PresencePayload::Following {
+        target: Some(target),
+    } = payload
+    {
+        meter.string_capacity(target);
+    }
+    if let PresencePayload::Interaction(update) = payload {
+        serialized_bytes(update.as_ref(), meter);
+    }
+}
+
+fn workspace_control_event_bytes(
+    event: &runtime_collab::WorkspaceControlEvent,
+    meter: &mut ByteMeter,
+) {
+    match event {
+        runtime_collab::WorkspaceControlEvent::Frame { encoded_h264, .. } => {
+            meter.bytes(encoded_h264);
+        }
+        runtime_collab::WorkspaceControlEvent::Closed(
+            runtime_collab::WorkspaceControlCloseReason::Denied(message),
+        ) => {
+            meter.string_capacity(message);
+        }
+        _ => {}
+    }
+}
+
+fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
+    meter.string_capacity(&action.resource);
+    meter.string_capacity(&action.action);
+    meter.string_capacity(&action.resource_kind);
+    meter.string_capacity(&action.resource_label);
+    meter.string_capacity(&action.action_label);
+    if let Some(description) = &action.description {
+        meter.string_capacity(description);
+    }
+    meter.add_product(
+        action.params.capacity(),
+        std::mem::size_of::<qos_actions::ActionParam>(),
+    );
+    for param in &action.params {
+        serialized_bytes(param, meter);
+    }
+    serialized_bytes(&action.contract, meter);
+    meter.string_capacity(&action.input.kind);
+    meter.string_capacity(&action.input.prompt);
+    meter.string_capacity(&action.input.placeholder);
+}
+
+fn context_event_bytes(
+    collaborators: &[Collaborator],
+    collaborator_capacity: usize,
+    permissions: &[String],
+    permission_capacity: usize,
+    meter: &mut ByteMeter,
+) {
+    meter.add_product(collaborator_capacity, std::mem::size_of::<Collaborator>());
+    for collaborator in collaborators {
+        meter.string_capacity(&collaborator.id);
+        meter.string_capacity(&collaborator.name);
+    }
+    meter.add_product(permission_capacity, std::mem::size_of::<String>());
+    for permission in permissions {
+        meter.string_capacity(permission);
+    }
+}
+
+fn action_catalogue_bytes(
+    surfaces: &[BrokerActionSurface],
+    surface_capacity: usize,
+    meter: &mut ByteMeter,
+) {
+    meter.add_product(surface_capacity, std::mem::size_of::<BrokerActionSurface>());
+    for surface in surfaces {
+        meter.string_capacity(&surface.app_id);
+        meter.string_capacity(&surface.cluster_id);
+        meter.string_capacity(&surface.record_id);
+        meter.add_product(
+            surface.actions.capacity(),
+            std::mem::size_of::<BrokerActionDescriptor>(),
+        );
+        for action in &surface.actions {
+            broker_action_bytes(action, meter);
+        }
+    }
+}
+
+fn scrollback_batch_bytes(
+    ops: &[Box<SignedOp>],
+    op_capacity: usize,
+    decrypted_payloads: &[Option<Vec<u8>>],
+    payload_capacity: usize,
+    meter: &mut ByteMeter,
+) {
+    meter.add_product(op_capacity, std::mem::size_of::<Box<SignedOp>>());
+    for op in ops {
+        meter.bytes(&op.payload);
+    }
+    meter.add_product(payload_capacity, std::mem::size_of::<Option<Vec<u8>>>());
+    for payload in decrypted_payloads.iter().flatten() {
+        meter.bytes(payload);
+    }
+}
+
+fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) {
+    meter.string_capacity(&run.task_id);
+    meter.string_capacity(&run.title);
+    meter.string_capacity(&run.lease);
+    json_bytes(&run.action_context, meter);
+}
+
+fn event_bytes(event: &CollabEvent) -> Option<usize> {
+    let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
+    match event {
+        CollabEvent::Context {
+            collaborators,
+            permissions,
+        } => context_event_bytes(
+            collaborators,
+            collaborators.capacity(),
+            permissions,
+            permissions.capacity(),
+            &mut meter,
+        ),
+        CollabEvent::FollowChanged { peer_id } => {
+            if let Some(peer_id) = peer_id {
+                meter.string_capacity(peer_id);
+            }
+        }
+        CollabEvent::RemoteCursorMoved { user_id, .. } => meter.string_capacity(user_id),
+        CollabEvent::RemotePresenceUpdate {
+            user_id,
+            key,
+            payload,
+        } => {
+            meter.string_capacity(user_id);
+            serialized_bytes(key, &mut meter);
+            presence_payload_bytes(payload, &mut meter);
+        }
+        CollabEvent::ActionArrived {
+            type_id,
+            payload,
+            from_user_id,
+        } => {
+            meter.string_capacity(type_id);
+            meter.bytes(payload);
+            meter.string_capacity(from_user_id);
+        }
+        CollabEvent::Document {
+            envelope,
+            from_user_id,
+            decrypted_payload,
+        } => {
+            meter.bytes(&envelope.payload);
+            meter.string_capacity(from_user_id);
+            if let Some(payload) = decrypted_payload {
+                meter.bytes(payload);
+            }
+        }
+        CollabEvent::ScrollbackBatch {
+            ops,
+            decrypted_payloads,
+            ..
+        } => scrollback_batch_bytes(
+            ops,
+            ops.capacity(),
+            decrypted_payloads,
+            decrypted_payloads.capacity(),
+            &mut meter,
+        ),
+        CollabEvent::Invocation {
+            resource,
+            action,
+            argument,
+            actor,
+            context,
+            ..
+        } => {
+            meter.string_capacity(resource);
+            meter.string_capacity(action);
+            if let Some(argument) = argument {
+                meter.string_capacity(argument);
+            }
+            meter.string_capacity(actor);
+            if let Some(context) = context {
+                serialized_bytes(context.as_ref(), &mut meter);
+            }
+        }
+        CollabEvent::InvocationCancellation { .. } => {}
+        CollabEvent::ActionCatalogue { surfaces } => {
+            action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
+        }
+        CollabEvent::PublishedInvocationResult { result, .. }
+        | CollabEvent::TaskActionInvocationResult { result, .. } => match result {
+            Ok((_, update)) => serialized_bytes(update, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
+        CollabEvent::TaskRun(run) => task_run_bytes(run, &mut meter),
+        CollabEvent::TaskRunCancellation { result, .. } => {
+            if let Err(error) = result {
+                meter.string_capacity(error);
+            }
+        }
+        CollabEvent::WorkspaceControl { event, .. } => {
+            workspace_control_event_bytes(event, &mut meter);
+        }
+    }
+    meter.finish()
+}
+
+/// Shared failure latch. The UI reads it through `is_connected()` even when
+/// overload is detected by a subscription task on the shovel thread.
+#[derive(Clone)]
+struct BridgeState {
+    healthy: Arc<AtomicBool>,
+    command_bytes: ByteBudget,
+    event_bytes: ByteBudget,
+}
+
+/// Lock-free aggregate reservation for heap payload retained by one queue.
+/// A reservation moves with its queued value and releases automatically when
+/// the receiver consumes or drops that value.
+#[derive(Clone)]
+struct ByteBudget(Arc<AtomicUsize>);
+
+struct ByteReservation {
+    budget: ByteBudget,
+    bytes: usize,
+}
+
+impl ByteBudget {
+    fn new() -> Self {
+        Self(Arc::new(AtomicUsize::new(0)))
+    }
+
+    fn reserve(&self, bytes: usize, limit: usize) -> Option<ByteReservation> {
+        let mut used = self.0.load(Ordering::Acquire);
+        loop {
+            let next = used.checked_add(bytes)?;
+            if next > limit {
+                return None;
+            }
+            match self
+                .0
+                .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    return Some(ByteReservation {
+                        budget: self.clone(),
+                        bytes,
+                    });
+                }
+                Err(observed) => used = observed,
+            }
+        }
+    }
+}
+
+impl Drop for ByteReservation {
+    fn drop(&mut self) {
+        self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+struct QueuedSdkCommand {
+    command: SdkCommand,
+    _reservation: ByteReservation,
+}
+
+struct QueuedCollabEvent {
+    event: CollabEvent,
+    _reservation: ByteReservation,
+}
+
+impl BridgeState {
+    fn new() -> Self {
+        Self {
+            healthy: Arc::new(AtomicBool::new(true)),
+            command_bytes: ByteBudget::new(),
+            event_bytes: ByteBudget::new(),
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Acquire)
+    }
+
+    fn fail_closed(&self, direction: &'static str) {
+        if self.healthy.swap(false, Ordering::AcqRel) {
+            tracing::error!(
+                direction,
+                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+            );
+        }
+    }
+}
+
+/// Non-blocking UI enqueue. Presence may be dropped when the finite queue is
+/// full; a durable command makes the whole bridge unavailable instead.
+fn enqueue_sdk_command(
+    tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
+    command: SdkCommand,
+    state: &BridgeState,
+) -> bool {
+    if !state.is_healthy() {
+        return false;
+    }
+    let transient = command.is_transient_presence();
+    let Some(reservation) = state.command_bytes.reserve(
+        command_bytes(&command).unwrap_or(usize::MAX),
+        SDK_COMMAND_QUEUE_BYTES,
+    ) else {
+        if !transient {
+            state.fail_closed("outbound command byte budget");
+        }
+        return false;
+    };
+    match tx.try_send(QueuedSdkCommand {
+        command,
+        _reservation: reservation,
+    }) {
+        Ok(()) => true,
+        Err(tokio_mpsc::error::TrySendError::Full(_)) if transient => false,
+        Err(_) => {
+            state.fail_closed("outbound command queue");
+            false
+        }
+    }
+}
+
+/// Bounded inbound half with the same split between durable events and
+/// explicitly lossy presence. Stream tasks stop after a durable failure, so
+/// they cannot keep pulling broker frames after the connection is failed.
+#[derive(Clone)]
+struct InboundBridge {
+    tx: tokio_mpsc::Sender<QueuedCollabEvent>,
+    state: BridgeState,
+}
+
+impl InboundBridge {
+    fn send_durable(&self, event: CollabEvent) -> bool {
+        let Some(reservation) = self.state.event_bytes.reserve(
+            event_bytes(&event).unwrap_or(usize::MAX),
+            SDK_EVENT_QUEUE_BYTES,
+        ) else {
+            self.state.fail_closed("inbound event byte budget");
+            return false;
+        };
+        if self
+            .tx
+            .try_send(QueuedCollabEvent {
+                event,
+                _reservation: reservation,
+            })
+            .is_ok()
+        {
+            true
+        } else {
+            self.state.fail_closed("inbound event queue");
+            false
+        }
+    }
+
+    /// Returns false only when the receiver has gone away. A full queue is a
+    /// permitted transient-presence drop and does not terminate the stream.
+    fn send_presence(&self, event: CollabEvent) -> bool {
+        let Some(reservation) = self.state.event_bytes.reserve(
+            event_bytes(&event).unwrap_or(usize::MAX),
+            SDK_EVENT_QUEUE_BYTES,
+        ) else {
+            return true;
+        };
+        match self.tx.try_send(QueuedCollabEvent {
+            event,
+            _reservation: reservation,
+        }) {
+            Ok(()) | Err(tokio_mpsc::error::TrySendError::Full(_)) => true,
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                self.state.fail_closed("inbound presence queue");
+                false
+            }
+        }
+    }
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
@@ -926,15 +1569,18 @@ impl CollaborationManager {
             return Err(runtime_portal::NotAvailable::ServiceFdMissing);
         };
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        channel
-            .outbound_tx
-            .send(SdkCommand::PrimaryReady(ready_tx))
-            .map_err(|_| {
-                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+        if !enqueue_sdk_command(
+            &channel.outbound_tx,
+            SdkCommand::PrimaryReady(ready_tx),
+            &channel.state,
+        ) {
+            return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
-                    "collaboration setup thread ended before route readiness",
-                ))
-            })?;
+                    "collaboration setup thread is unavailable or overloaded",
+                ),
+            ));
+        }
         match ready_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => Err(runtime_portal::NotAvailable::ConnectionFailed(
@@ -1175,8 +1821,13 @@ impl CollaborationManager {
         source: SdkConnectSource,
         identity: SdkJoinIdentity,
     ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
-        let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<SdkCommand>();
-        let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
+        let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
+        let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
+        let state = BridgeState::new();
+        let inbound = InboundBridge {
+            tx: inbound_tx,
+            state: state.clone(),
+        };
         let (action_directory_tx, action_directory_rx) =
             mpsc::sync_channel::<ActionDirectoryRequest>(ACTION_DIRECTORY_REQUEST_QUEUE);
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
@@ -1185,7 +1836,7 @@ impl CollaborationManager {
         // NotAvailable rather than panicking; an app must open even without collab.
         let handle = match thread::Builder::new()
             .name("ui-collab-shovel".into())
-            .spawn(move || run_shovel(source, identity, outbound_rx, inbound_tx, init_tx))
+            .spawn(move || run_shovel(source, identity, outbound_rx, inbound, init_tx))
         {
             Ok(handle) => handle,
             Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
@@ -1226,6 +1877,7 @@ impl CollaborationManager {
             InitStatus::Ready => Ok(SdkChannel {
                 outbound_tx,
                 inbound_rx,
+                state,
                 action_directory_rx,
                 action_directory_tx,
                 action_directory_published: false,
@@ -1242,7 +1894,7 @@ impl CollaborationManager {
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
     pub fn is_connected(&self) -> bool {
-        !matches!(self.backend, Backend::Disabled)
+        matches!(&self.backend, Backend::Sdk(channel) if channel.state.is_healthy())
     }
 
     /// Bind a signing identity, builder-style for chaining at boot.
@@ -1287,16 +1939,12 @@ impl CollaborationManager {
         Ok(())
     }
 
-    /// Fire-and-forget, non-blocking on every backend. Delivery failures
-    /// never surface — apps needing confirmation build on `poll` events.
+    /// Fire-and-forget and non-blocking on every backend. Presence may be
+    /// shed under saturation; any durable enqueue failure visibly disconnects
+    /// the manager, so callers never continue under the illusion it was sent.
     pub fn send(&mut self, req: CollabRequest) {
-        match &mut self.backend {
-            Backend::Disabled => {}
-            Backend::Sdk(ch) => {
-                // Only errors when the shovel thread has exited; the
-                // next poll observes the same shutdown.
-                let _ = ch.outbound_tx.send(SdkCommand::Primary(req));
-            }
+        if let Backend::Sdk(ch) = &self.backend {
+            let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
         }
     }
 
@@ -1308,14 +1956,14 @@ impl CollaborationManager {
             if ch.action_directory_published {
                 return;
             }
-            if ch
-                .outbound_tx
-                .send(SdkCommand::PublishActionDirectory {
+            if enqueue_sdk_command(
+                &ch.outbound_tx,
+                SdkCommand::PublishActionDirectory {
                     app_id: app_id.into(),
                     requests: ch.action_directory_tx.clone(),
-                })
-                .is_ok()
-            {
+                },
+                &ch.state,
+            ) {
                 ch.action_directory_published = true;
             }
         }
@@ -1338,7 +1986,7 @@ impl CollaborationManager {
     /// Repeated joins of the same route are idempotent.
     pub fn join_route(&mut self, route: RouteSpec) {
         if let Backend::Sdk(ch) = &mut self.backend {
-            let _ = ch.outbound_tx.send(SdkCommand::Join(route));
+            let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Join(route), &ch.state);
         }
     }
 
@@ -1371,13 +2019,17 @@ impl CollaborationManager {
             return Err("collaboration broker is unavailable".into());
         };
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        ch.outbound_tx
-            .send(SdkCommand::InstallEncryption {
+        if !enqueue_sdk_command(
+            &ch.outbound_tx,
+            SdkCommand::InstallEncryption {
                 spec: route,
                 group: Box::new(group),
                 reply: reply_tx,
-            })
-            .map_err(|_| "collaboration worker stopped".to_string())?;
+            },
+            &ch.state,
+        ) {
+            return Err("collaboration worker is unavailable or overloaded".to_string());
+        }
         reply_rx
             .recv()
             .map_err(|_| "collaboration worker stopped".to_string())?
@@ -1392,7 +2044,8 @@ impl CollaborationManager {
             return;
         }
         if let Backend::Sdk(ch) = &mut self.backend {
-            let _ = ch.outbound_tx.send(SdkCommand::ToRoute(route, req));
+            let _ =
+                enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state);
         }
     }
 
@@ -1403,7 +2056,7 @@ impl CollaborationManager {
             Backend::Sdk(ch) => {
                 let mut events = Vec::new();
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
-                    events.push(evt);
+                    events.push(evt.event);
                 }
                 events
             }
@@ -1691,8 +2344,8 @@ enum InitStatus {
 fn run_shovel(
     source: SdkConnectSource,
     identity: SdkJoinIdentity,
-    outbound_rx: tokio_mpsc::UnboundedReceiver<SdkCommand>,
-    inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
+    outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
+    inbound_tx: InboundBridge,
     init_tx: mpsc::SyncSender<InitStatus>,
 ) {
     // Building `current_thread` is fallible (can OOM); surface as
@@ -1739,8 +2392,8 @@ fn run_shovel(
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
     identity: SdkJoinIdentity,
-    mut outbound_rx: tokio_mpsc::UnboundedReceiver<SdkCommand>,
-    inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
+    mut outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
+    inbound_tx: InboundBridge,
 ) {
     let SdkJoinIdentity {
         presentation,
@@ -1752,7 +2405,14 @@ async fn drive_shovel(
     let mut participant_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
 
-    while let Some(command) = outbound_rx.recv().await {
+    while let Some(QueuedSdkCommand {
+        command,
+        _reservation,
+    }) = outbound_rx.recv().await
+    {
+        if !inbound_tx.state.is_healthy() {
+            break;
+        }
         match command {
             SdkCommand::Primary(CollabRequest::Hello {
                 app_id,
@@ -1898,7 +2558,7 @@ struct SdkJoinContext<'a> {
     presentation: &'a [u8],
     participant_handle: Option<&'a str>,
     participant_kind: &'a str,
-    inbound_tx: &'a tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &'a InboundBridge,
 }
 
 struct SdkRoute {
@@ -1922,7 +2582,7 @@ async fn ensure_sdk_route(
     identity_bytes: &[u8],
     participant_handle: Option<&str>,
     participant_kind: &str,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
     routes: &mut std::collections::HashMap<String, SdkRoute>,
     spec: &RouteSpec,
 ) -> Result<(), String> {
@@ -1986,7 +2646,7 @@ async fn ensure_sdk_route(
 )]
 async fn spawn_op_stream(
     channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
     encryption: std::sync::Arc<std::sync::Mutex<Option<channel_crypto::ChannelGroup>>>,
 ) {
     if let Ok(stream) = channel.subscribe().await {
@@ -2013,7 +2673,7 @@ async fn spawn_op_stream(
                         continue;
                     }
                 };
-                if tx.send(translated).is_err() {
+                if !tx.send_durable(translated) {
                     break;
                 }
             }
@@ -2027,16 +2687,13 @@ async fn spawn_op_stream(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
-async fn spawn_context_stream(
-    channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
-) {
+async fn spawn_context_stream(channel: &runtime_collab::ChannelHandle, inbound_tx: &InboundBridge) {
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(context) = stream.read().await {
                 if let Some(peer_id) = context.follow_changed {
-                    if tx.send(CollabEvent::FollowChanged { peer_id }).is_err() {
+                    if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
                         break;
                     }
                     continue;
@@ -2052,13 +2709,10 @@ async fn spawn_context_stream(
                         is_self: collaborator.is_self,
                     })
                     .collect();
-                if tx
-                    .send(CollabEvent::Context {
-                        collaborators,
-                        permissions: context.permissions,
-                    })
-                    .is_err()
-                {
+                if !tx.send_durable(CollabEvent::Context {
+                    collaborators,
+                    permissions: context.permissions,
+                }) {
                     break;
                 }
             }
@@ -2072,22 +2726,16 @@ async fn spawn_context_stream(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
-async fn spawn_action_stream(
-    channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
-) {
+async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx: &InboundBridge) {
     if let Ok(stream) = channel.subscribe_actions().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(action) = stream.read().await {
-                if tx
-                    .send(CollabEvent::ActionArrived {
-                        type_id: action.type_id,
-                        payload: action.payload,
-                        from_user_id: action.from_user_id,
-                    })
-                    .is_err()
-                {
+                if !tx.send_durable(CollabEvent::ActionArrived {
+                    type_id: action.type_id,
+                    payload: action.payload,
+                    from_user_id: action.from_user_id,
+                }) {
                     break;
                 }
             }
@@ -2101,7 +2749,7 @@ async fn spawn_action_stream(
 )]
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_invocations().await {
         let tx = inbound_tx.clone();
@@ -2110,17 +2758,14 @@ async fn spawn_invocation_stream(
             while let Ok(invocation) = stream.read().await {
                 let id = invocation.id;
                 let context = parse_invocation_context(id, &invocation.context_json);
-                if tx
-                    .send(CollabEvent::Invocation {
-                        id,
-                        resource: invocation.resource,
-                        action: invocation.action,
-                        argument: invocation.argument,
-                        actor: invocation.actor,
-                        context: context.map(Box::new),
-                    })
-                    .is_err()
-                {
+                if !tx.send_durable(CollabEvent::Invocation {
+                    id,
+                    resource: invocation.resource,
+                    action: invocation.action,
+                    argument: invocation.argument,
+                    actor: invocation.actor,
+                    context: context.map(Box::new),
+                }) {
                     break;
                 }
                 let cancellation_tx = tx.clone();
@@ -2132,7 +2777,7 @@ async fn spawn_invocation_stream(
                             Ok(false) => {}
                             Ok(true) => {
                                 let _ = cancellation_tx
-                                    .send(CollabEvent::InvocationCancellation { id });
+                                    .send_durable(CollabEvent::InvocationCancellation { id });
                                 break;
                             }
                             // The broker removes terminal invocations, so an
@@ -2165,7 +2810,7 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<qos_actions::ActionCo
 )]
 async fn spawn_action_catalogue_stream(
     channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
 ) -> Result<(), String> {
     let stream = channel
         .subscribe_action_catalogue()
@@ -2177,23 +2822,20 @@ async fn spawn_action_catalogue_stream(
         .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
     let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
         .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
-    inbound_tx
-        .send(CollabEvent::ActionCatalogue {
-            surfaces: catalogue.surfaces,
-        })
-        .map_err(|_| "delivering initial action catalogue failed".to_string())?;
+    if !inbound_tx.send_durable(CollabEvent::ActionCatalogue {
+        surfaces: catalogue.surfaces,
+    }) {
+        return Err("delivering initial action catalogue failed".to_string());
+    }
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(snapshot) = stream.read().await {
             match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
                 Ok(catalogue) => {
-                    if tx
-                        .send(CollabEvent::ActionCatalogue {
-                            surfaces: catalogue.surfaces,
-                        })
-                        .is_err()
-                    {
+                    if !tx.send_durable(CollabEvent::ActionCatalogue {
+                        surfaces: catalogue.surfaces,
+                    }) {
                         break;
                     }
                 }
@@ -2215,13 +2857,13 @@ async fn spawn_action_catalogue_stream(
 )]
 async fn spawn_task_run_stream(
     channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
 ) {
     if let Ok(stream) = channel.subscribe_task_runs().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(run) = stream.read().await {
-                if tx.send(CollabEvent::TaskRun(run)).is_err() {
+                if !tx.send_durable(CollabEvent::TaskRun(run)) {
                     break;
                 }
             }
@@ -2239,7 +2881,7 @@ async fn spawn_task_run_stream(
 )]
 async fn spawn_presence_stream(
     channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
 ) -> Option<runtime_collab::PresenceHandle> {
     match channel.presence().await {
         Ok(handle) => {
@@ -2248,7 +2890,7 @@ async fn spawn_presence_stream(
                 tokio::task::spawn_local(async move {
                     while let Ok(event) = stream.read().await {
                         if let Some(event) = translate_presence_event(event)
-                            && tx.send(event).is_err()
+                            && !tx.send_presence(event)
                         {
                             break;
                         }
@@ -2642,7 +3284,7 @@ async fn dispatch_sdk_request(
     route: &mut SdkRoute,
     request: CollabRequest,
     signer: &SdkDocumentSigner,
-    inbound_tx: &tokio_mpsc::UnboundedSender<CollabEvent>,
+    inbound_tx: &InboundBridge,
 ) {
     match request {
         CollabRequest::Hello { .. } => {}
@@ -2737,7 +3379,7 @@ async fn dispatch_sdk_request(
                 }
                 Err(_) => (Vec::new(), Vec::new(), true),
             };
-            let _ = inbound_tx.send(CollabEvent::ScrollbackBatch {
+            let _ = inbound_tx.send_durable(CollabEvent::ScrollbackBatch {
                 artifact,
                 ops,
                 decrypted_payloads,
@@ -2804,9 +3446,7 @@ async fn dispatch_sdk_request(
                     while let Ok(event) = reader.read().await {
                         let terminal =
                             matches!(event, runtime_collab::WorkspaceControlEvent::Closed(_));
-                        if tx
-                            .send(CollabEvent::WorkspaceControl { session_id, event })
-                            .is_err()
+                        if !tx.send_durable(CollabEvent::WorkspaceControl { session_id, event })
                             || terminal
                         {
                             break;
@@ -2816,7 +3456,7 @@ async fn dispatch_sdk_request(
                 route.workspace_controls.insert(session_id, handle);
             }
             Err(error) => {
-                let _ = inbound_tx.send(CollabEvent::WorkspaceControl {
+                let _ = inbound_tx.send_durable(CollabEvent::WorkspaceControl {
                     session_id,
                     event: runtime_collab::WorkspaceControlEvent::Closed(
                         runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
@@ -2828,7 +3468,7 @@ async fn dispatch_sdk_request(
             if let Some(handle) = route.workspace_controls.get(&session_id)
                 && let Err(error) = handle.send_input(&event).await
             {
-                let _ = inbound_tx.send(CollabEvent::WorkspaceControl {
+                let _ = inbound_tx.send_durable(CollabEvent::WorkspaceControl {
                     session_id,
                     event: runtime_collab::WorkspaceControlEvent::Closed(
                         runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
@@ -2900,7 +3540,8 @@ async fn dispatch_sdk_request(
                         .map(|update| (id, update))
                         .map_err(|error| error.to_string())
                 });
-            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
         CollabRequest::PublishedInvocationStatus { request_id, id } => {
             let result = route
@@ -2914,7 +3555,8 @@ async fn dispatch_sdk_request(
                         .map(|update| (id, update))
                         .map_err(|error| error.to_string())
                 });
-            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
         CollabRequest::CancelPublishedInvocation { request_id, id } => {
             let result = route
@@ -2927,7 +3569,8 @@ async fn dispatch_sdk_request(
                         .map(|update| (id, update))
                         .map_err(|error| error.to_string())
                 });
-            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
         CollabRequest::LaunchPublishedApplication { request_id, app_id } => {
             let result = route
@@ -2940,7 +3583,8 @@ async fn dispatch_sdk_request(
                         .map(|update| (id, update))
                         .map_err(|error| error.to_string())
                 });
-            let _ = inbound_tx.send(CollabEvent::PublishedInvocationResult { request_id, result });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
         CollabRequest::ReportTaskRun {
             run_id,
@@ -2983,7 +3627,8 @@ async fn dispatch_sdk_request(
                         .map(|update| (id, update))
                         .map_err(|error| error.to_string())
                 });
-            let _ = inbound_tx.send(CollabEvent::TaskActionInvocationResult { request_id, result });
+            let _ = inbound_tx
+                .send_durable(CollabEvent::TaskActionInvocationResult { request_id, result });
         }
         CollabRequest::TaskRunCancellation {
             request_id,
@@ -2995,7 +3640,8 @@ async fn dispatch_sdk_request(
                 .task_run_cancelled(run_id, &lease)
                 .await
                 .map_err(|error| error.to_string());
-            let _ = inbound_tx.send(CollabEvent::TaskRunCancellation { request_id, result });
+            let _ =
+                inbound_tx.send_durable(CollabEvent::TaskRunCancellation { request_id, result });
         }
     }
 }
@@ -3725,6 +4371,174 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         false
+    }
+
+    #[test]
+    fn saturated_outbound_bridge_sheds_only_presence_then_fails_closed() {
+        let (tx, mut rx) = tokio_mpsc::channel(1);
+        let state = BridgeState::new();
+        let document = || {
+            SdkCommand::Primary(CollabRequest::DocumentIncremental {
+                data: b"durable".to_vec(),
+            })
+        };
+        let presence = || {
+            SdkCommand::Primary(CollabRequest::Presence {
+                key: PresenceKey::Tab {
+                    id: "saturated".to_owned(),
+                },
+                payload: PresencePayload::Pointer { x: 1.0, y: 2.0 },
+            })
+        };
+
+        assert!(enqueue_sdk_command(&tx, document(), &state));
+        for _ in 0..10_000 {
+            assert!(
+                !enqueue_sdk_command(&tx, presence(), &state),
+                "a full bounded queue may shed only this transient update"
+            );
+        }
+        assert!(state.is_healthy());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(QueuedSdkCommand {
+                command: SdkCommand::Primary(CollabRequest::DocumentIncremental { data }),
+                ..
+            })
+                if data == b"durable"
+        ));
+
+        assert!(enqueue_sdk_command(&tx, document(), &state));
+        assert!(
+            !enqueue_sdk_command(&tx, document(), &state),
+            "a durable overflow must be observable as a disconnected bridge"
+        );
+        assert!(!state.is_healthy());
+        assert!(
+            rx.try_recv().is_ok() && rx.try_recv().is_err(),
+            "the bounded queue retains only its admitted durable command"
+        );
+    }
+
+    #[test]
+    fn saturated_inbound_bridge_preserves_presence_policy_and_fails_for_results() {
+        let (tx, mut rx) = tokio_mpsc::channel(1);
+        let state = BridgeState::new();
+        let inbound = InboundBridge {
+            tx,
+            state: state.clone(),
+        };
+
+        for _ in 0..10_000 {
+            assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
+                user_id: "peer".to_owned(),
+                x: 1.0,
+                y: 2.0,
+            }));
+        }
+        assert!(state.is_healthy());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(QueuedCollabEvent {
+                event: CollabEvent::RemoteCursorMoved { .. },
+                ..
+            })
+        ));
+
+        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
+            surfaces: Vec::new(),
+        }));
+        assert!(
+            !inbound.send_durable(CollabEvent::PublishedInvocationResult {
+                request_id: 9,
+                result: Err("would have been lost".to_owned()),
+            }),
+            "an invocation lifecycle result is never silently discarded"
+        );
+        assert!(!state.is_healthy());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(QueuedCollabEvent {
+                event: CollabEvent::ActionCatalogue { surfaces },
+                ..
+            }) if surfaces.is_empty()
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn oversized_durable_payload_fails_the_byte_budget_before_queueing() {
+        let (tx, mut rx) = tokio_mpsc::channel(1);
+        let state = BridgeState::new();
+        let mut data = Vec::with_capacity(5 * 1024 * 1024);
+        data.push(0);
+        let oversized = SdkCommand::Primary(CollabRequest::DocumentSnapshot {
+            // Capacity, not just logical length, is charged: a caller must
+            // not park a mostly-empty giant allocation on the UI bridge.
+            data,
+        });
+
+        assert!(!enqueue_sdk_command(&tx, oversized, &state));
+        assert!(!state.is_healthy());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn byte_budget_rejects_aggregate_documents_before_count_capacity() {
+        let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
+        let state = BridgeState::new();
+        let mut admitted = 0;
+        loop {
+            let command = SdkCommand::Primary(CollabRequest::DocumentIncremental {
+                data: vec![0; 64 * 1024],
+            });
+            if !enqueue_sdk_command(&tx, command, &state) {
+                break;
+            }
+            admitted += 1;
+        }
+
+        assert!(admitted < SDK_COMMAND_QUEUE);
+        assert!(!state.is_healthy());
+        assert_eq!(rx.len(), admitted);
+    }
+
+    #[test]
+    fn byte_reservation_releases_when_the_ui_consumes_a_command() {
+        let (tx, mut rx) = tokio_mpsc::channel(2);
+        let state = BridgeState::new();
+        let document = || {
+            SdkCommand::Primary(CollabRequest::DocumentIncremental {
+                data: vec![0; 3 * 1024 * 1024],
+            })
+        };
+
+        // Consuming its queued wrapper drops its reservation before the next
+        // admission, rather than leaking the aggregate budget.
+        assert!(enqueue_sdk_command(&tx, document(), &state));
+        drop(rx.try_recv().expect("queued document"));
+        assert!(enqueue_sdk_command(&tx, document(), &state));
+        assert!(state.is_healthy());
+    }
+
+    #[test]
+    fn oversized_inbound_action_fails_before_queueing() {
+        let (tx, mut rx) = tokio_mpsc::channel(1);
+        let state = BridgeState::new();
+        let inbound = InboundBridge {
+            tx,
+            state: state.clone(),
+        };
+        let mut payload = Vec::with_capacity(5 * 1024 * 1024);
+        payload.push(1);
+
+        assert!(!inbound.send_durable(CollabEvent::ActionArrived {
+            type_id: "test.action".to_owned(),
+            payload,
+            from_user_id: "peer".to_owned(),
+        }));
+        assert!(!state.is_healthy());
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
