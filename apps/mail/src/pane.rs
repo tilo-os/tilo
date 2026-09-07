@@ -2414,6 +2414,17 @@ impl Widget for Pane {
         match self.role {
             Role::Sidebar => self.draw_sidebar(scene, t, tr, theme),
             Role::List => {
+                // The query may also change through restored collaborative
+                // state or a resource operation, not only this input's event
+                // handler. Keep the retained editor projection in lockstep so
+                // a focused search never paints an empty field over active
+                // results (and so assistive technology gets the real value).
+                let query = self.shared.borrow().search.clone();
+                if let Some(inp) = self.search_input.as_mut()
+                    && inp.value() != query
+                {
+                    inp.set_text(&query);
+                }
                 self.draw_list(scene, t, tr, theme);
                 if let Some(inp) = self.search_input.as_mut() {
                     inp.draw(scene, t, tr, theme, presence);
@@ -2484,7 +2495,7 @@ impl Widget for Pane {
                         "Star (S)"
                     }
                 }
-                Hit::SearchFocus => "Search mail (/)",
+                Hit::SearchFocus => "Search mail (/ or Ctrl+F)",
                 Hit::SearchClear => "Clear search",
                 Hit::Refresh => "Refresh (F5)",
                 Hit::Reply => "Reply (R)",

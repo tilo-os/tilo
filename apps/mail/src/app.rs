@@ -368,6 +368,19 @@ impl MailApp {
         self.dirty = true;
     }
 
+    /// Put the list in an active, non-empty search state. This is deliberately
+    /// seeded through the same shared query state used by type-ahead rather
+    /// than fabricating a separate search-only data path.
+    pub fn prime_search_shot(&mut self) {
+        let mut st = self.shared.borrow_mut();
+        st.search = "spatial".into();
+        st.search_focused = true;
+        st.selected = st.list_rows().first().map(|(id, _)| *id);
+        st.dirty = true;
+        drop(st);
+        self.dirty = true;
+    }
+
     /// Open the account-setup sheet (setup shot).
     pub fn prime_setup_shot(&mut self) {
         let active = self.shared.borrow().accounts.active;
@@ -3199,7 +3212,7 @@ impl Widget for MailApp {
 
         // 6) If nothing consumed it, apply global mailbox shortcuts.
         if !*handled {
-            self.global_shortcuts(event, state, handled);
+            self.global_shortcuts(event, *modifiers, state, handled);
         }
 
         self.dirty = true;
@@ -3949,6 +3962,7 @@ impl MailApp {
     fn global_shortcuts(
         &mut self,
         event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -3968,13 +3982,20 @@ impl MailApp {
         else {
             return;
         };
+        let command = modifiers.state().control_key() || modifiers.state().super_key();
+        // Bare letter shortcuts must never steal a platform/editor chord such
+        // as Ctrl+C, Ctrl+S, or Alt+R. The focused widget gets first refusal;
+        // this is the final safety net for commands addressed to the shell.
+        let plain = !command && !modifiers.state().alt_key();
         let selected = self.shared.borrow().selected;
         match logical_key {
-            Key::Character(ch) if ch.eq_ignore_ascii_case("c") => {
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("c") => {
                 self.compose.open_blank();
                 *handled = true;
             }
-            Key::Character(ch) if ch == "/" => {
+            Key::Character(ch)
+                if (plain && ch == "/") || (command && ch.eq_ignore_ascii_case("f")) =>
+            {
                 self.shared.borrow_mut().focus_search_request = true;
                 self.dirty = true;
                 *handled = true;
@@ -3991,7 +4012,7 @@ impl MailApp {
                 self.shared.borrow_mut().move_selection(state, -1);
                 *handled = true;
             }
-            Key::Character(ch) if ch.eq_ignore_ascii_case("e") => {
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("e") => {
                 if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
@@ -4000,7 +4021,7 @@ impl MailApp {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::Delete | NamedKey::Backspace) => {
+            Key::Named(NamedKey::Delete | NamedKey::Backspace) if plain => {
                 if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
@@ -4009,7 +4030,7 @@ impl MailApp {
                     *handled = true;
                 }
             }
-            Key::Character(ch) if ch.eq_ignore_ascii_case("s") => {
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("s") => {
                 if let Some(id) = selected {
                     self.shared
                         .borrow_mut()
@@ -4017,14 +4038,14 @@ impl MailApp {
                     *handled = true;
                 }
             }
-            Key::Character(ch) if ch.eq_ignore_ascii_case("r") => {
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("r") => {
                 if let Some(id) = selected {
                     self.shared.borrow_mut().push_intent(Intent::Reply(id));
                     self.process_intents();
                     *handled = true;
                 }
             }
-            Key::Character(ch) if ch.eq_ignore_ascii_case("u") => {
+            Key::Character(ch) if plain && ch.eq_ignore_ascii_case("u") => {
                 if let Some(id) = selected {
                     self.shared.borrow_mut().set_read(state, id, false);
                     *handled = true;
