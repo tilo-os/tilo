@@ -36,9 +36,9 @@
 //!   `FutoSwipeModel` implementing the same trait can be swapped in via
 //!   [`OskWidget::with_swipe_model`] with no other change.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -47,7 +47,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
+use ui::qos_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -83,8 +83,23 @@ pub const DEFAULT_TOOLBAR_HEIGHT: f32 = 48.0;
 pub const DEFAULT_SUGGESTION_HEIGHT: f32 = 40.0;
 /// How many suggestion chips to show at once.
 pub(crate) const MAX_SUGGESTIONS: usize = 5;
+/// The diagnostic mirror is deliberately bounded: the live injector is the
+/// delivery path, while this buffer exists only for hosts/tests that drain it.
+pub const MAX_PENDING_TEXT_BYTES: usize = 16 * 1024;
+const MAX_KEY_LOG_ENTRIES: usize = 1_024;
+const MAX_TOOLBAR_LOG_ENTRIES: usize = 128;
+const MAX_GESTURE_POINTS: usize = 256;
+const MAX_TRACKED_WORD_SCALARS: usize = 128;
+const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
+const CONFIG_LAYOUT_KEY: &str = "osk.preferred_layout";
+const CONFIG_SUGGESTIONS_KEY: &str = "osk.suggestions_enabled";
+const CONFIG_PERSONALIZATION_KEY: &str = "osk.personalization_enabled";
 
 /// The on-screen keyboard widget.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "these independent, user-configurable interaction flags are clearer than a false state-machine invariant"
+)]
 pub struct OskWidget {
     /// Registered layouts by name. Always contains the symbols layer plus
     /// at least one letter layout. Adding AZERTY/QWERTZ/… is just inserting
@@ -94,6 +109,10 @@ pub struct OskWidget {
     /// purposes (numeric/phone/pin) this holds the chosen specialised layout
     /// name; it is what `active_layout_name` reports when symbols are not shown.
     active_letter: String,
+    /// Last chosen alphabetic layout. Content-purpose layouts may temporarily
+    /// replace `active_letter`, but returning to a text field restores this
+    /// durable language preference.
+    preferred_text_layout: String,
     /// The field intent the keyboard is currently serving. Drives which layout
     /// is active and whether the shift/symbols affordances make sense.
     purpose: InputPurpose,
@@ -109,9 +128,19 @@ pub struct OskWidget {
     toolbar_height: f32,
     /// Suggestion-bar row height.
     suggestion_height: f32,
+    /// Whether candidate chips are shown. Turning this off leaves the stable
+    /// suggestion band in place, avoiding geometry churn while typing.
+    suggestions_enabled: bool,
+    /// Whether this process may adapt rankings from committed words. The
+    /// learned cache itself is never persisted or collaborated.
+    personalization_enabled: bool,
 
     // --- frame caches (populated in apply_layout) ---
     rect: Rect,
+    /// Centred responsive keyboard surface. On a wide desktop it caps the
+    /// key span so each key remains comfortably scannable rather than becoming
+    /// a very wide desktop tile; narrow/tablet surfaces retain full width.
+    content_rect: Rect,
     key_geom: Vec<(KeyId, Rect)>,
     toolbar_geom: Vec<(usize, Rect)>,
     suggestion_geom: Vec<(usize, Rect)>,
@@ -137,6 +166,9 @@ pub struct OskWidget {
     /// The in-progress word at the caret (letters since the last word
     /// boundary). Used to replace-on-suggestion and to feed prefix completion.
     current_word: String,
+    /// Once a word exceeds the predictor cap, do not begin tracking another
+    /// suffix of that same word. It resets only at a real word boundary.
+    current_word_overflowed: bool,
     /// The previously committed word, for bigram next-word context.
     prev_word: Option<String>,
     /// While the left button is down, the captured pointer path (logical px).
@@ -145,8 +177,11 @@ pub struct OskWidget {
 
     // --- output ---
     pending_text: String,
-    key_log: Vec<KeyAction>,
-    toolbar_log: Vec<OskToolbarAction>,
+    pending_text_dropped_bytes: usize,
+    key_log: VecDeque<KeyAction>,
+    dropped_key_actions: usize,
+    toolbar_log: VecDeque<OskToolbarAction>,
+    dropped_toolbar_actions: usize,
     on_key: Option<Box<dyn FnMut(KeyAction)>>,
     on_toolbar: Option<Box<dyn FnMut(OskToolbarAction)>>,
 
@@ -155,6 +190,10 @@ pub struct OskWidget {
     /// taffy node (its intrinsic height tracks the row count). Cleared by
     /// `take_structure_dirty`.
     structure_dirty: bool,
+    /// A resource operation changed durable per-user configuration. `sync`
+    /// writes it into the app document once, then remote document changes are
+    /// adopted on later syncs.
+    configuration_dirty: bool,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -189,6 +228,7 @@ impl OskWidget {
         let mut me = Self {
             layouts,
             active_letter: "qwerty".to_string(),
+            preferred_text_layout: "qwerty".to_string(),
             purpose: InputPurpose::Text,
             showing_symbols: false,
             shift: ShiftState::Off,
@@ -196,7 +236,10 @@ impl OskWidget {
             target_key_height: DEFAULT_KEY_HEIGHT,
             toolbar_height: DEFAULT_TOOLBAR_HEIGHT,
             suggestion_height: DEFAULT_SUGGESTION_HEIGHT,
+            suggestions_enabled: true,
+            personalization_enabled: true,
             rect: Rect::ZERO,
+            content_rect: Rect::ZERO,
             key_geom: Vec::new(),
             toolbar_geom: Vec::new(),
             suggestion_geom: Vec::new(),
@@ -213,14 +256,19 @@ impl OskWidget {
             predictor: Predictor::english(),
             suggestions: Vec::new(),
             current_word: String::new(),
+            current_word_overflowed: false,
             prev_word: None,
             gesture_path: None,
             pending_text: String::new(),
-            key_log: Vec::new(),
-            toolbar_log: Vec::new(),
+            pending_text_dropped_bytes: 0,
+            key_log: VecDeque::new(),
+            dropped_key_actions: 0,
+            toolbar_log: VecDeque::new(),
+            dropped_toolbar_actions: 0,
             on_key: None,
             on_toolbar: None,
             structure_dirty: false,
+            configuration_dirty: false,
             visible: true,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
@@ -243,9 +291,7 @@ impl OskWidget {
     /// Choose the active letter layout by name (must be registered).
     #[must_use]
     pub fn with_active_layout(mut self, name: &str) -> Self {
-        if self.layouts.contains_key(name) {
-            self.active_letter = name.to_string();
-        }
+        self.select_text_layout(name);
         self
     }
 
@@ -319,12 +365,74 @@ impl OskWidget {
     /// Drain the log of emitted key actions (for hosts/tests that want the
     /// raw [`KeyAction`] stream rather than the flattened text).
     pub fn take_key_actions(&mut self) -> Vec<KeyAction> {
-        std::mem::take(&mut self.key_log)
+        self.key_log.drain(..).collect()
     }
 
     /// Drain the log of toolbar actions.
     pub fn take_toolbar_actions(&mut self) -> Vec<OskToolbarAction> {
-        std::mem::take(&mut self.toolbar_log)
+        self.toolbar_log.drain(..).collect()
+    }
+
+    /// Bytes that could not fit in the bounded diagnostic text mirror. Live
+    /// key delivery still reached `on_key`; callers that rely on this mirror
+    /// must drain it promptly instead of treating it as an unbounded transcript.
+    pub fn pending_text_dropped_bytes(&self) -> usize {
+        self.pending_text_dropped_bytes
+    }
+
+    /// Number of oldest raw key events evicted from the bounded diagnostic log.
+    pub fn dropped_key_actions(&self) -> usize {
+        self.dropped_key_actions
+    }
+
+    /// Number of oldest toolbar events evicted from the bounded diagnostic log.
+    pub fn dropped_toolbar_actions(&self) -> usize {
+        self.dropped_toolbar_actions
+    }
+
+    /// Whether suggestions are visibly offered above the key grid.
+    pub fn suggestions_enabled(&self) -> bool {
+        self.suggestions_enabled
+    }
+
+    /// Whether this process may adapt future rankings from committed words.
+    pub fn personalization_enabled(&self) -> bool {
+        self.personalization_enabled
+    }
+
+    /// Toggle visible suggestions. This is a durable preference, while the
+    /// candidate words themselves remain deliberately ephemeral.
+    pub fn set_suggestions_enabled(&mut self, enabled: bool) {
+        if self.suggestions_enabled == enabled {
+            return;
+        }
+        self.suggestions_enabled = enabled;
+        if enabled {
+            self.refresh_next_word_suggestions();
+        } else {
+            self.suggestions.clear();
+        }
+        self.configuration_dirty = true;
+    }
+
+    /// Toggle local adaptive ranking. Disabling it immediately forgets the
+    /// in-memory profile; neither profile entries nor typed text are persisted.
+    pub fn set_personalization_enabled(&mut self, enabled: bool) {
+        if self.personalization_enabled == enabled {
+            return;
+        }
+        self.personalization_enabled = enabled;
+        if !enabled {
+            self.predictor.clear_learned();
+        }
+        self.refresh_next_word_suggestions();
+        self.configuration_dirty = true;
+    }
+
+    /// Forget locally adapted suggestion ranking without changing the privacy
+    /// preference. This has no effect on the bundled dictionary/bigram model.
+    pub fn clear_personalization(&mut self) {
+        self.predictor.clear_learned();
     }
 
     // --- runtime configuration -----------------------------------------
@@ -469,7 +577,11 @@ impl OskWidget {
             Some(it) => it.action.clone(),
             None => return,
         };
-        self.toolbar_log.push(action.clone());
+        if self.toolbar_log.len() == MAX_TOOLBAR_LOG_ENTRIES {
+            self.toolbar_log.pop_front();
+            self.dropped_toolbar_actions = self.dropped_toolbar_actions.saturating_add(1);
+        }
+        self.toolbar_log.push_back(action.clone());
         if let Some(cb) = &mut self.on_toolbar {
             cb(action);
         }
@@ -484,7 +596,11 @@ impl OskWidget {
     /// [`set_purpose`](Self::set_purpose).
     fn apply_purpose(&mut self, purpose: InputPurpose) {
         self.purpose = purpose;
-        let name = KeyboardLayout::for_purpose(purpose);
+        let name = if purpose == InputPurpose::Text {
+            self.preferred_text_layout.as_str()
+        } else {
+            KeyboardLayout::for_purpose(purpose)
+        };
         if !self.layouts.contains_key(name)
             && let Some(layout) = KeyboardLayout::by_name(name)
         {
@@ -494,6 +610,59 @@ impl OskWidget {
             self.active_letter = name.to_string();
         }
         self.shift = ShiftState::Off;
+    }
+
+    fn select_text_layout(&mut self, name: &str) -> bool {
+        if name == "symbols" || !self.layouts.contains_key(name) {
+            return false;
+        }
+        self.preferred_text_layout = name.to_string();
+        self.active_letter = name.to_string();
+        self.purpose = InputPurpose::Text;
+        self.showing_symbols = false;
+        self.shift = ShiftState::Off;
+        self.structure_dirty = true;
+        self.configuration_dirty = true;
+        true
+    }
+
+    fn select_text_layout_from_sync(&mut self, name: &str) {
+        if name == "symbols"
+            || !self.layouts.contains_key(name)
+            || self.preferred_text_layout == name
+        {
+            return;
+        }
+        self.preferred_text_layout = name.to_string();
+        if self.purpose == InputPurpose::Text {
+            self.active_letter = name.to_string();
+            self.showing_symbols = false;
+            self.shift = ShiftState::Off;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn set_suggestions_enabled_from_sync(&mut self, enabled: bool) {
+        if self.suggestions_enabled == enabled {
+            return;
+        }
+        self.suggestions_enabled = enabled;
+        if enabled {
+            self.refresh_next_word_suggestions();
+        } else {
+            self.suggestions.clear();
+        }
+    }
+
+    fn set_personalization_enabled_from_sync(&mut self, enabled: bool) {
+        if self.personalization_enabled == enabled {
+            return;
+        }
+        self.personalization_enabled = enabled;
+        if !enabled {
+            self.predictor.clear_learned();
+        }
+        self.refresh_next_word_suggestions();
     }
 
     /// The layout currently on screen.
@@ -527,7 +696,7 @@ impl OskWidget {
     fn apply_action(&mut self, action: KeyAction) {
         match &action {
             KeyAction::Char(s) => {
-                self.pending_text.push_str(s);
+                self.append_pending_text(s);
                 // One-shot shift resets after a character; caps is sticky.
                 if self.shift == ShiftState::Shift {
                     self.shift = ShiftState::Off;
@@ -535,18 +704,33 @@ impl OskWidget {
                 // Track the current word: letters extend it, punctuation ends
                 // it (commits a word boundary).
                 if s.chars().all(char::is_alphabetic) {
-                    self.current_word.push_str(s);
-                    self.refresh_completion_suggestions();
+                    if !self.current_word_overflowed
+                        && self
+                            .current_word
+                            .chars()
+                            .count()
+                            .saturating_add(s.chars().count())
+                            <= MAX_TRACKED_WORD_SCALARS
+                    {
+                        self.current_word.push_str(s);
+                        self.refresh_completion_suggestions();
+                    } else {
+                        // Keep delivery intact but stop retaining a hostile or
+                        // accidental mega-token solely for prediction.
+                        self.current_word.clear();
+                        self.current_word_overflowed = true;
+                        self.suggestions.clear();
+                    }
                 } else {
                     self.commit_current_word();
                 }
             }
             KeyAction::Space => {
-                self.pending_text.push(' ');
+                self.append_pending_text(" ");
                 self.commit_current_word();
             }
             KeyAction::Enter => {
-                self.pending_text.push('\n');
+                self.append_pending_text("\n");
                 self.commit_current_word();
                 // A newline clears next-word context.
                 self.prev_word = None;
@@ -571,14 +755,14 @@ impl OskWidget {
                 self.structure_dirty = true;
             }
             KeyAction::Layout(name) => {
-                if self.layouts.contains_key(name) {
-                    self.active_letter.clone_from(name);
-                    self.showing_symbols = false;
-                    self.structure_dirty = true;
-                }
+                self.select_text_layout(name);
             }
         }
-        self.key_log.push(action.clone());
+        if self.key_log.len() == MAX_KEY_LOG_ENTRIES {
+            self.key_log.pop_front();
+            self.dropped_key_actions = self.dropped_key_actions.saturating_add(1);
+        }
+        self.key_log.push_back(action.clone());
         if let Some(cb) = &mut self.on_key {
             cb(action);
         }
@@ -590,17 +774,24 @@ impl OskWidget {
     fn commit_current_word(&mut self) {
         if !self.current_word.is_empty() {
             let committed = self.current_word.to_lowercase();
-            self.predictor
-                .learn_transition(self.prev_word.as_deref(), &committed);
+            if self.personalization_enabled {
+                self.predictor
+                    .learn_transition(self.prev_word.as_deref(), &committed);
+            }
             self.prev_word = Some(committed);
             self.current_word.clear();
         }
+        self.current_word_overflowed = false;
         self.refresh_next_word_suggestions();
     }
 
     /// Refill the bar with completions of the in-progress word (biased by the
     /// previous word). Called as the user types letters.
     fn refresh_completion_suggestions(&mut self) {
+        if !self.suggestions_enabled {
+            self.suggestions.clear();
+            return;
+        }
         if self.current_word.is_empty() {
             self.refresh_next_word_suggestions();
             return;
@@ -618,6 +809,10 @@ impl OskWidget {
 
     /// Refill the bar with next-word predictions for the previous word.
     fn refresh_next_word_suggestions(&mut self) {
+        if !self.suggestions_enabled {
+            self.suggestions.clear();
+            return;
+        }
         let preds = self
             .predictor
             .predict_next_n(self.prev_word.as_deref(), "", MAX_SUGGESTIONS);
@@ -637,11 +832,14 @@ impl OskWidget {
         for _ in 0..drop {
             self.pending_text.pop();
         }
-        self.pending_text.push_str(word);
+        self.append_pending_text(word);
         self.current_word.clear();
+        self.current_word_overflowed = false;
         let committed = word.to_lowercase();
-        self.predictor
-            .learn_transition(self.prev_word.as_deref(), &committed);
+        if self.personalization_enabled {
+            self.predictor
+                .learn_transition(self.prev_word.as_deref(), &committed);
+        }
         self.prev_word = Some(committed);
         self.refresh_next_word_suggestions();
     }
@@ -658,12 +856,15 @@ impl OskWidget {
         };
         if self.current_word.is_empty() {
             // Next-word pick: insert "word ".
-            self.pending_text.push_str(&s.word);
-            self.pending_text.push(' ');
+            self.append_pending_text(&s.word);
+            self.append_pending_text(" ");
             let committed = s.word.to_lowercase();
-            self.predictor
-                .learn_transition(self.prev_word.as_deref(), &committed);
+            if self.personalization_enabled {
+                self.predictor
+                    .learn_transition(self.prev_word.as_deref(), &committed);
+            }
             self.prev_word = Some(committed);
+            self.current_word_overflowed = false;
             self.refresh_next_word_suggestions();
         } else {
             self.replace_current_word(&s.word);
@@ -690,7 +891,7 @@ impl OskWidget {
         let top = top_cand.word.clone();
         if self.current_word.is_empty() {
             // Auto-insert acts like a completed word.
-            self.pending_text.push_str(&top);
+            self.append_pending_text(&top);
             self.prev_word = Some(top.to_lowercase());
         } else {
             self.replace_current_word(&top);
@@ -703,6 +904,7 @@ impl OskWidget {
         // After a swipe the word is committed; the next tap on a chip should
         // *correct* it, so keep current_word empty but remember the candidates.
         self.current_word.clear();
+        self.current_word_overflowed = false;
         true
     }
 
@@ -739,6 +941,39 @@ impl OskWidget {
             .iter()
             .find(|(_, r)| r.contains(p))
             .map(|(i, _)| *i)
+    }
+
+    fn append_pending_text(&mut self, text: &str) {
+        let remaining = MAX_PENDING_TEXT_BYTES.saturating_sub(self.pending_text.len());
+        if remaining == 0 {
+            self.pending_text_dropped_bytes =
+                self.pending_text_dropped_bytes.saturating_add(text.len());
+            return;
+        }
+        let mut end = remaining.min(text.len());
+        while end > 0 && !text.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        if let Some(prefix) = text.get(..end) {
+            self.pending_text.push_str(prefix);
+        }
+        self.pending_text_dropped_bytes = self
+            .pending_text_dropped_bytes
+            .saturating_add(text.len().saturating_sub(end));
+    }
+}
+
+fn read_config_text(state: &AutoCommit, path: &ObjId, key: &str) -> Option<String> {
+    match state.get(path, key) {
+        Ok(Some((Value::Scalar(value), _))) => value.to_str().map(ToOwned::to_owned),
+        _ => None,
+    }
+}
+
+fn read_config_bool(state: &AutoCommit, path: &ObjId, key: &str) -> Option<bool> {
+    match state.get(path, key) {
+        Ok(Some((Value::Scalar(value), _))) => value.to_bool(),
+        _ => None,
     }
 }
 
@@ -924,36 +1159,79 @@ fn draw_suggestion_chip(
 
 impl Widget for OskWidget {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["osk.type", "osk.key"]
+        &["osk.layout", "osk.suggestions"]
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut keyboard = Resource::new("keyboard", "osk.keyboard", "On-screen keyboard");
-        keyboard.actions.push(
-            ActionSpec::prompted_operation(
-                "type",
-                "Type text",
-                "Text to type",
-                "Text",
-                OperationKind::Effect,
-                "osk.type",
-                |text| EncodedAction::encode_operation("osk.type", &text).expect("string payload"),
-            )
-            .retry_policy(RetryPolicy::AtMostOnce),
+        // Resource actions intentionally cover only durable configuration:
+        // layouts and privacy/suggestion preferences can be searched, audited,
+        // replayed and invoked by an agent. Individual keystrokes are
+        // position-dependent, privacy-sensitive input, so they remain direct
+        // IM delivery rather than invented collaborative/history actions.
+        let mut keyboard = Resource::new("osk.keyboard", "osk.keyboard", "On-screen keyboard");
+
+        let mut layout = Resource::new(
+            "osk.keyboard.layout",
+            "osk.layout",
+            format!(
+                "Keyboard layout ({})",
+                self.preferred_text_layout.to_uppercase()
+            ),
         );
-        for (id, label) in [
-            ("backspace", "Backspace"),
-            ("enter", "Enter"),
-            ("space", "Space"),
+        for (id, label, value) in [
+            ("qwerty", "Use QWERTY layout", "qwerty"),
+            ("azerty", "Use AZERTY layout", "azerty"),
         ] {
             if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "osk.key", &id)
+                ActionSpec::operation(id, label, OperationKind::Effect, "osk.layout", &value)
             {
-                keyboard
+                layout
                     .actions
                     .push(spec.retry_policy(RetryPolicy::AtMostOnce));
             }
         }
+        let mut suggestions = Resource::new(
+            "osk.keyboard.suggestions",
+            "osk.suggestions",
+            "Suggestions and privacy",
+        );
+        let suggestion_action = if self.suggestions_enabled {
+            ("disable", "Turn off suggestions", "disable")
+        } else {
+            ("enable", "Turn on suggestions", "enable")
+        };
+        let personal_action = if self.personalization_enabled {
+            (
+                "disable-personal",
+                "Turn off personalized suggestions",
+                "disable-personal",
+            )
+        } else {
+            (
+                "enable-personal",
+                "Turn on personalized suggestions",
+                "enable-personal",
+            )
+        };
+        for (id, label, value) in [
+            suggestion_action,
+            personal_action,
+            (
+                "clear-personal",
+                "Clear learned suggestions",
+                "clear-personal",
+            ),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "osk.suggestions", &value)
+            {
+                suggestions
+                    .actions
+                    .push(spec.retry_policy(RetryPolicy::AtMostOnce));
+            }
+        }
+        keyboard.children.push(layout);
+        keyboard.children.push(suggestions);
         vec![keyboard]
     }
 
@@ -970,19 +1248,47 @@ impl Widget for OskWidget {
         }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
-            "osk.type" => self.apply_action(KeyAction::Char(value)),
-            "osk.key" => self.apply_action(match value.as_str() {
-                "backspace" => KeyAction::Backspace,
-                "enter" => KeyAction::Enter,
-                "space" => KeyAction::Space,
+            "osk.layout" => return Ok(self.select_text_layout(&value)),
+            "osk.suggestions" => match value.as_str() {
+                "enable" => self.set_suggestions_enabled(true),
+                "disable" => self.set_suggestions_enabled(false),
+                "enable-personal" => self.set_personalization_enabled(true),
+                "disable-personal" => self.set_personalization_enabled(false),
+                "clear-personal" => self.clear_personalization(),
                 _ => return Ok(false),
-            }),
+            },
             _ => return Ok(false),
         }
         Ok(true)
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.configuration_dirty {
+            let _ = state.put(path, CONFIG_LAYOUT_KEY, self.preferred_text_layout.as_str());
+            let _ = state.put(path, CONFIG_SUGGESTIONS_KEY, self.suggestions_enabled);
+            let _ = state.put(
+                path,
+                CONFIG_PERSONALIZATION_KEY,
+                self.personalization_enabled,
+            );
+            self.configuration_dirty = false;
+            return;
+        }
+        let layout = read_config_text(state, path, CONFIG_LAYOUT_KEY);
+        let suggestions = read_config_bool(state, path, CONFIG_SUGGESTIONS_KEY);
+        let personalization = read_config_bool(state, path, CONFIG_PERSONALIZATION_KEY);
+        if let Some(layout) = layout {
+            // Remote/persisted config cannot introduce an arbitrary layout: it
+            // must still be one registered in this OSK process.
+            self.select_text_layout_from_sync(&layout);
+        }
+        if let Some(enabled) = suggestions {
+            self.set_suggestions_enabled_from_sync(enabled);
+        }
+        if let Some(enabled) = personalization {
+            self.set_personalization_enabled_from_sync(enabled);
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -1032,18 +1338,41 @@ impl Widget for OskWidget {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        let content_width = self.rect.width().min(MAX_KEYBOARD_CONTENT_WIDTH);
+        let content_x0 = self.rect.center().x - content_width * 0.5;
+        self.content_rect = Rect::new(
+            content_x0,
+            self.rect.y0,
+            content_x0 + content_width,
+            self.rect.y1,
+        );
 
         // Top → bottom bands: toolbar, suggestion bar, keys (keys fill the
         // rest). Clamp each band so a too-short surface degrades gracefully.
-        let h = self.rect.height();
+        let h = self.content_rect.height();
         let toolbar_h = f64::from(self.toolbar_height).min(h);
         let suggestion_h = f64::from(self.suggestion_height).min((h - toolbar_h).max(0.0));
-        let toolbar_y1 = self.rect.y0 + toolbar_h;
+        let toolbar_y1 = self.content_rect.y0 + toolbar_h;
         let suggestion_y1 = toolbar_y1 + suggestion_h;
 
-        let toolbar_area = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, toolbar_y1);
-        let suggestion_area = Rect::new(self.rect.x0, toolbar_y1, self.rect.x1, suggestion_y1);
-        let key_area = Rect::new(self.rect.x0, suggestion_y1, self.rect.x1, self.rect.y1);
+        let toolbar_area = Rect::new(
+            self.content_rect.x0,
+            self.content_rect.y0,
+            self.content_rect.x1,
+            toolbar_y1,
+        );
+        let suggestion_area = Rect::new(
+            self.content_rect.x0,
+            toolbar_y1,
+            self.content_rect.x1,
+            suggestion_y1,
+        );
+        let key_area = Rect::new(
+            self.content_rect.x0,
+            suggestion_y1,
+            self.content_rect.x1,
+            self.content_rect.y1,
+        );
 
         self.toolbar_geom = toolbar_rects(&self.toolbar, toolbar_area);
         self.suggestion_geom = suggestion_rects(&self.suggestions, suggestion_area);
@@ -1057,6 +1386,10 @@ impl Widget for OskWidget {
         self.key_geom = geom;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom key-grid renderer keeps paint order and hit-state styling auditable in one pass"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1135,6 +1468,26 @@ impl Widget for OskWidget {
                     top,
                 );
             }
+            if self.suggestion_geom.is_empty() {
+                let hint = if self.suggestions_enabled {
+                    "Type or swipe to see suggestions"
+                } else {
+                    "Suggestions are off"
+                };
+                let font = (self.suggestion_area.height() * 0.38).clamp(12.0, 18.0) as f32;
+                let (width, _) = text_renderer.measure(hint, font, None);
+                let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
+                let y = self.suggestion_area.y0
+                    + (self.suggestion_area.height() - f64::from(font)) * 0.5;
+                text_renderer.draw_text(
+                    scene,
+                    hint,
+                    font,
+                    theme.tokens.colors.text_primary,
+                    transform * Affine::translate((x, y)),
+                    None,
+                );
+            }
         }
 
         // Keys.
@@ -1198,7 +1551,14 @@ impl Widget for OskWidget {
                     // Only record once the pointer has moved a touch, to keep
                     // the path tight.
                     if path.last().is_none_or(|&l| l.distance(p) > 1.0) {
-                        path.push(p);
+                        if path.len() < MAX_GESTURE_POINTS {
+                            path.push(p);
+                        } else if let Some(last) = path.last_mut() {
+                            // Preserve the start plus the most recent endpoint
+                            // under very high-rate pointer streams without
+                            // retaining an unbounded gesture trace.
+                            *last = p;
+                        }
                     }
                 }
                 let k = self.key_at(p);
@@ -1348,7 +1708,11 @@ impl Widget for OskWidget {
         Some(
             AccessNode::new(Role::Group)
                 .with_name("On-screen keyboard")
-                .with_description("Keyboard keys, suggestions, and input controls")
+                .with_description(if self.suggestions_enabled {
+                    "Keyboard keys, suggestions, and input controls"
+                } else {
+                    "Keyboard keys and input controls. Suggestions are turned off."
+                })
                 .with_children(children),
         )
     }
@@ -2270,5 +2634,95 @@ mod tests {
         );
         assert!(!handled, "a hidden keyboard does not consume pointer input");
         assert_eq!(osk.pending_text(), "");
+    }
+
+    #[test]
+    fn resource_catalogue_exports_configuration_not_keystrokes() {
+        let osk = OskWidget::new();
+        let resources = osk.resources(&AutoCommit::new());
+        let keyboard = resources.first().expect("keyboard resource");
+        assert!(
+            keyboard.actions.is_empty(),
+            "typing is not a replayable action"
+        );
+        assert_eq!(keyboard.children.len(), 2);
+        let layout = keyboard
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "osk.keyboard.layout")
+            .expect("layout configuration resource");
+        assert!(layout.actions.iter().any(|action| action.id == "qwerty"));
+        assert!(layout.actions.iter().any(|action| action.id == "azerty"));
+        assert_eq!(
+            osk.local_resource_operation_handlers(),
+            ["osk.layout", "osk.suggestions"]
+        );
+    }
+
+    #[test]
+    fn configuration_resource_persists_and_restores_preferred_layout() {
+        let mut osk = OskWidget::new();
+        let mut doc = AutoCommit::new();
+        let payload = serde_json::to_vec("azerty").expect("serialize layout action");
+        assert!(
+            osk.invoke_resource_operation(
+                OperationKind::Effect,
+                "osk.layout",
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("valid layout action")
+        );
+        osk.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            read_config_text(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
+            Some("azerty")
+        );
+
+        let mut restored = OskWidget::new();
+        restored.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(restored.active_layout_name(), "azerty");
+    }
+
+    #[test]
+    fn responsive_content_caps_on_desktop_but_keeps_tablet_width() {
+        let mut desktop = OskWidget::new();
+        lay_out(&mut desktop, 1_920.0, 480.0);
+        assert_eq!(desktop.content_rect.width(), MAX_KEYBOARD_CONTENT_WIDTH);
+        assert!(desktop.content_rect.x0 > 0.0, "desktop keyboard is centred");
+
+        let mut tablet = OskWidget::new();
+        lay_out(&mut tablet, 768.0, 420.0);
+        assert_eq!(tablet.content_rect.width(), 768.0);
+        assert_eq!(tablet.content_rect.x0, 0.0);
+    }
+
+    #[test]
+    fn disabled_suggestions_are_announced_and_not_materialised() {
+        let mut osk = OskWidget::new();
+        osk.set_suggestions_enabled(false);
+        lay_out(&mut osk, 720.0, 360.0);
+        assert!(osk.suggestions().is_empty());
+        let node = osk.accessibility().expect("visible semantics");
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|text| text.contains("turned off"))
+        );
+    }
+
+    #[test]
+    fn bounded_diagnostic_buffers_report_overflow_without_blocking_delivery() {
+        let mut osk = OskWidget::new();
+        osk.apply_action(KeyAction::Char("x".repeat(MAX_PENDING_TEXT_BYTES + 11)));
+        assert_eq!(osk.pending_text().len(), MAX_PENDING_TEXT_BYTES);
+        assert_eq!(osk.pending_text_dropped_bytes(), 11);
+
+        for _ in 0..(MAX_KEY_LOG_ENTRIES + 5) {
+            osk.apply_action(KeyAction::Shift);
+        }
+        assert_eq!(osk.key_log.len(), MAX_KEY_LOG_ENTRIES);
+        assert!(osk.dropped_key_actions() >= 6);
     }
 }
