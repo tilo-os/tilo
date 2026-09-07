@@ -580,6 +580,8 @@ pub fn model() -> TubeModel {
         dearrow_thumb_url: std::collections::BTreeMap::new(),
         // The sample is fully populated, so it never shows a loading skeleton.
         feed_loading: false,
+        feed_error: None,
         search_loading: false,
+        search_error: None,
     }
 }
