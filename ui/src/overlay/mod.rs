@@ -17,28 +17,39 @@ pub enum OverlayEntry {
 }
 
 pub struct OverlayStack {
-    next_id: u64,
+    /// `None` once every possible ID has been issued. A dismissed ID must
+    /// never be recycled: retained callbacks can still carry it and would
+    /// otherwise dismiss a different, newer overlay.
+    next_id: Option<u64>,
     entries: Vec<(OverlayId, OverlayEntry)>,
 }
 
 impl OverlayStack {
     pub fn new() -> Self {
         Self {
-            next_id: 1,
+            next_id: Some(1),
             entries: Vec::new(),
         }
     }
-    pub fn push_modal(&mut self, m: Modal) -> OverlayId {
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+    /// Push a modal and return its unique ID, or `None` after the ID namespace
+    /// is exhausted. On exhaustion neither the entry list nor an existing ID
+    /// changes.
+    pub fn push_modal(&mut self, m: Modal) -> Option<OverlayId> {
+        let id = self.take_next_id()?;
         self.entries.push((id, OverlayEntry::Modal(m)));
-        id
+        Some(id)
     }
-    pub fn push_popover(&mut self, p: Popover) -> OverlayId {
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
+    /// Push a popover and return its unique ID, or `None` after exhaustion.
+    pub fn push_popover(&mut self, p: Popover) -> Option<OverlayId> {
+        let id = self.take_next_id()?;
         self.entries.push((id, OverlayEntry::Popover(p)));
-        id
+        Some(id)
+    }
+
+    fn take_next_id(&mut self) -> Option<OverlayId> {
+        let id = self.next_id?;
+        self.next_id = id.checked_add(1);
+        Some(id)
     }
     pub fn dismiss(&mut self, id: OverlayId) {
         self.entries.retain(|(x, _)| *x != id);
@@ -60,5 +71,31 @@ impl OverlayStack {
 impl Default for OverlayStack {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_id_exhaustion_never_reuses_or_partially_pushes() {
+        let mut stack = OverlayStack::new();
+        stack.next_id = Some(u64::MAX);
+
+        let last = stack
+            .push_modal(Modal::new("last"))
+            .expect("last ID is usable");
+        assert_eq!(last, u64::MAX);
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack.top_id(), Some(u64::MAX));
+
+        assert!(
+            stack
+                .push_popover(Popover::new("after", vello::kurbo::Point::ZERO))
+                .is_none()
+        );
+        assert_eq!(stack.len(), 1);
+        assert_eq!(stack.top_id(), Some(u64::MAX));
     }
 }
