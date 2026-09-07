@@ -349,6 +349,11 @@ pub struct VpnApp {
     completed_import: Option<qos_actions::InvocationUpdate>,
     pending_control_invocation: Option<ControlInvocation>,
     operation_error: Option<String>,
+    /// Import errors can be retried without making the user rediscover which
+    /// protocol they were importing. Other machine-action errors deliberately
+    /// do not get a blind retry: the user can inspect the profile and choose
+    /// Connect again after addressing the reported cause.
+    retry_import_kind: Option<ConnKind>,
     last_mouse: Point,
     hovered_row: Option<ConnId>,
     is_focused: bool,
@@ -431,6 +436,7 @@ impl VpnApp {
             completed_import: None,
             pending_control_invocation: None,
             operation_error: None,
+            retry_import_kind: None,
             last_mouse: Point::ZERO,
             hovered_row: None,
             is_focused: false,
@@ -634,9 +640,36 @@ impl VpnApp {
                     .push("No credentials were written to the shared document".into());
             }
             "loading" => self.shot_loading = true,
+            "disconnected" => {
+                if let Some(id) = self
+                    .vault
+                    .connections
+                    .iter()
+                    .find(|connection| connection.status == ConnStatus::Disconnected)
+                    .map(|connection| connection.id)
+                {
+                    self.local_selected = Some(id);
+                    self.vault.selected = Some(id);
+                    self.live_status.insert(id, ConnStatus::Disconnected);
+                }
+            }
+            "connecting" => {
+                if let Some(id) = self
+                    .vault
+                    .connections
+                    .iter()
+                    .find(|connection| connection.status == ConnStatus::Disconnected)
+                    .map(|connection| connection.id)
+                {
+                    self.local_selected = Some(id);
+                    self.vault.selected = Some(id);
+                    self.live_status.insert(id, ConnStatus::Connecting);
+                }
+            }
             "error" => {
                 self.operation_error =
                     Some("The profile is incomplete: WireGuard Peer.PublicKey is missing.".into());
+                self.retry_import_kind = Some(ConnKind::WireGuard);
             }
             "empty" => {
                 self.vault = Vault::default();
@@ -649,6 +682,12 @@ impl VpnApp {
 
     fn request_toggle(&mut self, id: ConnId) {
         let Some(c) = self.vault.get(id) else { return };
+        if c.status == ConnStatus::Connecting {
+            self.log(format!("{} is already changing state", c.name));
+            return;
+        }
+        self.operation_error = None;
+        self.retry_import_kind = None;
         let backend = config::default_backend(c.kind);
         self.pending = Some(if c.is_connected() {
             Pending::Disconnect(id, config::disconnect_plan(c, backend))
@@ -659,6 +698,8 @@ impl VpnApp {
     }
 
     fn request_tor_global(&mut self) {
+        self.operation_error = None;
+        self.retry_import_kind = None;
         let next = !self.vault.tor_global;
         self.pending = Some(Pending::TorGlobal(next, config::tor_plan(next)));
         self.modal = Modal::Confirm;
@@ -752,6 +793,8 @@ impl VpnApp {
         if self.import_rx.is_some() {
             return;
         }
+        self.operation_error = None;
+        self.retry_import_kind = None;
         self.import_hint = kind;
         self.import_rx = Some(tunnel_import_request(kind).send());
         self.log(format!("choose a .{} file to import…", kind.ext()));
@@ -888,6 +931,8 @@ impl VpnApp {
     }
 
     fn finish_import_success(&mut self) {
+        self.operation_error = None;
+        self.retry_import_kind = None;
         if let Some(invocation) = self.import_invocation.take() {
             self.completed_import = Some(qos_actions::InvocationUpdate::Succeeded {
                 invocation,
@@ -898,6 +943,7 @@ impl VpnApp {
 
     fn finish_import_error(&mut self, message: String) {
         self.operation_error = Some(message.clone());
+        self.retry_import_kind = Some(self.import_hint);
         self.log(message.clone());
         if let Some(invocation) = self.import_invocation.take() {
             self.completed_import = Some(qos_actions::InvocationUpdate::Failed {
@@ -925,8 +971,27 @@ impl VpnApp {
     }
 
     fn open_add(&mut self, kind: ConnKind) {
+        self.operation_error = None;
+        self.retry_import_kind = None;
         self.add_kind = kind;
         self.modal = Modal::Add;
+    }
+
+    /// Clear a transient failure after it has been announced. Kept explicit so
+    /// mouse, keyboard, and semantic actions share one recovery path.
+    fn dismiss_error(&mut self) {
+        self.operation_error = None;
+        self.retry_import_kind = None;
+    }
+
+    /// Reopen the exact import protocol that failed. This only runs when the
+    /// failure was produced by the portal/import pipeline, never for a tunnel
+    /// transition where replaying a privileged command blindly would be unsafe.
+    fn retry_import(&mut self) {
+        let Some(kind) = self.retry_import_kind else {
+            return;
+        };
+        self.request_import(kind);
     }
 
     pub(crate) fn commit_add(&mut self) {
@@ -966,6 +1031,19 @@ impl VpnApp {
             header.x1,
             header.y1,
         ));
+        // Recovery controls live inside the notice band. They are deliberately
+        // large enough for touch and reserve their space before the message is
+        // ellipsized, so an error can never paint underneath an action.
+        let notice_dismiss =
+            notice.map(|r| Rect::new(r.x1 - 16.0 - 68.0, r.y0 + 6.0, r.x1 - 16.0, r.y1 - 6.0));
+        let notice_retry = notice.map(|r| {
+            Rect::new(
+                r.x1 - 16.0 - 68.0 - 8.0 - 78.0,
+                r.y0 + 6.0,
+                r.x1 - 16.0 - 76.0,
+                r.y1 - 6.0,
+            )
+        });
         // No bottom chrome strip: the body spans to the window bottom.
         let body = Rect::new(r.x0, header.y1, r.x1, r.y1);
         let list = if compact {
@@ -1091,6 +1169,8 @@ impl VpnApp {
                 detail.y0 + 42.0,
             ),
             notice,
+            notice_retry,
+            notice_dismiss,
         }
     }
 }
@@ -1112,6 +1192,8 @@ struct LayoutRects {
     modal_card: Rect,
     back_btn: Rect,
     notice: Option<Rect>,
+    notice_retry: Option<Rect>,
+    notice_dismiss: Option<Rect>,
 }
 
 /// Position of the per-tunnel-Tor pill inside the Status kv table.
@@ -1376,11 +1458,23 @@ impl VpnApp {
                 )
             };
             scene.fill(Fill::NonZero, t, color.multiply_alpha(0.10), None, &notice);
+            let has_recovery = self.operation_error.is_some();
+            let text_right = if has_recovery {
+                lay.notice_retry
+                    .filter(|_| self.retry_import_kind.is_some())
+                    .map_or_else(
+                        || lay.notice_dismiss.map_or(notice.x1, |r| r.x0 - 10.0),
+                        |r| r.x0 - 10.0,
+                    )
+            } else {
+                notice.x1 - 24.0
+            };
+            let message_chars = ((text_right - notice.x0 - 24.0) / 6.5).max(12.0).floor() as usize;
             text_vc(
                 tr,
                 scene,
                 t,
-                &ellipsize(&label, if lay.compact { 46 } else { 110 }),
+                &ellipsize(&label, message_chars),
                 12.0,
                 color,
                 notice.x0 + 24.0,
@@ -1388,6 +1482,32 @@ impl VpnApp {
                 notice.height(),
                 TextWeight::Semibold,
             );
+            if has_recovery {
+                if let (Some(retry), Some(_)) = (lay.notice_retry, self.retry_import_kind) {
+                    Button::paint(
+                        scene,
+                        t,
+                        tr,
+                        theme,
+                        &ButtonFace::new(retry, "Retry")
+                            .radius(f64::from(theme.tokens.radii.md))
+                            .text_size(11.0)
+                            .hovered(point_in(retry, self.last_mouse)),
+                    );
+                }
+                if let Some(dismiss) = lay.notice_dismiss {
+                    Button::paint(
+                        scene,
+                        t,
+                        tr,
+                        theme,
+                        &ButtonFace::new(dismiss, "Dismiss")
+                            .radius(f64::from(theme.tokens.radii.md))
+                            .text_size(11.0)
+                            .hovered(point_in(dismiss, self.last_mouse)),
+                    );
+                }
+            }
         }
     }
 
@@ -1795,7 +1915,10 @@ impl VpnApp {
         lay: &LayoutRects,
         c: &Connection,
     ) {
-        let face = if c.is_connected() {
+        let connecting = c.status == ConnStatus::Connecting;
+        let face = if connecting {
+            ButtonFace::new(lay.connect_btn, "Connecting…").disabled(true)
+        } else if c.is_connected() {
             ButtonFace::new(lay.connect_btn, "Disconnect").danger()
         } else {
             ButtonFace::new(lay.connect_btn, "Connect").primary()
@@ -1808,6 +1931,7 @@ impl VpnApp {
             &face
                 .radius(f64::from(theme.tokens.radii.md))
                 .weight(TextWeight::Semibold)
+                .disabled(connecting)
                 .hovered(point_in(lay.connect_btn, self.last_mouse)),
         );
     }
@@ -3326,6 +3450,18 @@ impl Widget for VpnApp {
             }
         }
         if let Some(error) = &self.operation_error {
+            if self.retry_import_kind.is_some()
+                && let Some(retry) = lay.notice_retry
+            {
+                children.push(button(
+                    "Retry VPN profile import",
+                    "vpn:retry-import",
+                    retry,
+                ));
+            }
+            if let Some(dismiss) = lay.notice_dismiss {
+                children.push(button("Dismiss VPN error", "vpn:dismiss-error", dismiss));
+            }
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(error)
@@ -3370,6 +3506,8 @@ impl Widget for VpnApp {
             "vpn:import-dialog" => self.open_add(ConnKind::WireGuard),
             "vpn:tor-global" => self.request_tor_global(),
             "vpn:back" => self.compact_detail_open = false,
+            "vpn:retry-import" => self.retry_import(),
+            "vpn:dismiss-error" => self.dismiss_error(),
             _ if target.starts_with("vpn:select:") => {
                 let Some(id) = target
                     .strip_prefix("vpn:select:")
@@ -3467,6 +3605,21 @@ impl VpnApp {
         let p = self.last_mouse;
         let lay = self.layout();
         *handled = true;
+        if self.operation_error.is_some() {
+            if self.retry_import_kind.is_some()
+                && lay.notice_retry.is_some_and(|retry| point_in(retry, p))
+            {
+                self.retry_import();
+                return;
+            }
+            if lay
+                .notice_dismiss
+                .is_some_and(|dismiss| point_in(dismiss, p))
+            {
+                self.dismiss_error();
+                return;
+            }
+        }
         if lay.compact && self.compact_detail_open && point_in(lay.back_btn, p) {
             self.compact_detail_open = false;
             return;
@@ -3553,6 +3706,10 @@ impl VpnApp {
     fn handle_key_press(&mut self, logical_key: &Key, handled: &mut bool) {
         // Global shortcuts.
         match logical_key {
+            Key::Named(NamedKey::Escape) if self.operation_error.is_some() => {
+                self.dismiss_error();
+                *handled = true;
+            }
             Key::Named(NamedKey::ArrowDown) => {
                 self.select_offset(1);
                 *handled = true;
@@ -3767,6 +3924,38 @@ mod tests {
         assert_ne!(first, last);
         app.select_offset(1);
         assert_eq!(app.vault.selected.unwrap(), first);
+    }
+
+    #[test]
+    fn connecting_profile_rejects_a_duplicate_transition() {
+        let (mut app, _doc) = demo_with_doc();
+        let id = app.vault.selected.expect("demo has a selected profile");
+        app.vault
+            .get_mut(id)
+            .expect("selected profile exists")
+            .status = ConnStatus::Connecting;
+
+        app.request_toggle(id);
+
+        assert_eq!(app.modal, Modal::None, "no second confirmation is opened");
+        assert!(
+            app.activity
+                .last()
+                .is_some_and(|line| line.contains("already changing state")),
+            "the rejected request is visible in the local activity history"
+        );
+    }
+
+    #[test]
+    fn error_notice_can_be_dismissed_with_escape() {
+        let (mut app, mut doc) = demo_with_doc();
+        app.operation_error = Some("The profile is incomplete".into());
+        app.retry_import_kind = Some(ConnKind::WireGuard);
+
+        dispatch(&mut app, &mut doc, &esc_key());
+
+        assert!(app.operation_error.is_none());
+        assert!(app.retry_import_kind.is_none());
     }
 
     #[test]
