@@ -346,6 +346,120 @@ impl FirewallConfig {
     pub fn from_json(s: &str) -> Option<Self> {
         serde_json::from_str(s).ok()
     }
+
+    /// Verify that this is a configuration the app can safely represent and
+    /// hand to firewalld. This is deliberately independent of the UI: remote
+    /// collaborators and action replay are untrusted input too.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first malformed zone, service, port, or source constraint.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.zones.is_empty() {
+            return Err("configuration has no zones".into());
+        }
+        if self.zone(self.default_zone).is_none() {
+            return Err("default zone is missing from configuration".into());
+        }
+        for zone in &self.zones {
+            if self
+                .zones
+                .iter()
+                .filter(|other| other.kind == zone.kind)
+                .count()
+                != 1
+            {
+                return Err(format!("zone {} appears more than once", zone.kind.name()));
+            }
+            for service in &zone.services {
+                validate_service(service)?;
+            }
+            for rule in &zone.rules {
+                validate_rule(rule)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Validate a user-authored port or inclusive port range. Firewalld itself is
+/// still authoritative, but rejecting malformed values here keeps invalid
+/// shared state and misleading dry-run plans out of the system.
+///
+/// # Errors
+///
+/// Returns a human-readable reason when `port` is empty, out of range, or has
+/// a descending/malformed range.
+pub fn validate_port(port: &str) -> Result<(), String> {
+    let value = port.trim();
+    if value.is_empty() {
+        return Err("port is required".into());
+    }
+    let (first, last) = match value.split_once('-') {
+        Some(range) => range,
+        None => (value, value),
+    };
+    let parse = |part: &str| -> Result<u16, String> {
+        part.parse::<u16>()
+            .ok()
+            .filter(|number| *number > 0)
+            .ok_or_else(|| "use a port from 1 to 65535".into())
+    };
+    let first = parse(first)?;
+    let last = parse(last)?;
+    if first > last {
+        return Err("a port range must run from low to high".into());
+    }
+    Ok(())
+}
+
+/// Validate an optional IPv4 source address or CIDR. The backend emits IPv4
+/// rich rules, so accepting IPv6 here would silently create a rule with the
+/// wrong family.
+///
+/// # Errors
+///
+/// Returns a human-readable reason when `source` is not an IPv4 address or a
+/// CIDR with a `/0` through `/32` prefix.
+pub fn validate_source(source: &str) -> Result<(), String> {
+    let value = source.trim();
+    if value.is_empty() {
+        return Ok(());
+    }
+    let (address, prefix) = value
+        .split_once('/')
+        .map_or((value, None), |(ip, p)| (ip, Some(p)));
+    if address.parse::<std::net::Ipv4Addr>().is_err() {
+        return Err("source must be an IPv4 address or CIDR".into());
+    }
+    if let Some(prefix) = prefix {
+        prefix
+            .parse::<u8>()
+            .ok()
+            .filter(|prefix| *prefix <= 32)
+            .ok_or_else(|| "CIDR prefix must be from /0 to /32".to_string())?;
+    }
+    Ok(())
+}
+
+fn validate_service(service: &str) -> Result<(), String> {
+    if service.is_empty()
+        || service.len() > 64
+        || !service
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("service names may contain only letters, numbers, '.', '_' or '-'".into());
+    }
+    Ok(())
+}
+
+fn validate_rule(rule: &Rule) -> Result<(), String> {
+    match &rule.matcher {
+        Matcher::Service(service) => validate_service(service)?,
+        Matcher::Port { port, .. } => validate_port(port)?,
+    }
+    validate_source(&rule.source)
 }
 
 /// A catalog entry describing a well-known service: stable id, display
@@ -544,6 +658,18 @@ mod tests {
         assert_eq!(r.source_label(), "anywhere");
         let r2 = Rule::new(Matcher::Service("ssh".into()), Action::Allow, "10.0.0.0/8");
         assert_eq!(r2.source_label(), "10.0.0.0/8");
+    }
+
+    #[test]
+    fn firewall_input_validation_rejects_unsafe_values() {
+        assert!(validate_port("1").is_ok());
+        assert!(validate_port("8000-8080").is_ok());
+        assert!(validate_port("0").is_err());
+        assert!(validate_port("8080-8000").is_err());
+        assert!(validate_port("22; reboot").is_err());
+        assert!(validate_source("192.168.1.0/24").is_ok());
+        assert!(validate_source("2001:db8::1").is_err());
+        assert!(validate_source("10.0.0.1/33").is_err());
     }
 
     #[test]
