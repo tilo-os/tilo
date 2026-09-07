@@ -40,6 +40,8 @@ fn build_widget(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         Some("sign") => pdf_viewer::app_root_sign(),
         Some("reorder") => pdf_viewer::app_root_reorder_demo(file.as_deref()),
         Some("import") => pdf_viewer::app_root_import_demo(file.as_deref()),
+        Some("loading") => pdf_viewer::app_root_loading(),
+        Some("error") => pdf_viewer::app_root_error(),
         _ => file.as_deref().map_or_else(
             || {
                 if args.has("--sample") {
@@ -84,6 +86,8 @@ pub fn main() {
                 "sign",
                 "reorder",
                 "import",
+                "loading",
+                "error",
             ])
             .live_handler(live),
     );
