@@ -1980,8 +1980,11 @@ mod tests {
     #[test]
     fn terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb() {
         let mut s = vertical(1200.0);
-        s.last_activity =
-            Some(Instant::now() - Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1));
+        s.last_activity = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1))
+                .expect("the test duration is far shorter than the monotonic clock"),
+        );
         // Model the preceding submitted frame, where the thumb was visible.
         s.bar_visible_last_draw.set(true);
         let mut scene = Scene::new();
