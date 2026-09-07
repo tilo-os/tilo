@@ -30,7 +30,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, VideoPlayer};
+use ui::widget::{TextInput, TooltipHost, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, SoundEngine};
@@ -614,6 +614,10 @@ pub struct ChatApp {
     /// so Tab and assistive focus traverse the same controls a pointer can use.
     pub(crate) keyboard_target: Option<usize>,
     pub(crate) last_mouse: Point,
+    /// One shared tooltip controller for Chat's immediate-mode controls. This
+    /// gives icon-only buttons and elided header text the same dwell behaviour
+    /// as toolkit widgets without allocating a tooltip per hit region.
+    pub(crate) tooltips: TooltipHost,
     /// The live call control beneath the pointer. Kept as render-only state so
     /// attached and shell-owned copies share the same hover treatment without
     /// duplicating a second native-window control implementation.
@@ -820,6 +824,7 @@ impl ChatApp {
             keyboard_target: None,
             last_mouse: Point::ZERO,
             call_hovered: None,
+            tooltips: TooltipHost::new(),
             relayout: false,
             flap_animating: false,
             shot_starter: false,
@@ -2615,6 +2620,51 @@ impl ChatApp {
         Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.hits))
     }
 
+    pub(crate) fn hover_tooltip_target(&self, point: Point) -> Option<(Rect, String)> {
+        if let Some((rect, hit)) = self.hits.iter().rev().find(|(rect, hit)| {
+            rect.contains(point)
+                && matches!(
+                    hit,
+                    Hit::Inbox
+                        | Hit::CurrentContext
+                        | Hit::ToggleLeftFlap
+                        | Hit::ToggleRightFlap
+                        | Hit::Attach
+                        | Hit::Send
+                        | Hit::ComposerEmoji(_)
+                        | Hit::AddReaction { .. }
+                )
+        }) && let Some((_, _, label, _, _)) = self
+            .semantic_hits_from(&[(*rect, hit.clone())])
+            .into_iter()
+            .next()
+        {
+            return Some((*rect, label));
+        }
+        // Do not let the broad title region lend its text to a labelled
+        // control layered above it (for example the Call button).
+        if self
+            .hits
+            .iter()
+            .rev()
+            .any(|(rect, hit)| rect.contains(point) && !matches!(hit, Hit::Dismiss))
+        {
+            return None;
+        }
+        let header = self.header_rect();
+        if header.contains(point)
+            && let Some(channel) = self.channel(&self.active_channel)
+        {
+            let mut label = format!("{} {}", channel.kind.glyph(), channel.name);
+            if !channel.topic.trim().is_empty() {
+                label.push_str(" — ");
+                label.push_str(channel.topic.trim());
+            }
+            return Some((header, label));
+        }
+        None
+    }
+
     /// A semantic target names an operation, not a particular paint pass. A
     /// message can appear in both timeline and thread briefly; exporting one
     /// retained node keeps that operation's target unambiguous.
@@ -2845,6 +2895,7 @@ impl Widget for ChatApp {
         // Resolve flap modes + advance their eased reveals for this frame.
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
+        self.tooltips.tick(std::time::Instant::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;
@@ -2954,6 +3005,10 @@ impl Widget for ChatApp {
             } else {
                 self.keyboard_target = None;
             }
+        }
+
+        if let Some((label, anchor)) = self.tooltips.visible() {
+            ui::widget::tooltip::draw_hover_tooltip(scene, tf, tr, theme, anchor, label, self.rect);
         }
 
         self.hits = hits;
@@ -3071,6 +3126,19 @@ impl Widget for ChatApp {
             .with_hashed_key("message-list");
 
         let mut children: Vec<AccessNode> = controls;
+        if let Some(channel) = self.channel(&self.active_channel) {
+            let mut heading = AccessNode::new(Role::Heading { level: 1 })
+                .with_name(format!("{} {}", channel.kind.glyph(), channel.name))
+                .with_bounds(self.header_rect())
+                .with_hashed_key(("conversation-heading", &channel.id));
+            if !channel.topic.trim().is_empty() {
+                // The desktop header deliberately elides the topic before the
+                // member/call cluster, and narrow layouts may omit it entirely.
+                // Keep the complete string available to screen readers.
+                heading = heading.with_description(channel.topic.clone());
+            }
+            children.push(heading);
+        }
         children.push(conversation);
         Some(
             AccessNode::new(Role::Group)
@@ -3372,6 +3440,7 @@ impl Widget for ChatApp {
             || self.call_chrome_motion.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
+            || self.tooltips.needs_frame()
             || !self.images.is_idle()
     }
 
