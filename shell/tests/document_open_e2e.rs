@@ -257,6 +257,9 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
 
+    let old_home = std::env::var_os("HOME");
+    let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+
     // SAFETY: this test is the only thing in its binary, and the values
     // are read on this thread and by the launch thread it spawns.
     unsafe {
@@ -370,6 +373,14 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     }
 
     unsafe {
+        match old_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match old_runtime {
+            Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
         std::env::remove_var("QOS_APPS_DATA_DIR");
         std::env::remove_var("QOS_LAUNCHER_BIN");
     }

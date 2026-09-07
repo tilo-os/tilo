@@ -148,6 +148,20 @@ pub(crate) fn step_active_window(
     Some((strip.id, group, tab))
 }
 
+/// Conventional switcher traversal over the same flat window sequence as
+/// [`step_active_window`], wrapping only when the requested direction reaches
+/// an edge. Spatial Super+Arrow navigation continues to use the clamped form.
+pub(crate) fn cycle_active_window(
+    tree: &WorkspaceTree,
+    direction: i32,
+) -> Option<(StripId, GroupId, u64)> {
+    if direction == 0 {
+        return None;
+    }
+    step_active_window(tree, direction)
+        .or_else(|| step_active_window(tree, if direction > 0 { i32::MIN } else { i32::MAX }))
+}
+
 impl ClientInput {
     /// Record a freshly-created foreign toplevel — called from `XdgShellHandler::new_toplevel`; the chrome-side tab is spliced in by [`sync_foreign_tabs`] next tick.
     pub fn register_toplevel(
@@ -423,6 +437,11 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
 pub enum ChordKey {
     Space,
     Tab,
+    PageUp,
+    PageDown,
+    PrintScreen,
+    ArrowLeft,
+    ArrowRight,
     ArrowUp,
     ArrowDown,
     Escape,
@@ -485,10 +504,58 @@ impl From<&Modifiers> for ChordMods {
     }
 }
 
-/// The shell's chord table, expressed once: every `Super` chord, `Ctrl+K`/
-/// `Alt+Space`, `Ctrl+Tab`, `Ctrl+Arrow`, and `Escape` *only while an overlay is open* — an unconditional Escape grab would break every modal editor running as a client.
+/// True immutable shell chords only. Configurable navigation/search bindings
+/// are resolved from `ShortcutConfig` by the host before client delivery; do
+/// not add their defaults here or rebinding would leave the old app chord
+/// blocked forever.
 pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
     if key == ChordKey::Modifier {
+        return false;
+    }
+    // Alt+Tab is the conventional, immutable window ring alias. It must be
+    // withheld before a focused client sees it even though the editable
+    // spatial bindings default to Super+Left/Right.
+    if key == ChordKey::Tab && mods.alt && !mods.logo && !mods.ctrl {
+        return true;
+    }
+    // These desktop conventions are deliberately immutable aliases. They
+    // must be withheld before a focused client can consume them: Alt+F4 is
+    // the universal close gesture, while Super+PageUp/PageDown is the GNOME
+    // workspace convention people retain when moving between sessions.
+    if (key == ChordKey::Function(4) && mods.alt && !mods.logo && !mods.ctrl && !mods.shift)
+        || (matches!(key, ChordKey::PageUp | ChordKey::PageDown)
+            && mods.logo
+            && !mods.ctrl
+            && !mods.alt
+            && !mods.shift)
+    {
+        return true;
+    }
+    // Vim navigation is an explicitly enabled desktop layer. Its complete
+    // Super+Ctrl mask cannot collide with ordinary text editing, and keeping
+    // this ownership decision beside the static aliases prevents a focused
+    // client from consuming H/J/K/L before the host can dispatch them.
+    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+        && mods.logo
+        && mods.ctrl
+        && !mods.alt
+        && matches!(key, ChordKey::Char('h' | 'j' | 'k' | 'l'))
+    {
+        return true;
+    }
+    // These are defaults for editable actions.  They intentionally fall
+    // through when the effective configuration no longer assigns them.
+    if matches!(
+        key,
+        ChordKey::Tab
+            | ChordKey::ArrowLeft
+            | ChordKey::ArrowRight
+            | ChordKey::ArrowUp
+            | ChordKey::ArrowDown
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+    ) && ((mods.logo && !mods.ctrl && !mods.alt)
+        || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
+    {
         return false;
     }
     if mods.logo {
@@ -496,9 +563,19 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     }
     match key {
         ChordKey::Space => mods.alt,
-        ChordKey::Tab | ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
+        ChordKey::Tab => false,
+        ChordKey::PageUp | ChordKey::PageDown => false,
+        ChordKey::PrintScreen => true,
+        ChordKey::ArrowLeft | ChordKey::ArrowRight | ChordKey::ArrowUp | ChordKey::ArrowDown => {
+            false
+        }
         ChordKey::Escape => overlay_open,
-        ChordKey::Char(c) => mods.ctrl && c == 'k',
+        ChordKey::Char(_) => false,
+        // The shell visibly advertises F1 as the hardware-neutral route to
+        // its desktop guide. Reserving it here is essential: otherwise a
+        // focused client consumes the event before the guide dispatcher can
+        // see it. Other function keys remain application-owned.
+        ChordKey::Function(1) => true,
         ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
     }
 }
@@ -511,6 +588,11 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
     match key {
         Key::Named(NamedKey::Space) => ChordKey::Space,
         Key::Named(NamedKey::Tab) => ChordKey::Tab,
+        Key::Named(NamedKey::PageUp) => ChordKey::PageUp,
+        Key::Named(NamedKey::PageDown) => ChordKey::PageDown,
+        Key::Named(NamedKey::PrintScreen) => ChordKey::PrintScreen,
+        Key::Named(NamedKey::ArrowLeft) => ChordKey::ArrowLeft,
+        Key::Named(NamedKey::ArrowRight) => ChordKey::ArrowRight,
         Key::Named(NamedKey::ArrowUp) => ChordKey::ArrowUp,
         Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
@@ -546,12 +628,17 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
     match code {
         1 => ChordKey::Escape,
         15 => ChordKey::Tab,
+        104 => ChordKey::PageUp,
+        109 => ChordKey::PageDown,
+        99 => ChordKey::PrintScreen,
         // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
         29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
         57 => ChordKey::Space,
         59..=68 => ChordKey::Function(u8::try_from(code.saturating_sub(58)).unwrap_or(0)),
         87 => ChordKey::Function(11),
         88 => ChordKey::Function(12),
+        105 => ChordKey::ArrowLeft,
+        106 => ChordKey::ArrowRight,
         103 => ChordKey::ArrowUp,
         108 => ChordKey::ArrowDown,
         111 => ChordKey::Delete,
@@ -615,6 +702,7 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             NamedKey::F10 => Some(68),
             NamedKey::F11 => Some(87),
             NamedKey::F12 => Some(88),
+            NamedKey::PrintScreen => Some(99),
             NamedKey::Home => Some(102),
             NamedKey::ArrowUp => Some(103),
             NamedKey::PageUp => Some(104),
@@ -786,6 +874,9 @@ pub fn evdev_button(button: MouseButton) -> Option<u32> {
         MouseButton::Left => BTN_LEFT,
         MouseButton::Right => BTN_RIGHT,
         MouseButton::Middle => BTN_MIDDLE,
+        // winit has already normalised both Linux side-button pairs. Emit the
+        // conventional BTN_SIDE/BTN_EXTRA pair used by ordinary mice and
+        // accepted by Wayland browsers/Electron clients.
         MouseButton::Back => BTN_SIDE,
         MouseButton::Forward => BTN_EXTRA,
         MouseButton::Other(_) => return None,
@@ -837,17 +928,21 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         return true;
     }
     let peer_sync_visible = fb.host().peer_sync_card_visible();
+    let inner_surface_captures = fb.host().inner_surface_captures_input();
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
         || chrome.overlays.ws_settings
         || chrome.overlays.collaborators
         || chrome.overlays.room_activity
+        || chrome.overlays.projection
+        || chrome.overlays.shortcut_help
         // The peer-sync card, on the same two fields the overlay host
         // paints it from — its handler runs before every other overlay,
         // but this predicate decides whether an event reaches it. Without
         // it, a card raised over a focused client sent its Escape to the client, undismissable, with a live invite token exposed.
         || peer_sync_visible
+        || inner_surface_captures
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
@@ -860,6 +955,24 @@ fn mint_serial(state: &mut State) -> Serial {
     Serial::from(state.serial_counter)
 }
 
+fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    let now = Instant::now();
+    state
+        .activation_serials
+        .push_back((serial, surface_id, now));
+    while state
+        .activation_serials
+        .front()
+        .is_some_and(|(_, _, issued)| {
+            now.saturating_duration_since(*issued)
+                > crate::compositor::activation::MAX_ACTIVATION_AGE
+        })
+        || state.activation_serials.len() > 512
+    {
+        let _ = state.activation_serials.pop_front();
+    }
+}
+
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 fn event_time(state: &State) -> u32 {
     // `as_millis()` is `u128`; keep the low 32 bits exactly as `as u32` would (wrapping after ~49.7 days of uptime), just without the lint-flagged cast. `millis` is always in range, so `try_from` never actually falls back.
@@ -868,6 +981,38 @@ fn event_time(state: &State) -> u32 {
 }
 
 impl State {
+    /// Revoke client keyboard focus and retire every pressed seat key without
+    /// delivering it to an application.
+    ///
+    /// This is for a trusted input-source reset (lock/seat loss), where the
+    /// backend cannot promise that the physical release will arrive.  Smithay
+    /// owns the authoritative XKB pressed-key set, so clearing our small
+    /// routing ledger alone would leave modifiers stuck in the Wayland seat.
+    /// Focus is removed *before* the synthetic releases: forwarding then
+    /// clears Smithay's forwarded-key bookkeeping while no client can observe
+    /// a fabricated release.
+    pub fn reset_client_keyboard_state(&mut self) {
+        self.set_client_keyboard_focus(None);
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            self.client_input.forwarded_keys.clear();
+            return;
+        };
+        let pressed = keyboard.pressed_keys();
+        for keycode in pressed {
+            let serial = mint_serial(self);
+            let time = event_time(self);
+            let _: Option<()> = keyboard.input(
+                self,
+                keycode,
+                KeyState::Released,
+                serial,
+                time,
+                |_, _, _| FilterResult::Forward,
+            );
+        }
+        self.client_input.forwarded_keys.clear();
+    }
+
     /// Point the seat's keyboard at `surface_id` (or nothing when `None`), sending `leave`/`enter` and the keymap; idempotent, so the run loop can call it unconditionally every tick.
     pub fn set_client_keyboard_focus(&mut self, surface_id: Option<u64>) {
         if self.client_input.keyboard_focus == surface_id {
@@ -885,7 +1030,10 @@ impl State {
         // Clipboard/primary selection follow the keyboard: smithay refuses `set_selection` from a client without keyboard focus.
         let selection_client = target.as_ref().and_then(|(_, surface)| surface.client());
         self.set_selection_focus(selection_client);
-        keyboard.set_focus(self, target.map(|(_, s)| s), serial);
+        keyboard.set_focus(self, target.clone().map(|(_, s)| s), serial);
+        if let Some((surface_id, _)) = target {
+            record_activation_serial(self, serial, surface_id);
+        }
     }
 
     /// Push one key press/release through the seat, forwarding to the focused
@@ -921,7 +1069,11 @@ impl State {
                 }
             },
         );
-        forward && has_focus && intercepted.is_none()
+        let delivered = forward && has_focus && intercepted.is_none();
+        if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            record_activation_serial(self, serial, surface_id);
+        }
+        delivered
     }
 
     /// Move the seat pointer to `global` and focus it on `target` (`(surface
@@ -942,6 +1094,7 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        let previous_focus = self.client_input.pointer_focus;
         self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
         let serial = mint_serial(self);
         let time = event_time(self);
@@ -955,12 +1108,28 @@ impl State {
             },
         );
         pointer.frame(self);
+        // `wl_pointer.motion` itself has no serial. Smithay uses this serial
+        // only when the motion changes focus and emits `wl_pointer.enter`, so
+        // recording every motion would bless predictable numbers the client
+        // never received.
+        if previous_focus != self.client_input.pointer_focus
+            && let Some(surface_id) = self.client_input.pointer_focus
+        {
+            record_activation_serial(self, serial, surface_id);
+        }
     }
 
     /// Forward a pointer button press/release to the surface the pointer is focused on — no-op when the pointer is over chrome.
     pub fn forward_client_pointer_button(&mut self, button: u32, pressed: bool) -> bool {
         // A chrome drag's grab needs the release even with no client under the pointer — that is how it learns the drag was cancelled.
-        if self.client_input.pointer_focus.is_none() && self.selection.chrome_drag.is_none() {
+        let smithay_grabbed = self
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed());
+        if self.client_input.pointer_focus.is_none()
+            && self.selection.chrome_drag.is_none()
+            && !smithay_grabbed
+        {
             return false;
         }
         let Some(pointer) = self.seat.get_pointer() else {
@@ -982,6 +1151,9 @@ impl State {
             },
         );
         pointer.frame(self);
+        if let Some(surface_id) = self.client_input.pointer_focus {
+            record_activation_serial(self, serial, surface_id);
+        }
         true
     }
 
@@ -1182,6 +1354,11 @@ pub fn touch_target(
     {
         return Some((surface_id, (rect.x0, rect.y0)));
     }
+    if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
+        && state.client_input.surfaces.contains_key(&surface_id)
+    {
+        return Some((surface_id, (rect.x0, rect.y0)));
+    }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
@@ -1196,6 +1373,29 @@ pub fn touch_target(
         return None;
     }
     Some((hit.surface_id, (hit.rect.x0, hit.rect.y0)))
+}
+
+/// Direct touch follows the same click-to-focus policy as pointer input for
+/// app-owned overlays. Tiled focus remains owned by the chrome's active-tab
+/// writeback, while touching the OSK must preserve the edited app's focus.
+pub fn focus_touch_target(state: &mut State, fb: &FrameBuilder, surface_id: u64) {
+    if state.osk_surface == Some(surface_id) {
+        return;
+    }
+    if state.is_output_presentation_surface(surface_id) {
+        state.focus_output_presentation_surface(surface_id);
+        sync_keyboard_focus(state, fb);
+        return;
+    }
+    state.clear_output_presentation_focus();
+    if state.is_floating_toplevel(surface_id)
+        || state.is_transient_surface(surface_id)
+        || fb
+            .fullscreen_surface_rect()
+            .is_some_and(|(fullscreen_id, _)| fullscreen_id == surface_id)
+    {
+        state.set_client_keyboard_focus(Some(surface_id));
+    }
 }
 
 // Run-loop entry points.
@@ -1388,6 +1588,32 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
 
+/// Advance the compositor seat's keyboard state while a trusted shell
+/// surface (currently the lock screen) owns the visible interaction.
+///
+/// The lock must never forward input to an application, but it cannot simply
+/// drop physical edges: a modifier pressed before lock and released while
+/// locked would otherwise remain pressed in Smithay after unlock.  Smithay
+/// only retires its forwarded-key set when the filter says `Forward`, so this
+/// path deliberately forwards every capture edge *after* revoking focus.
+/// With focus `None` no client sees it, while a pre-lock client key and a key
+/// held across unlock get the same coherent seat bookkeeping.
+pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return;
+    };
+    let Some(code) = evdev_keycode(key) else {
+        return;
+    };
+    state.set_client_keyboard_focus(None);
+    let pressed = key.state == ElementState::Pressed;
+    let _ = track_forwarded_key(&mut state.client_input.forwarded_keys, code, pressed, false);
+    // `Intercept` updates XKB but does not remove a previously forwarded
+    // key from Smithay's focus-enter key array.  Focus is already `None`, so
+    // `Forward` advances that internal ledger without emitting to an app.
+    let _ = state.deliver_client_key(code, pressed, true);
+}
+
 fn gate_keyboard_focus(candidate: Option<u64>, chrome_captures: bool) -> Option<u64> {
     if chrome_captures { None } else { candidate }
 }
@@ -1545,10 +1771,19 @@ fn route_mouse_input(
                 return true;
             }
             deliver_pointer(state, hit);
-            state.client_input.grab = Some(match hit {
-                Some(h) => PointerOwner::Client(h.surface_id),
-                None => PointerOwner::Chrome,
-            });
+            // Smithay's xdg-popup grab must receive the outside press even
+            // when the pointer has left every client surface. Do not layer
+            // our ordinary implicit grab over that protocol-modal grab.
+            let smithay_grabbed = state
+                .seat
+                .get_pointer()
+                .is_some_and(|pointer| pointer.is_grabbed());
+            if !smithay_grabbed {
+                state.client_input.grab = Some(match hit {
+                    Some(h) => PointerOwner::Client(h.surface_id),
+                    None => PointerOwner::Chrome,
+                });
+            }
             // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
             if let Some(h) = hit {
                 if state.is_output_presentation_surface(h.surface_id) {
@@ -1558,6 +1793,14 @@ fn route_mouse_input(
                     sync_keyboard_focus(state, fb);
                 } else {
                     state.clear_output_presentation_focus();
+                }
+                let overlay_focus = state.is_floating_toplevel(h.surface_id)
+                    || state.is_transient_surface(h.surface_id)
+                    || fb
+                        .fullscreen_surface_rect()
+                        .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
+                if overlay_focus && state.osk_surface != Some(h.surface_id) {
+                    state.set_client_keyboard_focus(Some(h.surface_id));
                 }
                 // Tapping the keyboard must keep the editable field's
                 // keyboard focus. Pointer focus moves to the OSK, but
@@ -1579,8 +1822,13 @@ fn route_mouse_input(
     }
     // A chrome drag's release is the drop: the server-side grab smithay holds only ends on a button event, whether or not a client is under the pointer.
     let chrome_drag = state.selection.chrome_drag.is_some();
-    let to_client = (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
-        && state.client_input.pointer_focus.is_some())
+    let smithay_grabbed = state
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| pointer.is_grabbed());
+    let to_client = ((matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
+        || smithay_grabbed)
+        && (state.client_input.pointer_focus.is_some() || smithay_grabbed))
         || (chrome_drag && !pressed);
     let consumed = if to_client {
         match evdev_button(button) {
@@ -1668,24 +1916,69 @@ fn route_keyboard_input(
         return false;
     };
     let pressed = key.state == ElementState::Pressed;
+    // DRM mirrors winit's repeat events for in-process qOS widgets. Native
+    // Wayland clients already synthesize repeats from `wl_keyboard.repeat_info`;
+    // sending another pressed edge would double every held key. Shell-owned
+    // repeats must still reach the host so navigation can repeat and the host
+    // can absorb edge-triggered actions (close/open/toggle) without running
+    // them again.
+    if key.repeat {
+        let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+        let configured_shortcut = fb
+            .host()
+            .configured_shortcut_action(&key.logical_key, modifiers)
+            .is_some();
+        let shell_owns =
+            captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+        return if shell_owns {
+            false
+        } else {
+            !captured && state.client_input.keyboard_focus.is_some()
+        };
+    }
     let Some(code) = evdev_keycode(key) else {
         return false;
     };
     // Anything the shell has up that Escape would dismiss — the summoned workspace wheel counts, since Escape must reach the shell, not a focused client.
     let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
-    let shell_owns = captured || is_shell_chord(event, &modifiers, overlay_open);
-    let forward = if pressed {
-        let forward = !shell_owns && state.client_input.keyboard_focus.is_some();
-        if forward {
-            state.client_input.forwarded_keys.insert(code);
-        }
-        forward
-    } else {
-        // A release mirrors its press exactly — see `ClientInput::forwarded_keys`.
-        state.client_input.forwarded_keys.remove(&code)
-    };
+    // Static safety chords and user-edited shortcuts share the same
+    // client-first boundary. Without the host-side check, a valid binding
+    // such as Alt+G is shown and saved by Settings but disappears whenever a
+    // real app holds focus because that app consumes the press first.
+    let configured_shortcut = pressed
+        && fb
+            .host()
+            .configured_shortcut_action(&key.logical_key, modifiers)
+            .is_some();
+    let shell_owns =
+        captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+    let forward = track_forwarded_key(
+        &mut state.client_input.forwarded_keys,
+        code,
+        pressed,
+        !shell_owns && state.client_input.keyboard_focus.is_some(),
+    );
     // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
     state.deliver_client_key(code, pressed, forward)
+}
+
+/// Record exactly which key presses reached a client and mirror that decision
+/// on release. A shell-owned press must never be followed by an unmatched
+/// client release, even when its ownership came from a live custom binding.
+fn track_forwarded_key(
+    forwarded: &mut std::collections::HashSet<u32>,
+    code: u32,
+    pressed: bool,
+    press_can_forward: bool,
+) -> bool {
+    if pressed {
+        if press_can_forward {
+            forwarded.insert(code);
+        }
+        press_can_forward
+    } else {
+        forwarded.remove(&code)
+    }
 }
 
 /// Promote a file drag from the hosted file manager into a Wayland drag.
@@ -1836,6 +2129,16 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                     rect,
                 });
             }
+            if let Some((fullscreen_id, rect)) = fb.fullscreen_surface_rect()
+                && fullscreen_id == surface_id
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
             let (strip, group) = *state.client_input.placements.get(&surface_id)?;
             let rect = fb.host().active_tile_rect(group)?;
             Some(TileHit {
@@ -1864,6 +2167,16 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                 });
             }
             if let Some((surface_id, rect)) = fb.transient_surface_hit(state.client_input.cursor())
+                && state.client_input.surfaces.contains_key(&surface_id)
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
+            if let Some((surface_id, rect)) = fb.fullscreen_surface_hit(state.client_input.cursor())
                 && state.client_input.surfaces.contains_key(&surface_id)
             {
                 return Some(TileHit {
@@ -2069,6 +2382,26 @@ mod tests {
     }
 
     #[test]
+    fn conventional_window_cycle_wraps_while_spatial_step_clamps() {
+        let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
+        let first_group = tree.workspaces[0].strips[0].window_groups[0].id;
+        assert_eq!(
+            cycle_active_window(&tree, -1).map(|(_, group, _)| group),
+            Some(foreign_group),
+            "Alt+Shift+Tab from the first window wraps to the last"
+        );
+        assert_eq!(step_active_window(&tree, -1), None);
+
+        tree.set_active_group(strip, foreign_group);
+        assert_eq!(
+            cycle_active_window(&tree, 1).map(|(_, group, _)| group),
+            Some(first_group),
+            "Alt+Tab from the last window wraps to the first"
+        );
+        assert_eq!(step_active_window(&tree, 1), None);
+    }
+
+    #[test]
     fn step_active_window_walks_tabs_within_a_group() {
         // ONE group holding several windows as tabs — one step right of the first is the second.
         let tabs: Vec<Tab> = ["Notes", "Files", "Terminal"]
@@ -2217,15 +2550,11 @@ mod tests {
     }
 
     #[test]
-    fn super_chords_never_reach_a_client() {
+    fn only_immutable_super_chords_are_static_client_firewall_rules() {
         let m = mods(ModifiersState::SUPER);
         for key in [
             Key::Character(SmolStr::new("l")),
-            Key::Character(SmolStr::new("k")),
             Key::Named(NamedKey::Space),
-            Key::Named(NamedKey::Tab),
-            Key::Named(NamedKey::ArrowUp),
-            Key::Named(NamedKey::ArrowDown),
         ] {
             let ev = key_event(key.clone(), true);
             assert!(
@@ -2233,23 +2562,38 @@ mod tests {
                 "Super+{key:?} must be handled by the shell"
             );
         }
+        for key in [
+            Key::Character(SmolStr::new("k")),
+            Key::Named(NamedKey::Tab),
+            Key::Named(NamedKey::ArrowUp),
+            Key::Named(NamedKey::ArrowDown),
+        ] {
+            assert!(
+                !is_shell_chord(&key_event(key.clone(), true), &m, false),
+                "Super+{key:?} is configurable and must be resolved by the effective table"
+            );
+        }
     }
 
     #[test]
-    fn ctrl_and_alt_shell_chords_are_reserved() {
+    fn configurable_ctrl_defaults_are_not_static_but_alt_tab_is_the_ring_alias() {
         let ctrl = mods(ModifiersState::CONTROL);
         let alt = mods(ModifiersState::ALT);
-        assert!(is_shell_chord(
+        assert!(!is_shell_chord(
             &key_event(Key::Character(SmolStr::new("k")), true),
             &ctrl,
             false
         ));
-        assert!(is_shell_chord(
+        assert!(!is_shell_chord(
             &key_event(Key::Named(NamedKey::Tab), true),
             &ctrl,
             false
         ));
-        assert!(is_shell_chord(
+        assert!(
+            is_shell_chord(&key_event(Key::Named(NamedKey::Tab), true), &alt, false),
+            "Alt+Tab is the immutable conventional window-ring alias"
+        );
+        assert!(!is_shell_chord(
             &key_event(Key::Named(NamedKey::ArrowDown), true),
             &ctrl,
             false
@@ -2257,6 +2601,39 @@ mod tests {
         assert!(is_shell_chord(
             &key_event(Key::Named(NamedKey::Space), true),
             &alt,
+            false
+        ));
+        assert!(is_shell_chord(
+            &key_event(Key::Named(NamedKey::PrintScreen), true),
+            &mods(ModifiersState::empty()),
+            false
+        ));
+    }
+
+    #[test]
+    fn conventional_close_and_workspace_aliases_are_owned_before_clients() {
+        let alt = mods(ModifiersState::ALT);
+        let super_only = mods(ModifiersState::SUPER);
+        assert!(is_shell_chord(
+            &key_event(Key::Named(NamedKey::F4), true),
+            &alt,
+            false
+        ));
+        for key in [NamedKey::PageUp, NamedKey::PageDown] {
+            assert!(is_shell_chord(
+                &key_event(Key::Named(key), true),
+                &super_only,
+                false
+            ));
+        }
+        assert!(!is_shell_chord(
+            &key_event(Key::Named(NamedKey::F4), true),
+            &mods(ModifiersState::empty()),
+            false
+        ));
+        assert!(!is_shell_chord(
+            &key_event(Key::Named(NamedKey::PageDown), true),
+            &mods(ModifiersState::CONTROL),
             false
         ));
     }
@@ -2268,6 +2645,11 @@ mod tests {
         // Unmodified typing goes to the client.
         assert!(!is_shell_chord(
             &key_event(Key::Character(SmolStr::new("a")), true),
+            &none,
+            false
+        ));
+        assert!(!is_shell_chord(
+            &key_event(Key::Named(NamedKey::Tab), true),
             &none,
             false
         ));
@@ -2361,6 +2743,8 @@ mod tests {
         assert_eq!(evdev_button(MouseButton::Left), Some(0x110));
         assert_eq!(evdev_button(MouseButton::Right), Some(0x111));
         assert_eq!(evdev_button(MouseButton::Middle), Some(0x112));
+        assert_eq!(evdev_button(MouseButton::Forward), Some(0x114));
+        assert_eq!(evdev_button(MouseButton::Back), Some(0x113));
         assert_eq!(evdev_button(MouseButton::Other(9)), None);
     }
 
@@ -2506,6 +2890,46 @@ mod tests {
                  and the card can never be dismissed"
             );
         }
+    }
+
+    /// These surfaces are modal in the rendered shell, so the compositor
+    /// boundary—not merely their widget handler—must take the seat away from
+    /// the app underneath. Direct host tests cannot catch this regression:
+    /// they bypass the client-first router entirely.
+    #[test]
+    fn desktop_modals_take_input_before_a_focused_client_can_consume_it() {
+        for overlay in ["shortcut_help", "projection"] {
+            let mut fb = FrameBuilder::new((1600, 900));
+            fb.with_chrome(|chrome| match overlay {
+                "shortcut_help" => chrome.overlays.shortcut_help = true,
+                "projection" => chrome.overlays.projection = true,
+                _ => unreachable!(),
+            });
+            assert!(
+                chrome_captures_input(&fb),
+                "{overlay} is painted as modal and must revoke client focus"
+            );
+        }
+
+        let mut capture = FrameBuilder::new((1600, 900));
+        assert!(
+            capture
+                .host_mut()
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+        assert!(
+            chrome_captures_input(&capture),
+            "Print Screen's chooser must receive its follow-up keys and clicks"
+        );
+
+        let mut markup = FrameBuilder::new((1600, 900));
+        markup
+            .host_mut()
+            .open_screenshot_markup(std::sync::Arc::from([0_u8; 4]), 1, 1, None);
+        assert!(
+            chrome_captures_input(&markup),
+            "screenshot editing must not leak input into the captured app"
+        );
     }
 
     /// The portal's file chooser is modal, so it must hold input while it is
@@ -2929,6 +3353,103 @@ mod tests {
         state
     }
 
+    /// A bare production seat used to test the lock/device-loss key-state
+    /// boundary without inventing an in-process text widget.
+    fn seat_state() -> crate::compositor::state::State {
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, crate::compositor::state::State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<crate::compositor::state::State> =
+            Display::new().expect("wayland display");
+        crate::compositor::state::State::new(event_loop.handle(), display.handle())
+    }
+
+    fn seat_has_evdev_key(state: &crate::compositor::state::State, evdev: u32) -> bool {
+        state
+            .seat
+            .get_keyboard()
+            .expect("seat keyboard")
+            .pressed_keys()
+            .iter()
+            .any(|code| u32::from(*code) == evdev.saturating_add(8))
+    }
+
+    /// A lock is a trusted input-capture boundary, not permission to stop
+    /// advancing the seat XKB state.  This is the direct regression for a
+    /// held Shift/Ctrl/Backspace whose release happens while the lock is up.
+    #[test]
+    fn captured_keyboard_edges_retire_modifiers_and_editing_keys() {
+        let mut state = seat_state();
+        for (key, evdev) in [
+            (Key::Named(NamedKey::Shift), 42),
+            (Key::Named(NamedKey::Control), 29),
+            (Key::Named(NamedKey::Backspace), 14),
+        ] {
+            consume_keyboard_while_captured(&mut state, &key_event(key.clone(), true));
+            assert!(
+                seat_has_evdev_key(&state, evdev),
+                "captured press for {key:?} must still reach the seat XKB state"
+            );
+            consume_keyboard_while_captured(&mut state, &key_event(key, false));
+            assert!(
+                !seat_has_evdev_key(&state, evdev),
+                "captured release for evdev {evdev} must clear the seat state"
+            );
+        }
+    }
+
+    /// A lock/modal can begin after a client saw the press but before its
+    /// physical release. The captured release must consume the same routing
+    /// ledger entry, otherwise a later unrelated release could be forwarded
+    /// as an unmatched key-up after focus returns.
+    #[test]
+    fn captured_release_retires_a_preexisting_client_key_ledger_entry() {
+        let mut state = seat_state();
+        state.client_input.forwarded_keys.insert(14);
+        consume_keyboard_while_captured(
+            &mut state,
+            &key_event(Key::Named(NamedKey::Backspace), false),
+        );
+        assert!(
+            state.client_input.forwarded_keys.is_empty(),
+            "the captured Backspace release must retire the prior client press"
+        );
+    }
+
+    /// VT/device loss has no reliable release edge.  Resetting the seat,
+    /// rather than only stopping repeat, prevents that lost Backspace/Shift
+    /// from leaking into the next focused application after resume.
+    #[test]
+    fn keyboard_state_reset_clears_all_pressed_keys_without_client_focus() {
+        let mut state = seat_state();
+        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), true));
+        consume_keyboard_while_captured(
+            &mut state,
+            &key_event(Key::Named(NamedKey::Backspace), true),
+        );
+        assert!(seat_has_evdev_key(&state, 42));
+        assert!(seat_has_evdev_key(&state, 14));
+
+        state.reset_client_keyboard_state();
+
+        assert!(
+            state
+                .seat
+                .get_keyboard()
+                .expect("seat keyboard")
+                .pressed_keys()
+                .is_empty(),
+            "an input-source reset must leave no latent modifier or repeat key"
+        );
+        assert!(
+            state.client_input.forwarded_keys.is_empty(),
+            "the compositor routing ledger must retire with Smithay's seat state"
+        );
+        assert_eq!(state.client_input.keyboard_focus(), None);
+    }
+
     const KILL_PEER: u64 = 77;
     const KILL_SURFACE: u64 = 808;
 
@@ -3055,6 +3576,7 @@ mod tests {
             NamedKey::F10,
             NamedKey::F11,
             NamedKey::F12,
+            NamedKey::PrintScreen,
             NamedKey::Home,
             NamedKey::ArrowUp,
             NamedKey::PageUp,
@@ -3097,9 +3619,15 @@ mod tests {
         );
     }
 
-    /// Function keys carry no chord on their own — the compositor hands `F2` to a focused client; it's the `Ctrl+Alt` combination the kernel takes.
+    /// F1 is the advertised desktop-guide key and must beat a focused client;
+    /// every other bare function key remains application-owned.
     #[test]
-    fn function_keys_are_not_shell_chords_on_their_own() {
+    fn only_f1_is_a_shell_chord_on_its_own() {
+        assert!(shell_owns_chord(
+            ChordKey::Function(1),
+            ChordMods::default(),
+            false
+        ));
         assert!(!shell_owns_chord(
             ChordKey::Function(2),
             ChordMods::default(),
@@ -3113,6 +3641,38 @@ mod tests {
             },
             false
         ));
+    }
+
+    #[test]
+    fn conventional_alt_tab_ring_is_owned_before_a_focused_client() {
+        assert!(shell_owns_chord(
+            ChordKey::Tab,
+            ChordMods {
+                alt: true,
+                ..Default::default()
+            },
+            false
+        ));
+        assert!(shell_owns_chord(
+            ChordKey::Tab,
+            ChordMods {
+                shift: true,
+                alt: true,
+                ..Default::default()
+            },
+            false
+        ));
+    }
+
+    #[test]
+    fn a_shell_owned_press_never_produces_an_unmatched_client_release() {
+        let mut forwarded = std::collections::HashSet::new();
+        assert!(!track_forwarded_key(&mut forwarded, 34, true, false));
+        assert!(!track_forwarded_key(&mut forwarded, 34, false, true));
+
+        assert!(track_forwarded_key(&mut forwarded, 35, true, true));
+        assert!(track_forwarded_key(&mut forwarded, 35, false, false));
+        assert!(forwarded.is_empty());
     }
 
     #[test]

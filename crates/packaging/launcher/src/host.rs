@@ -47,7 +47,8 @@
 //! compositor's own `QOS_*` variables don't leak into a process not
 //! subject to them.
 
-use std::process::ExitStatus;
+use std::os::unix::process::CommandExt as _;
+use std::process::{Command, ExitStatus};
 
 use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id};
 
@@ -123,6 +124,7 @@ pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
 
     let mut cmd = launch.to_command();
     cmd.stdin(std::process::Stdio::null());
+    configure_host_launch_session(&mut cmd);
     let mut child = cmd.spawn().map_err(|source| HostError::Spawn {
         program: launch.program.display().to_string(),
         source,
@@ -131,6 +133,28 @@ pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
         program: launch.program.display().to_string(),
         source,
     })
+}
+
+/// Put each host launch in its own session before its desktop entry is
+/// executed.  This gives Xwayland bridges a bounded, launch-scoped ancestry
+/// domain when applications such as Electron create renderer processes and
+/// process groups whose immediate environment no longer contains the startup
+/// token.
+///
+/// This is deliberately established by the production launcher, rather than
+/// inferred from the compositor's session: a host app must never share
+/// its correlation domain with an unrelated desktop process.
+fn configure_host_launch_session(cmd: &mut Command) {
+    // SAFETY: `setsid()` is async-signal-safe and this closure captures
+    // no Rust state.  It runs in the child after fork and before exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +222,33 @@ mod tests {
             err.to_string()
                 .contains("dev.qos.definitely-not-installed-anywhere"),
             "the error must name what could not be found: {err}"
+        );
+    }
+
+    #[test]
+    fn host_child_becomes_its_own_session_leader() {
+        struct ReapChild(std::process::Child);
+
+        impl Drop for ReapChild {
+            fn drop(&mut self) {
+                let pid = i32::try_from(self.0.id()).unwrap_or(i32::MAX);
+                // SAFETY: this is the bounded child created by this test.
+                let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        configure_host_launch_session(&mut command);
+        let child = ReapChild(command.spawn().expect("spawn grouped host child"));
+        let pid = i32::try_from(child.0.id()).expect("child pid fits i32");
+        // SAFETY: querying the session of our own still-running bounded child
+        // is read-only. `sleep 30` keeps the PID valid through the assertion.
+        assert_eq!(
+            unsafe { libc::getsid(pid) },
+            pid,
+            "the production host launch configuration must isolate a fresh session"
         );
     }
 }

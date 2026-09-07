@@ -50,6 +50,20 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     source_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo_root" log -1 --format=%ct)}
     source_revision=${GITHUB_SHA:-$(git -C "$repo_root" rev-parse HEAD)}
     export SOURCE_DATE_EPOCH="$source_epoch" GITHUB_SHA="$source_revision"
+    signing_env=()
+    if [[ $distro == fedora-44 ]]; then
+        signing_env=(
+            --env QOS_RPM_SIGNING_ENABLED
+            --env QOS_RPM_SIGNING_KEY_ARTIFACT
+            --env QOS_RPM_SIGNING_KEY_B64
+            --env QOS_RPM_SIGNING_KEY_ID
+            --env QOS_RPM_SIGNING_FINGERPRINT
+        )
+    else
+        # Do not expose the RPM signing secret to unrelated target userspaces.
+        unset QOS_RPM_SIGNING_ENABLED QOS_RPM_SIGNING_KEY_ARTIFACT \
+            QOS_RPM_SIGNING_KEY_B64 QOS_RPM_SIGNING_KEY_ID QOS_RPM_SIGNING_FINGERPRINT
+    fi
     output=$repo_root/dist/ci-output/$distro-$arch
     [[ ! -e $output ]] || { echo "output path already exists: $output" >&2; exit 1; }
     mkdir -p "$output"
@@ -94,6 +108,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
             --env CARGO_TERM_COLOR=never \
+            "${signing_env[@]}" \
             "${cache_env[@]}" \
             "$image" -c "$inner_command" 2> >(tee "$create_log" >&2))
     else
@@ -322,10 +337,10 @@ fedora-44)
     rpmlint dist/rpm/build/RPMS/*/qos-session-*.rpm 2>&1 | tee "$rpmlint_log"
     rpmlint_status=${PIPESTATUS[0]}
     set -e
-    # Fedora explicitly permits these for locally built artifacts. Native RPM
-    # signing belongs at a separately protected publication boundary; build
-    # and test jobs must not hold that private key. Every package-content or
-    # policy error still fails.
+    # Fedora permits no-signature for local and branch-validation artifacts.
+    # Protected desktop tags sign only after this install test, in this Fedora
+    # userspace, and immediately verify the result before artifact collection.
+    # Every package-content or policy error still fails.
     if grep ' E: ' "$rpmlint_log" \
         | grep -Ev ' (no-signature|no-packager-tag)( |$)' >/dev/null; then
         echo "rpmlint reported a package error" >&2
@@ -339,6 +354,16 @@ fedora-44)
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/qos-session-*.rpm
     stage=collect-rpm
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
+    if [[ ${QOS_RPM_SIGNING_ENABLED:-0} == 1 ]]; then
+        stage=sign-rpm
+        QOS_RPM_SIGNING_KEY_ARTIFACT=${QOS_RPM_SIGNING_KEY_ARTIFACT:-0} \
+            dist/rpm/sign-rpms.sh /artifacts
+        if [[ ${QOS_RPM_SIGNING_KEY_ARTIFACT:-0} == 1 ]]; then
+            dist/rpm/make-repo-file.sh "$(<dist/VERSION)" \
+                /artifacts/qos-fedora-44.repo
+            (cd /artifacts && sha256sum qos-fedora-44.repo > qos-fedora-44.repo.sha256)
+        fi
+    fi
     stage=collect-os-desktop-payload
     case "$arch" in amd64) payload_arch=x86_64 ;; arm64) payload_arch=aarch64 ;; esac
     dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts

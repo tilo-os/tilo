@@ -38,13 +38,33 @@ use crate::onboarding::{
     NO_RECOVERY_POINTS, NO_RECOVERY_TITLE, Onboarding, Screen,
 };
 
-const PANEL_MAX_WIDTH: f32 = 720.0;
-const PANEL_MAX_HEIGHT: f32 = 620.0;
-/// The introduction has much less content than the recovery and completion
-/// stages. Giving it the maximum-height scroll viewport made the first thing
-/// a new user saw look like a mostly empty dialog.
-const INTRO_PANEL_HEIGHT: f32 = 420.0;
-const VIEWPORT_GUTTER: f32 = 32.0;
+const PANEL_MAX_WIDTH: f32 = 760.0;
+// Longer translated/large-text pages scroll inside this limit. Short pages
+// retain their intrinsic height so setup never becomes a mostly empty modal.
+const PANEL_MAX_HEIGHT: f32 = 640.0;
+/// Large text and high contrast need additional vertical room before a dense
+/// first-use page falls back to scrolling. The viewport wrapper still caps
+/// this to its own height minus the safety gutters.
+const ACCESSIBLE_PANEL_HEIGHT: f32 = 672.0;
+/// Restore, protection and backup contain dense decisions and controls. Give
+/// them enough preferred height to avoid needless scrolling on a wide laptop;
+/// flex shrink still preserves the safety gutter on a compact display.
+const DENSE_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
+/// The introduction gets a lower cap than the recovery and completion stages;
+/// it still shrinks to its contents.
+const INTRO_PANEL_HEIGHT: f32 = 500.0;
+const VIEWPORT_GUTTER: f32 = 24.0;
+/// A 40 px action plus the footer's 17 px bottom inset. The gap above the
+/// footer belongs to the parent column and must not be reserved twice; doing
+/// so made short pages acquire a pointless scrollbar and hid useful recovery
+/// copy on laptop-height displays.
+const FOOTER_HEIGHT: f32 = 57.0;
+/// A labelled checkbox has a 44 px minimum target. Decision pages pin that
+/// acknowledgement above the ordinary action row so large text and compact
+/// displays never hide the gate inside scrolling explanatory copy.
+const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
+/// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
+const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
@@ -56,7 +76,15 @@ const PROGRESS_MAX_BYTES: u64 = 4096;
 #[serde(rename_all = "kebab-case")]
 enum PersistedStage {
     AcquiringIdentity,
+    /// The identity exists and setup must still offer a portable backup.
     IdentityReady,
+    /// A portable backup was verified, but setup has not reached its hand-off.
+    IdentityReadyBackedUp,
+    /// The person handled the backup choice and reached the final hand-off.
+    ReadyToEnter,
+    /// The hand-off was reached after a portable backup was written and
+    /// verified. Only this fact is journaled, never the backup's path.
+    ReadyToEnterBackedUp,
     TourNavigate,
     TourOrganise,
     TourCollaborate,
@@ -187,6 +215,8 @@ pub const KEY_CONNECT_CANCEL: &str = "onboarding.connect.cancel";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
+pub const KEY_BACKUP_CONTINUE: &str = "onboarding.backup.continue";
+pub const KEY_BACKUP_SKIP_ACKNOWLEDGED: &str = "onboarding.backup.skip-acknowledged";
 pub const KEY_TOUR_START: &str = "onboarding.tour.start";
 pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
 pub const KEY_TOUR_NEXT: &str = "onboarding.tour.next";
@@ -211,7 +241,7 @@ const NAVIGATE_CARDS: &[(&str, &str)] = &[
         "Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.",
     ),
     (
-        "Overview  ·  Ctrl+Tab or four-finger swipe",
+        "Overview  ·  Super+Tab or four-finger swipe",
         "See every workspace and window group, then use Up, Down, and Enter to choose one.",
     ),
     (
@@ -348,6 +378,14 @@ pub struct OnboardingView {
     error: Option<String>,
     backup_error: Option<String>,
     backup_saved: Option<PathBuf>,
+    backup_was_verified: bool,
+    /// An unprotected identity is a consequential, but supported, choice.
+    /// Keep the explicit acknowledgement process-local: it only gates this
+    /// one screen, while the durable journal records the resulting choice.
+    backup_skip_acknowledged: bool,
+    /// `false` shows the post-mint backup step; `true` shows the concise
+    /// desktop hand-off. Persisted separately so a crash cannot skip backup.
+    identity_ready_page: bool,
     /// A persistence error is distinct from identity creation failure: the
     /// current screen remains valid, but advancing is blocked until crash
     /// recovery state can be written or removed safely.
@@ -366,6 +404,7 @@ pub struct OnboardingView {
     transition_direction: f64,
     reduce_motion: bool,
     picker: Option<(PickerPurpose, FilePicker)>,
+    connect_source_selected: bool,
     connect_passphrase: Arc<Mutex<String>>,
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
@@ -474,6 +513,19 @@ impl OnboardingView {
         )
     }
 
+    /// Build the production host-session composition with an injected minter.
+    /// Kept for deterministic visual/interaction review: only identity I/O is
+    /// replaced; copy, state transitions, layout and controls are unchanged.
+    #[doc(hidden)]
+    pub fn with_minter_for_host_desktop(minter: Minter) -> Self {
+        Self::with_all_handlers_in_context(
+            minter,
+            Box::new(|_, _| Err("identity import is unavailable in this test".to_string())),
+            Box::new(|_, _, _| Err("identity backup is unavailable in this test".to_string())),
+            OnboardingContext::HostDesktop,
+        )
+    }
+
     fn with_handlers(minter: Minter, importer: Importer) -> Self {
         Self::with_all_handlers(
             minter,
@@ -506,6 +558,9 @@ impl OnboardingView {
             error: None,
             backup_error: None,
             backup_saved: None,
+            backup_was_verified: false,
+            backup_skip_acknowledged: false,
+            identity_ready_page: false,
             progress_error: None,
             tour_page: None,
             tour_only: false,
@@ -518,6 +573,7 @@ impl OnboardingView {
             transition_direction: 1.0,
             reduce_motion: false,
             picker: None,
+            connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
@@ -559,8 +615,25 @@ impl OnboardingView {
         match crate::onboarding::existing_identity_at(&identity_path) {
             Ok(identity) => {
                 self.flow.resume_created(identity);
+                self.identity_ready_page = matches!(
+                    stage,
+                    PersistedStage::ReadyToEnter
+                        | PersistedStage::ReadyToEnterBackedUp
+                        | PersistedStage::TourNavigate
+                        | PersistedStage::TourOrganise
+                        | PersistedStage::TourCollaborate
+                        | PersistedStage::TourStart
+                );
+                self.backup_was_verified = matches!(
+                    stage,
+                    PersistedStage::IdentityReadyBackedUp | PersistedStage::ReadyToEnterBackedUp
+                );
                 self.tour_page = match stage {
-                    PersistedStage::AcquiringIdentity | PersistedStage::IdentityReady => None,
+                    PersistedStage::AcquiringIdentity
+                    | PersistedStage::IdentityReady
+                    | PersistedStage::IdentityReadyBackedUp
+                    | PersistedStage::ReadyToEnter
+                    | PersistedStage::ReadyToEnterBackedUp => None,
                     PersistedStage::TourNavigate => Some(TourPage::Navigate),
                     PersistedStage::TourOrganise => Some(TourPage::Organise),
                     PersistedStage::TourCollaborate => Some(TourPage::Collaborate),
@@ -624,10 +697,12 @@ impl OnboardingView {
         }
     }
 
-    fn progress_notice(&self) -> Option<Box<dyn Widget>> {
+    fn progress_notice(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
         self.progress_error.as_ref().map(|error| {
-            Box::new(Banner::error("Setup progress needs attention").with_message(error.clone()))
-                as Box<dyn Widget>
+            spaced_banner(
+                Banner::error("Setup progress needs attention").with_message(error.clone()),
+                theme,
+            )
         })
     }
 
@@ -646,83 +721,225 @@ impl OnboardingView {
         }
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
-            Screen::Connect | Screen::NoRecovery => (2, "Protect"),
-            Screen::Done => (3, "Ready"),
+            Screen::Connect => (2, "Restore"),
+            Screen::NoRecovery => (2, "Protect"),
+            Screen::Done if self.identity_ready_page => (4, "Ready"),
+            Screen::Done => (3, "Backup"),
         };
         let body: Box<dyn Widget> = match self.flow.screen() {
             Screen::Intro => self.intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
-            Screen::Done => self.done(theme),
+            Screen::Done if self.identity_ready_page => self.done(theme),
+            Screen::Done => self.backup(theme),
         };
         let spacing = &theme.tokens.spacing;
         let progress_value = match step {
-            1 => 1.0 / 3.0,
-            2 => 2.0 / 3.0,
+            1 => 0.25,
+            2 => 0.5,
+            3 => 0.75,
             _ => 1.0,
         };
         let progress = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing.s2)
+            .with_gap(spacing.s3)
             .push(Box::new(
                 Row::new()
+                    // Keep both labels away from the rounded card edge. The
+                    // progress rule spans the content width below; its text
+                    // should not visually collide with the panel outline.
+                    .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
-                        Text::new("qOS setup")
+                        Text::new("qOS identity setup")
+                            .with_id("onboarding.progress.eyebrow")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&format!("{stage}  ·  {step} of 3"))
+                        Text::new(&format!("Step {step} of 4  ·  {stage}"))
+                            .with_id("onboarding.progress.stage")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
                     )),
             ))
-            .push(Box::new(ProgressBar::new(progress_value).with_label(
-                format!("Identity setup, step {step} of 3: {stage}"),
-            )));
-        let mut content = Column::new()
-            .with_intrinsic_height()
-            .with_gap(spacing.s6)
-            .push(Box::new(progress));
-        if let Some(notice) = self.progress_notice() {
+            .push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_vertical_padding(spacing.s2)
+                    .push(Box::new(ProgressBar::new(progress_value).with_label(
+                        format!("Identity setup, step {step} of 4: {stage}"),
+                    ))),
+            ));
+        let mut content = Column::new().with_intrinsic_height().with_gap(spacing.s4);
+        if let Some(notice) = self.progress_notice(theme) {
             content = content.push(notice);
         }
         content = content.push(body);
-        if self.flow.screen() == Screen::Done {
-            // The backup card can be taller than a laptop-height viewport,
-            // especially with large text. Keep the only route into the
-            // desktop outside that scroll region so setup never becomes a
-            // visual dead end.
-            let footer_height = 56.0;
-            // The outer Column owns `padding_standard * 2` on both edges plus
-            // the gap between the scroll region and footer. Account for those
-            // explicitly; otherwise large text pushes the sticky actions below
-            // a laptop-height viewport even though the panel itself is bounded.
-            let outer_vertical_padding = theme.padding_standard * 4.0;
-            let footer_gap = spacing.s3;
-            let scroll_height =
-                (panel_height - footer_height - footer_gap - outer_vertical_padding).max(120.0);
-            return Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_gap(spacing.s3)
-                    .push(Box::new(
-                        Scrollable::new_vertical()
-                            .with_height(scroll_height)
-                            .with_content_gutter(spacing.s3)
-                            .with_child(Box::new(content)),
-                    ))
-                    .push(Self::finish_action()),
-            );
+        // Every identity page keeps its choices outside the scroll region,
+        // except Backup. Its acknowledgement follows a form that can be
+        // taller than a compact accessible viewport; pinning it over that
+        // form made the initial frame bisect fields and explanatory copy.
+        // Keeping that one decision in the existing scroll flow preserves a
+        // clean viewport edge and still exposes the same keyboard actions.
+        let footer_gap = spacing.s3;
+        let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
+        let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
+        let footer_height = if backup_in_scroll {
+            0.0
+        } else {
+            FOOTER_HEIGHT
+                + if acknowledgement_footer {
+                    ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT
+                } else {
+                    0.0
+                }
+        };
+        let scroll_height =
+            (panel_height - PROGRESS_HEADER_HEIGHT - footer_height - footer_gap).max(120.0);
+        let fill_panel = theme.text_scale > 1.0
+            || theme.name.eq_ignore_ascii_case("high contrast")
+            || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+            || (self.flow.screen() == Screen::Done && !self.identity_ready_page);
+        let scroll = Scrollable::new_vertical()
+            .with_content_gutter(spacing.s3)
+            // Keep a clean terminal edge even on Backup's in-flow decision
+            // block, so the last control is not painted against the clip.
+            .with_bottom_content_inset(spacing.s3)
+            // A 960×540 large-text/high-contrast dialog resolves to a 492 px
+            // scroll viewport. Keep its first frame's edge in the gap between
+            // the form card and recovery copy; the full-height 672 px dialog
+            // retains room for the acknowledgement and Continue action.
+            .with_compact_bottom_content_inset(
+                520.0,
+                if backup_in_scroll
+                    && (theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast"))
+                {
+                    spacing.s12
+                } else {
+                    0.0
+                },
+            )
+            .with_child(Box::new(content));
+        let scroll = if fill_panel {
+            scroll.fill_parent_height()
+        } else {
+            scroll.with_max_height(scroll_height)
+        };
+        let composition = Column::new()
+            .with_no_padding()
+            .with_gap(spacing.s3)
+            .push(Box::new(progress))
+            .push(Box::new(scroll));
+        if backup_in_scroll {
+            Box::new(composition)
+        } else {
+            Box::new(composition.push(self.identity_footer(theme)))
         }
+    }
+
+    fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
+        let acknowledgement = match self.flow.screen() {
+            Screen::NoRecovery => Some(
+                Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
+                    .with_id("onboarding.understood.row")
+                    .with_label(ACKNOWLEDGEMENT),
+            ),
+            _ => None,
+        };
+        let Some(acknowledgement) = acknowledgement else {
+            return self.identity_actions();
+        };
         Box::new(
-            Scrollable::new_vertical()
-                .with_height(panel_height)
-                .with_content_gutter(spacing.s3)
-                .with_child(Box::new(content)),
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                // Match the scroll content gutter so a long acknowledgement
+                // measures and wraps inside the panel rather than running
+                // into its edge. The vertical inset is part of the sticky
+                // footer's reserved height and keeps the label distinct from
+                // the action row below it.
+                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
+                .with_vertical_padding(theme.tokens.spacing.s2)
+                .with_gap(theme.tokens.spacing.s3)
+                .push(Box::new(acknowledgement))
+                .push(self.identity_actions()),
         )
+    }
+
+    fn identity_actions(&self) -> Box<dyn Widget> {
+        match self.flow.screen() {
+            Screen::Intro => footer_actions(vec![
+                Box::new(
+                    Button::new(
+                        "onboarding.connect.button",
+                        "Use existing",
+                        Some(KEY_CONNECT),
+                    )
+                    .fit_content(40.0)
+                    .with_icon(ui::icons::Icon::ExternalLink),
+                ),
+                Box::new(
+                    Button::new(
+                        "onboarding.begin.button",
+                        "Create identity",
+                        Some(KEY_BEGIN),
+                    )
+                    .fit_content(40.0)
+                    .with_icon(ui::icons::Icon::ArrowRight)
+                    .with_style(ui::widget::ButtonStyle::Primary),
+                ),
+            ]),
+            Screen::Connect => footer_actions(vec![
+                back_button(),
+                Box::new(
+                    Button::new(
+                        "onboarding.import.button",
+                        "Restore selected backup",
+                        Some(KEY_IMPORT),
+                    )
+                    .fit_content(40.0)
+                    .with_icon(ui::icons::Icon::ArrowRight)
+                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .with_enabled(self.connect_source_selected),
+                ),
+            ]),
+            Screen::NoRecovery => footer_actions(vec![
+                back_button(),
+                Box::new(
+                    Button::new(
+                        "onboarding.create.button",
+                        "Create local identity",
+                        Some(KEY_CREATE),
+                    )
+                    .fit_content(40.0)
+                    .with_icon(ui::icons::Icon::Shield)
+                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .with_enabled(self.flow.can_create()),
+                ),
+            ]),
+            Screen::Done if self.identity_ready_page => Self::finish_action(),
+            Screen::Done => footer_actions(vec![Box::new(
+                Button::new(
+                    "onboarding.backup.continue.button",
+                    if self.backup_was_verified {
+                        "Continue"
+                    } else {
+                        "Continue without backup"
+                    },
+                    Some(KEY_BACKUP_CONTINUE),
+                )
+                .fit_content(40.0)
+                .with_style(if self.backup_was_verified {
+                    ui::widget::ButtonStyle::Primary
+                } else {
+                    ui::widget::ButtonStyle::Neutral
+                })
+                .with_enabled(self.backup_was_verified || self.backup_skip_acknowledged),
+            )]),
+        }
     }
 
     fn build_tour_composition(
@@ -741,7 +958,7 @@ impl OnboardingView {
         let progress = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s2)
+            .with_gap(theme.tokens.spacing.s3)
             .push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -757,14 +974,19 @@ impl OnboardingView {
                     )),
             ))
             .push(Box::new(
-                ProgressBar::new(f32::from(number) / 4.0)
-                    .with_label(format!("Desktop tour, step {number} of 4: {stage}")),
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_vertical_padding(theme.tokens.spacing.s2)
+                    .push(Box::new(
+                        ProgressBar::new(f32::from(number) / 4.0)
+                            .with_label(format!("Desktop tour, step {number} of 4: {stage}")),
+                    )),
             ));
         let mut content = Column::new()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s6)
-            .push(Box::new(progress));
-        if let Some(notice) = self.progress_notice() {
+            .with_gap(theme.tokens.spacing.s6);
+        if let Some(notice) = self.progress_notice(theme) {
             content = content.push(notice);
         }
         content = content.push(Self::tour_page(theme, page));
@@ -773,19 +995,19 @@ impl OnboardingView {
         // than the panel; making Continue part of that content forced people
         // to discover scrolling before they could finish the introduction.
         // The identity Done screen uses the same sticky-footer contract.
-        let footer_height = 48.0;
         let footer_gap = theme.tokens.spacing.s3;
-        let outer_vertical_padding = theme.padding_standard * 4.0;
         let scroll_height =
-            (panel_height - footer_height - footer_gap - outer_vertical_padding).max(120.0);
+            (panel_height - PROGRESS_HEADER_HEIGHT - FOOTER_HEIGHT - footer_gap).max(120.0);
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_gap(footer_gap)
+                .push(Box::new(progress))
                 .push(Box::new(
                     Scrollable::new_vertical()
-                        .with_height(scroll_height)
+                        .with_max_height(scroll_height)
                         .with_content_gutter(theme.tokens.spacing.s3)
+                        .with_bottom_content_inset(theme.tokens.spacing.s3)
                         .with_child(Box::new(content)),
                 ))
                 .push(Self::tour_actions(page)),
@@ -847,7 +1069,7 @@ impl OnboardingView {
         } else {
             ("Continue", KEY_TOUR_NEXT)
         };
-        actions(vec![
+        footer_actions(vec![
             Box::new(
                 Button::new(
                     "onboarding.tour.skip.button",
@@ -874,7 +1096,10 @@ impl OnboardingView {
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut list = Column::new().with_no_padding().with_gap(spacing.s3);
+        let mut list = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s3);
         for point in INTRO_POINTS {
             list = list.push(bullet(point, theme));
         }
@@ -886,33 +1111,10 @@ impl OnboardingView {
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(spacing.s6)
+                .with_gap(spacing.s4)
                 .push(heading(title, theme))
                 .push(paragraph(body, theme))
-                .push(Box::new(Card::titled("What it is for", Box::new(list))))
-                .push(actions(vec![
-                    Box::new(
-                        Button::new(
-                            "onboarding.connect.button",
-                            // Keep this action concise enough to remain legible beside
-                            // Create identity on the supported 420 px narrow layout.
-                            // The surrounding intro already establishes qOS identity
-                            // as the subject, so the shorter copy loses no context.
-                            "Use existing",
-                            Some(KEY_CONNECT),
-                        )
-                        .with_icon(ui::icons::Icon::ExternalLink),
-                    ),
-                    Box::new(
-                        Button::new(
-                            "onboarding.begin.button",
-                            "Create identity",
-                            Some(KEY_BEGIN),
-                        )
-                        .with_icon(ui::icons::Icon::ArrowRight)
-                        .with_style(ui::widget::ButtonStyle::Primary),
-                    ),
-                ])),
+                .push(Box::new(Card::titled("What it is for", Box::new(list)))),
         )
     }
 
@@ -927,22 +1129,19 @@ impl OnboardingView {
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             "Backup passphrase",
-            "Passphrase for encrypted backups",
+            "Passphrase (leave empty for legacy JSON)",
         )
         .with_font_size(theme.tokens.typography.scale.base);
         let spacing = &theme.tokens.spacing;
         let mut body = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(spacing.s6)
-                .push(heading("Connect an existing identity", theme))
-                .push(paragraph(
-                    "Bring an encrypted backup from another qOS device. It is authenticated and validated locally before this machine is certified. For a legacy unencrypted JSON export, leave the passphrase empty.",
-                    theme,
-                ));
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s4)
+            .push(heading("Connect an existing identity", theme));
         if let Some(error) = &self.error {
-            body = body.push(Box::new(
+            body = body.push(spaced_banner(
                 Banner::error("That identity could not be connected").with_message(error.clone()),
+                theme,
             ));
         }
         let nearby_action = if self.nearby_child.is_some() {
@@ -954,17 +1153,17 @@ impl OnboardingView {
         } else {
             Button::new(
                 "onboarding.connect.nearby.button",
-                "Connect nearby",
+                "Connect a nearby device",
                 Some(KEY_CONNECT_NEARBY),
             )
-            .with_style(ui::widget::ButtonStyle::Primary)
+            .fit_content(40.0)
         };
         let mut nearby = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing.s3)
             .push(paragraph(
-                "On a trusted qOS device, open Settings → Devices & Sync → Add a personal device. Compare the six-digit code shown on both devices before approving.",
+                "On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.",
                 theme,
             ));
         if let Some(status) = &self.nearby_status {
@@ -988,89 +1187,72 @@ impl OnboardingView {
             )
             .with_icon(ui::icons::Icon::Folder),
         ));
+        let backup = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s3)
+            .push(Box::new(file_row))
+            .push(Box::new(
+                Text::new("Backup passphrase").with_role(ui::tokens::typography::TextRole::Label),
+            ))
+            .push(Box::new(passphrase));
         Box::new(
             body.push(Box::new(Card::titled(
                 "Nearby trusted device",
                 Box::new(nearby),
             )))
-            .push(Box::new(Card::titled(
-                "Encrypted backup",
-                Box::new(file_row),
-            )))
-            .push(Box::new(Card::titled(
-                "Backup passphrase",
-                Box::new(passphrase),
-            )))
-            .push(actions(vec![
-                back_button(),
-                Box::new(
-                    Button::new("onboarding.import.button", "Connect", Some(KEY_IMPORT))
-                        .with_icon(ui::icons::Icon::ArrowRight)
-                        .with_style(ui::widget::ButtonStyle::Primary),
-                ),
-            ])),
+            .push(Box::new(Card::titled("Encrypted backup", Box::new(backup)))),
         )
     }
 
     fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut list = Column::new().with_no_padding().with_gap(spacing.s4);
+        let mut list = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s4);
         for point in NO_RECOVERY_POINTS {
             list = list.push(bullet(point, theme));
         }
-        // The gate. Disabled until the box is ticked, so the primary action can't be clicked past the consequence.
-        let create = Button::new("onboarding.create.button", "Create", Some(KEY_CREATE))
-            .with_icon(ui::icons::Icon::Shield)
-            .with_style(ui::widget::ButtonStyle::Primary)
-            .with_enabled(self.flow.can_create());
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing.s6)
-            .push(heading("Keep the key to your identity", theme))
+            .with_gap(spacing.s4)
             .push(Box::new(
-                Banner::warning(NO_RECOVERY_TITLE)
-                    .with_message(
-                        "There is no reset button. Read this once, then choose deliberately.",
-                    )
-                    .with_icon(ui::icons::Icon::Shield),
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(spacing.s3)
+                    .push(heading("Protect your qOS identity", theme))
+                    .push(spaced_banner(
+                        Banner::warning(NO_RECOVERY_TITLE)
+                            .with_message(
+                                "There is no reset button. Create an encrypted portable backup after this step.",
+                            )
+                            .with_icon(ui::icons::Icon::Shield),
+                        theme,
+                    )),
             ));
         if let Some(error) = &self.error {
-            body = body.push(Box::new(
+            body = body.push(spaced_banner(
                 Banner::error("Your identity was not created").with_message(error.clone()),
+                theme,
             ));
         }
-        Box::new(
-            body.push(Box::new(Card::new(Box::new(list))))
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(
-                            Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
-                                .with_accessible_name(ACKNOWLEDGEMENT),
-                        ))
-                        .push(Box::new(
-                            Text::new(ACKNOWLEDGEMENT)
-                                .with_role(ui::tokens::typography::TextRole::Body),
-                        )),
-                ))
-                .push(actions(vec![back_button(), Box::new(create)])),
-        )
+        Box::new(body.push(Box::new(Card::new(Box::new(list)))))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the completion card is kept together so its backup and finish states remain coherent"
-    )]
-    fn done(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(theme.tokens.spacing.s6)
-                    .push(Box::new(
+                    .push(spaced_banner(
                         Banner::error("Your identity could not be created")
                             .with_message(err.clone()),
+                        theme,
                     ))
                     .push(paragraph(
                         "Nothing was written and the desktop is still protected. Go back and try again after checking storage and permissions.",
@@ -1079,22 +1261,6 @@ impl OnboardingView {
                     .push(actions(vec![back_button()])),
             );
         }
-        let minted = self.flow.minted();
-        let fingerprint = minted
-            .map(super::onboarding::MintedIdentity::grouped_fingerprint)
-            .unwrap_or_default();
-        let detail = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s2)
-            .push(Box::new(
-                Text::new(&fingerprint).with_role(ui::tokens::typography::TextRole::Code),
-            ))
-            .push(Box::new(
-                Text::new("Others may use this fingerprint to verify that this identity is yours.")
-                    .with_role(ui::tokens::typography::TextRole::Caption)
-                    .with_color(theme.text_dim),
-            ));
         let backup_fields = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -1116,35 +1282,112 @@ impl OnboardingView {
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s3)
             .push(paragraph(
-                "Save an encrypted copy to another drive. qOS verifies the finished file before calling it a backup; keep its passphrase somewhere separate.",
+                "Save an encrypted copy somewhere other than this device. Keep the file and its passphrase separately; together they can restore this identity. qOS verifies the finished file before reporting success.",
                 theme,
             ))
             .push(Box::new(backup_fields));
         if let Some(error) = &self.backup_error {
-            backup = backup.push(Box::new(
+            backup = backup.push(spaced_banner(
                 Banner::error("The backup was not saved").with_message(error.clone()),
+                theme,
             ));
         }
         if let Some(path) = &self.backup_saved {
-            backup = backup.push(Box::new(
+            backup = backup.push(spaced_banner(
                 Banner::success("Encrypted backup verified")
                     .with_message(path.display().to_string())
                     .with_icon(ui::icons::Icon::Check),
+                theme,
+            ));
+        } else if self.backup_was_verified {
+            backup = backup.push(spaced_banner(
+                Banner::success("Encrypted backup verified")
+                    .with_message("The verified backup was saved before setup restarted.")
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
             ));
         }
-        let mut backup_button = Button::new(
+        let backup_button = Button::new(
             "onboarding.backup.button",
-            if self.backup_saved.is_some() {
+            if self.backup_was_verified {
                 "Save another copy"
             } else {
-                "Save backup…"
+                "Choose location and save backup…"
             },
             Some(KEY_BACKUP_BROWSE),
-        );
-        if self.backup_saved.is_none() {
-            backup_button = backup_button.with_style(ui::widget::ButtonStyle::Primary);
+        )
+        .fit_content(40.0);
+        // The form's action is visually distinct from the confirmation field.
+        // In a text-only accessibility scale, the card can otherwise shrink
+        // the column gap until the button appears to touch that field.
+        backup = backup.push(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_vertical_padding(theme.tokens.spacing.s2)
+                .push(actions(vec![Box::new(backup_button)])),
+        ));
+
+        let mut page = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s4)
+            .push(heading("Back up your qOS identity", theme))
+            .push(spaced_banner(
+                Banner::success("Your local identity was created")
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
+            ))
+            .push(Box::new(Card::titled(
+                "Encrypted portable backup",
+                Box::new(backup),
+            )));
+
+        if !self.backup_was_verified {
+            page = page.push(paragraph(
+                "No recovery words are shown because they could not restore this single-device identity. The encrypted backup is the real recovery material, and qOS verifies it before accepting it.",
+                theme,
+            ));
         }
-        backup = backup.push(actions(vec![Box::new(backup_button)]));
+        // Backup deliberately keeps this acknowledgement and its existing
+        // Continue action in the document flow. On compact/large-text
+        // displays a sticky version overlays the passphrase form, whereas a
+        // scrollable decision block keeps each field and button fully
+        // reachable without a clipped resting frame.
+        let decision = if self.backup_was_verified {
+            self.identity_actions()
+        } else {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
+                    .with_vertical_padding(theme.tokens.spacing.s2)
+                    .with_gap(theme.tokens.spacing.s3)
+                    .push(Box::new(
+                        Checkbox::new(
+                            "onboarding.backup.skip-acknowledged.box",
+                            KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                        )
+                        .with_id("onboarding.backup.skip-acknowledged.row")
+                        .with_label(
+                            "I understand that without an encrypted backup, losing this device means losing this identity.",
+                        ),
+                    ))
+                    .push(self.identity_actions()),
+            )
+        };
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(theme.tokens.spacing.s4)
+                .push(Box::new(page))
+                .push(decision),
+        )
+    }
+
+    fn done(&self, theme: &Theme) -> Box<dyn Widget> {
         let system_care = match self.context {
             OnboardingContext::FullSystem => {
                 "qOS checks signed system updates automatically after setup when the machine is \
@@ -1155,55 +1398,72 @@ impl OnboardingView {
                  This host-session package does not install or run qOS bootc update services."
             }
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s6)
-                .push(heading(DONE_TITLE, theme))
-                .push(Box::new(
-                    Banner::success("Identity stored on this device")
-                        .with_icon(ui::icons::Icon::Check),
-                ))
-                .push(paragraph(DONE_BODY, theme))
-                .push(paragraph(
-                    "The desktop is ready. Sharing stays off until you turn it on in Settings.",
+        let (title, body, ready) = match self.context {
+            OnboardingContext::FullSystem => {
+                (DONE_TITLE, DONE_BODY, "Identity stored on this device")
+            }
+            OnboardingContext::HostDesktop => (
+                "Your qOS identity is ready",
+                "qOS will use this local identity when you collaborate or invite peers. It remains separate from your Linux login and is not an online account.",
+                "Ready for qOS collaboration",
+            ),
+        };
+        let mut page = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(theme.tokens.spacing.s4)
+            .push(heading(title, theme))
+            .push(spaced_banner(
+                Banner::success(ready).with_icon(ui::icons::Icon::Check),
+                theme,
+            ))
+            .push(paragraph(body, theme))
+            .push(Box::new(Card::titled(
+                "What happens next",
+                paragraph(
+                    "The desktop is ready. Sharing remains off until you deliberately enable it in Settings.",
                     theme,
-                ))
-                .push(Box::new(Card::titled(
-                    "System care",
-                    paragraph(system_care, theme),
-                )))
-                .push(Box::new(Card::titled("Your fingerprint", Box::new(detail))))
-                .push(Box::new(Card::titled(
-                    "Make a portable backup",
-                    Box::new(backup),
-                )))
-                // Repeated deliberately: the last moment the user is looking at the
-                // subject is the one fact they need to carry away from the whole ceremony.
-                .push(paragraph(
-                    "There is no recovery service. If this device goes and you have no \
-                     encrypted portable backup, this identity goes with it.",
-                    theme,
-                )),
-        )
+                ),
+            )))
+            .push(paragraph(
+                if self.backup_was_verified {
+                    "Your encrypted portable backup was cryptographically verified. Keep its file and passphrase in separate places."
+                } else {
+                    "You chose to continue without a portable backup. Create one from Settings before relying on this identity."
+                },
+                theme,
+            ));
+
+        if self.context == OnboardingContext::FullSystem {
+            page = page.push(Box::new(Card::titled(
+                "System care",
+                paragraph(system_care, theme),
+            )));
+        }
+        Box::new(page)
     }
 
     /// Sticky final action, deliberately outside the Done screen's scrollable
     /// backup content so it remains visible at narrow and large-text sizes.
     fn finish_action() -> Box<dyn Widget> {
-        // The tour used to have a complete state machine but no UI route into
-        // it. Keep skipping possible, while making the helpful path the clear
-        // primary action at the moment setup hands over to the desktop.
-        let skip = Button::new("onboarding.finish.button", "Skip tour", Some(KEY_FINISH));
+        // Continuing to the desktop is the primary hand-off. The optional
+        // tour remains explicit rather than making “Skip” the first desktop
+        // action a new user has to decipher.
         let tour = Button::new(
             "onboarding.tour.start.button",
-            "Start tour",
+            "Take a quick tour",
             Some(KEY_TOUR_START),
         )
+        .fit_content(40.0);
+        let enter = Button::new(
+            "onboarding.finish.button",
+            "Continue to desktop",
+            Some(KEY_FINISH),
+        )
+        .fit_content(40.0)
         .with_icon(ui::icons::Icon::ArrowRight)
         .with_style(ui::widget::ButtonStyle::Primary);
-        actions(vec![Box::new(skip), Box::new(tour)])
+        footer_actions(vec![Box::new(tour), Box::new(enter)])
     }
 }
 
@@ -1221,6 +1481,19 @@ fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
+/// Give status surfaces deliberate breathing room independent of the parent
+/// composition's gap calculation. This also keeps consecutive warning/error
+/// banners from visually merging into one block.
+fn spaced_banner(banner: Banner, theme: &Theme) -> Box<dyn Widget> {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_vertical_padding(theme.tokens.spacing.s2)
+            .push(Box::new(banner)),
+    )
+}
+
 /// A list item.
 ///
 /// The marker is part of the same `Text` rather than a sibling in a
@@ -1232,6 +1505,7 @@ fn bullet(text: &str, _theme: &Theme) -> Box<dyn Widget> {
 fn back_button() -> Box<dyn Widget> {
     Box::new(
         Button::new("onboarding.back.button", "Back", Some(KEY_BACK))
+            .fit_content(40.0)
             .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }
@@ -1242,7 +1516,19 @@ fn actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
     for b in buttons {
         row = row.push(b);
     }
-    Box::new(row)
+    Box::new(row.no_wrap())
+}
+
+/// Sticky page navigation with a deliberate 20 px side and 16 px bottom
+/// inset, independent of the scrollable page body.
+fn footer_actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
+    let mut row = Row::new().push(Box::new(Spacer::new()));
+    for button in buttons {
+        row = row.push(button);
+    }
+    // Taffy rounds logical positions at the output edge; 17 keeps the
+    // promised visible 16 px bottom inset after that rounding.
+    Box::new(row.no_wrap().with_padding(20.0, 17.0))
 }
 
 fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
@@ -1481,11 +1767,17 @@ impl Widget for OnboardingView {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let before = self.flow.screen();
         let tour_before = self.tour_page;
+        let ready_before = self.identity_ready_page;
 
         // Pull widget-local edits (notably passphrases) into their process-local
         // buffers before interpreting action keys from the same input frame.
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
+        }
+        let connect_source_selected = !read_string(state, root, KEY_CONNECT_PATH).trim().is_empty();
+        if connect_source_selected != self.connect_source_selected {
+            self.connect_source_selected = connect_source_selected;
+            self.invalidation.structure();
         }
 
         let picker_outcome = self
@@ -1503,6 +1795,7 @@ impl Widget for OnboardingView {
                             KEY_CONNECT_PATH,
                             ScalarValue::Str(path.to_string_lossy().into_owned().into()),
                         );
+                        self.connect_source_selected = true;
                         self.error = None;
                     }
                     PickerPurpose::BackupIdentity => {
@@ -1519,6 +1812,9 @@ impl Widget for OnboardingView {
                         match export {
                             Ok(()) => {
                                 self.backup_saved = Some(path);
+                                self.backup_was_verified = true;
+                                let _ =
+                                    self.persist_progress(PersistedStage::IdentityReadyBackedUp);
                                 self.backup_error = None;
                                 clear_secret(&self.backup_passphrase);
                                 clear_secret(&self.backup_confirmation);
@@ -1671,6 +1967,7 @@ impl Widget for OnboardingView {
                         let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
                         if fingerprint.len() == 64 && path.is_some() {
                             self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
+                            self.identity_ready_page = false;
                             let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
                             self.nearby_status = Some("Connected. Your workspaces will appear automatically.".into());
@@ -1694,7 +1991,10 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_BACKUP_BROWSE) {
             let _ = state.put(root, KEY_BACKUP_BROWSE, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Done && self.picker.is_none() {
+            if self.flow.screen() == Screen::Done
+                && !self.identity_ready_page
+                && self.picker.is_none()
+            {
                 self.backup_error = match (
                     self.backup_passphrase.lock(),
                     self.backup_confirmation.lock(),
@@ -1728,6 +2028,25 @@ impl Widget for OnboardingView {
             }
         }
 
+        if read_bool(state, root, KEY_BACKUP_CONTINUE) {
+            let _ = state.put(root, KEY_BACKUP_CONTINUE, ScalarValue::Boolean(false));
+            if self.flow.is_done()
+                && self.tour_page.is_none()
+                && !self.identity_ready_page
+                && (self.backup_was_verified || self.backup_skip_acknowledged)
+                && self.persist_progress(if self.backup_was_verified {
+                    PersistedStage::ReadyToEnterBackedUp
+                } else {
+                    PersistedStage::ReadyToEnter
+                })
+            {
+                self.identity_ready_page = true;
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+                self.invalidation.both();
+            }
+        }
+
         if read_bool(state, root, KEY_BACK) {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
@@ -1740,7 +2059,11 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_IMPORT) {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
-            if self.flow.screen() == Screen::Connect
+            if self.flow.screen() == Screen::Connect && source.as_os_str().is_empty() {
+                self.error =
+                    Some("Choose an encrypted backup or legacy identity file first.".into());
+                self.invalidation.structure();
+            } else if self.flow.screen() == Screen::Connect
                 && self.persist_progress(PersistedStage::AcquiringIdentity)
             {
                 let passphrase = Zeroizing::new(
@@ -1754,6 +2077,7 @@ impl Widget for OnboardingView {
                     Ok(identity) => {
                         self.error = None;
                         self.flow.complete_connected(identity);
+                        self.identity_ready_page = false;
                         let _ = self.persist_progress(PersistedStage::IdentityReady);
                         clear_secret(&self.connect_passphrase);
                     }
@@ -1773,6 +2097,12 @@ impl Widget for OnboardingView {
             self.invalidation.structure();
         }
 
+        let skip_acknowledged = read_bool(state, root, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+        if skip_acknowledged != self.backup_skip_acknowledged {
+            self.backup_skip_acknowledged = skip_acknowledged;
+            self.invalidation.structure();
+        }
+
         if read_bool(state, root, KEY_CREATE) {
             let _ = state.put(root, KEY_CREATE, ScalarValue::Boolean(false));
             // `can_create` is checked inside `complete` too — this is the outer guard, that one is the invariant.
@@ -1781,6 +2111,7 @@ impl Widget for OnboardingView {
                 match (self.minter)() {
                     Ok(minted) => {
                         self.flow.complete(minted);
+                        self.identity_ready_page = false;
                         let _ = self.persist_progress(PersistedStage::IdentityReady);
                     }
                     Err(e) => {
@@ -1796,7 +2127,10 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_TOUR_START) {
             let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
-            if self.flow.is_done() && self.persist_progress(PersistedStage::TourNavigate) {
+            if self.flow.is_done()
+                && self.identity_ready_page
+                && self.persist_progress(PersistedStage::TourNavigate)
+            {
                 self.tour_page = Some(TourPage::Navigate);
             }
         }
@@ -1814,7 +2148,11 @@ impl Widget for OnboardingView {
                 Some(TourPage::Start) => Some(TourPage::Collaborate),
             };
             let progress_stage = match next {
-                None => Some(PersistedStage::IdentityReady),
+                None => Some(if self.backup_was_verified {
+                    PersistedStage::ReadyToEnterBackedUp
+                } else {
+                    PersistedStage::ReadyToEnter
+                }),
                 Some(TourPage::Navigate) => Some(PersistedStage::TourNavigate),
                 Some(TourPage::Organise) => Some(PersistedStage::TourOrganise),
                 Some(TourPage::Collaborate) => Some(PersistedStage::TourCollaborate),
@@ -1867,7 +2205,8 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             let at_tour_end = self.tour_page == Some(TourPage::Start);
-            let skipping_tour = self.tour_page.is_none() && self.flow.is_done();
+            let skipping_tour =
+                self.tour_page.is_none() && self.flow.is_done() && self.identity_ready_page;
             // A reopened, tour-only flow exposes “Skip tour” on every page.
             // Its action is KEY_FINISH, so it must dismiss from every page,
             // not only from the final hand-off page.
@@ -1882,8 +2221,13 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.flow.screen() != before || self.tour_page != tour_before {
-            self.transition_direction = if view_order(self.flow.screen(), self.tour_page)
+        if self.flow.screen() != before
+            || self.tour_page != tour_before
+            || self.identity_ready_page != ready_before
+        {
+            self.transition_direction = if self.identity_ready_page != ready_before {
+                1.0
+            } else if view_order(self.flow.screen(), self.tour_page)
                 < view_order(before, tour_before)
             {
                 -1.0
@@ -1903,12 +2247,31 @@ impl Widget for OnboardingView {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         self.transition_duration = theme.tokens.motion.durations.slow();
-        let panel_height = if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
+        let accessibility_expanded =
+            theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
+        let panel_height = if accessibility_expanded {
+            ACCESSIBLE_PANEL_HEIGHT
+        } else if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
             INTRO_PANEL_HEIGHT
         } else {
             PANEL_MAX_HEIGHT
         };
-        let mut composed = self.build_composition(theme, panel_height);
+        let dense_identity_page = self.tour_page.is_none()
+            && (accessibility_expanded
+                || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+                || (self.flow.screen() == Screen::Done && !self.identity_ready_page));
+        // The scroll/footer budget must use the same preferred height as the
+        // composition itself. Previously dense normal-text pages measured a
+        // 640 px scroll region and were then placed in a 560 px card, putting
+        // the sticky action on top of its scrolling sibling.
+        let composition_height = if accessibility_expanded {
+            ACCESSIBLE_PANEL_HEIGHT
+        } else if dense_identity_page {
+            DENSE_PANEL_PREFERRED_HEIGHT
+        } else {
+            panel_height
+        };
+        let mut composed = self.build_composition(theme, composition_height);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -1917,9 +2280,24 @@ impl Widget for OnboardingView {
         // taller than the bounded setup surface.
         if let Ok(mut cs) = taffy.style(child).cloned() {
             cs.size.width = taffy::Dimension::percent(1.0);
-            cs.size.height = taffy::Dimension::percent(1.0);
+            // Pages with little content should own only the space they need.
+            // The scroll viewport above caps longer pages, so this still
+            // cannot exceed the safe laptop-height panel.
+            cs.size.height = if accessibility_expanded {
+                taffy::Dimension::length(ACCESSIBLE_PANEL_HEIGHT)
+            } else if dense_identity_page {
+                taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
+            } else {
+                taffy::Dimension::auto()
+            };
+            // The default automatic minimum is the content's min-height and
+            // therefore prevents the scroll viewport from shrinking. This
+            // previously put tall restore pages flush against (or beyond)
+            // the physical display edge despite the parent's safety gutter.
+            cs.min_size.height = taffy::Dimension::length(0.0);
             cs.max_size.width = taffy::Dimension::length(PANEL_MAX_WIDTH);
             cs.max_size.height = taffy::Dimension::length(panel_height);
+            cs.flex_basis = taffy::Dimension::auto();
             cs.flex_grow = 0.0;
             cs.flex_shrink = 1.0;
             let _ = taffy.set_style(child, cs);
@@ -1927,6 +2305,10 @@ impl Widget for OnboardingView {
 
         let style = taffy::Style {
             display: taffy::Display::Flex,
+            // The viewport gutter is part of the viewport-sized shell, not
+            // extra width outside it. This keeps the panel inside narrow
+            // displays instead of overflowing by both side gutters.
+            box_sizing: taffy::BoxSizing::BorderBox,
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
@@ -2320,6 +2702,21 @@ mod tests {
         handled
     }
 
+    fn pointer_event(position: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(position.x, position.y),
+        }
+    }
+
+    fn primary_press_event() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
     fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
         if widget.test_id() == Some(id) {
             return widget.accessibility();
@@ -2415,6 +2812,28 @@ mod tests {
             );
         }
 
+        // The keyboard/action route carries the same guard as the disabled
+        // button. A stale or malicious document action cannot silently skip
+        // the only recovery decision.
+        press(&mut document, KEY_BACKUP_CONTINUE);
+        view.sync(&mut document, &automerge::ROOT);
+        assert!(
+            !view.identity_ready_page,
+            "continuing without a backup requires an explicit acknowledgement"
+        );
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::IdentityReady)
+        );
+
+        press(&mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+        view.sync(&mut document, &automerge::ROOT);
+        press(&mut document, KEY_BACKUP_CONTINUE);
+        view.sync(&mut document, &automerge::ROOT);
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::ReadyToEnter)
+        );
         press(&mut document, KEY_FINISH);
         view.sync(&mut document, &automerge::ROOT);
         assert!(view.finished());
@@ -2422,10 +2841,26 @@ mod tests {
     }
 
     #[test]
-    fn restart_resumes_done_and_exact_tour_page_without_recreating_identity() {
+    fn restart_resumes_backup_ready_and_exact_tour_page_without_recreating_identity() {
         let directory = TempDir::new().expect("progress directory");
         write_fixture_identity(directory.path());
-        store_progress(directory.path(), PersistedStage::IdentityReady).expect("ready journal");
+
+        store_progress(directory.path(), PersistedStage::IdentityReady).expect("backup journal");
+        let mut backup = OnboardingView::new(directory.path().to_path_buf());
+        assert_eq!(backup.flow().screen(), Screen::Done);
+        assert!(!backup.identity_ready_page);
+        let mut blocked_finish = AutoCommit::new();
+        press(&mut blocked_finish, KEY_FINISH);
+        backup.sync(&mut blocked_finish, &automerge::ROOT);
+        assert!(!backup.finished(), "backup choice cannot be bypassed");
+
+        store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
+            .expect("verified-backup journal");
+        let backed_up = OnboardingView::new(directory.path().to_path_buf());
+        assert!(!backed_up.identity_ready_page);
+        assert!(backed_up.backup_was_verified);
+
+        store_progress(directory.path(), PersistedStage::ReadyToEnter).expect("ready journal");
 
         let mut done = OnboardingView::new(directory.path().to_path_buf());
         assert_eq!(done.flow().screen(), Screen::Done);
@@ -2634,6 +3069,10 @@ mod tests {
         v.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_CREATE);
         v.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+        v.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_BACKUP_CONTINUE);
+        v.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_FINISH);
         v.sync(&mut doc, &automerge::ROOT);
         assert!(v.finished());
@@ -2648,6 +3087,10 @@ mod tests {
         press(&mut doc, KEY_UNDERSTOOD);
         view.sync(&mut doc, &automerge::ROOT);
         press(&mut doc, KEY_CREATE);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_BACKUP_CONTINUE);
         view.sync(&mut doc, &automerge::ROOT);
 
         press(&mut doc, KEY_TOUR_START);
@@ -2795,7 +3238,7 @@ mod tests {
         assert!(navigation.contains("Super+K"));
         assert!(navigation.contains("Super+Space"));
         assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
-        assert!(navigation.contains("Ctrl+Tab"));
+        assert!(navigation.contains("Super+Tab"));
         assert!(navigation.contains("four-finger swipe"));
         assert!(navigation.contains("Super+arrow keys"));
         assert!(navigation.contains("three-finger swipe"));
@@ -3085,10 +3528,59 @@ mod tests {
         let mut doc = AutoCommit::new();
         press(&mut doc, KEY_CONNECT);
         view.sync(&mut doc, &automerge::ROOT);
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_CONNECT_PATH,
+            ScalarValue::Str("/media/identity.qos-identity".into()),
+        );
         press(&mut doc, KEY_IMPORT);
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(view.flow().screen(), Screen::Connect);
         assert_eq!(view.error(), Some("not a qOS identity"));
+    }
+
+    #[test]
+    fn connect_requires_a_selected_file_before_importing() {
+        let mut view = OnboardingView::with_handlers(
+            Box::new(|| Err("create should not run".to_string())),
+            Box::new(|_, _| Err("importer must not run without a path".to_string())),
+        );
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_CONNECT);
+        view.sync(&mut doc, &automerge::ROOT);
+        let theme = Theme::dark();
+        let disabled = accessibility_for_id(
+            &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
+            "onboarding.import.button",
+        )
+        .expect("restore action is exposed to accessibility");
+        assert!(
+            disabled.state.disabled,
+            "restore must be visibly and semantically disabled without a selected source"
+        );
+        press(&mut doc, KEY_IMPORT);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(view.flow().screen(), Screen::Connect);
+        assert_eq!(
+            view.error(),
+            Some("Choose an encrypted backup or legacy identity file first.")
+        );
+
+        let _ = doc.put(
+            &automerge::ROOT,
+            KEY_CONNECT_PATH,
+            ScalarValue::Str("/media/identity.qos-identity".into()),
+        );
+        view.sync(&mut doc, &automerge::ROOT);
+        let enabled = accessibility_for_id(
+            &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
+            "onboarding.import.button",
+        )
+        .expect("restore action remains exposed");
+        assert!(
+            !enabled.state.disabled,
+            "selecting a source must enable the restore action"
+        );
     }
 
     #[test]
@@ -3109,6 +3601,7 @@ mod tests {
 
     #[test]
     fn portable_backup_requires_matching_strong_passphrases_and_reports_success() {
+        let progress = TempDir::new().expect("backup progress directory");
         let exports = Arc::new(AtomicUsize::new(0));
         let exports_for_handler = Arc::clone(&exports);
         let mut view = OnboardingView::with_all_handlers(
@@ -3131,6 +3624,7 @@ mod tests {
             fingerprint: "ef".repeat(32),
             path: PathBuf::from("/identity/primary.json"),
         }));
+        view.identity_dir = Some(progress.path().to_path_buf());
         let mut doc = AutoCommit::new();
 
         *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
@@ -3148,13 +3642,32 @@ mod tests {
         *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
         press(&mut doc, KEY_BACKUP_BROWSE);
         view.sync(&mut doc, &automerge::ROOT);
+        view.picker.as_mut().expect("save picker").1.click_cancel();
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.picker.is_none());
+        assert_eq!(exports.load(Ordering::SeqCst), 0);
+
+        press(&mut doc, KEY_BACKUP_BROWSE);
+        view.sync(&mut doc, &automerge::ROOT);
         view.picker.as_mut().expect("save picker").1.click_open();
         view.sync(&mut doc, &automerge::ROOT);
         assert_eq!(exports.load(Ordering::SeqCst), 1);
         assert!(view.backup_saved.is_some());
         assert!(view.backup_error.is_none());
+        assert_eq!(
+            load_progress(progress.path()).expect("verified backup progress"),
+            Some(PersistedStage::IdentityReadyBackedUp)
+        );
         assert!(view.backup_passphrase.lock().unwrap().is_empty());
         assert!(view.backup_confirmation.lock().unwrap().is_empty());
+
+        press(&mut doc, KEY_BACKUP_CONTINUE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.identity_ready_page);
+        assert_eq!(
+            load_progress(progress.path()).expect("ready progress"),
+            Some(PersistedStage::ReadyToEnterBackedUp)
+        );
     }
 
     /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
@@ -3167,6 +3680,8 @@ mod tests {
             Some(KEY_BEGIN),
             Some(KEY_UNDERSTOOD),
             Some(KEY_CREATE),
+            Some(KEY_BACKUP_SKIP_ACKNOWLEDGED),
+            Some(KEY_BACKUP_CONTINUE),
         ] {
             if let Some(k) = step {
                 press(&mut doc, k);
@@ -3186,6 +3701,313 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
+    }
+
+    #[test]
+    fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
+        let scenarios: &[(&[&str], &[&str], bool)] = &[
+            (
+                &[],
+                &["onboarding.connect.button", "onboarding.begin.button"],
+                false,
+            ),
+            (
+                &[KEY_CONNECT],
+                &["onboarding.back.button", "onboarding.import.button"],
+                false,
+            ),
+            (
+                &[KEY_CONNECT],
+                &["onboarding.back.button", "onboarding.import.button"],
+                true,
+            ),
+            (
+                &[KEY_BEGIN],
+                &["onboarding.back.button", "onboarding.create.button"],
+                false,
+            ),
+            (
+                &[KEY_BEGIN],
+                &["onboarding.back.button", "onboarding.create.button"],
+                true,
+            ),
+            (
+                &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE],
+                &["onboarding.backup.continue.button"],
+                false,
+            ),
+            (
+                &[
+                    KEY_BEGIN,
+                    KEY_UNDERSTOOD,
+                    KEY_CREATE,
+                    KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                    KEY_BACKUP_CONTINUE,
+                ],
+                &["onboarding.tour.start.button", "onboarding.finish.button"],
+                false,
+            ),
+        ];
+
+        for (width, height, theme) in [
+            (1600.0, 900.0, Theme::dark()),
+            (1366.0, 768.0, Theme::dark()),
+            (1280.0, 720.0, Theme::dark()),
+            (800.0, 600.0, Theme::dark()),
+            (1280.0, 720.0, Theme::dark().with_text_scale(1.3)),
+            (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
+        ] {
+            for &(keys, action_ids, error_state) in scenarios {
+                let mut view = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
+                    Ok(MintedIdentity {
+                        fingerprint: "ab".repeat(32),
+                        path: PathBuf::from("/identity/primary.json"),
+                    })
+                }));
+                let mut document = AutoCommit::new();
+                for key in keys {
+                    press(&mut document, key);
+                    view.sync(&mut document, &automerge::ROOT);
+                }
+                if error_state {
+                    view.error =
+                        Some("A deterministic error for responsive layout coverage".into());
+                }
+
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let measure_map = node_map.clone();
+                taffy
+                    .compute_layout_with_measure(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(width),
+                            height: taffy::AvailableSpace::Definite(height),
+                        },
+                        |known, available, node_id, _, _| {
+                            measure_map
+                                .get(&node_id)
+                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                    (*pointer).measure(known, available, &mut text)
+                                })
+                        },
+                    )
+                    .expect("host identity layout");
+                view.apply_layout(&taffy, node, Point::ZERO);
+                let panel = view.composed.as_ref().expect("composition").get_rect();
+                assert!(
+                    panel.x0 >= f64::from(VIEWPORT_GUTTER) - 0.5
+                        && panel.x1 <= f64::from(width - VIEWPORT_GUTTER) + 0.5
+                        && panel.y0 >= f64::from(VIEWPORT_GUTTER) - 0.5
+                        && panel.y1 <= f64::from(height - VIEWPORT_GUTTER) + 0.5,
+                    "setup panel must preserve its viewport gutter at {width}x{height}: {panel:?}"
+                );
+
+                let widget_rect = |id: &str| {
+                    node_map
+                        .values()
+                        .find_map(|&pointer| unsafe {
+                            ((*pointer).test_id() == Some(id)).then(|| (*pointer).get_rect())
+                        })
+                        .unwrap_or_else(|| panic!("host identity page exposes {id}"))
+                };
+                let eyebrow = widget_rect("onboarding.progress.eyebrow");
+                let stage = widget_rect("onboarding.progress.stage");
+                let progress = node_map
+                    .values()
+                    .find_map(|&pointer| unsafe {
+                        ((*pointer).name() == "ProgressBar").then(|| (*pointer).get_rect())
+                    })
+                    .expect("identity page progress bar");
+                assert!(
+                    eyebrow.x0 >= panel.x0 + f64::from(theme.tokens.spacing.s3) - 0.5
+                        && stage.x1 <= panel.x1 - f64::from(theme.tokens.spacing.s3) + 0.5,
+                    "setup header labels need an inset from both panel edges at {width}x{height}: panel={panel:?}, eyebrow={eyebrow:?}, stage={stage:?}"
+                );
+                for header in [eyebrow, stage, progress] {
+                    assert!(
+                        header.y0 >= panel.y0 && header.y1 <= panel.y1,
+                        "setup header must never be clipped at {width}x{height}: panel={panel:?}, header={header:?}, keys={keys:?}, error={error_state}"
+                    );
+                }
+                assert!(
+                    progress.y0 >= eyebrow.y1.max(stage.y1) + 4.0,
+                    "progress rule needs a deliberate gap below both labels: eyebrow={eyebrow:?}, stage={stage:?}, progress={progress:?}"
+                );
+
+                let scroll_pointer = node_map
+                    .values()
+                    .copied()
+                    .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
+                    .expect("identity page scroll viewport");
+                let scroll = unsafe {
+                    (*scroll_pointer)
+                        .as_any_mut()
+                        .and_then(|widget| widget.downcast_mut::<Scrollable>())
+                        .expect("Scrollable exposes geometry to the regression harness")
+                };
+                let content_viewport = scroll.content_viewport_rect();
+                // The progress header is intentionally sticky above the body
+                // viewport; only the scrolling content belongs inside this
+                // clip. Geometry above already proves the header remains
+                // inside the panel and separated from the progress rule.
+
+                let backup_page = view.flow().screen() == Screen::Done
+                    && !view.identity_ready_page
+                    // The identity-mint failure variant deliberately replaces
+                    // the passphrase form with its recovery action.
+                    && node_map.values().any(|&pointer| unsafe {
+                        (*pointer).test_id() == Some("onboarding.backup.passphrase")
+                    });
+                if backup_page {
+                    let max_offset = f64::from(scroll.max_offset_y());
+                    for control_id in [
+                        "onboarding.backup.passphrase",
+                        "onboarding.backup.confirmation",
+                        "onboarding.backup.button",
+                        "onboarding.backup.skip-acknowledged.row",
+                        "onboarding.backup.continue.button",
+                    ] {
+                        let control = widget_rect(control_id);
+                        let earliest_offset = (control.y1 - content_viewport.y1).max(0.0);
+                        let latest_offset = (control.y0 - content_viewport.y0).min(max_offset);
+                        assert!(
+                            control.height() <= content_viewport.height()
+                                && earliest_offset <= latest_offset + 0.5,
+                            "Backup control must be fully reachable by scrolling at {width}x{height}: control={control_id} {control:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
+                            theme.name,
+                        );
+                    }
+                    continue;
+                }
+
+                let rects = action_ids
+                    .iter()
+                    .map(|id| widget_rect(id))
+                    .collect::<Vec<_>>();
+                for rect in &rects {
+                    assert!(rect.area() > 0.0, "action={rect:?}");
+                    assert!(
+                        rect.x0 >= 0.0
+                            && rect.x1 <= f64::from(width)
+                            && rect.y0 >= 0.0
+                            && rect.y1 <= f64::from(height),
+                        "action must remain inside {width}x{height}: {rect:?}"
+                    );
+                    assert!(
+                        panel.x1 - rect.x1 >= 16.0 && panel.y1 - rect.y1 >= 16.0,
+                        "sticky action needs a visible right/bottom inset: panel={panel:?}, action={rect:?}"
+                    );
+                }
+                let first_center = rects[0].center().y;
+                assert!(
+                    rects
+                        .iter()
+                        .all(|rect| (rect.center().y - first_center).abs() <= 0.5),
+                    "footer actions must share a baseline: {rects:?}"
+                );
+                assert!(
+                    scroll.get_rect().y1 + 8.0 <= rects[0].y0,
+                    "the sticky footer must reserve layout space below scrolling content at {width}x{height}: scroll={:?}, actions={rects:?}, keys={keys:?}, error={error_state}, theme={}",
+                    scroll.get_rect(),
+                    theme.name,
+                );
+
+                if view.flow().screen() == Screen::Connect {
+                    let viewport = content_viewport;
+                    let max_offset = f64::from(scroll.max_offset_y());
+                    for field_id in [
+                        "onboarding.connect.path.field",
+                        "onboarding.connect.passphrase.field",
+                    ] {
+                        let field = widget_rect(field_id);
+                        let earliest_offset = (field.y1 - viewport.y1).max(0.0);
+                        let latest_offset = (field.y0 - viewport.y0).min(max_offset);
+                        assert!(
+                            field.height() <= viewport.height()
+                                && earliest_offset <= latest_offset + 0.5,
+                            "required restore field must be fully reachable by scrolling at {width}x{height}: field={field:?}, viewport={viewport:?}, max_offset={max_offset}, error={error_state}"
+                        );
+                    }
+                }
+
+                if width == 800.0
+                    && height == 600.0
+                    && view.flow().screen() == Screen::Done
+                    && view.identity_ready_page
+                {
+                    assert_eq!(
+                        scroll.max_offset_y(),
+                        0.0,
+                        "the fully visible Ready page must not show a spurious scrollbar"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn acknowledgement_label_is_the_checkbox_click_target() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_BEGIN);
+        view.sync(&mut document, &automerge::ROOT);
+
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                            (*pointer).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("host acknowledgement layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let row = node_map
+            .values()
+            .find_map(|&pointer| unsafe {
+                ((*pointer).test_id() == Some("onboarding.understood.row"))
+                    .then(|| (*pointer).get_rect())
+            })
+            .expect("labelled acknowledgement row");
+        let label_point = Point::new(row.x1 - 8.0, row.center().y);
+        assert!(
+            label_point.x > row.x0 + 44.0,
+            "test point must be in the label, not the checkbox face"
+        );
+
+        let mut focus = None;
+        for event in [pointer_event(label_point), primary_press_event()] {
+            let mut handled = false;
+            view.handle_event(
+                &event,
+                1.0,
+                &Modifiers::default(),
+                &mut document,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+            assert!(handled, "the labelled checkbox row must handle {event:?}");
+        }
+        assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
     }
 
     #[test]
@@ -3263,6 +4085,10 @@ mod tests {
             view.sync(&mut doc, &automerge::ROOT);
         }
         assert_eq!(view.flow().screen(), Screen::Done);
+        press(&mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+        view.sync(&mut doc, &automerge::ROOT);
+        press(&mut doc, KEY_BACKUP_CONTINUE);
+        view.sync(&mut doc, &automerge::ROOT);
 
         let theme = Theme::dark().with_text_scale(1.3);
         let mut text = ui::text_render::TextRenderer::new();
@@ -3288,6 +4114,12 @@ mod tests {
             .expect("large-text done layout");
         view.apply_layout(&taffy, node, Point::ZERO);
 
+        let panel = view.composed.as_ref().expect("composition").get_rect();
+        assert!(
+            panel.height() > f64::from(PANEL_MAX_HEIGHT),
+            "large-text setup should use otherwise-empty viewport height before clipping: {panel:?}",
+        );
+
         for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
             let action = node_map
                 .values()
@@ -3304,6 +4136,55 @@ mod tests {
     }
 
     #[test]
+    fn large_text_backup_action_keeps_a_clear_gap_below_confirmation() {
+        let (mut view, _) = view();
+        let mut document = AutoCommit::new();
+        for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
+            press(&mut document, key);
+            view.sync(&mut document, &automerge::ROOT);
+        }
+        assert_eq!(view.flow().screen(), Screen::Done);
+
+        let theme = Theme::dark().with_text_scale(1.3);
+        let mut text = ui::text_render::TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let measure_map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(720.0),
+                },
+                |known, available, node_id, _, _| {
+                    measure_map
+                        .get(&node_id)
+                        .map_or(taffy::Size::ZERO, |&ptr| unsafe {
+                            (*ptr).measure(known, available, &mut text)
+                        })
+                },
+            )
+            .expect("large-text backup layout");
+        view.apply_layout(&taffy, node, Point::ZERO);
+        let widget_rect = |id: &str| {
+            node_map
+                .values()
+                .find_map(|&ptr| unsafe {
+                    ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
+                })
+                .unwrap_or_else(|| panic!("backup page exposes {id}"))
+        };
+        let confirmation = widget_rect("onboarding.backup.confirmation");
+        let action = widget_rect("onboarding.backup.button");
+        assert!(
+            action.y0 - confirmation.y1 >= f64::from(theme.tokens.spacing.s2) - 0.5,
+            "backup action must not visually merge with confirmation input: confirmation={confirmation:?}, action={action:?}"
+        );
+    }
+
+    #[test]
     fn tour_navigation_stays_visible_on_every_page_at_narrow_large_text_size() {
         const WIDTH: f32 = 420.0;
         const HEIGHT: f32 = 640.0;
@@ -3311,7 +4192,14 @@ mod tests {
         for next_presses in 0..=3 {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
-            for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE, KEY_TOUR_START] {
+            for key in [
+                KEY_BEGIN,
+                KEY_UNDERSTOOD,
+                KEY_CREATE,
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                KEY_BACKUP_CONTINUE,
+                KEY_TOUR_START,
+            ] {
                 press(&mut doc, key);
                 view.sync(&mut doc, &automerge::ROOT);
             }

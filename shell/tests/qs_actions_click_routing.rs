@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use settings_store::hardware::QuickSettingsConfig;
 use shell::shell::build_nirios_overlay_host_with_chrome;
 use shell::shell::qs_actions::{PowerProfile, QsActions};
 use shell::shell::quick_settings::WifiNetwork;
@@ -31,7 +32,8 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
 #[derive(Default)]
 struct RecordingDispatcher {
@@ -250,6 +252,63 @@ fn click_at(
     }
 }
 
+/// Route a pressed logical key through the real host dispatcher. `KeyEvent`
+/// deliberately has no public constructor because a small platform payload is
+/// opaque, so initialise that payload to zero and set every public field just
+/// as the compositor's own test harness does.
+fn press_key(
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    taffy: &TaffyTree<()>,
+    host_node: NodeId,
+    key: Key,
+    modifiers: ModifiersState,
+) -> bool {
+    let mut key_event: KeyEvent = unsafe { std::mem::zeroed() };
+    key_event.logical_key = key;
+    key_event.physical_key =
+        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    key_event.location = KeyLocation::Standard;
+    key_event.state = ElementState::Pressed;
+    key_event.repeat = false;
+    key_event.text = None;
+    let event = WindowEvent::KeyboardInput {
+        device_id: unsafe { std::mem::zeroed() },
+        event: key_event,
+        is_synthetic: false,
+    };
+    let mut state = automerge::AutoCommit::new();
+    let root_id = automerge::ROOT;
+    let mut handled = false;
+    let mut focus_target = None;
+    host.handle_event(
+        &event,
+        1.0,
+        &Modifiers::from(modifiers),
+        &mut state,
+        &root_id,
+        &mut handled,
+        &mut focus_target,
+        host_node,
+        taffy,
+    );
+    handled
+}
+
+fn open_quick_settings(
+    host: &mut shell::shell::overlay_host::ShellOverlayHost,
+    chrome: &shell::shell::chrome_state::Chrome,
+) -> (TaffyTree<()>, NodeId) {
+    {
+        let mut state = chrome.borrow_mut();
+        state.overlays.quick_settings = true;
+        state.quick_settings.radios.wifi_available = true;
+        state.quick_settings.bluetooth_available = true;
+        state.bump();
+    }
+    host.force_quick_settings_settled();
+    layout_host(host)
+}
+
 #[test]
 fn brightness_slider_click_routes_to_set_brightness() {
     let tree = minimal_tree();
@@ -302,16 +361,258 @@ fn volume_slider_click_routes_to_set_volume() {
     );
 }
 
+/// The root owns keyboard input before ordinary desktop shortcuts. Exercise
+/// that complete host path rather than calling `QuickSettingsRoot` directly:
+/// Tab establishes paint-order focus, arrows commit the matching live slider,
+/// and no app/input child is allowed to consume the key first.
+#[test]
+fn keyboard_slider_arrows_route_through_the_host() {
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let recorder = SharedRecorder::default();
+    host = host
+        .with_qs_actions(Box::new(recorder.clone()))
+        .with_quick_settings_config(QuickSettingsConfig::default());
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+
+    // None → Edit → four destination buttons → Brightness.
+    for _ in 0..6 {
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+    }
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::ArrowRight),
+        ModifiersState::empty(),
+    ));
+    // One more Tab moves brightness → volume.
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::ArrowLeft),
+        ModifiersState::empty(),
+    ));
+
+    let calls = recorder.0.calls();
+    assert!(
+        calls.iter().any(|call| call.starts_with("set_brightness(")),
+        "Right Arrow on the focused brightness slider did not reach QsActions: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|call| call.starts_with("set_volume(")),
+        "Left Arrow on the focused volume slider did not reach QsActions: {calls:?}"
+    );
+}
+
+/// Enter, Space and reverse-Tab all use the same root actions exposed to
+/// pointer users. This guards the route through `ShellOverlayHost`, where
+/// overlay ordering and modifier state have historically swallowed keys.
+#[test]
+fn keyboard_actions_and_reverse_tab_route_through_the_host() {
+    // The first Tab selects Edit; the second selects Settings. Enter opens
+    // settings and dismisses the popover.
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Enter),
+        ModifiersState::empty(),
+    ));
+    assert!(chrome.borrow().overlays.ws_settings);
+    assert!(!chrome.borrow().overlays.quick_settings);
+
+    // A fresh host: Space on History opens its in-panel activity route.
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    for _ in 0..4 {
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+    }
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Space),
+        ModifiersState::empty(),
+    ));
+    assert!(matches!(
+        chrome.borrow().quick_settings.current_level(),
+        shell::shell::quick_settings::QsLevel::Notifications
+    ));
+
+    // Shift+Tab from no focus wraps to the final power-profile control.
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let recorder = SharedRecorder::default();
+    host = host.with_qs_actions(Box::new(recorder.clone()));
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::SHIFT,
+    ));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Space),
+        ModifiersState::empty(),
+    ));
+    assert!(
+        recorder
+            .0
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("set_power_profile(")),
+        "Shift+Tab did not wrap to the power-profile control"
+    );
+}
+
+/// Ctrl+Arrow reorders a focused edit row through the production keyboard
+/// dispatcher. The injected config is deliberately non-persisting, proving
+/// tests/embedders cannot alter a user's real Quick Settings file.
+#[test]
+fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    host = host.with_quick_settings_config(QuickSettingsConfig {
+        controls: vec![
+            settings_store::hardware::QuickSettingsControl::Wifi,
+            settings_store::hardware::QuickSettingsControl::Bluetooth,
+            settings_store::hardware::QuickSettingsControl::NightLight,
+        ],
+    });
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+
+    // Tab chooses Edit; Space enters it with the first editable row focused.
+    // Two further Tabs select Bluetooth. Move it below Night Light with
+    // Ctrl+Down.
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Space),
+        ModifiersState::empty(),
+    ));
+    for _ in 0..2 {
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+    }
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::CONTROL,
+    ));
+
+    let semantic_root = host.accessibility().expect("shell semantics");
+    let quick_settings = semantic_root
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Quick Settings"))
+        .expect("Quick Settings must remain published while editing");
+    let names = quick_settings
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names[..3],
+        ["Wi-Fi", "Night Light", "Bluetooth"],
+        "Ctrl+Down must reorder the semantic and visual row order"
+    );
+
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::ArrowUp),
+        ModifiersState::CONTROL,
+    ));
+    let semantic_root = host.accessibility().expect("shell semantics");
+    let quick_settings = semantic_root
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Quick Settings"))
+        .expect("Quick Settings must remain published while editing");
+    let names = quick_settings
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names[..3],
+        ["Wi-Fi", "Bluetooth", "Night Light"],
+        "Ctrl+Up must reverse a keyboard reorder"
+    );
+}
+
 #[test]
 fn wifi_toggle_click_routes_to_set_wifi() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
+    host = host
+        .with_qs_actions(Box::new(recorder.clone()))
+        .with_quick_settings_config(QuickSettingsConfig::default());
 
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
+        st.quick_settings.radios.wifi_available = true;
         st.bump();
     }
     host.force_quick_settings_settled();
@@ -335,11 +636,15 @@ fn bluetooth_toggle_click_routes_to_set_bluetooth() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let recorder = SharedRecorder::default();
-    host = host.with_qs_actions(Box::new(recorder.clone()));
+    host = host
+        .with_qs_actions(Box::new(recorder.clone()))
+        .with_quick_settings_config(QuickSettingsConfig::default());
 
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
+        st.quick_settings.radios.wifi_available = true;
+        st.quick_settings.bluetooth_available = true;
         st.bump();
     }
     host.force_quick_settings_settled();
@@ -417,9 +722,10 @@ fn wifi_drill_in_row_click_routes_by_whether_a_passphrase_is_needed() {
     let (taffy, host_node) = layout_host(&mut host);
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
-    // Header is 56 px, rows are 56 px, so +28 into a row lands mid-row.
+    // The drill-in header and hotspot affordance reserve 116 px; rows are
+    // 56 px, so +28 into a row lands mid-row.
     let row_y =
-        |i: usize| rect.y0 + 56.0 + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * 56.0 + 28.0;
+        |i: usize| rect.y0 + 116.0 + f64::from(u32::try_from(i).unwrap_or(u32::MAX)) * 56.0 + 28.0;
 
     // Row 0 — secured, not joined: must prompt for a passphrase rather than
     // firing a connect that would fail silently.

@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -33,6 +34,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
+use ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
@@ -48,6 +50,7 @@ use wayland_client::protocol::{
     wl_shm::{Format, WlShm},
     wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
+    wl_touch::{self, WlTouch},
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::primary_selection::zv1::client::{
@@ -87,6 +90,10 @@ struct Compositor {
     /// The privileged socket — what a clipboard manager gets.
     privileged_socket: PathBuf,
     control_socket: PathBuf,
+    /// The durable tree used by this fixture.  Keeping it explicit lets a
+    /// lifecycle test restart the actual compositor process against the same
+    /// isolated desktop, rather than merely deserialising a second model.
+    state_path: PathBuf,
     /// Everything the compositor wrote to stderr, so a failure can quote the
     /// compositor's own account of what it did rather than only the client's.
     log: Arc<Mutex<Vec<String>>>,
@@ -106,10 +113,38 @@ impl Compositor {
         Self::start_with(home, (1280, 800))
     }
 
+    /// Start with a deliberately persisted input configuration. This is kept
+    /// inside the fixture's XDG tree so an input-layout test cannot ever read
+    /// or rewrite the person running it’s desktop preferences.
+    fn start_with_input_settings(input: serde_json::Value) -> Self {
+        Self::start_with_fixture_settings((1280, 800), serde_json::json!({ "input": input }))
+    }
+
     /// [`Self::start_with_home`] on a screen of `size`. A wider screen keeps
     /// two window groups on screen at once when one of them is the demo
     /// group, whose tabs are laid out at their normal width.
     fn start_with(home: Option<&Path>, size: (i32, i32)) -> Self {
+        Self::start_with_config(home, size, None, false)
+    }
+
+    /// Host-desktop mode is intentionally a separate fixture mode: it is the
+    /// only supported configuration in which qOS starts the rootless Xwayland
+    /// bridge. It still uses the same private XDG tree and Wayland socket as
+    /// every other test, never the caller's session.
+    fn start_host_desktop() -> Self {
+        Self::start_with_config(None, (1280, 800), None, true)
+    }
+
+    fn start_with_fixture_settings(size: (i32, i32), settings: serde_json::Value) -> Self {
+        Self::start_with_config(None, size, Some(settings), false)
+    }
+
+    fn start_with_config(
+        home: Option<&Path>,
+        size: (i32, i32),
+        settings: Option<serde_json::Value>,
+        host_desktop: bool,
+    ) -> Self {
         // SUN_LEN caps a unix socket path (~108 bytes), so the runtime dir must be
         // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
@@ -119,16 +154,29 @@ impl Compositor {
             next_id(),
         ));
         std::fs::create_dir_all(&runtime_dir).expect("create private runtime dir");
+        if let Some(settings) = settings {
+            let settings_path = runtime_dir.join("config/qos/settings.json");
+            let parent = settings_path.parent().expect("settings parent");
+            std::fs::create_dir_all(parent).expect("create fixture config root");
+            std::fs::write(
+                &settings_path,
+                serde_json::to_vec(&settings).expect("encode fixture settings"),
+            )
+            .expect("write fixture settings");
+        }
         let control_socket = runtime_dir.join("ctl");
         // Production first boot is intentionally empty. This harness predates
         // that policy and exercises the hosted Files tab, so seed the demo
         // tree explicitly instead of depending on the production default.
         let state_path = runtime_dir.join("state.json");
-        shell::shell::persist::save_tree_to(
-            &shell::shell::state::WorkspaceTree::bootstrap_demo(),
-            &state_path,
-        )
-        .expect("seed the clipboard e2e desktop");
+        let mut fixture_tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
+        // An untouched bootstrap demo is deliberately recognised as legacy
+        // sample data and migrated to a clean first-boot tree on load. This
+        // suite genuinely needs the hosted Files tab, so mark the persisted
+        // tree as test-owned instead of accidentally exercising that cleanup.
+        fixture_tree.workspaces[0].name = "Clipboard test desktop".into();
+        shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
+            .expect("seed the clipboard e2e desktop");
         let identity_root = Self::seed_identity(&runtime_dir);
 
         let mut child = Self::spawn_compositor(
@@ -138,6 +186,7 @@ impl Compositor {
             &control_socket,
             &state_path,
             &identity_root,
+            host_desktop,
         );
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let rx = Self::drain_log_pipes(&mut child, &log);
@@ -149,6 +198,7 @@ impl Compositor {
             wayland_socket: runtime_dir.join(&found["public"]),
             privileged_socket: runtime_dir.join(&found["privileged"]),
             control_socket: PathBuf::from(&found["control"]),
+            state_path,
             runtime_dir,
             log: Arc::clone(&log),
         };
@@ -163,6 +213,32 @@ impl Compositor {
             this.privileged_socket.display()
         );
         this
+    }
+
+    /// Kill and relaunch the native headless compositor on its existing
+    /// isolated XDG tree.  This is deliberately a process restart: reading
+    /// `state.json` in the test process would not prove native startup and its
+    /// first-frame reconciliation keep a closed foreign surface absent.
+    fn restart_headless(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+
+        let identity_root = self.runtime_dir.join("identity-root");
+        let mut child = Self::spawn_compositor(
+            None,
+            self.size,
+            &self.runtime_dir,
+            &self.control_socket,
+            &self.state_path,
+            &identity_root,
+            false,
+        );
+        let rx = Self::drain_log_pipes(&mut child, &self.log);
+        let found = Self::wait_for_sockets(&rx, &mut child, &self.log);
+        self.wayland_socket = self.runtime_dir.join(&found["public"]);
+        self.privileged_socket = self.runtime_dir.join(&found["privileged"]);
+        self.control_socket = PathBuf::from(&found["control"]);
+        self.child = child;
     }
 
     /// Give this desktop fixture an already-completed identity ceremony.
@@ -203,13 +279,30 @@ impl Compositor {
         control_socket: &Path,
         state_path: &Path,
         identity_root: &Path,
+        host_desktop: bool,
     ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
             command.env("HOME", home).env("QOS_USER_HOME", home);
         }
+        command.args(["--mode", "native", "--backend", "headless"]);
+        if host_desktop {
+            command.arg("--host-desktop-session");
+            // The nested headless lane intentionally has no DRM render node.
+            // Keep Xwayland on its software path; the production session does
+            // not set these and continues to use hardware acceleration.
+            command
+                .env("XWAYLAND_NO_GLAMOR", "1")
+                .env("LIBGL_ALWAYS_SOFTWARE", "1");
+            // Keep satellite and the Xwayland binary it execs in one runtime.
+            // Mixing `/run/host/usr/bin` into a build container's PATH can
+            // select a newer host Xwayland with a libc ABI the container does
+            // not provide. That fails before satellite's private Wayland
+            // server (and its xwayland-shell-v1 global) can even be exercised.
+            // The opt-in workstation lane therefore uses the installed pair
+            // from the environment in which this test binary is running.
+        }
         command
-            .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", runtime_dir)
             // Point every XDG dir at the throwaway runtime dir so the test neither
             // reads nor writes the developer's real desktop, and each run starts from
@@ -338,6 +431,34 @@ impl Compositor {
             .unwrap_or_else(|e| panic!("control response was not JSON ({e}): {response:?}"))
     }
 
+    /// The native compositor's current durable tree, exposed by the
+    /// test-control endpoint rather than reached through this test's model.
+    fn workspace_tree(&self) -> serde_json::Value {
+        self.control(&serde_json::json!({"op": "state_dump"}))
+            .get("state")
+            .and_then(|state| state.get("workspace_tree"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state dump omitted workspace_tree"))
+    }
+
+    fn key(&self, key: &str) {
+        let response = self.control(&serde_json::json!({"op": "key", "key": key}));
+        assert!(
+            response.get("ok").is_some(),
+            "key {key:?} failed: {response:?}"
+        );
+    }
+
+    fn modifiers(&self, ctrl: bool, shift: bool, alt: bool, logo: bool) {
+        let response = self.control(&serde_json::json!({
+            "op": "modifiers", "ctrl": ctrl, "shift": shift, "alt": alt, "logo": logo,
+        }));
+        assert!(
+            response.get("ok").is_some(),
+            "modifier update failed: {response:?}"
+        );
+    }
+
     fn chrome_copy(&self, text: &str, primary: bool) {
         let resp = self.control(&serde_json::json!({
             "op": "clipboard_copy", "text": text, "primary": primary,
@@ -345,6 +466,14 @@ impl Compositor {
         assert!(
             resp.get("ok").is_some(),
             "chrome copy was refused: {resp:?}"
+        );
+    }
+
+    fn chrome_copy_image(&self) {
+        let resp = self.control(&serde_json::json!({"op": "clipboard_copy_image"}));
+        assert!(
+            resp.get("ok").is_some(),
+            "chrome image copy was refused: {resp:?}"
         );
     }
 
@@ -457,6 +586,85 @@ fn walk_json(value: &serde_json::Value, f: &mut impl FnMut(&serde_json::Value)) 
     }
 }
 
+fn window_group_count(tree: &serde_json::Value) -> usize {
+    let mut count = 0usize;
+    walk_json(tree, &mut |value| {
+        count = count.saturating_add(
+            value
+                .get("window_groups")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len),
+        );
+    });
+    count
+}
+
+/// Foreign clients are keyed by the compositor-global surface id, never by
+/// app-id. This deliberately returns every surface for an app so a two-window
+/// application cannot pass lifecycle coverage by folding its windows into one
+/// tab. The low protocol-id bits may legitimately match across connections.
+fn foreign_surface_ids(tree: &serde_json::Value, app_id: &str) -> Vec<u64> {
+    let mut ids = Vec::new();
+    walk_json(tree, &mut |value| {
+        let Some(foreign) = value.get("Foreign") else {
+            return;
+        };
+        if foreign.get("app_id").and_then(serde_json::Value::as_str) == Some(app_id)
+            && let Some(id) = foreign
+                .get("surface_id")
+                .and_then(serde_json::Value::as_u64)
+        {
+            ids.push(id);
+        }
+    });
+    ids.sort_unstable();
+    ids
+}
+
+fn wait_for_foreign_surface_count(
+    compositor: &Compositor,
+    app_id: &str,
+    count: usize,
+    label: &str,
+) -> Vec<u64> {
+    let started = Instant::now();
+    loop {
+        let ids = foreign_surface_ids(&compositor.workspace_tree(), app_id);
+        if ids.len() == count {
+            return ids;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "{label}; wanted {count} surfaces, got {ids:?}.\n{}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn group_order(tree: &serde_json::Value) -> Vec<u64> {
+    tree.get("workspaces")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|workspace| {
+            workspace
+                .get("strips")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .flat_map(|strip| {
+            strip
+                .get("window_groups")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|group| group.get("id").and_then(serde_json::Value::as_u64))
+        .collect()
+}
+
 /// Monotonic suffix so two compositors in one test process never collide on a
 /// runtime-dir name.
 fn next_id() -> u64 {
@@ -480,6 +688,8 @@ struct ClientState {
     wm_base: Option<XdgWmBase>,
     seat: Option<WlSeat>,
     seat_name: Option<String>,
+    /// Keep the verified protocol endpoint alive for the whole client.
+    touch: Option<WlTouch>,
     data_manager: Option<WlDataDeviceManager>,
     primary_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
     shm: Option<WlShm>,
@@ -488,11 +698,32 @@ struct ClientState {
     configured: bool,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
+    /// The compositor requested that this exact xdg toplevel exit.  `close`
+    /// carries no serial/ack: the application proves it acted by destroying
+    /// its own objects below.
+    toplevel_close_requested: bool,
+    /// The exact XKB text keymap the compositor sent on keyboard focus. A
+    /// protocol client must make decisions from this map, not from the
+    /// compositor's preferred locale or from the test process environment.
+    keyboard_keymap: Option<String>,
+    /// Raw evdev transitions observed on the real Wayland socket. These are
+    /// deliberately captured before toolkit translation, allowing the test to
+    /// prove that a held modifier/release pair reaches a foreign client.
+    keyboard_events: Vec<(u32, bool)>,
+    /// The most recent protocol repeat contract, `(rate_hz, delay_ms)`.
+    keyboard_repeat_info: Option<(i32, i32)>,
     /// Latest serial from any input event, for requests that need one.
     last_serial: u32,
     /// Set once the pointer entered this surface — the implicit grab `start_drag` needs.
     pointer_entered: bool,
     pointer_button_serial: Option<u32>,
+    /// Set after the seat advertised touch and this client issued
+    /// `wl_seat.get_touch`; injection tests wait for this protocol precondition.
+    touch_bound: bool,
+    /// Exact `wl_touch` events observed on the real client connection.
+    touch_events: Vec<TouchTrace>,
+    /// Pointer traffic observed after the test clears setup noise.
+    pointer_events: Vec<&'static str>,
 
     /// Mime types on the most recent clipboard offer, and the offer itself.
     clipboard_offer: Option<WlDataOffer>,
@@ -518,12 +749,22 @@ struct ClientState {
     source_cancelled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TouchTrace {
+    Down(i32),
+    Motion(i32),
+    Up(i32),
+    Cancel,
+    Frame,
+}
+
 struct TestClient {
     conn: Connection,
     queue: EventQueue<ClientState>,
     qh: QueueHandle<ClientState>,
     state: ClientState,
     surface: Option<WlSurface>,
+    xdg_surface: Option<XdgSurface>,
     toplevel: Option<XdgToplevel>,
     data_device: Option<WlDataDevice>,
     primary_device: Option<ZwpPrimarySelectionDeviceV1>,
@@ -546,6 +787,7 @@ impl TestClient {
             qh,
             state,
             surface: None,
+            xdg_surface: None,
             toplevel: None,
             data_device: None,
             primary_device: None,
@@ -582,6 +824,22 @@ impl TestClient {
             .expect("client roundtrip");
     }
 
+    fn clear_keyboard_trace(&mut self) {
+        self.state.keyboard_events.clear();
+    }
+
+    fn clear_touch_and_pointer_trace(&mut self) {
+        self.state.touch_events.clear();
+        self.state.pointer_events.clear();
+    }
+
+    fn wait_for_keyboard_events(&mut self, at_least: usize) {
+        self.wait_until(
+            |s| s.keyboard_events.len() >= at_least,
+            "the focused client did not receive the expected keyboard transitions",
+        );
+    }
+
     /// Map an xdg-toplevel and return once the compositor has given this
     /// client keyboard focus — the precondition for setting a selection.
     fn map_window(&mut self, compositor: &Compositor) {
@@ -602,6 +860,7 @@ impl TestClient {
         toplevel.set_app_id(self.app_id.clone());
         surface.commit();
         self.surface = Some(surface.clone());
+        self.xdg_surface = Some(xdg_surface);
         self.toplevel = Some(toplevel);
         self.step(&format!(
             "toplevel committed (wl_surface protocol id {}), waiting for keyboard focus",
@@ -762,6 +1021,22 @@ impl TestClient {
             .expect("client roundtrip while pumping");
     }
 
+    /// Cooperate with an `xdg_toplevel.close` by destroying in reverse
+    /// creation order.  A compositor close request is intentionally not a
+    /// process kill, so this is the application's observable exit action.
+    fn destroy_toplevel(&mut self) {
+        if let Some(toplevel) = self.toplevel.take() {
+            toplevel.destroy();
+        }
+        if let Some(xdg_surface) = self.xdg_surface.take() {
+            xdg_surface.destroy();
+        }
+        if let Some(surface) = self.surface.take() {
+            surface.destroy();
+        }
+        self.conn.flush().expect("flush client teardown");
+    }
+
     /// Take ownership of the clipboard. The source stays alive on `self.state`
     /// so the client can answer the compositor's forwarded `send` request.
     fn set_clipboard(&mut self, text: &str) {
@@ -800,6 +1075,11 @@ impl TestClient {
     /// when another client in this process owns the selection, it must be
     /// dispatched to answer the `send` request or nothing gets written.
     fn read_clipboard(&mut self, peer: Option<&mut TestClient>) -> String {
+        let bytes = self.read_clipboard_bytes(TEXT_MIME, peer);
+        String::from_utf8(bytes).expect("selection bytes were not UTF-8")
+    }
+
+    fn read_clipboard_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
         self.wait_until(
             |s| s.clipboard_selection_seen && s.clipboard_offer.is_some(),
             "no clipboard offer ever arrived",
@@ -808,17 +1088,17 @@ impl TestClient {
             self.state
                 .clipboard_offer_mimes
                 .iter()
-                .any(|m| m == TEXT_MIME),
-            "clipboard offer did not advertise {TEXT_MIME}; got {:?}",
+                .any(|offered| offered == mime),
+            "clipboard offer did not advertise {mime}; got {:?}",
             self.state.clipboard_offer_mimes,
         );
         self.step("clipboard offer received, requesting the bytes");
         let offer = self.state.clipboard_offer.clone().expect("clipboard offer");
         let (read_fd, write_fd) = make_pipe();
-        offer.receive(TEXT_MIME.to_string(), write_fd.as_fd_ref());
+        offer.receive(mime.to_string(), write_fd.as_fd_ref());
         drop(write_fd);
         self.conn.flush().expect("flush the receive request");
-        drain(read_fd, self, peer)
+        drain_bytes(read_fd, self, peer)
     }
 
     fn read_primary(&mut self, peer: Option<&mut TestClient>) -> String {
@@ -857,6 +1137,123 @@ impl TestClient {
         self.conn.flush().expect("flush the receive request");
         drain_bytes(read_fd, self, peer)
     }
+}
+
+#[test]
+fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.image-sink");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    compositor.chrome_copy("caption survives image copy", false);
+    compositor.chrome_copy_image();
+
+    let png = client.read_clipboard_bytes("image/png", None);
+    let decoder = png::Decoder::new(std::io::Cursor::new(png));
+    let mut reader = decoder.read_info().expect("PNG header");
+    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
+    let info = reader.next_frame(&mut frame).expect("PNG frame");
+    assert_eq!((info.width, info.height), (2, 1));
+    assert_eq!(
+        &frame[..info.buffer_size()],
+        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+    );
+
+    // One compositor-owned selection advertises both formats, so image copy
+    // must not make the previously copied text disappear.
+    assert_eq!(client.read_clipboard(None), "caption survives image copy");
+}
+
+/// A real `wl_touch` client sees the partial two-contact stream, then exactly
+/// the protocol cancellation boundary when a third direct contact transfers
+/// ownership to the shell. This reaches the actual native Wayland seat; the
+/// headless input adapter reuses DRM's ownership arena rather than faking a
+/// client trace.
+#[test]
+fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leaks() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.touch-owner");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |state| state.touch_bound,
+        "the client did not finish binding wl_touch before injection",
+    );
+    // `get_touch` is issued while dispatching the seat-capability event.
+    // Complete one more roundtrip so that request is on the server before
+    // the test-control path emits its first `wl_touch.down`.
+    client.roundtrip();
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    // `pointer_target` deliberately scans a coarse grid and may return the
+    // last pixel inside a tile. Keep every initial contact at that proven
+    // in-surface point rather than offsetting it outside the client rect.
+    for slot in [0, 1, 2] {
+        compositor.touch("e2e-panel", slot, "down", x, y);
+    }
+    client.wait_until(
+        |state| state.touch_events.len() >= 3,
+        "the third contact did not cancel the real wl_touch client stream",
+    );
+    assert_eq!(
+        client.state.touch_events,
+        vec![TouchTrace::Down(0), TouchTrace::Down(1), TouchTrace::Cancel,],
+        "the client receives its first two downs, then the complete cancellation boundary"
+    );
+
+    // These are physical events arriving after ownership already moved to the
+    // shell. No down/motion/up or pointer emulation may escape to the client.
+    for slot in [0, 1, 2] {
+        compositor.touch("e2e-panel", slot, "motion", x, y);
+    }
+    for slot in [0, 1, 2] {
+        compositor.touch("e2e-panel", slot, "up", x, y);
+    }
+    for _ in 0..4 {
+        client.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        client.state.touch_events,
+        vec![TouchTrace::Down(0), TouchTrace::Down(1), TouchTrace::Cancel,],
+        "no post-cancel touch event may leak to the client"
+    );
+    assert!(
+        client.state.pointer_events.is_empty(),
+        "a shell-owned multi-touch gesture must not manufacture client pointer motion, click, or drag: {:?}",
+        client.state.pointer_events
+    );
+}
+
+#[test]
+fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.qos.test.app-clipboard");
+    app.assert_is_qos_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    app.map_window(&compositor);
+
+    // This is the app-side backend, not HostClipboard: its publication worker
+    // owns a second wl_data_device on the app connection and must observe the
+    // focused seat before accepting the queued copy.
+    assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
+    assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+
+    let mut sink = TestClient::new(compositor.connect(), "org.qos.test.app-sink");
+    sink.assert_is_qos_compositor();
+    sink.map_window(&compositor);
+    let png = sink.read_clipboard_bytes("image/png", None);
+    let decoder = png::Decoder::new(std::io::Cursor::new(png));
+    let mut reader = decoder.read_info().expect("PNG header");
+    let mut frame = vec![0; reader.output_buffer_size().expect("bounded PNG frame")];
+    let info = reader.next_frame(&mut frame).expect("PNG frame");
+    assert_eq!((info.width, info.height), (2, 1));
+    assert_eq!(
+        &frame[..info.buffer_size()],
+        &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]
+    );
+    assert_eq!(sink.read_clipboard(None), "app caption");
 }
 
 /// An `OwnedFd` plus a borrow helper, so `receive` can take `&fd`.
@@ -990,6 +1387,10 @@ impl Dispatch<WlSeat, ()> for ClientState {
                 if caps.contains(wl_seat::Capability::Pointer) {
                     seat.get_pointer(qh, ());
                 }
+                if caps.contains(wl_seat::Capability::Touch) {
+                    state.touch = Some(seat.get_touch(qh, ()));
+                    state.touch_bound = true;
+                }
             }
             _ => {}
         }
@@ -1014,9 +1415,39 @@ impl Dispatch<WlKeyboard, ()> for ClientState {
                 state.keyboard_focused = false;
                 state.last_serial = serial;
             }
-            wl_keyboard::Event::Key { serial, .. }
-            | wl_keyboard::Event::Modifiers { serial, .. } => {
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                let mut bytes = Vec::new();
+                let file = std::fs::File::from(fd);
+                // The protocol promises `size` bytes including a trailing
+                // NUL. Bound the read to it: a malformed compositor must not
+                // make this diagnostic client consume an unbounded fd.
+                let take = u64::from(size);
+                file.take(take)
+                    .read_to_end(&mut bytes)
+                    .expect("read wl_keyboard keymap");
+                if bytes.last() == Some(&0) {
+                    let _ = bytes.pop();
+                }
+                state.keyboard_keymap = Some(
+                    String::from_utf8(bytes).expect("wl_keyboard keymap must be UTF-8 XKB text"),
+                );
+            }
+            wl_keyboard::Event::Key {
+                serial,
+                key,
+                state: key_state,
+                ..
+            } => {
                 state.last_serial = serial;
+                let pressed = matches!(
+                    key_state,
+                    wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
+                );
+                state.keyboard_events.push((key, pressed));
+            }
+            wl_keyboard::Event::Modifiers { serial, .. } => state.last_serial = serial,
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                state.keyboard_repeat_info = Some((rate, delay));
             }
             _ => {}
         }
@@ -1036,15 +1467,21 @@ impl Dispatch<WlPointer, ()> for ClientState {
             wl_pointer::Event::Enter { serial, .. } => {
                 state.pointer_entered = true;
                 state.last_serial = serial;
+                state.pointer_events.push("enter");
             }
             wl_pointer::Event::Leave { serial, .. } => {
                 state.pointer_entered = false;
                 state.last_serial = serial;
+                state.pointer_events.push("leave");
+            }
+            wl_pointer::Event::Motion { .. } => {
+                state.pointer_events.push("motion");
             }
             wl_pointer::Event::Button {
                 serial, state: s, ..
             } => {
                 state.last_serial = serial;
+                state.pointer_events.push("button");
                 if matches!(
                     s,
                     wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed)
@@ -1052,6 +1489,26 @@ impl Dispatch<WlPointer, ()> for ClientState {
                     state.pointer_button_serial = Some(serial);
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlTouch, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &WlTouch,
+        event: wl_touch::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_touch::Event::Down { id, .. } => state.touch_events.push(TouchTrace::Down(id)),
+            wl_touch::Event::Motion { id, .. } => state.touch_events.push(TouchTrace::Motion(id)),
+            wl_touch::Event::Up { id, .. } => state.touch_events.push(TouchTrace::Up(id)),
+            wl_touch::Event::Cancel => state.touch_events.push(TouchTrace::Cancel),
+            wl_touch::Event::Frame => state.touch_events.push(TouchTrace::Frame),
             _ => {}
         }
     }
@@ -1090,13 +1547,16 @@ impl Dispatch<XdgSurface, ()> for ClientState {
 
 impl Dispatch<XdgToplevel, ()> for ClientState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &XdgToplevel,
-        _: xdg_toplevel::Event,
+        event: xdg_toplevel::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if matches!(event, xdg_toplevel::Event::Close) {
+            state.toplevel_close_requested = true;
+        }
     }
 }
 
@@ -1283,6 +1743,1046 @@ fn write_and_close(fd: OwnedFd, text: &str) {
 }
 
 // Tests
+
+/// Translate a trace exactly as a real Wayland toolkit does: with the XKB
+/// keymap delivered by the compositor, rather than with the locale of the
+/// test runner. The protocol uses evdev codes; xkbcommon uses evdev + 8.
+fn translated_keysyms(keymap_text: &str, trace: &[(u32, bool)]) -> Vec<u32> {
+    use smithay::input::keyboard::xkb;
+
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let keymap = xkb::Keymap::new_from_string(
+        &context,
+        keymap_text.to_owned(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+    .expect("the compositor sent a parseable XKB keymap");
+    let mut state = xkb::State::new(&keymap);
+    let mut symbols = Vec::new();
+    for &(evdev, pressed) in trace {
+        let keycode = xkb::Keycode::new(evdev.saturating_add(8));
+        if pressed {
+            symbols.push(u32::from(state.key_get_one_sym(keycode)));
+        }
+        let direction = if pressed {
+            xkb::KeyDirection::Down
+        } else {
+            xkb::KeyDirection::Up
+        };
+        let _ = state.update_key(keycode, direction);
+    }
+    symbols
+}
+
+/// A GUI application can spawn helpers. Put it in its own process group so a
+/// failed live-client probe cannot leave an Electron renderer attached to the
+/// developer's machine after the isolated compositor is gone.
+struct KillProcessGroup {
+    child: Child,
+    groups: std::collections::BTreeSet<i32>,
+}
+
+impl KillProcessGroup {
+    fn new(child: Child, direct_group: bool) -> Self {
+        let mut groups = std::collections::BTreeSet::new();
+        if direct_group {
+            groups.insert(i32::try_from(child.id()).unwrap_or(i32::MAX));
+        }
+        Self { child, groups }
+    }
+
+    fn remember_group(&mut self, group: i32) {
+        if group > 1 {
+            self.groups.insert(group);
+        }
+    }
+}
+
+impl Drop for KillProcessGroup {
+    fn drop(&mut self) {
+        let pid = i32::try_from(self.child.id()).unwrap_or(i32::MAX);
+        // The direct probe owns `pid`'s group.  The production launcher path
+        // records only process groups found below its own child, never the
+        // test runner's inherited group.
+        for group in &self.groups {
+            let _ = unsafe { libc::kill(-*group, libc::SIGTERM) };
+        }
+        let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self.child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // A wedged Electron renderer must not wedge the test runner.
+        for group in &self.groups {
+            let _ = unsafe { libc::kill(-*group, libc::SIGKILL) };
+        }
+        let _ = self.child.wait();
+    }
+}
+
+/// Inspect only the throwaway process group created by this test.  This tells
+/// an Electron wrapper dropping a launch token apart from a satellite bridge
+/// dropping one, without reading the user's running desktop processes or
+/// printing the opaque capability value.
+fn private_process_group_has_env(child: &mut KillProcessGroup, key: &[u8]) -> bool {
+    let child_pid = match i32::try_from(child.child.id()) {
+        Ok(pid) => pid,
+        Err(_) => return false,
+    };
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            return false;
+        };
+        // Do not inspect arbitrary same-UID programs: only the bounded
+        // descendant chain of the launcher process this test created.
+        let mut ancestor = pid;
+        let mut belongs_to_launch = false;
+        for _ in 0..=16 {
+            if ancestor == child_pid {
+                belongs_to_launch = true;
+                break;
+            }
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{ancestor}/stat")) else {
+                break;
+            };
+            let Some((_, fields)) = stat.rsplit_once(") ") else {
+                break;
+            };
+            let Some(parent) = fields
+                .split_ascii_whitespace()
+                .nth(1)
+                .and_then(|parent| parent.parse::<i32>().ok())
+            else {
+                break;
+            };
+            if parent <= 1 || parent == ancestor {
+                break;
+            }
+            ancestor = parent;
+        }
+        if !belongs_to_launch {
+            return false;
+        }
+        let has_key = std::fs::read(entry.path().join("environ"))
+            .ok()
+            .is_some_and(|env| {
+                env.split(|byte| *byte == 0)
+                    .any(|item| item.starts_with(key))
+            });
+        if has_key {
+            // SAFETY: querying a process group is read-only; a process
+            // exiting between enumeration and this call simply returns -1.
+            let group = unsafe { libc::getpgid(pid) };
+            child.remember_group(group);
+        }
+        has_key
+    })
+}
+
+/// Read the mapped X11 window's advertised PID/startup properties through the
+/// private satellite display.  Returns only booleans and PIDs, never an
+/// activation token, so diagnostics cannot disclose the one-shot capability.
+fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool)> {
+    let Some((display, authority)) = private_xwayland_connection(compositor) else {
+        return Vec::new();
+    };
+    let run_xprop = |args: &[String]| {
+        Command::new("/usr/bin/xprop")
+            .args(args)
+            .env_clear()
+            .env("DISPLAY", &display)
+            .env("XAUTHORITY", &authority)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let root_args = vec!["-root".to_string(), "_NET_CLIENT_LIST".to_string()];
+    let Some(root) = run_xprop(&root_args) else {
+        return Vec::new();
+    };
+    root.split_whitespace()
+        .filter_map(|word| word.strip_prefix("0x"))
+        .filter_map(|hex| u64::from_str_radix(hex.trim_end_matches(','), 16).ok())
+        .filter_map(|id| u32::try_from(id).ok())
+        .filter_map(|id| {
+            let args = vec![
+                "-id".to_string(),
+                format!("0x{id:x}"),
+                "_NET_WM_PID".to_string(),
+                "_NET_STARTUP_ID".to_string(),
+            ];
+            let props = run_xprop(&args)?;
+            let pid = props
+                .lines()
+                .find(|line| line.starts_with("_NET_WM_PID"))?
+                .split_whitespace()
+                .last()?
+                .parse::<u32>()
+                .ok()?;
+            let has_startup_id = props
+                .lines()
+                .any(|line| line.starts_with("_NET_STARTUP_ID"));
+            let has_token = std::fs::read(format!("/proc/{pid}/environ"))
+                .ok()
+                .is_some_and(|env| {
+                    env.split(|byte| *byte == 0)
+                        .any(|item| item.starts_with(b"XDG_ACTIVATION_TOKEN="))
+                });
+            Some((pid, has_token, has_startup_id))
+        })
+        .collect()
+}
+
+/// Start the installed ChatGPT Electron client strictly through qOS's
+/// rootless Xwayland bridge. The test is opt-in because it opens a real
+/// heavyweight graphical process, but it is a genuine compatibility lane:
+/// private HOME/XDG state, qOS-created Xauthority, no inherited display or
+/// D-Bus session, and a child process group that is always torn down.
+fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
+    let bridge = compositor.runtime_dir.join("qos-session/xwayland");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let authority = loop {
+        let authority = std::fs::read_dir(&bridge).ok().and_then(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("Xauthority-"))
+                })
+        });
+        if let Some(authority) = authority {
+            break authority;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "qOS did not publish its private Xwayland authority; compositor log:\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let number = authority
+        .file_name()?
+        .to_string_lossy()
+        .strip_prefix("Xauthority-")?
+        .to_string();
+    Some((format!(":{number}"), authority))
+}
+
+fn spawn_isolated_chatgpt_x11(
+    compositor: &Compositor,
+    activation_token: Option<&str>,
+) -> Option<(KillProcessGroup, Arc<Mutex<Vec<String>>>)> {
+    let launcher = std::env::var_os("QOS_TEST_LAUNCHER_BINARY")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file());
+    let Some(launcher) = launcher else {
+        eprintln!(
+            "SKIP Xwayland/Electron lane: set QOS_TEST_LAUNCHER_BINARY to the built qos-launcher; this test intentionally exercises the production host-launch process-group path"
+        );
+        return None;
+    };
+    let (display, authority) = private_xwayland_connection(compositor)?;
+    let profile = compositor.runtime_dir.join("chatgpt-profile");
+    std::fs::create_dir_all(&profile).expect("create isolated Electron profile");
+    // The test runs in a disposable distrobox where the installed host entry
+    // is visible under `/run/host`, while production qos-launcher runs on the
+    // host where its `Exec=/usr/bin/chatgpt` is correct.  Preserve every
+    // installed entry field and rewrite only that mount boundary in a private
+    // first-precedence XDG data root, so this remains a real `run-host`
+    // launch rather than a direct Electron invocation.
+    let installed_entry = [
+        PathBuf::from("/usr/share/applications/chatgpt.desktop"),
+        PathBuf::from("/run/host/usr/share/applications/chatgpt.desktop"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())?;
+    let entry = std::fs::read_to_string(&installed_entry).ok()?;
+    let exec = entry
+        .lines()
+        .find(|line| line == &"Exec=chatgpt %U")
+        .map(|_| "Exec=/run/host/usr/bin/chatgpt %U")?;
+    let entry = entry.replacen("Exec=chatgpt %U", exec, 1);
+    let data_home = profile.join("share");
+    let applications = data_home.join("applications");
+    std::fs::create_dir_all(&applications).ok()?;
+    std::fs::write(applications.join("chatgpt.desktop"), entry).ok()?;
+
+    let desktop_id = "chatgpt";
+    let xdg_data_dirs = "/nonexistent/qos-private-host-launch-fixture";
+    let mut preflight = Command::new(&launcher);
+    preflight
+        .env_clear()
+        .args([
+            "run-host",
+            "--desktop-id",
+            desktop_id,
+            "--x11-display",
+            &display,
+            "--x11-authority",
+        ])
+        .arg(&authority)
+        .arg("--dry-run")
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .env("HOME", &profile)
+        .env("XDG_CONFIG_HOME", profile.join("config"))
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_DATA_DIRS", xdg_data_dirs)
+        .env("XDG_CACHE_HOME", profile.join("cache"))
+        .env("XDG_STATE_HOME", profile.join("state"))
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir);
+    let preflight = preflight.output().expect("run host-launch preflight");
+    assert!(
+        preflight.status.success(),
+        "private host-entry fixture must resolve through qos-launcher before Electron starts: {}",
+        String::from_utf8_lossy(&preflight.stderr)
+    );
+
+    let mut command = Command::new(launcher);
+    command
+        // Match `HostLaunch::to_command`: the test must not accidentally
+        // inherit the user's desktop/display or a prior launch capability.
+        .env_clear()
+        .args([
+            "run-host",
+            "--desktop-id",
+            desktop_id,
+            "--x11-display",
+            &display,
+            "--x11-authority",
+        ])
+        .arg(&authority)
+        .env("DISPLAY", display)
+        .env("XAUTHORITY", authority)
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .env("HOME", &profile)
+        .env("XDG_CONFIG_HOME", profile.join("config"))
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_DATA_DIRS", xdg_data_dirs)
+        .env("XDG_CACHE_HOME", profile.join("cache"))
+        .env("XDG_STATE_HOME", profile.join("state"))
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    if let Some(token) = activation_token {
+        // qOS's compositor passes this intermediary only to qos-launcher.
+        // The launcher clears it, creates the production per-launch process
+        // group, then gives the final host child only the standard variables.
+        command.env("QOS_HOST_ACTIVATION_TOKEN", token);
+    }
+    let mut child = command
+        .spawn()
+        .expect("spawn isolated ChatGPT Electron client");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&log);
+    let stderr = child.stderr.take().expect("Electron stderr");
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if let Ok(mut lines) = sink.lock() {
+                lines.push(line);
+            }
+        }
+    });
+    Some((KillProcessGroup::new(child, false), log))
+}
+
+fn spawn_isolated_x11_probe(
+    compositor: &Compositor,
+    activation_token: &str,
+) -> Option<KillProcessGroup> {
+    let program = Path::new("/usr/bin/zenity");
+    if !program.is_file() {
+        eprintln!("SKIP Xwayland token probe: zenity is not installed");
+        return None;
+    }
+    let (display, authority) = private_xwayland_connection(compositor)?;
+    let mut command = Command::new(program);
+    command
+        .env_clear()
+        .args([
+            "--info",
+            "--text=private xwayland activation probe",
+            "--timeout=8",
+        ])
+        .env("DISPLAY", display)
+        .env("XAUTHORITY", authority)
+        .env("GDK_BACKEND", "x11")
+        .env("XDG_ACTIVATION_TOKEN", activation_token)
+        .env("DESKTOP_STARTUP_ID", activation_token)
+        .env("HOME", compositor.runtime_dir.join("x11-probe-home"))
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: the probe's new process group is established before exec and
+    // contains no user-session process, so `Drop` can reclaim it exactly.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command
+        .spawn()
+        .ok()
+        .map(|child| KillProcessGroup::new(child, true))
+}
+
+#[test]
+#[ignore = "starts installed Electron with a compositor-minted token in a private Xwayland session; opt in for compatibility review"]
+fn installed_electron_client_consumes_host_launch_token_through_private_xwayland() {
+    let compositor = Compositor::start_host_desktop();
+    // Keep one ordinary native Wayland client alive throughout the Electron
+    // launch. A bridge that only works in an otherwise empty compositor is
+    // not compatible with a desktop where qOS and host applications coexist.
+    let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-alongside-x11");
+    native.assert_is_qos_compositor();
+    native.map_window(&compositor);
+    let before = compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let before_state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+    let before_groups = before_state
+        .get("state")
+        .and_then(|state| state.get("workspace_tree"))
+        .map_or(0, window_group_count);
+    let display_name = "ChatGPT host activation test";
+    let token = compositor.mint_host_launch_activation("chatgpt", display_name);
+    let Some((mut child, log)) = spawn_isolated_chatgpt_x11(&compositor, Some(&token)) else {
+        return;
+    };
+    let started = Instant::now();
+    let mut token_reached_electron_process_group = false;
+    loop {
+        token_reached_electron_process_group |=
+            private_process_group_has_env(&mut child, b"XDG_ACTIVATION_TOKEN=");
+        let frames = compositor.control(&serde_json::json!({ "op": "foreign_frames" }));
+        let mapped = frames
+            .get("foreign_frames")
+            .and_then(|payload| payload.get("frames"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| entries.len() > before);
+        if mapped {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "the installed Electron client never mapped through qOS Xwayland.\nLast foreign-frame state:\n{}\nElectron log:\n{}\nCompositor log:\n{}",
+            serde_json::to_string_pretty(&frames).unwrap_or_else(|_| frames.to_string()),
+            log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
+            compositor.recent_log(),
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let x11_facts = private_x11_activation_facts(&compositor);
+    assert!(
+        token_reached_electron_process_group,
+        "the ChatGPT launcher/Electron process group discarded XDG_ACTIVATION_TOKEN before satellite could read it"
+    );
+    // Rootless satellite identifies the client with XRes.  It does not have
+    // to publish the non-standard `_NET_WM_PID` EWMH property, so use it only
+    // as supplementary evidence when available rather than making the
+    // standards-path regression depend on it.
+    if !x11_facts.is_empty() {
+        assert!(
+            x11_facts.iter().any(|(_, has_token, _)| *has_token),
+            "the mapped Electron _NET_WM_PID has no XDG_ACTIVATION_TOKEN; X11 facts (pid, has_token, has_startup_id): {x11_facts:?}"
+        );
+    }
+    native.wait_until(
+        |state| !state.keyboard_focused,
+        "the X11/Electron toplevel mapped but did not consume the host activation token to take focus",
+    );
+    // Xwayland maps before satellite's Wayland activation request reaches the
+    // compositor.  Wait for the token-bound relocation rather than racing a
+    // state snapshot against that final protocol round trip.
+    let activation_started = Instant::now();
+    let (tree, titles) = loop {
+        let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+        let tree = state
+            .get("state")
+            .and_then(|state| state.get("workspace_tree"))
+            .cloned()
+            .unwrap_or_else(|| panic!("state dump did not contain a workspace tree: {state:?}"));
+        let mut titles = Vec::new();
+        walk_json(&tree, &mut |value| {
+            if let (Some(title), Some(_tile)) = (value.get("title"), value.get("tile")) {
+                titles.push(title.as_str().unwrap_or_default().to_string());
+            }
+        });
+        if titles.iter().any(|title| title == display_name)
+            || activation_started.elapsed() >= Duration::from_secs(9)
+        {
+            break (tree, titles);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        titles.iter().any(|title| title == display_name),
+        "satellite mapped Electron but did not route its XDG_ACTIVATION_TOKEN through qOS relocation/name handling. tabs: {titles:?}\nElectron log:\n{}\nCompositor log:\n{}",
+        log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
+        compositor.recent_log(),
+    );
+    assert_eq!(
+        window_group_count(&tree),
+        before_groups + 1,
+        "the token-bound Electron surface must be relocated into its requested NewGroup placement"
+    );
+}
+
+#[test]
+fn generic_x11_client_relays_compositor_token_through_private_satellite() {
+    let compositor = Compositor::start_host_desktop();
+    let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-x11-token");
+    native.map_window(&compositor);
+    let before = compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let display_name = "Generic X11 activation probe";
+    let token = compositor.mint_host_launch_activation("org.example.x11-probe", display_name);
+    let Some(_probe) = spawn_isolated_x11_probe(&compositor, &token) else {
+        return;
+    };
+    let started = Instant::now();
+    loop {
+        let mapped = compositor
+            .control(&serde_json::json!({ "op": "foreign_frames" }))
+            .get("foreign_frames")
+            .and_then(|payload| payload.get("frames"))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|frames| frames.len() > before);
+        if mapped {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the private generic X11 probe did not map through satellite. compositor log:\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    native.wait_until(
+        |state| !state.keyboard_focused,
+        "the private generic X11 probe mapped but did not consume the compositor activation token",
+    );
+    let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+    let tree = state
+        .get("state")
+        .and_then(|state| state.get("workspace_tree"))
+        .unwrap_or_else(|| panic!("state dump did not contain workspace tree: {state:?}"));
+    let mut titles = Vec::new();
+    walk_json(tree, &mut |value| {
+        if let (Some(title), Some(_tile)) = (value.get("title"), value.get("tile")) {
+            titles.push(title.as_str().unwrap_or_default().to_string());
+        }
+    });
+    assert!(
+        titles.iter().any(|title| title == display_name),
+        "generic X11 token was not relayed through satellite/qOS relocation. tabs: {titles:?}\ncompositor log:\n{}",
+        compositor.recent_log(),
+    );
+}
+
+/// This is deliberately a real client-to-compositor exercise, not a unit
+/// test of `KeyboardSettings`: qOS must serialize the selected German keymap
+/// onto the Wayland seat and forward complete press/release/modifier streams
+/// to a focused foreign client. Electron and Xwayland both consume this same
+/// seat contract.
+#[test]
+fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract() {
+    let compositor = Compositor::start_with_input_settings(serde_json::json!({
+        "keyboard_layout": "de:nodeadkeys",
+        "key_repeat": 0.5,
+    }));
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.de-keyboard");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |s| s.keyboard_keymap.is_some() && s.keyboard_repeat_info.is_some(),
+        "focused foreign client never received the keymap and repeat contract",
+    );
+
+    let keymap = client
+        .state
+        .keyboard_keymap
+        .clone()
+        .expect("wait above established a keymap");
+    assert!(
+        keymap.contains("nodeadkeys"),
+        "the client received a keymap other than the persisted de:nodeadkeys layout"
+    );
+    let (rate, delay) = client
+        .state
+        .keyboard_repeat_info
+        .expect("wait above established repeat info");
+    assert!(
+        (10..=50).contains(&rate) && (200..=600).contains(&delay),
+        "repeat information must be usable by GTK/Qt/Electron clients, got rate={rate} delay={delay}"
+    );
+
+    client.clear_keyboard_trace();
+    // Physical positions: code 21 is the US-Y / German-Z position; code 12
+    // becomes `?` under Shift in de(nodeadkeys); code 43 becomes apostrophe.
+    // Holding modifiers as separate transitions proves the protocol does not
+    // collapse Shift into a synthetic text event (which breaks selection in
+    // Electron and all standard toolkits).
+    for (key, down) in [
+        ("Shift", true),
+        ("y", true),
+        ("y", false),
+        ("-", true),
+        ("-", false),
+        ("\\", true),
+        ("\\", false),
+        ("Shift", false),
+        ("Control", true),
+        ("ArrowLeft", true),
+        ("ArrowLeft", false),
+        ("Control", false),
+        // A held editing key has one press and one release. The client owns
+        // repeated delivery according to `repeat_info`; qOS must never leave
+        // the key logically down or manufacture a second press on release.
+        ("Backspace", true),
+        ("Backspace", false),
+    ] {
+        let operation = if down { "key_down" } else { "key_up" };
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} {key}: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(14);
+    let trace = client.state.keyboard_events.clone();
+    assert_eq!(
+        trace,
+        vec![
+            (42, true),
+            (21, true),
+            (21, false),
+            (12, true),
+            (12, false),
+            (43, true),
+            (43, false),
+            (42, false),
+            (29, true),
+            (105, true),
+            (105, false),
+            (29, false),
+            (14, true),
+            (14, false),
+        ],
+        "the foreign client must receive every physical transition exactly once"
+    );
+    let symbols = translated_keysyms(&keymap, &trace);
+    use smithay::input::keyboard::xkb::keysyms;
+    assert_eq!(
+        symbols,
+        vec![
+            keysyms::KEY_Shift_L,
+            keysyms::KEY_Z,
+            keysyms::KEY_question,
+            keysyms::KEY_apostrophe,
+            keysyms::KEY_Control_L,
+            keysyms::KEY_Left,
+            keysyms::KEY_BackSpace,
+        ],
+        "the delivered keymap must make German punctuation, uppercase text and Ctrl+Arrow available to a real client"
+    );
+}
+
+/// Print Screen is compositor-owned, including its release. This drives the
+/// developer socket through the real input ledger rather than only asking the
+/// overlay host to open Capture Studio: a client must lose focus while capture
+/// is active, never see a stray Print release, and regain a clean keyboard
+/// stream after Capture Studio closes.
+#[test]
+fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.print-screen");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.clear_keyboard_trace();
+
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} for Print Screen: {response:?}"
+        );
+    }
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "Capture Studio did not take keyboard focus from the mapped client",
+    );
+    client.roundtrip();
+    assert!(
+        client.state.keyboard_events.is_empty(),
+        "the focused client received a Print Screen edge despite capture owning the shortcut: {:?}",
+        client.state.keyboard_events
+    );
+
+    // A second Print while capture is active is consumed, rather than opening
+    // a second capture surface or leaking into the now-unfocused client.
+    for (operation, key) in [("key_down", "PrintScreen"), ("key_up", "PrintScreen")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused the second {operation}: {response:?}"
+        );
+    }
+    client.roundtrip();
+    assert!(
+        !client.state.keyboard_focused && client.state.keyboard_events.is_empty(),
+        "the second Print must leave the existing capture focus and client ledger untouched"
+    );
+
+    let response = compositor.control(&serde_json::json!({ "op": "key", "key": "Escape" }));
+    assert!(
+        response.get("ok").is_some(),
+        "test control refused Escape to close Capture Studio: {response:?}"
+    );
+    client.wait_until(
+        |state| state.keyboard_focused,
+        "the exact prior client did not regain keyboard focus after Capture Studio closed",
+    );
+    client.clear_keyboard_trace();
+    for (operation, key) in [("key_down", "Tab"), ("key_up", "Tab")] {
+        let response = compositor.control(&serde_json::json!({ "op": operation, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "test control refused {operation} for post-capture Tab: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(2);
+    assert_eq!(
+        client.state.keyboard_events,
+        vec![(15, true), (15, false)],
+        "the first post-capture key must have one matched press/release and no delayed Print release"
+    );
+}
+
+/// Lock from the visible power menu must enter qOS's own session lifecycle,
+/// rather than merely asking the surrounding login manager to lock.  Drive
+/// the production shortcut and menu keyboard path, then prove both the
+/// compositor state and a real Wayland client's focus/input boundary.
+#[test]
+fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.power-menu-lock");
+    client.assert_is_qos_compositor();
+    client.map_window(&compositor);
+    client.clear_keyboard_trace();
+
+    // Open Quick Settings through its configured default (Super+Q), then
+    // Keyboard-navigate its visible action row to Power and open it. Focus
+    // starts with no hidden selection, followed by Edit, Settings, Privacy,
+    // Notifications and Power;
+    // the next Enter activates the default Lock row in the real modal.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("q");
+    compositor.modifiers(false, false, false, false);
+    for _ in 0..5 {
+        compositor.key("Tab");
+    }
+    compositor.key("Enter");
+    compositor.key("Enter");
+
+    let started = Instant::now();
+    loop {
+        let state = compositor.control(&serde_json::json!({ "op": "state_dump" }));
+        if state
+            .get("state")
+            .and_then(|state| state.get("chrome"))
+            .and_then(|chrome| chrome.get("session_locked"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "power-menu Lock did not enter the qOS locked state. {}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    client.wait_until(
+        |state| !state.keyboard_focused,
+        "power-menu Lock left the real Wayland client focused",
+    );
+    // A post-lock key is routed only to the lock controller.  No menu or
+    // shortcut input from the whole sequence may leak to the hidden client.
+    compositor.key("x");
+    client.roundtrip();
+    assert!(
+        client.state.keyboard_events.is_empty(),
+        "power-menu Lock leaked input to the hidden client: {:?}",
+        client.state.keyboard_events
+    );
+}
+
+/// The desktop's core lifecycle must be true at the protocol boundary, not
+/// only after directly mutating a `WorkspaceTree`: two actual xdg clients
+/// sharing an app-id remain separate; real shortcut input navigates and
+/// reorders their groups; close reaches the selected client's `xdg_toplevel`;
+/// then that client's own destroy, unrelated chrome revisions, and a fresh
+/// compositor process all keep the selected surface absent.
+#[test]
+fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart() {
+    let mut compositor = Compositor::start();
+    let app_id = "org.qos.test.same-app-lifecycle";
+
+    // NewGroup is the production pending-placement path.  Use it twice for
+    // the same app-id: app-id identity is intentionally insufficient to
+    // identify one of an application's windows.
+    compositor.place_next_window(app_id);
+    let mut first = TestClient::new(compositor.connect(), app_id);
+    first.assert_is_qos_compositor();
+    first.map_window(&compositor);
+    let first_protocol_id = u64::from(
+        first
+            .surface
+            .as_ref()
+            .expect("first client surface")
+            .id()
+            .protocol_id(),
+    );
+    let first_ids = wait_for_foreign_surface_count(
+        &compositor,
+        app_id,
+        1,
+        "the first mapped client did not contribute exactly one foreign surface",
+    );
+    let first_surface = first_ids
+        .first()
+        .copied()
+        .expect("the first mapped client's compositor-global surface id");
+
+    compositor.place_next_window(app_id);
+    let mut selected = TestClient::new(compositor.connect(), app_id);
+    selected.assert_is_qos_compositor();
+    selected.map_window(&compositor);
+    let selected_protocol_id = u64::from(
+        selected
+            .surface
+            .as_ref()
+            .expect("selected client surface")
+            .id()
+            .protocol_id(),
+    );
+    assert_eq!(
+        first_protocol_id, selected_protocol_id,
+        "independent Wayland clients may reuse the same protocol-local object id"
+    );
+
+    let initial_ids = wait_for_foreign_surface_count(
+        &compositor,
+        app_id,
+        2,
+        "two mapped windows from one app-id did not occupy distinct foreign tabs",
+    );
+    let selected_surface = *initial_ids
+        .iter()
+        .find(|surface| **surface != first_surface)
+        .expect("the second client receives its own compositor-global surface id");
+    assert_ne!(
+        first_surface, selected_surface,
+        "the compositor must namespace equal protocol ids by client connection"
+    );
+    let initial = compositor.workspace_tree();
+
+    // These go through the native test-control executor, its real
+    // `WindowEvent` dispatch, and the per-frame compositor reconciliation.
+    // They are deliberately not calls to the host's navigation/reorder model.
+    let active_before_super = initial.get("active_group").cloned();
+    compositor.modifiers(false, false, false, true);
+    compositor.key("ArrowLeft");
+    compositor.modifiers(false, false, false, false);
+    let after_super = compositor.workspace_tree();
+    assert_ne!(
+        after_super.get("active_group").cloned(),
+        active_before_super,
+        "Super+Left must navigate away from the focused real client group"
+    );
+
+    let active_before_alt = after_super.get("active_group").cloned();
+    compositor.modifiers(false, false, true, false);
+    compositor.key("Tab");
+    compositor.modifiers(false, false, false, false);
+    let after_alt = compositor.workspace_tree();
+    assert_ne!(
+        after_alt.get("active_group").cloned(),
+        active_before_alt,
+        "Alt+Tab must traverse a live window group rather than only acknowledge input"
+    );
+
+    // Let the client itself tell us where it is on screen, then click it to
+    // make the later close target unambiguous after both navigation paths.
+    let point = selected.pointer_target(&compositor);
+    compositor.click_at(point.0, point.1);
+    selected.wait_until(
+        |state| state.keyboard_focused,
+        "pointer focus did not return to the selected same-app client",
+    );
+
+    let order_before = group_order(&compositor.workspace_tree());
+    compositor.modifiers(false, true, false, true);
+    compositor.key("ArrowLeft");
+    compositor.modifiers(false, false, false, false);
+    assert_ne!(
+        group_order(&compositor.workspace_tree()),
+        order_before,
+        "Super+Shift+Left must reorder the focused real client's group"
+    );
+
+    // Re-read the real client's pointer enter after layout changed, then use
+    // the actual close shortcut.  The close event has no protocol ack; the
+    // selected client proves receipt and cooperates by destroying its objects.
+    let point = selected.pointer_target(&compositor);
+    compositor.click_at(point.0, point.1);
+    selected.wait_until(
+        |state| state.keyboard_focused,
+        "selected client lost focus before its close shortcut",
+    );
+    compositor.modifiers(false, false, false, true);
+    compositor.key("w");
+    compositor.modifiers(false, false, false, false);
+    selected.wait_until(
+        |state| state.toplevel_close_requested,
+        "Super+W did not reach the selected xdg_toplevel.close",
+    );
+    first.roundtrip();
+    assert!(
+        !first.state.toplevel_close_requested,
+        "closing one window must not address its same-app sibling"
+    );
+    selected.destroy_toplevel();
+
+    let wait_for_tree = |want: &[u64], label: &str| {
+        let started = Instant::now();
+        loop {
+            let got = foreign_surface_ids(&compositor.workspace_tree(), app_id);
+            if got == want {
+                return;
+            }
+            assert!(
+                started.elapsed() < DEADLINE,
+                "{label}; wanted {want:?}, got {got:?}.\n{}",
+                compositor.debug_state()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    wait_for_tree(
+        &[first_surface],
+        "destroying the selected client did not reap exactly its foreign tab",
+    );
+
+    // A chrome-only revision exercises the native frame loop's foreign-tab
+    // mirror while the first same-app client remains live.  It used to be the
+    // edge that reinserted a still-closing foreign surface.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("Tab");
+    compositor.modifiers(false, false, false, false);
+    compositor.key("Escape");
+    wait_for_tree(
+        &[first_surface],
+        "an unrelated revision/resync resurrected the selected closed surface",
+    );
+
+    // The actual QOS_STATE_PATH must contain no process-local Wayland ids.
+    // This read uses the production persistence decoder, not a raw string
+    // search. Live exact-close durability was established above while the
+    // innocent sibling remained mapped; restart safety is the separate rule
+    // that neither live surface id may be serialized as restorable layout.
+    let persisted = shell::shell::persist::load_tree_from(&compositor.state_path)
+        .expect("the close must atomically persist a reloadable WorkspaceTree");
+    let persisted = serde_json::to_value(persisted).expect("serialize persisted tree for probe");
+    assert_eq!(
+        foreign_surface_ids(&persisted, app_id),
+        Vec::<u64>::new(),
+        "QOS_STATE_PATH must strip every process-local foreign surface binding"
+    );
+
+    compositor.restart_headless();
+    let wait_selected_absent = |label: &str| {
+        let started = Instant::now();
+        loop {
+            let got = foreign_surface_ids(&compositor.workspace_tree(), app_id);
+            if !got.contains(&selected_surface) {
+                return;
+            }
+            assert!(
+                started.elapsed() < DEADLINE,
+                "{label}; selected {selected_surface:?} reappeared in {got:?}.\n{}",
+                compositor.debug_state()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    wait_selected_absent("the restarted native compositor resurrected a durably closed surface");
+
+    // Reconnect a fresh process from the same application after native
+    // startup.  Whether startup prunes the now-disconnected old sibling or
+    // keeps its persisted placeholder is an independent policy; neither may
+    // manufacture the selected surface id, and a new same-app window must be
+    // adopted as its own new protocol surface.
+    let mut survivor = TestClient::new(compositor.connect(), app_id);
+    survivor.assert_is_qos_compositor();
+    survivor.map_window(&compositor);
+    let survivor_protocol_id = u64::from(
+        survivor
+            .surface
+            .as_ref()
+            .expect("reconnected same-app surface")
+            .id()
+            .protocol_id(),
+    );
+    let after_reconnect = wait_for_foreign_surface_count(
+        &compositor,
+        app_id,
+        1,
+        "the fresh same-app client was not adopted after restart",
+    );
+    let survivor_surface = after_reconnect
+        .first()
+        .copied()
+        .expect("the reconnected client's compositor-global surface id");
+    assert_eq!(
+        survivor_surface & u64::from(u32::MAX),
+        survivor_protocol_id,
+        "the global identity must retain the client's protocol-local low bits"
+    );
+    assert!(
+        after_reconnect.contains(&survivor_surface) && !after_reconnect.contains(&selected_surface),
+        "a same-app reconnect must add its new surface without resurrecting the selected closed one; got {after_reconnect:?}"
+    );
+}
 
 /// A real toolkit must find every global it treats as mandatory — GTK
 /// refuses the display outright (stopping every GTK program) if
@@ -1542,6 +3042,33 @@ fn data_control_is_privileged_socket_only() {
     }
 }
 
+/// Session-lock is an authentication boundary, just like clipboard-manager
+/// access: ordinary applications must not be able to acquire a compositor
+/// lock and later release it without passing qOS authentication.
+#[test]
+fn session_lock_is_privileged_socket_only() {
+    let compositor = Compositor::start();
+
+    let mut public = TestClient::new(compositor.connect(), "org.qos.test.untrusted-locker");
+    public.assert_is_qos_compositor();
+    assert!(
+        !public.has_global("ext_session_lock_manager_v1"),
+        "session-lock is visible on the public socket; any app could acquire and release the desktop lock. Globals: {:?}",
+        public.global_names(),
+    );
+
+    let mut trusted = TestClient::new(
+        compositor.connect_privileged(),
+        "org.qos.test.session-locker",
+    );
+    trusted.assert_is_qos_compositor();
+    assert!(
+        trusted.has_global("ext_session_lock_manager_v1"),
+        "session-lock is missing from the privileged session socket. Globals: {:?}",
+        trusted.global_names(),
+    );
+}
+
 /// Drag a piece of text out of one client and drop it on another. The
 /// pointer is driven through the compositor's real input path (test-control
 /// socket synthesises the same events the backend would), so `start_drag`
@@ -1634,6 +3161,22 @@ fn drag_and_drop_carries_data_between_two_clients() {
 }
 
 impl Compositor {
+    /// Ask the private test-control transport to mint the exact external
+    /// activation token a user-selected host launch receives.  The token is
+    /// passed only to the throwaway client below, never to the user's session.
+    fn mint_host_launch_activation(&self, desktop_id: &str, display_name: &str) -> String {
+        let resp = self.control(&serde_json::json!({
+            "op": "mint_host_launch_activation",
+            "desktop_id": desktop_id,
+            "display_name": display_name,
+        }));
+        resp.get("answer")
+            .and_then(|answer| answer.get("activation_token"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("mint_host_launch_activation failed: {resp:?}"))
+    }
+
     /// Open the next window of `app_id` in its own group, so two client windows
     /// can be on screen at once.
     fn place_next_window(&self, app_id: &str) {
@@ -1654,6 +3197,21 @@ impl Compositor {
     fn pointer_button(&self, pressed: bool) {
         let resp = self.control(&serde_json::json!({"op": "pointer_button", "pressed": pressed}));
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
+    }
+
+    /// Feed one direct-touch hardware edge through the explicit test-control
+    /// socket. The native adapter uses DRM's real ownership arena before it
+    /// forwards anything to the Wayland seat.
+    fn touch(&self, device: &str, slot: u32, phase: &str, x: f64, y: f64) {
+        let resp = self.control(&serde_json::json!({
+            "op": "touch",
+            "device": device,
+            "slot": slot,
+            "phase": phase,
+            "x": x,
+            "y": y,
+        }));
+        assert!(resp.get("ok").is_some(), "touch {phase:?} failed: {resp:?}");
     }
 
     /// The on-screen rect `[x, y, w, h]` of a named chrome target this frame.

@@ -401,6 +401,7 @@ Built-in scenarios:\n{scenarios}\n\
 Examples:\n\
   shots                                                 # offscreen, all scenes\n\
   shots --scenes desktop,palette --out /tmp/s\n\
+  QOS_SHOTS_THEME=high-contrast QOS_SHOTS_TEXT_SCALE=1.3 shots \\\n+    --scenes quick-settings,qs-compact,qs-wifi-long-labels,qs-bt-long-labels,qs-vpn-long-labels \\\n+    --sweep 1280x720,960x540 --out /tmp/quick-settings-a11y\n\
   shots --mode offscreen --scenario palette_typing\n\
   shots --mode offscreen --scenes desktop --sweep --out /tmp/sweep\n\
   shots --mode offscreen --scenario overview_transition --per-frame 4\n\

@@ -411,6 +411,14 @@ fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: u
 fn group_drag_reorders_strip_window_groups_in_tree() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300]);
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let state_dir = tempfile::tempdir().expect("state directory");
+    let state_path = state_dir.path().join("state.json");
+    {
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        tree.seed_doc_from_cache();
+    }
     let layout = lay_out_host(&mut host);
 
     {
@@ -451,6 +459,120 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
         vec![200, 300, 100],
         "the dragged group must move to the dropped slot in the persisted tree; \
          neighbours shift to fill the vacated slot",
+    );
+    drop(tree);
+    drop(st);
+
+    // The one-shot must be consumed: a second frame may not author a
+    // duplicate reorder transaction or alter the already-persisted order.
+    let heads_after_first = chrome.borrow_mut().tree_mut().current_heads();
+    host.tick_pending_group_reorder_harvest_for_tests();
+    assert_eq!(
+        chrome.borrow_mut().tree_mut().current_heads(),
+        heads_after_first,
+        "one pointer drag commits exactly one durable reorder"
+    );
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("pointer reorder writes a reconstructable layout");
+    assert_eq!(
+        restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<Vec<_>>(),
+        vec![200, 300, 100],
+        "restart retains the pointer-drag order"
+    );
+}
+
+/// A complete durable desktop interaction uses three entry points: opening a
+/// file from the shell, dragging a window group, and closing the opened tab.
+/// The final revision/load checks make sure none of those live-widget steps
+/// can be undone by the next reconciliation or a process restart.
+#[test]
+fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300]);
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let state_dir = tempfile::tempdir().expect("state directory");
+    let state_path = state_dir.path().join("state.json");
+    {
+        let state = chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        tree.seed_doc_from_cache();
+    }
+
+    let opened = chrome
+        .borrow_mut()
+        .handle_file_drop(std::path::Path::new("/tmp/layout-session.ts"))
+        .expect("file drop opens an editor tab");
+    chrome.borrow_mut().bump();
+    assert!(
+        host.take_structure_dirty(),
+        "the opened tab reaches the live row"
+    );
+    let layout = lay_out_host(&mut host);
+
+    // Drag the first group to the end through the real pointer path.
+    let grab = group_grab_point(&mut host, strip_id, 0);
+    let last_center_x = host
+        .group_at_for_tests(strip_id, 2)
+        .expect("last group")
+        .get_rect()
+        .center()
+        .x;
+    cursor(&mut host, &layout, grab);
+    press(&mut host, &layout);
+    cursor(&mut host, &layout, Point::new(last_center_x + 60.0, grab.y));
+    release(&mut host, &layout);
+    host.tick_pending_group_reorder_harvest_for_tests();
+
+    assert!(
+        host.close_tab_in_group(100, Some(opened)),
+        "the shared durable close path removes the file-opened tab"
+    );
+    let _ = host.take_structure_dirty();
+    chrome.borrow_mut().bump();
+    let _ = host.take_structure_dirty();
+
+    {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![200, 300, 100],
+            "pointer reorder remains after the open/close lifecycle"
+        );
+        assert!(
+            strip.window_groups[2]
+                .tabs
+                .iter()
+                .all(|tab| tab.id != opened),
+            "the opened tab is absent from durable state before reconstruction"
+        );
+    }
+
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("the combined interaction writes a reconstructable layout");
+    let strip = &restarted.workspaces[0].strips[0];
+    assert_eq!(
+        strip
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<Vec<_>>(),
+        vec![200, 300, 100]
+    );
+    assert!(
+        strip.window_groups[2]
+            .tabs
+            .iter()
+            .all(|tab| tab.id != opened)
     );
 }
 

@@ -28,10 +28,14 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(test)]
+use std::time::Duration;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
+use ui::WakeHandle;
 use ui::theme::Theme;
 use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
 use vello::Scene;
@@ -294,6 +298,19 @@ pub trait UpdateControl: Send + Sync {
     fn check_now(&self) -> Result<(), String> {
         Err("checking for updates is unavailable on this machine".into())
     }
+    /// # Errors
+    /// Returns an error when firmware metadata or history cannot be refreshed.
+    fn refresh_firmware(
+        &self,
+    ) -> Result<
+        (
+            Vec<os_actions::FirmwareUpdate>,
+            Vec<os_actions::FirmwareHistoryEntry>,
+        ),
+        String,
+    > {
+        Err("firmware refresh is unavailable on this machine".into())
+    }
 }
 
 /// The words on the rollback card. Constants because they are the pane's
@@ -527,6 +544,22 @@ impl UpdateControl for RealUpdateControl {
             })
         }
     }
+
+    fn refresh_firmware(
+        &self,
+    ) -> Result<
+        (
+            Vec<os_actions::FirmwareUpdate>,
+            Vec<os_actions::FirmwareHistoryEntry>,
+        ),
+        String,
+    > {
+        os_actions::refresh_firmware_metadata()
+            .and_then(|()| os_actions::get_firmware_updates())
+            .and_then(|updates| {
+                os_actions::get_firmware_history().map(|history| (updates, history))
+            })
+    }
 }
 
 /// What `bootc status` says this machine can go back to.
@@ -576,6 +609,7 @@ impl Rebooter for RealRebooter {
 
 type StatusProvider = Arc<dyn Fn() -> UpdateStatus + Send + Sync>;
 type Clock = Arc<dyn Fn() -> String + Send + Sync>;
+type DetailsProvider = Arc<dyn Fn(Option<&str>) -> UpdateDetails + Send + Sync>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum FirmwareUiState {
@@ -589,6 +623,15 @@ enum FirmwareUiState {
         needs_reboot: bool,
     },
 }
+
+type CheckEvent = Result<(UpdateStatus, Option<String>, UpdateDetails), String>;
+type FirmwareRefreshEvent = Result<
+    (
+        Vec<os_actions::FirmwareUpdate>,
+        Vec<os_actions::FirmwareHistoryEntry>,
+    ),
+    String,
+>;
 
 /// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
@@ -609,6 +652,7 @@ pub struct UpdatesPane {
     prefs: UpdatePrefs,
     last_prefs: UpdatePrefs,
     status_provider: StatusProvider,
+    details_provider: DetailsProvider,
     clock: Clock,
     rebooter: Arc<dyn Rebooter>,
     control: Arc<dyn UpdateControl>,
@@ -625,6 +669,11 @@ pub struct UpdatesPane {
     firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
     firmware_state: FirmwareUiState,
     firmware_events: Option<std::sync::mpsc::Receiver<os_actions::FirmwareEvent>>,
+    check_events: Option<Receiver<CheckEvent>>,
+    firmware_refresh_events: Option<Receiver<FirmwareRefreshEvent>>,
+    check_pending: bool,
+    firmware_refresh_pending: bool,
+    wake: WakeHandle,
     /// Set once the person has asked to roll back and been shown what it does
     /// not undo; cleared when they leave the pane's structure alone long
     /// enough to rebuild.
@@ -670,6 +719,7 @@ impl UpdatesPane {
             prefs,
             last_prefs: UpdatePrefs::default(),
             status_provider,
+            details_provider: Arc::new(UpdateDetails::from_system),
             clock: Arc::new(now_stamp),
             rebooter: Arc::new(RealRebooter),
             control,
@@ -681,6 +731,11 @@ impl UpdatesPane {
             firmware_history,
             firmware_state: FirmwareUiState::Idle,
             firmware_events: None,
+            check_events: None,
+            firmware_refresh_events: None,
+            check_pending: false,
+            firmware_refresh_pending: false,
+            wake: WakeHandle::new(),
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
@@ -738,6 +793,7 @@ impl UpdatesPane {
             prefs: prefs.clone(),
             last_prefs: prefs,
             status_provider,
+            details_provider: Arc::new(|_| UpdateDetails::default()),
             clock,
             rebooter,
             control,
@@ -749,6 +805,11 @@ impl UpdatesPane {
             firmware_history: Err("fwupd is unavailable in this test".into()),
             firmware_state: FirmwareUiState::Idle,
             firmware_events: None,
+            check_events: None,
+            firmware_refresh_events: None,
+            check_pending: false,
+            firmware_refresh_pending: false,
+            wake: WakeHandle::new(),
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
@@ -950,7 +1011,11 @@ impl UpdatesPane {
                     Row::new()
                         .push(Box::new(Button::new(
                             "settings.updates.check",
-                            "Check for updates",
+                            if self.check_pending {
+                                "Checking for updates…"
+                            } else {
+                                "Check for updates"
+                            },
                             Some(CHECK_KEY),
                         )))
                         .push(Box::new(Spacer::new())),
@@ -986,14 +1051,14 @@ impl UpdatesPane {
 
     fn firmware_card(&self) -> El {
         let body = match &self.firmware_updates {
-            Err(error) => Self::firmware_card_error(error),
+            Err(error) => self.firmware_card_error(error),
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
         card("Device firmware", body)
     }
 
-    fn firmware_card_error(error: &str) -> El {
+    fn firmware_card_error(&self, error: &str) -> El {
         rows(vec![
             value_row("Status", "Firmware inventory could not be queried"),
             caption(&format!("fwupd reported: {error}")),
@@ -1001,7 +1066,11 @@ impl UpdatesPane {
                 Row::new()
                     .push(Box::new(Button::new(
                         "settings.updates.firmware.refresh",
-                        "Try again",
+                        if self.firmware_refresh_pending {
+                            "Refreshing…"
+                        } else {
+                            "Try again"
+                        },
                         Some(FIRMWARE_REFRESH_KEY),
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1030,7 +1099,11 @@ impl UpdatesPane {
                 Row::new()
                     .push(Box::new(Button::new(
                         "settings.updates.firmware.refresh",
-                        "Check firmware",
+                        if self.firmware_refresh_pending {
+                            "Checking firmware…"
+                        } else {
+                            "Check firmware"
+                        },
                         Some(FIRMWARE_REFRESH_KEY),
                     )))
                     .push(Box::new(Spacer::new())),
@@ -1270,6 +1343,75 @@ impl UpdatesPane {
         }
     }
 
+    fn drain_check_events(&mut self) {
+        let Some(events) = self.check_events.as_ref() else {
+            return;
+        };
+        let event = match events.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.check_events = None;
+                self.check_pending = false;
+                self.notice = Some("Updates could not be checked: worker stopped".into());
+                self.structure_dirty = true;
+                return;
+            }
+        };
+        self.check_events = None;
+        self.check_pending = false;
+        match event {
+            Ok((status, rollback_target, details)) => {
+                self.status = status;
+                self.rollback_target = rollback_target;
+                self.details = details;
+                self.prefs.last_checked = (self.clock)();
+                self.last_prefs.last_checked = self.prefs.last_checked.clone();
+                self.notice = None;
+                self.persist();
+            }
+            Err(error) => {
+                self.notice = Some(format!("Updates could not be checked: {error}"));
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn drain_firmware_refresh_events(&mut self) {
+        let Some(events) = self.firmware_refresh_events.as_ref() else {
+            return;
+        };
+        let event = match events.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => {
+                self.firmware_refresh_events = None;
+                self.firmware_refresh_pending = false;
+                let error = "firmware refresh worker stopped".to_string();
+                self.firmware_updates = Err(error.clone());
+                self.firmware_history = Err(error.clone());
+                self.notice = Some(format!("Firmware metadata could not be refreshed: {error}"));
+                self.structure_dirty = true;
+                return;
+            }
+        };
+        self.firmware_refresh_events = None;
+        self.firmware_refresh_pending = false;
+        match event {
+            Ok((updates, history)) => {
+                self.firmware_updates = Ok(updates);
+                self.firmware_history = Ok(history);
+                self.notice = None;
+            }
+            Err(error) => {
+                self.firmware_updates = Err(error.clone());
+                self.firmware_history = Err(error.clone());
+                self.notice = Some(format!("Firmware metadata could not be refreshed: {error}"));
+            }
+        }
+        self.structure_dirty = true;
+    }
+
     /// First `sync`: seed every key this pane owns so the composed controls
     /// have something to read.
     fn seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -1315,19 +1457,33 @@ impl UpdatesPane {
             return;
         }
         let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
-        match self.control.check_now() {
-            Ok(()) => {
-                self.status = (self.status_provider)();
-                self.rollback_target = self.control.rollback_target();
-                self.details = UpdateDetails::from_system(self.rollback_target.as_deref());
-                self.prefs.last_checked = (self.clock)();
-                self.last_prefs.last_checked = self.prefs.last_checked.clone();
-                self.notice = None;
-                self.persist();
-            }
-            Err(error) => {
-                self.notice = Some(format!("Updates could not be checked: {error}"));
-            }
+        if self.check_pending {
+            self.structure_dirty = true;
+            return;
+        }
+        let status_provider = Arc::clone(&self.status_provider);
+        let details_provider = Arc::clone(&self.details_provider);
+        let control = Arc::clone(&self.control);
+        let wake = self.wake;
+        let (tx, rx) = mpsc::channel();
+        if std::thread::Builder::new()
+            .name("qos-update-check".into())
+            .spawn(move || {
+                let result = control.check_now().map(|()| {
+                    let status = status_provider();
+                    let rollback_target = control.rollback_target();
+                    let details = details_provider(rollback_target.as_deref());
+                    (status, rollback_target, details)
+                });
+                let _ = tx.send(result);
+                wake.wake();
+            })
+            .is_err()
+        {
+            self.notice = Some("Updates could not be checked: worker could not start".into());
+        } else {
+            self.check_events = Some(rx);
+            self.check_pending = true;
         }
         self.structure_dirty = true;
     }
@@ -1341,19 +1497,28 @@ impl UpdatesPane {
             FIRMWARE_REFRESH_KEY,
             automerge::ScalarValue::Boolean(false),
         );
-        self.firmware_updates = match os_actions::refresh_firmware_metadata()
-            .and_then(|()| os_actions::get_firmware_updates())
+        if self.firmware_refresh_pending || self.firmware_events.is_some() {
+            self.structure_dirty = true;
+            return;
+        }
+        let control = Arc::clone(&self.control);
+        let wake = self.wake;
+        let (tx, rx) = mpsc::channel();
+        if std::thread::Builder::new()
+            .name("qos-firmware-refresh".into())
+            .spawn(move || {
+                let result = control.refresh_firmware();
+                let _ = tx.send(result);
+                wake.wake();
+            })
+            .is_err()
         {
-            Ok(updates) => {
-                self.notice = None;
-                self.firmware_history = os_actions::get_firmware_history();
-                Ok(updates)
-            }
-            Err(e) => {
-                self.notice = Some(format!("Firmware metadata could not be refreshed: {e}"));
-                Err(e)
-            }
-        };
+            self.notice =
+                Some("Firmware metadata could not be refreshed: worker could not start".into());
+        } else {
+            self.firmware_refresh_events = Some(rx);
+            self.firmware_refresh_pending = true;
+        }
         self.structure_dirty = true;
     }
 
@@ -1366,6 +1531,11 @@ impl UpdatesPane {
             FIRMWARE_INSTALL_KEY,
             automerge::ScalarValue::Boolean(false),
         );
+        if self.firmware_refresh_pending || self.firmware_events.is_some() {
+            self.notice = Some("Firmware work is already in progress".into());
+            self.structure_dirty = true;
+            return;
+        }
         match self
             .firmware_updates
             .as_deref()
@@ -1535,6 +1705,8 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for UpdatesPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.drain_check_events();
+        self.drain_firmware_refresh_events();
         self.drain_firmware_events();
         self.seed(state, root);
         self.handle_check(state, root);
@@ -1671,7 +1843,9 @@ impl Widget for UpdatesPane {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.firmware_events.is_some()
+        self.check_pending
+            || self.firmware_refresh_pending
+            || self.firmware_events.is_some()
             || self
                 .composed
                 .as_ref()
@@ -1778,7 +1952,13 @@ mod tests {
         assert_eq!(pane.status().staged_version, None);
         // Press Check.
         let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
+        for _ in 0..1000 {
+            pane.sync(&mut doc, &root);
+            if pane.prefs().last_checked != "Never" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(
             pane.prefs().last_checked,
             "CHECKED-NOW",
@@ -1790,6 +1970,123 @@ mod tests {
             "the re-query result landed"
         );
         assert!(pane.take_structure_dirty(), "check refreshes the view");
+    }
+
+    #[test]
+    fn blocking_update_check_returns_promptly_and_stamps_only_on_completion() {
+        let control =
+            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(80), false));
+        let mut pane = pane_with_control(control);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+        let started = std::time::Instant::now();
+        pane.sync(&mut doc, &root);
+        assert!(started.elapsed() < Duration::from_millis(40));
+        assert_eq!(pane.prefs().last_checked, "Never");
+        for _ in 0..1000 {
+            pane.sync(&mut doc, &root);
+            if !pane.check_pending {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
+        assert!(pane.notice().is_none());
+    }
+
+    #[test]
+    fn failed_async_update_check_does_not_stamp_last_checked() {
+        let control =
+            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(20), true));
+        let mut pane = pane_with_control(control);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut doc, &root);
+        for _ in 0..100 {
+            pane.sync(&mut doc, &root);
+            if !pane.check_pending {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(pane.prefs().last_checked, "Never");
+        assert!(
+            pane.notice()
+                .is_some_and(|message| message.contains("could not be checked"))
+        );
+    }
+
+    #[test]
+    fn blocking_firmware_refresh_returns_promptly_and_reports_success_or_failure() {
+        let control = Arc::new(
+            FakeControl::new(None, None).blocking_refresh(Duration::from_millis(20), false),
+        );
+        let mut pane = pane_with_control(Arc::clone(&control));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(
+            &root,
+            FIRMWARE_REFRESH_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
+        let started = std::time::Instant::now();
+        pane.sync(&mut doc, &root);
+        assert!(started.elapsed() < Duration::from_millis(40));
+        assert!(pane.firmware_refresh_pending);
+        for _ in 0..100 {
+            pane.sync(&mut doc, &root);
+            if !pane.firmware_refresh_pending {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(pane.firmware_updates, Ok(Vec::new()));
+
+        control.set_refresh_fails(true);
+        let _ = doc.put(
+            &root,
+            FIRMWARE_REFRESH_KEY,
+            automerge::ScalarValue::Boolean(true),
+        );
+        pane.sync(&mut doc, &root);
+        for _ in 0..100 {
+            pane.sync(&mut doc, &root);
+            if !pane.firmware_refresh_pending {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(pane.firmware_updates.is_err());
+        assert!(pane.notice().is_some_and(|message| {
+            message.contains("Firmware metadata could not be refreshed")
+        }));
+    }
+
+    #[test]
+    fn duplicate_update_checks_are_cleared_while_one_is_pending() {
+        let control =
+            Arc::new(FakeControl::new(None, None).blocking_check(Duration::from_millis(40), false));
+        let mut pane = pane_with_control(Arc::clone(&control));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, CHECK_KEY, automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut doc, &root);
+        for _ in 0..100 {
+            pane.sync(&mut doc, &root);
+            if !pane.check_pending {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(*control.check_calls.lock().unwrap(), 1);
     }
 
     /// Restart & update reboots exactly once via the injected rebooter.
@@ -1818,6 +2115,11 @@ mod tests {
         target: Mutex<Option<String>>,
         set_fails: bool,
         rollback_fails: bool,
+        check_delay: Duration,
+        check_fails: bool,
+        refresh_delay: Duration,
+        refresh_fails: Mutex<bool>,
+        check_calls: Mutex<u32>,
     }
 
     impl FakeControl {
@@ -1829,6 +2131,11 @@ mod tests {
                 target: Mutex::new(target.map(str::to_string)),
                 set_fails: false,
                 rollback_fails: false,
+                check_delay: Duration::ZERO,
+                check_fails: false,
+                refresh_delay: Duration::ZERO,
+                refresh_fails: Mutex::new(false),
+                check_calls: Mutex::new(0),
             }
         }
         fn failing_set(mut self) -> Self {
@@ -1838,6 +2145,19 @@ mod tests {
         fn failing_rollback(mut self) -> Self {
             self.rollback_fails = true;
             self
+        }
+        fn blocking_check(mut self, delay: Duration, fails: bool) -> Self {
+            self.check_delay = delay;
+            self.check_fails = fails;
+            self
+        }
+        fn blocking_refresh(mut self, delay: Duration, fails: bool) -> Self {
+            self.refresh_delay = delay;
+            *self.refresh_fails.get_mut().unwrap() = fails;
+            self
+        }
+        fn set_refresh_fails(&self, fails: bool) {
+            *self.refresh_fails.lock().unwrap() = fails;
         }
     }
 
@@ -1863,6 +2183,33 @@ mod tests {
             }
             *self.target.lock().unwrap() = None;
             Ok(())
+        }
+
+        fn check_now(&self) -> Result<(), String> {
+            *self.check_calls.lock().unwrap() += 1;
+            std::thread::sleep(self.check_delay);
+            if self.check_fails {
+                Err("update check failed".into())
+            } else {
+                Ok(())
+            }
+        }
+
+        fn refresh_firmware(
+            &self,
+        ) -> Result<
+            (
+                Vec<os_actions::FirmwareUpdate>,
+                Vec<os_actions::FirmwareHistoryEntry>,
+            ),
+            String,
+        > {
+            std::thread::sleep(self.refresh_delay);
+            if *self.refresh_fails.lock().unwrap() {
+                Err("firmware refresh failed".into())
+            } else {
+                Ok((Vec::new(), Vec::new()))
+            }
         }
     }
 
