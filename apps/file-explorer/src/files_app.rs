@@ -1033,6 +1033,7 @@ impl FileExplorerWidget {
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_persisted_offset(self.scroll_offset.clone())
+                .with_cursor(self.last_cursor)
                 .with_child(view_child),
         ));
         Box::new(view_col)
