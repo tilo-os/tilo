@@ -74,7 +74,8 @@ pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.qos.record-index.by-id."
 pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
 pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
 const RECORD_INDEX_V2_VERSION: u16 = 2;
-const RECORD_INDEX_PAGE_ENTRIES: usize = 128;
+// Must match the mount authority's portable, single-xattr page contract.
+const RECORD_INDEX_PAGE_ENTRIES: usize = 32;
 const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
 pub const AVAILABILITY_XATTR: &str = "user.qos.availability";
 pub const AVAILABILITY_CONTROL_XATTR: &str = "user.qos.availability-control";
