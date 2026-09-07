@@ -140,6 +140,11 @@ jobs:
           bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p qos-user-identity projection --lib -- --nocapture
           bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell governed_name_and_root_signed_endpoint_project_human_and_device --lib -- --nocapture
+          # Test executables from the relay, filesystem, and shell acceptance
+          # stages are no longer needed. The privileged runner has a small
+          # container overlay; retaining every multi-gigabyte harness left no
+          # room for Files' temporary xattrs despite the code itself passing.
+          find target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.so' -delete
           bash scripts/ci-run.sh "Files collaboration UX" -- cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
 
       - name: Enforce skew, read-only and atomic-recovery boundaries
