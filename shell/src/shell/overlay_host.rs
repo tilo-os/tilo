@@ -1481,31 +1481,29 @@ impl ShellOverlayHost {
             theme,
             flags,
         );
+        self.prepare_quick_settings_transition(theme, flags);
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
-        let quick_settings_bounds = self.draw_quick_settings_dropdown(
+        let quick_settings_bounds =
+            self.draw_quick_settings_dropdown(&mut quick_settings, transform, text_renderer, theme);
+        // Keep the strip in the retained QS section even while the dropdown
+        // is closed. Opening QS then changes one bounded section rather than
+        // removing chrome from the opaque workspace section, which preserves
+        // sparse damage eligibility without changing the final scene order.
+        self.draw_strip_chrome(
             &mut quick_settings,
             transform,
-            text_renderer,
             theme,
             flags,
+            quick_settings_transition_visible,
         );
-        if flags.quick_settings || quick_settings_transition_visible {
-            self.draw_strip_chrome(
-                &mut quick_settings,
-                transform,
-                theme,
-                flags,
-                quick_settings_transition_visible,
-            );
-        } else {
-            self.draw_strip_chrome(
-                &mut workspace,
-                transform,
-                theme,
-                flags,
-                quick_settings_transition_visible,
-            );
-        }
+        let shortcut_help_bounds =
+            (!self.shortcut_help_button_is_suppressed()).then(|| self.shortcut_help_button_rect());
+        self.draw_shortcut_help_button(&mut quick_settings, transform, text_renderer, theme);
+        let quick_settings_bounds = quick_settings_bounds
+            .into_iter()
+            .chain(self.strip_chrome_bounds(flags, quick_settings_transition_visible))
+            .chain(shortcut_help_bounds)
+            .reduce(|current, rect| current.union(rect));
         self.power_menu.draw(
             self.rect,
             &mut above_quick_settings,
@@ -1564,6 +1562,7 @@ impl ShellOverlayHost {
 
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(6);
+        let flags = self.overlay_flags();
         // The palette has a complete semantic tree (query, result list, and
         // focused result).  It is drawn as a top overlay, so publish it from
         // the same ordered synthetic tree as every other overlay rather than
@@ -1574,7 +1573,6 @@ impl ShellOverlayHost {
         if self.workspace_settings_overlay.member_sheet_is_open() {
             order.push(AccessibleOverlay::MemberSheet);
         }
-        let flags = self.overlay_flags();
         if flags.ws_settings {
             order.push(AccessibleOverlay::WorkspaceSettings);
         }
@@ -6475,7 +6473,7 @@ impl ShellOverlayHost {
                 let _ = self.scroll_qs_notification_history(page);
             }
             Key::Named(NamedKey::PageUp) => {
-                let _ = self.scroll_qs_notification_history(-page);
+                let _ = self.scroll_qs_notification_history(page.saturating_neg());
             }
             Key::Named(NamedKey::Home) => {
                 let _ = self.scroll_qs_notification_history(-isize::MAX);
@@ -8109,23 +8107,19 @@ impl ShellOverlayHost {
             return true;
         }
         if shortcut_pressed(ShortcutAction::WorkspaceOverview) {
-            if !repeat {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.overview = !st.overlays.overview;
-                    st.bump();
-                }
+            if !repeat && let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.overview = !st.overlays.overview;
+                st.bump();
             }
             *handled = true;
             return true;
         }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
-            if !repeat {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.quick_settings = !st.overlays.quick_settings;
-                    st.bump();
-                }
+            if !repeat && let Some(chrome) = self.chrome.clone() {
+                let mut st = chrome.borrow_mut();
+                st.overlays.quick_settings = !st.overlays.quick_settings;
+                st.bump();
             }
             *handled = true;
             return true;
@@ -9192,7 +9186,7 @@ impl ShellOverlayHost {
                     if let Some(chrome) = self.chrome.as_ref() {
                         chrome.borrow_mut().push_notification(
                             "Session action blocked",
-                            &format!(
+                            format!(
                                 "{} — close the app or finish its work first.",
                                 reasons
                                     .first()
@@ -9547,6 +9541,10 @@ impl ShellOverlayHost {
         true
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered root-action dispatch keeps fallback routing adjacent to each action"
+    )]
     fn apply_quick_settings_root_action(&mut self, action: RootAction, chrome: &Chrome) {
         match action {
             RootAction::None => {}
@@ -9599,11 +9597,20 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                let _ = crate::shell::search::providers::applications::launch_installed_app(
+                if crate::shell::search::providers::applications::launch_installed_app(
                     chrome,
                     "dev.qos.settings",
                     "Settings",
-                );
+                )
+                .is_err()
+                {
+                    // The settings package is optional in small/headless
+                    // sessions. Keep the affordance usable by falling back
+                    // to the in-shell workspace settings surface.
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.ws_settings = true;
+                    st.bump();
+                }
             }
             RootAction::Privacy | RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
@@ -10434,8 +10441,7 @@ fn shortcut_reference_rows(
         shortcuts
             .bindings
             .get(&action)
-            .map(shortcut_guide_chord)
-            .unwrap_or_else(|| "Unassigned".into())
+            .map_or_else(|| "Unassigned".into(), shortcut_guide_chord)
     };
     vec![
         ("Screenshot", "Print Screen".into()),
@@ -11473,11 +11479,9 @@ impl Widget for ShellOverlayHost {
                     let chord = |action| {
                         shortcuts
                             .bindings
-                            .get(&action)
-                            .map(shortcut_guide_chord)
-                            .unwrap_or_else(|| "unassigned".to_string())
+                            .get(&action).map_or_else(|| "unassigned".to_string(), shortcut_guide_chord)
                     };
-                    let essential_summary = shortcut_reference_rows(&shortcuts)
+                    let essential_summary = shortcut_reference_rows(shortcuts)
                         .into_iter()
                         .map(|(label, chord)| format!("{label}: {chord}"))
                         .collect::<Vec<_>>()
@@ -12369,6 +12373,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
+        self.prepare_quick_settings_transition(theme, flags);
         // Both drawn under the popovers, hidden under the overview since
         // it isn't showing strips.
         if !flags.overview {
@@ -12383,7 +12388,7 @@ impl ShellOverlayHost {
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
 
-        let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme, flags);
+        let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme);
 
         self.power_menu
             .draw(self.rect, scene, transform, text_renderer, theme);
@@ -12391,6 +12396,7 @@ impl ShellOverlayHost {
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+        self.draw_shortcut_help_button(scene, transform, text_renderer, theme);
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
@@ -12413,6 +12419,40 @@ impl ShellOverlayHost {
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
+    }
+
+    /// Visual extent of the retained strip chrome. It is folded into the
+    /// Quick Settings damage region because that section owns the chrome in
+    /// both its open and closed states.
+    fn strip_chrome_bounds(
+        &self,
+        flags: crate::shell::chrome_state::OverlayFlags,
+        quick_settings_transition_visible: bool,
+    ) -> Option<Rect> {
+        if flags.overview {
+            return None;
+        }
+        let mut bounds = None;
+        let mut include = |rect: Option<Rect>| {
+            if let Some(rect) = rect {
+                // Strip segments have a centred one-pixel outline, so their
+                // recorded geometry alone can miss an antialiased fringe at
+                // an outward-rounded damage edge.
+                let rect = Rect::new(rect.x0 - 1.0, rect.y0 - 1.0, rect.x1 + 1.0, rect.y1 + 1.0);
+                bounds = Some(bounds.map_or(rect, |current: Rect| current.union(rect)));
+            }
+        };
+        if !flags.quick_settings && !quick_settings_transition_visible {
+            let ribbon = self.strip_ribbon();
+            include(ribbon.segment_rect(0));
+            include(ribbon.segment_rect(ribbon.count.saturating_sub(1)));
+        }
+        let rail = self.strip_rail();
+        if rail.is_meaningful() {
+            include(rail.segment_rect(0));
+            include(rail.segment_rect(rail.count.saturating_sub(1)));
+        }
+        bounds
     }
 
     fn draw_collaborators_dropdown(
@@ -12546,21 +12586,14 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The quick-settings dropdown: no scrim, so it reads as a dropdown
-    /// rather than a modal. Split out of `draw_dropdowns_and_sheets`.
-    fn draw_quick_settings_dropdown(
+    /// Prepare the mutable Quick Settings state before either renderer decides
+    /// whether the strip ribbon is visible for this frame.
+    fn prepare_quick_settings_transition(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
-    ) -> Option<Rect> {
+    ) {
         if flags.quick_settings && !self.qs_was_open {
-            // Rising edge: ask for fresh OS state without waiting — the
-            // panel opens with last-known values and updates as readings
-            // land. Wi-Fi/Bluetooth drill-in lists aren't requested here,
-            // see `qs_refresh`.
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
             self.qs_root.reset_focus();
@@ -12576,6 +12609,17 @@ impl ShellOverlayHost {
             },
             ui::Curve::EaseOut,
         );
+    }
+
+    /// The quick-settings dropdown: no scrim, so it reads as a dropdown
+    /// rather than a modal. Split out of `draw_dropdowns_and_sheets`.
+    fn draw_quick_settings_dropdown(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Rect> {
         let now = Instant::now();
         if self.qs_transition.is_visible(now) {
             // `openness` runs 0→1 opening and 1→0 closing; the same
@@ -13176,17 +13220,18 @@ impl ShellOverlayHost {
                     None,
                     TextWeight::Semibold,
                 );
-                let references = shortcut_reference_rows(&shortcuts);
+                let references = shortcut_reference_rows(shortcuts);
                 let visible_references = if compact {
-                    &references[..references.len().min(8)]
+                    references.get(..8).unwrap_or(references.as_slice())
                 } else {
                     references.as_slice()
                 };
                 let reference_step = if compact { 32.0 } else { 38.0 };
                 let reference_offset = if compact { 24.0 } else { 28.0 };
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
-                    let column = index % reference_columns;
-                    let row = index / reference_columns;
+                    let reference_columns = reference_columns.max(1);
+                    let column = index.checked_rem(reference_columns).unwrap_or_default();
+                    let row = index.checked_div(reference_columns).unwrap_or_default();
                     let cell_width = body.width() / usize_to_f64_lossy(reference_columns);
                     let x = body.x0 + usize_to_f64_lossy(column) * cell_width;
                     let y =
@@ -13274,7 +13319,6 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.draw_shortcut_help_button(scene, transform, text_renderer, theme);
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -16912,7 +16956,7 @@ mod palette_dispatch_tests {
 
     /// The application callback has already put the short recovery card on
     /// screen when the launchpad adapter receives its refusal. The adapter's
-    /// detailed log path must not append a second card with raw ActionError
+    /// detailed log path must not append a second card with raw `ActionError`
     /// text (which can contain backend paths and embedded newlines).
     #[test]
     fn launchpad_refusal_reporting_does_not_duplicate_callback_notice() {
@@ -18427,17 +18471,17 @@ mod overlay_event_absorb_tests {
     }
 
     /// Test-only stand-in for the shell's directory cache.  It has the same
-    /// inert `SearchResult` shape the live ActionDirectory bridge emits, so
+    /// inert `SearchResult` shape the live `ActionDirectory` bridge emits, so
     /// palette layout is exercised without smuggling a capability or widget
     /// reference into this synchronous render harness.
     struct DirectoryPaletteFixtureProvider;
 
     impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "directory-fixture"
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Directory"
         }
 
