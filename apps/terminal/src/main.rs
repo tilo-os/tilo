@@ -81,6 +81,7 @@ pub fn main() {
                 "tui",
                 "scrollback",
                 "empty",
+                "ended",
             ]),
     );
 }
@@ -117,6 +118,7 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let scenario = args.scenario.as_deref();
     let mut widget = match scenario {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
+        Some("ended") => TerminalWidget::spawn_command(terminal::CommandBuilder::new("/bin/true")),
         Some(_) => TerminalWidget::spawn_headless(),
     }
     .map_err(|error| LaunchError::Operation(error.to_string()))?;
@@ -366,6 +368,9 @@ fn run_scenario(
             // Scroll up so retained history (not the live tail) is visible.
             widget.scroll_up(20);
         }
+        // A command that exits immediately exercises the persistent terminal
+        // lifecycle status, including the reader's EOF transition.
+        "ended" => std::thread::sleep(std::time::Duration::from_millis(50)),
         _ => {}
     }
 }
