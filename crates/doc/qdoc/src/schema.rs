@@ -60,14 +60,24 @@ pub const NOTE_KIND_ENDNOTE: &str = "endnote";
 /// The inline mark naming a note reference: covers the single placeholder character (U+FFFC), valued with the referenced note id (a `Str`).
 pub const MARK_NOTE_REF: &str = "note-ref"; // Str — the referenced note id
 
-// Comments / annotations: a `comments` root map of `Map<comment_id, comment>`, each a sub-map with
-// `author`, `date` (ISO-8601) and a `blocks` child map. Anchored to body text by a `comment` mark
+// Comments / annotations: a `comments` root map of `Map<comment_id, comment>`.
+// Comments have `author`, `date` (ISO-8601), and a `blocks` child map. Replies
+// share that already-eager root as `Map<reply_id, reply>` records with a
+// `parent` comment id plus author/date/blocks. Keeping sibling reply records in
+// an existing shared map means two peers can add their first reply to an older
+// comment concurrently without racing to create a nested map. Anchored to body text by a `comment` mark
 // valued with the comment id over `[start, end)`. Round-trips through the codecs (ODF
 // `office:annotation`/`-end`; OOXML `commentRangeStart`/`-End`+`commentReference`). Created eagerly so concurrent adds converge on one container.
 pub const KEY_COMMENTS: &str = "comments"; // Map<comment_id, comment>
 pub const COMMENT_AUTHOR: &str = "author"; // Str — the comment author's display name
 pub const COMMENT_DATE: &str = "date"; // Str — the comment timestamp (ISO-8601)
 pub const COMMENT_BLOCKS: &str = "blocks"; // Map<block_id, block> (the comment body)
+/// Parent comment id on a reply record. Its absence distinguishes a root
+/// annotation from a reply and keeps old comments fully backward compatible.
+pub const COMMENT_REPLY_PARENT: &str = "parent";
+pub const COMMENT_REPLY_AUTHOR: &str = "author"; // Str — reply author's display name
+pub const COMMENT_REPLY_DATE: &str = "date"; // Str — reply timestamp (ISO-8601)
+pub const COMMENT_REPLY_BLOCKS: &str = "blocks"; // Map<block_id, block> (reply body)
 /// The inline mark anchoring a comment to a text range `[start, end)`, valued with the comment id (a `Str`); unlike `note-ref`, spans real text rather than a placeholder character.
 pub const MARK_COMMENT: &str = "comment"; // Str — the anchored comment id
 
