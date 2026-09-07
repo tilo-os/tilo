@@ -23,7 +23,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
-use smithay::utils::Serial;
+use smithay::utils::{Logical, Rectangle, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
@@ -393,6 +393,18 @@ impl SessionLockHooks {
 /// alias to keep that field (and every function taking a slice of it) readable.
 pub type OutputPlacement = ((i32, i32), (u32, u32), f64);
 
+/// A client-owned transient that is painted above its parent rather than
+/// adopted into the workspace tree.  Keeping the protocol handle here lets
+/// us reconfigure reactive popups and, more importantly, tear the whole
+/// transient chain down when either endpoint disappears.
+#[derive(Clone)]
+pub(crate) struct TrackedPopup {
+    surface: PopupSurface,
+    parent: SurfaceId,
+    geometry: Rectangle<i32, Logical>,
+    grabbed: bool,
+}
+
 /// The compositor's process-wide state.
 ///
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
@@ -577,6 +589,12 @@ pub struct State {
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
     pub client_input: crate::compositor::client_input::ClientInput,
+    /// XDG popups are separate surfaces, not tabs.  They are captured and
+    /// composed above their parent through this registry.
+    pub(crate) popups: Vec<TrackedPopup>,
+    /// Input-method candidate surfaces are similarly transient.  They stay
+    /// outside the app tree so a candidate list can never become a tab.
+    pub(crate) input_method_popups: Vec<InputMethodPopupSurface>,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
@@ -896,6 +914,8 @@ impl State {
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
+            popups: Vec::new(),
+            input_method_popups: Vec::new(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -1557,6 +1577,7 @@ impl State {
             || self.osk_surface == Some(surface_id)
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
+            || self.is_transient_surface(surface_id)
     }
 
     /// Pump the share-session encoder for `surface_id` on a fresh commit.
@@ -2386,6 +2407,7 @@ impl CompositorHandler for State {
 
     fn destroyed(&mut self, surface: &WlSurface) {
         let id = crate::compositor::state::surface_id(surface);
+        self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
@@ -2491,6 +2513,265 @@ fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::b
         .parse::<u32>()
         .ok()
         .map(crate::compositor::backend::OutputId)
+}
+
+/// Calculate a popup's protocol geometry against the visible part of its
+/// parent coordinate space.  Smithay implements the xdg flip → slide → resize
+/// order here; keeping the target in parent coordinates is the part a shell
+/// must supply.
+fn constrained_popup_geometry(
+    positioner: PositionerState,
+    parent_origin: (i32, i32),
+    output: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let target = Rectangle::new(
+        (
+            output.loc.x.saturating_sub(parent_origin.0),
+            output.loc.y.saturating_sub(parent_origin.1),
+        )
+            .into(),
+        output.size,
+    );
+    positioner.get_unconstrained_geometry(target)
+}
+
+/// Keep an already-sized transient (the input-method protocol supplies its
+/// size through the committed buffer) fully visible when it can fit on the
+/// output.  Oversized candidates retain their size so the client can decide
+/// how to scroll or reflow instead of silently losing content.
+fn constrain_transient_rect(mut rect: Rect, bounds: Rect) -> Rect {
+    if rect.width() <= bounds.width() {
+        let dx = (bounds.x0 - rect.x0).max(0.0) - (rect.x1 - bounds.x1).max(0.0);
+        rect = rect.with_origin((rect.x0 + dx, rect.y0));
+    }
+    if rect.height() <= bounds.height() {
+        let dy = (bounds.y0 - rect.y0).max(0.0) - (rect.y1 - bounds.y1).max(0.0);
+        rect = rect.with_origin((rect.x0, rect.y0 + dy));
+    }
+    rect
+}
+
+impl State {
+    fn popup_parent_rect(&self, id: SurfaceId, depth: usize) -> Option<Rect> {
+        if depth > 16 {
+            // A client cannot legitimately form a cycle, but never let a
+            // malformed transient graph turn input or painting into recursion.
+            return None;
+        }
+        if let Some(rect) = crate::compositor::foreign::store().placement(id) {
+            return Some(rect);
+        }
+        let popup = self
+            .popups
+            .iter()
+            .find(|popup| surface_id(popup.surface.wl_surface()) == id)?;
+        let parent = self.popup_parent_rect(popup.parent, depth.saturating_add(1))?;
+        Some(Rect::new(
+            parent.x0 + f64::from(popup.geometry.loc.x),
+            parent.y0 + f64::from(popup.geometry.loc.y),
+            parent.x0 + f64::from(popup.geometry.loc.x + popup.geometry.size.w),
+            parent.y0 + f64::from(popup.geometry.loc.y + popup.geometry.size.h),
+        ))
+    }
+
+    fn popup_constraint_output(&self, parent: SurfaceId) -> Rectangle<i32, Logical> {
+        let parent_rect = self.popup_parent_rect(parent, 0);
+        let output = parent_rect.and_then(|rect| {
+            self.output_rects
+                .values()
+                .find(|output| output.contains(rect.center()))
+                .copied()
+        });
+        let output = output.unwrap_or_else(|| {
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.output_size.0.max(0)),
+                f64::from(self.output_size.1.max(0)),
+            )
+        });
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "output geometry is bounded by the i32 Wayland logical coordinate space"
+        )]
+        Rectangle::new(
+            (output.x0.round() as i32, output.y0.round() as i32).into(),
+            (
+                output.width().round().max(0.0) as i32,
+                output.height().round().max(0.0) as i32,
+            )
+                .into(),
+        )
+    }
+
+    fn configure_popup(
+        &self,
+        popup: &PopupSurface,
+        parent: SurfaceId,
+        positioner: PositionerState,
+    ) -> Rectangle<i32, Logical> {
+        let parent_origin = self
+            .popup_parent_rect(parent, 0)
+            .map(|rect| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    reason = "Wayland logical coordinates are i32 by protocol"
+                )]
+                (rect.x0.round() as i32, rect.y0.round() as i32)
+            })
+            .unwrap_or_default();
+        let geometry = constrained_popup_geometry(
+            positioner,
+            parent_origin,
+            self.popup_constraint_output(parent),
+        );
+        popup.with_pending_state(|state| state.geometry = geometry);
+        geometry
+    }
+
+    /// Visible transient rectangles, in paint order.  Children follow their
+    /// parents and therefore naturally paint/hit-test above them.
+    pub(crate) fn popup_surfaces(&self) -> Vec<(SurfaceId, Rect)> {
+        self.popups
+            .iter()
+            .filter(|popup| popup.surface.alive())
+            .filter_map(|popup| {
+                let parent = self.popup_parent_rect(popup.parent, 0)?;
+                let geometry = popup.geometry;
+                Some((
+                    surface_id(popup.surface.wl_surface()),
+                    Rect::new(
+                        parent.x0 + f64::from(geometry.loc.x),
+                        parent.y0 + f64::from(geometry.loc.y),
+                        parent.x0 + f64::from(geometry.loc.x + geometry.size.w),
+                        parent.y0 + f64::from(geometry.loc.y + geometry.size.h),
+                    ),
+                ))
+            })
+            .collect()
+    }
+
+    /// Candidate windows provided by the privileged input method.  They use
+    /// the focused text field as their parent and are clipped to its output,
+    /// so a candidate strip cannot escape a multi-monitor desktop.
+    pub(crate) fn input_method_popup_surfaces(&self) -> Vec<(SurfaceId, Rect)> {
+        self.input_method_popups
+            .iter()
+            .filter(|popup| popup.alive())
+            .filter_map(|popup| {
+                let parent = popup.get_parent()?;
+                let parent_id = surface_id(&parent.surface);
+                let parent_rect = self.popup_parent_rect(parent_id, 0)?;
+                let (width, height) = crate::compositor::foreign::store()
+                    .frame_size(surface_id(popup.wl_surface()))?;
+                let location = popup.location();
+                let rect = Rect::new(
+                    parent_rect.x0 + f64::from(location.x),
+                    parent_rect.y0 + f64::from(location.y),
+                    parent_rect.x0 + f64::from(location.x) + f64::from(width),
+                    parent_rect.y0 + f64::from(location.y) + f64::from(height),
+                );
+                let output = self.popup_constraint_output(parent_id);
+                let bounds = Rect::new(
+                    f64::from(output.loc.x),
+                    f64::from(output.loc.y),
+                    f64::from(output.loc.x + output.size.w),
+                    f64::from(output.loc.y + output.size.h),
+                );
+                Some((
+                    surface_id(popup.wl_surface()),
+                    constrain_transient_rect(rect, bounds),
+                ))
+            })
+            .collect()
+    }
+
+    pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
+        self.popups
+            .iter()
+            .any(|popup| surface_id(popup.surface.wl_surface()) == id)
+            || self
+                .input_method_popups
+                .iter()
+                .any(|popup| surface_id(popup.wl_surface()) == id)
+    }
+
+    fn drop_transients_for_surface(&mut self, surface: SurfaceId) {
+        let mut removed = Vec::new();
+        let mut frontier = vec![surface];
+        while let Some(parent) = frontier.pop() {
+            for popup in &self.popups {
+                let id = surface_id(popup.surface.wl_surface());
+                if (id == parent || popup.parent == parent) && !removed.contains(&id) {
+                    removed.push(id);
+                    frontier.push(id);
+                }
+            }
+        }
+        for popup in &self.input_method_popups {
+            let id = surface_id(popup.wl_surface());
+            let parent = popup.get_parent().map(|parent| surface_id(&parent.surface));
+            if id == surface || parent == Some(surface) {
+                removed.push(id);
+            }
+        }
+        removed.sort_unstable();
+        removed.dedup();
+        self.popups
+            .retain(|popup| !removed.contains(&surface_id(popup.surface.wl_surface())));
+        self.input_method_popups
+            .retain(|popup| !removed.contains(&surface_id(popup.wl_surface())));
+        for id in removed {
+            self.client_input.unregister_transient(id);
+            crate::compositor::foreign::store().forget(id);
+        }
+    }
+
+    fn grabbed_popup(&self) -> Option<SurfaceId> {
+        self.popups
+            .iter()
+            .rev()
+            .find(|popup| popup.grabbed && popup.surface.alive())
+            .map(|popup| surface_id(popup.surface.wl_surface()))
+    }
+
+    /// Honour xdg-popup grabs by dismissing the topmost grabbing popup when a
+    /// fresh click lands outside its transient chain.  The client owns the
+    /// actual destroy; `popup_done` is the protocol request to do so.
+    pub(crate) fn dismiss_popup_grab_outside(&mut self, hit: Option<SurfaceId>) -> bool {
+        let Some(popup_id) = self.grabbed_popup() else {
+            return false;
+        };
+        let is_inside_chain = hit.is_some_and(|hit| {
+            let mut cursor = Some(hit);
+            for _ in 0..16 {
+                let Some(current) = cursor else { return false };
+                if current == popup_id {
+                    return true;
+                }
+                cursor = self
+                    .popups
+                    .iter()
+                    .find(|popup| surface_id(popup.surface.wl_surface()) == current)
+                    .map(|popup| popup.parent);
+            }
+            false
+        });
+        if is_inside_chain {
+            return false;
+        }
+        if let Some(popup) = self
+            .popups
+            .iter_mut()
+            .find(|popup| surface_id(popup.surface.wl_surface()) == popup_id)
+        {
+            popup.grabbed = false;
+            popup.surface.send_popup_done();
+        }
+        true
+    }
 }
 
 impl XdgShellHandler for State {
@@ -2647,21 +2928,71 @@ impl XdgShellHandler for State {
         }
     }
 
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        surface.send_configure().ok();
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        let Some(parent_surface) = surface.get_parent_surface() else {
+            // Smithay will report the protocol violation at commit time; send
+            // the required initial configure so a malformed client cannot
+            // wedge the server's dispatch loop beforehand.
+            let _ = surface.send_configure();
+            return;
+        };
+        let parent = surface_id(&parent_surface);
+        let geometry = self.configure_popup(&surface, parent, positioner);
+        self.client_input.register_transient(
+            surface_id(surface.wl_surface()),
+            surface.wl_surface().clone(),
+        );
+        self.popups.push(TrackedPopup {
+            surface: surface.clone(),
+            parent,
+            geometry,
+            grabbed: false,
+        });
+        if let Err(error) = surface.send_configure() {
+            tracing::warn!(
+                target: "shell::compositor::popup",
+                parent,
+                error = %error,
+                "could not send initial popup configure"
+            );
+        }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup grabs aren't wired up yet.
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
+        if let Some(popup) = self
+            .popups
+            .iter_mut()
+            .find(|popup| popup.surface == surface)
+        {
+            popup.grabbed = true;
+        }
     }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
-        // No-op until popup positioning is wired up.
+        let Some(parent) = self
+            .popups
+            .iter()
+            .find(|popup| popup.surface == surface)
+            .map(|popup| popup.parent)
+        else {
+            return;
+        };
+        let geometry = self.configure_popup(&surface, parent, positioner);
+        if let Some(popup) = self
+            .popups
+            .iter_mut()
+            .find(|popup| popup.surface == surface)
+        {
+            popup.geometry = geometry;
+        }
+        // `repositioned(token)` is required even if the geometry happens to
+        // be unchanged after constraints.
+        surface.send_repositioned(token);
     }
 
     /// A client asked to occupy its output fullscreen
@@ -2820,22 +3151,60 @@ impl SeatHandler for State {
 }
 
 impl InputMethodHandler for State {
-    fn new_popup(&mut self, _surface: InputMethodPopupSurface) {
-        // qOS gives the full keyboard its compositor-positioned xdg overlay.
-        // Candidate popups are supported by the protocol but not painted yet;
-        // keeping them out of the tiled tree is safer than adopting a transient
-        // IM surface as an application tab.
+    fn new_popup(&mut self, surface: InputMethodPopupSurface) {
+        let id = surface_id(surface.wl_surface());
+        self.client_input
+            .register_transient(id, surface.wl_surface().clone());
+        self.input_method_popups
+            .retain(|popup| popup.wl_surface() != surface.wl_surface());
+        self.input_method_popups.push(surface);
     }
 
-    fn dismiss_popup(&mut self, _surface: InputMethodPopupSurface) {}
+    fn dismiss_popup(&mut self, surface: InputMethodPopupSurface) {
+        let id = surface_id(surface.wl_surface());
+        self.input_method_popups
+            .retain(|popup| popup.wl_surface() != surface.wl_surface());
+        self.client_input.unregister_transient(id);
+        crate::compositor::foreign::store().forget(id);
+    }
 
-    fn popup_repositioned(&mut self, _surface: InputMethodPopupSurface) {}
+    fn popup_repositioned(&mut self, surface: InputMethodPopupSurface) {
+        // The object stores its new text-input rectangle itself.  Retaining a
+        // single current handle makes the next frame pick up the new location
+        // without allocating a second overlay or leaving stale candidates.
+        let id = surface_id(surface.wl_surface());
+        self.input_method_popups
+            .retain(|popup| surface_id(popup.wl_surface()) != id);
+        self.input_method_popups.push(surface);
+    }
 
     fn parent_geometry(
         &self,
-        _parent: &WlSurface,
+        parent: &WlSurface,
     ) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
-        smithay::utils::Rectangle::new((0, 0).into(), self.output_size.into())
+        let rect = self
+            .popup_parent_rect(surface_id(parent), 0)
+            .unwrap_or_else(|| {
+                Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(self.output_size.0.max(0)),
+                    f64::from(self.output_size.1.max(0)),
+                )
+            });
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "Wayland parent geometry is represented as i32 logical coordinates"
+        )]
+        Rectangle::new(
+            (rect.x0.round() as i32, rect.y0.round() as i32).into(),
+            (
+                rect.width().round().max(0.0) as i32,
+                rect.height().round().max(0.0) as i32,
+            )
+                .into(),
+        )
     }
 }
 
@@ -2924,6 +3293,225 @@ impl AsRef<ColorManagerState> for State {
 
 // `wp_color_manager_v1` + friends live outside smithay's delegate wrappers, hand-rolled in `wayland::color_management`; this macro wires their `Dispatch`/`GlobalDispatch`.
 crate::delegate_color_management!(State);
+
+#[cfg(test)]
+mod popup_geometry_tests {
+    use super::*;
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::{
+        Anchor, ConstraintAdjustment, Gravity,
+    };
+    use ui::offscreen::OffscreenRenderer;
+    use vello::Scene;
+    use vello::kurbo::Affine;
+    use vello::peniko::{Color, Fill};
+
+    fn right_anchored_positioner(size: (i32, i32), anchor: (i32, i32)) -> PositionerState {
+        PositionerState {
+            rect_size: size.into(),
+            anchor_rect: Rectangle::new(anchor.into(), (1, 1).into()),
+            anchor_edges: Anchor::Right,
+            gravity: Gravity::Right,
+            constraint_adjustment: ConstraintAdjustment::SlideX,
+            ..Default::default()
+        }
+    }
+
+    fn popup_screen_rect(parent: Rect, geometry: Rectangle<i32, Logical>) -> Rect {
+        Rect::new(
+            parent.x0 + f64::from(geometry.loc.x),
+            parent.y0 + f64::from(geometry.loc.y),
+            parent.x0 + f64::from(geometry.loc.x + geometry.size.w),
+            parent.y0 + f64::from(geometry.loc.y + geometry.size.h),
+        )
+    }
+
+    fn draw_rect(scene: &mut Scene, rect: Rect, color: Color) {
+        scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+    }
+
+    fn assert_rect_within_viewport(rect: Rect, viewport: Rect) {
+        assert!(
+            rect.x0 >= viewport.x0
+                && rect.y0 >= viewport.y0
+                && rect.x1 <= viewport.x1
+                && rect.y1 <= viewport.y1,
+            "{rect:?} extends outside {viewport:?}"
+        );
+    }
+
+    #[test]
+    fn popup_constraints_are_relative_to_the_parent_not_global_origin() {
+        let positioner = PositionerState {
+            rect_size: (80, 20).into(),
+            anchor_rect: Rectangle::new((95, 10).into(), (1, 1).into()),
+            anchor_edges: Anchor::Right,
+            gravity: Gravity::Right,
+            constraint_adjustment: ConstraintAdjustment::SlideX,
+            ..Default::default()
+        };
+        // The parent begins at x=300 on a 400px output.  The visible target
+        // is therefore -300..100 in parent coordinates, not 0..400: using
+        // global bounds here would let this menu escape off the output.
+        let geometry = constrained_popup_geometry(
+            positioner,
+            (300, 0),
+            Rectangle::new((0, 0).into(), (400, 200).into()),
+        );
+        assert_eq!(geometry.loc.x, 20);
+        assert_eq!(geometry.size.w, 80);
+        assert_eq!(geometry.loc.y, 0);
+    }
+
+    #[test]
+    fn popup_constraints_preserve_requested_size_when_slide_can_fit_it() {
+        let positioner = right_anchored_positioner((40, 30), (95, 5));
+        let geometry = constrained_popup_geometry(
+            positioner,
+            (0, 0),
+            Rectangle::new((0, 0).into(), (100, 100).into()),
+        );
+        assert_eq!(geometry.loc.x, 60);
+        assert_eq!(geometry.size, (40, 30).into());
+    }
+
+    #[test]
+    fn popup_and_ime_geometry_fixture_renders_normal_and_scaled_edges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let output = Rectangle::new((0, 0).into(), (800, 500).into());
+        let parent = Rect::new(280.0, 130.0, 640.0, 370.0);
+        let popup = popup_screen_rect(
+            parent,
+            constrained_popup_geometry(
+                right_anchored_positioner((190, 110), (350, 72)),
+                (280, 130),
+                output,
+            ),
+        );
+        let nested = popup_screen_rect(
+            popup,
+            constrained_popup_geometry(
+                right_anchored_positioner((130, 76), (185, 54)),
+                (
+                    i32::try_from(popup.x0.round() as i64)?,
+                    i32::try_from(popup.y0.round() as i64)?,
+                ),
+                output,
+            ),
+        );
+        let candidate = constrain_transient_rect(
+            Rect::new(
+                parent.x1 - 18.0,
+                parent.y1 - 22.0,
+                parent.x1 + 142.0,
+                parent.y1 + 30.0,
+            ),
+            Rect::new(0.0, 0.0, 800.0, 500.0),
+        );
+        let normal_viewport = Rect::new(0.0, 0.0, 800.0, 500.0);
+        assert_rect_within_viewport(popup, normal_viewport);
+        assert_rect_within_viewport(nested, normal_viewport);
+        assert_rect_within_viewport(candidate, normal_viewport);
+
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/popup-ime-geometry-fixtures");
+        std::fs::create_dir_all(&out)?;
+        let mut normal = Scene::new();
+        draw_rect(
+            &mut normal,
+            Rect::new(0.0, 0.0, 800.0, 500.0),
+            Color::from_rgb8(0x0b, 0x10, 0x1d),
+        );
+        draw_rect(&mut normal, parent, Color::from_rgb8(0x45, 0x72, 0xb8));
+        draw_rect(&mut normal, popup, Color::from_rgb8(0x36, 0xbc, 0xa6));
+        draw_rect(&mut normal, nested, Color::from_rgb8(0xf0, 0xa0, 0x45));
+        draw_rect(&mut normal, candidate, Color::from_rgb8(0xdc, 0x66, 0x9c));
+        let mut renderer = OffscreenRenderer::new(800, 500);
+        renderer.render_png(&normal, Color::BLACK, out.join("normal.png"));
+
+        // The compositor positions in logical space.  Reserve a small work-area
+        // inset so an edge-constrained transient is visibly inside the physical
+        // framebuffer after the 1.5x logical-to-physical transform, rather than
+        // appearing cropped by the raster edge.
+        let logical_output = Rectangle::new((16, 12).into(), (568, 336).into());
+        let logical_parent = Rect::new(340.0, 86.0, 580.0, 266.0);
+        let logical_popup = popup_screen_rect(
+            logical_parent,
+            constrained_popup_geometry(
+                right_anchored_positioner((160, 90), (230, 50)),
+                (340, 86),
+                logical_output,
+            ),
+        );
+        let logical_nested = popup_screen_rect(
+            logical_popup,
+            constrained_popup_geometry(
+                right_anchored_positioner((110, 64), (155, 36)),
+                (
+                    i32::try_from(logical_popup.x0.round() as i64)?,
+                    i32::try_from(logical_popup.y0.round() as i64)?,
+                ),
+                logical_output,
+            ),
+        );
+        let logical_candidate = constrain_transient_rect(
+            Rect::new(550.0, 246.0, 670.0, 292.0),
+            Rect::new(16.0, 12.0, 584.0, 348.0),
+        );
+        let scale = 1.5;
+        let scale_rect = |rect: Rect| {
+            Rect::new(
+                rect.x0 * scale,
+                rect.y0 * scale,
+                rect.x1 * scale,
+                rect.y1 * scale,
+            )
+        };
+        let physical_viewport = Rect::new(0.0, 0.0, 900.0, 540.0);
+        let physical_work_area = scale_rect(Rect::new(16.0, 12.0, 584.0, 348.0));
+        assert_rect_within_viewport(scale_rect(logical_popup), physical_viewport);
+        assert_rect_within_viewport(scale_rect(logical_nested), physical_viewport);
+        assert_rect_within_viewport(scale_rect(logical_candidate), physical_viewport);
+        // Assert the stronger contract too: all constrained surfaces retain
+        // the physical 24px right-edge safe margin, not merely a non-clipped
+        // endpoint at the framebuffer boundary.
+        assert_rect_within_viewport(scale_rect(logical_popup), physical_work_area);
+        assert_rect_within_viewport(scale_rect(logical_nested), physical_work_area);
+        assert_rect_within_viewport(scale_rect(logical_candidate), physical_work_area);
+        let mut scaled = Scene::new();
+        draw_rect(
+            &mut scaled,
+            Rect::new(0.0, 0.0, 900.0, 540.0),
+            Color::from_rgb8(0x0b, 0x10, 0x1d),
+        );
+        draw_rect(
+            &mut scaled,
+            scale_rect(logical_parent),
+            Color::from_rgb8(0x45, 0x72, 0xb8),
+        );
+        draw_rect(
+            &mut scaled,
+            scale_rect(logical_popup),
+            Color::from_rgb8(0x36, 0xbc, 0xa6),
+        );
+        draw_rect(
+            &mut scaled,
+            scale_rect(logical_nested),
+            Color::from_rgb8(0xf0, 0xa0, 0x45),
+        );
+        draw_rect(
+            &mut scaled,
+            scale_rect(logical_candidate),
+            Color::from_rgb8(0xdc, 0x66, 0x9c),
+        );
+        let mut scaled_renderer = OffscreenRenderer::new(900, 540);
+        scaled_renderer.render_png(
+            &scaled,
+            Color::BLACK,
+            out.join("edge-constrained-scale-150.png"),
+        );
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod osk_identity_tests {

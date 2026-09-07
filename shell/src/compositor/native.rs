@@ -4658,6 +4658,9 @@ pub fn run() -> ! {
             .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
             .collect::<Vec<_>>();
         frame_builder.set_floating_surfaces(&floating_surfaces);
+        let mut transient_surfaces = state.popup_surfaces();
+        transient_surfaces.extend(state.input_method_popup_surfaces());
+        frame_builder.set_transient_surfaces(&transient_surfaces);
         frame_builder.set_floating_transfer_surfaces(
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
