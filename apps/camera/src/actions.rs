@@ -49,8 +49,20 @@ pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
 pub enum CameraOperation {
     Capture,
     ToggleRecording,
-    Share { id: String },
-    Delete { id: String },
+    /// Drop a stale device session and re-run real device discovery.
+    RetryCamera,
+    /// Hand the system camera-privacy URI to the registered desktop handler.
+    OpenCameraPrivacySettings,
+    /// Select one device that was discovered in the current refresh.
+    SelectCamera {
+        device: String,
+    },
+    Share {
+        id: String,
+    },
+    Delete {
+        id: String,
+    },
 }
 
 /// Decode one Camera effect payload, declining operation types owned by other
@@ -228,6 +240,15 @@ pub struct CameraResourceCtx {
     pub mode: CaptureMode,
     pub facing: Facing,
     pub recording: bool,
+    /// Device effects are only actionable when a real (or hermetic sample)
+    /// viewfinder feed is available. Keeping this in the resource context
+    /// means Ctrl+K tells an agent the truth before it attempts an operation.
+    pub feed_available: bool,
+    pub camera_permission_denied: bool,
+    /// Current device nodes, real discovery only. Empty is not an error and
+    /// never causes the chooser to be advertised.
+    pub camera_devices: Vec<String>,
+    pub selected_camera: Option<String>,
     pub settings: Settings,
 }
 
@@ -238,6 +259,10 @@ impl Default for CameraResourceCtx {
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             recording: false,
+            feed_available: false,
+            camera_permission_denied: false,
+            camera_devices: Vec::new(),
+            selected_camera: None,
             settings: Settings::default(),
         }
     }
@@ -280,7 +305,12 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         CAMERA_OPERATION_TYPE,
         &CameraOperation::Capture,
     ) {
-        root = root.with_action(if ctx.mode == CaptureMode::Photo && !ctx.recording {
+        root = root.with_action(if !ctx.feed_available {
+            spec.unavailable(
+                "camera_unavailable",
+                "Connect or allow a camera before capturing",
+            )
+        } else if ctx.mode == CaptureMode::Photo && !ctx.recording {
             spec
         } else {
             spec.unavailable(
@@ -288,6 +318,54 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
                 "Switch to photo mode before capturing",
             )
         });
+    }
+    if !ctx.feed_available {
+        if let Ok(spec) = ActionSpec::operation(
+            "retry-camera",
+            "Refresh cameras",
+            OperationKind::Effect,
+            CAMERA_OPERATION_TYPE,
+            &CameraOperation::RetryCamera,
+        ) {
+            root = root.with_action(spec);
+        }
+        if ctx.camera_permission_denied
+            && let Ok(spec) = ActionSpec::operation(
+                "open-camera-privacy",
+                "Open camera privacy settings",
+                OperationKind::Effect,
+                CAMERA_OPERATION_TYPE,
+                &CameraOperation::OpenCameraPrivacySettings,
+            )
+        {
+            root = root.with_action(spec);
+        }
+        if ctx.camera_devices.len() > 1 {
+            for device in &ctx.camera_devices {
+                let label = if ctx.selected_camera.as_deref() == Some(device.as_str()) {
+                    format!("Use {device} (selected)")
+                } else {
+                    format!("Use {device}")
+                };
+                if let Ok(spec) = ActionSpec::operation(
+                    format!("camera-device-{device}"),
+                    label,
+                    OperationKind::Effect,
+                    CAMERA_OPERATION_TYPE,
+                    &CameraOperation::SelectCamera {
+                        device: device.clone(),
+                    },
+                ) {
+                    root = root.with_action(
+                        if ctx.selected_camera.as_deref() == Some(device.as_str()) {
+                            spec.unavailable("already_selected", "This camera is already selected")
+                        } else {
+                            spec
+                        },
+                    );
+                }
+            }
+        }
     }
     if let Ok(spec) = ActionSpec::operation(
         "record",
@@ -300,7 +378,12 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         CAMERA_OPERATION_TYPE,
         &CameraOperation::ToggleRecording,
     ) {
-        root = root.with_action(if ctx.mode == CaptureMode::Video {
+        root = root.with_action(if !ctx.feed_available {
+            spec.unavailable(
+                "camera_unavailable",
+                "Connect or allow a camera before recording",
+            )
+        } else if ctx.mode == CaptureMode::Video {
             spec
         } else {
             spec.unavailable(
@@ -771,6 +854,10 @@ mod tests {
             .find(|a| a.id == "capture")
             .unwrap();
         assert_eq!(capture.kind, OperationKind::Effect);
+        assert!(
+            !capture.contract.availability.is_available(),
+            "a palette must not claim capture works without a feed"
+        );
         let delete = resources[0].children[0]
             .actions
             .iter()
@@ -778,5 +865,55 @@ mod tests {
             .unwrap();
         assert!(delete.contract.availability.is_available());
         assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+
+        let available = provide_resources(
+            &CameraResourceCtx {
+                feed_available: true,
+                ..CameraResourceCtx::default()
+            },
+            &AutoCommit::new(),
+        );
+        let capture = available[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "capture")
+            .unwrap();
+        assert!(capture.contract.availability.is_available());
+    }
+
+    #[test]
+    fn unavailable_camera_publishes_real_recovery_operations() {
+        let resources = provide_resources(
+            &CameraResourceCtx {
+                camera_permission_denied: true,
+                camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
+                ..CameraResourceCtx::default()
+            },
+            &AutoCommit::new(),
+        );
+        let actions = &resources[0].actions;
+        let ids: Vec<&str> = actions.iter().map(|action| action.id.as_str()).collect();
+        for id in [
+            "retry-camera",
+            "open-camera-privacy",
+            "camera-device-/dev/video0",
+            "camera-device-/dev/video2",
+        ] {
+            assert!(ids.contains(&id), "missing recovery action {id}: {ids:?}");
+        }
+        assert!(
+            actions
+                .iter()
+                .filter(|action| {
+                    matches!(
+                        action.id.as_str(),
+                        "retry-camera"
+                            | "open-camera-privacy"
+                            | "camera-device-/dev/video0"
+                            | "camera-device-/dev/video2"
+                    )
+                })
+                .all(|action| action.kind == OperationKind::Effect)
+        );
     }
 }

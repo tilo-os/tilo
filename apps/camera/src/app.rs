@@ -19,7 +19,7 @@ use qos_actions::EncodedAction;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -74,6 +74,15 @@ enum Storage {
     Sample,
 }
 
+/// The reason a live viewfinder cannot be opened when a device was present.
+/// This stays distinct from the ordinary "no camera connected" state so we
+/// never mislead someone whose portal/device permission was denied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CameraIssue {
+    PermissionDenied,
+    StartFailed,
+}
+
 /// An in-progress video recording: the encoder accumulating frames plus the
 /// epoch second it started (for the on-screen elapsed timer).
 struct RecState {
@@ -110,6 +119,10 @@ enum Action {
     ToggleGeotag,
     ToggleHdr,
     CycleDefaultFacing,
+    RetryCamera,
+    OpenCameraPrivacySettings,
+    OpenCameraChooser,
+    SelectCamera(String),
 }
 
 #[allow(
@@ -159,6 +172,13 @@ pub struct CameraApp {
     // Live camera frame (populated by the live-capture worker / tests).
     latest_frame: Option<FrameBuf>,
     frame_gen: u64,
+    camera_issue: Option<CameraIssue>,
+    selected_camera: Option<String>,
+    camera_chooser_open: bool,
+    /// The host supplies this preference before deciding whether to pump
+    /// animation frames. Capture itself still runs; only decorative frame
+    /// pumping is settled under reduced motion.
+    motion_reduced: bool,
     #[cfg(feature = "live-capture")]
     camera: Option<crate::capture::Capture>,
     /// The `(device, width, height)` the live pipeline is currently open on,
@@ -228,6 +248,10 @@ impl CameraApp {
             recording: None,
             latest_frame: None,
             frame_gen: 0,
+            camera_issue: None,
+            selected_camera: None,
+            camera_chooser_open: false,
+            motion_reduced: false,
             #[cfg(feature = "live-capture")]
             camera: None,
             #[cfg(feature = "live-capture")]
@@ -333,6 +357,37 @@ impl CameraApp {
         }
     }
 
+    fn no_feed_copy(&self) -> (&'static str, &'static str) {
+        match self.camera_issue {
+            Some(CameraIssue::PermissionDenied) => (
+                "Camera access needed",
+                "Allow camera access in system settings, then try again",
+            ),
+            Some(CameraIssue::StartFailed) => (
+                "Camera unavailable",
+                "The connected camera could not be started. Try another camera or reconnect it",
+            ),
+            None => (
+                "No camera connected",
+                "Connect a camera to start the viewfinder",
+            ),
+        }
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "the live-capture implementation reads storage while the no-feature build must return no fabricated devices"
+    )]
+    fn available_camera_devices(&self) -> Vec<String> {
+        #[cfg(feature = "live-capture")]
+        {
+            if matches!(self.storage, Storage::Disk(_)) {
+                return crate::capture::list_devices();
+            }
+        }
+        Vec::new()
+    }
+
     fn viewfinder_seed(facing: Facing) -> u8 {
         match facing {
             Facing::Back => 0,
@@ -343,6 +398,27 @@ impl CameraApp {
 
     fn push_region(&mut self, rect: Rect, action: Action) {
         self.regions.push((rect, action));
+    }
+
+    /// Register a compact painted affordance with a 44 pt minimum touch and
+    /// accessibility target. Larger cards keep their exact bounds through
+    /// [`Self::push_region`] so neighbouring gallery items never overlap.
+    fn push_tap_region(&mut self, rect: Rect, action: Action) {
+        let w = rect.width().max(44.0);
+        let h = rect.height().max(44.0);
+        let expanded = Rect::new(
+            rect.center().x - w / 2.0,
+            rect.center().y - h / 2.0,
+            rect.center().x + w / 2.0,
+            rect.center().y + h / 2.0,
+        );
+        let clamped = Rect::new(
+            expanded.x0.max(self.rect.x0),
+            expanded.y0.max(self.rect.y0),
+            expanded.x1.min(self.rect.x1),
+            expanded.y1.min(self.rect.y1),
+        );
+        self.push_region(clamped, action);
     }
 
     /// A stable semantic target for a hand-painted control. It is derived
@@ -373,6 +449,10 @@ impl CameraApp {
             Action::ToggleGeotag => "camera.geotag".into(),
             Action::ToggleHdr => "camera.hdr".into(),
             Action::CycleDefaultFacing => "camera.default-facing".into(),
+            Action::RetryCamera => "camera.retry-camera".into(),
+            Action::OpenCameraPrivacySettings => "camera.open-camera-privacy".into(),
+            Action::OpenCameraChooser => "camera.open-camera-chooser".into(),
+            Action::SelectCamera(device) => format!("camera.select-camera:{device}"),
         }
     }
 
@@ -545,6 +625,28 @@ impl CameraApp {
                 ),
                 AccessState::new().focusable(true),
             ),
+            Action::RetryCamera => (
+                Role::Button,
+                "Refresh available cameras".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenCameraPrivacySettings => (
+                Role::Button,
+                "Open camera privacy settings".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenCameraChooser => (
+                Role::Button,
+                "Choose a camera".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::SelectCamera(device) => (
+                Role::RadioButton,
+                format!("Use {device}"),
+                AccessState::new()
+                    .focusable(true)
+                    .checked(self.selected_camera.as_deref() == Some(device.as_str())),
+            ),
         };
         AccessNode::new(role)
             .with_name(name)
@@ -591,11 +693,16 @@ impl CameraApp {
                 is_video: c.is_video(),
             })
             .collect();
+        let camera_devices = self.available_camera_devices();
         crate::actions::CameraResourceCtx {
             items,
             mode: self.mode,
             facing: self.facing,
             recording: self.is_recording(),
+            feed_available: self.feed_active(),
+            camera_permission_denied: self.camera_issue == Some(CameraIssue::PermissionDenied),
+            camera_devices,
+            selected_camera: self.selected_camera.clone(),
             settings: self.settings,
         }
     }
@@ -623,6 +730,10 @@ impl CameraApp {
             Action::ShareSelected => self.apply_share_selected(),
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
             Action::ScanLibraryItem(id) => self.scan_library_item(&id, doc, root),
+            Action::RetryCamera => self.retry_camera(),
+            Action::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
+            Action::OpenCameraChooser => self.open_camera_chooser(),
+            Action::SelectCamera(device) => self.select_camera(&device),
             settings_action @ (Action::CycleResolution
             | Action::CycleFormat
             | Action::SetTimer(_)
@@ -901,6 +1012,9 @@ impl CameraApp {
                     self.start_recording();
                 }
             }
+            CameraOperation::RetryCamera => self.retry_camera(),
+            CameraOperation::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
+            CameraOperation::SelectCamera { device } => self.select_camera(&device),
             CameraOperation::Share { id } => {
                 self.selected_capture = Some(id);
                 self.apply_share_selected();
@@ -910,6 +1024,69 @@ impl CameraApp {
             }
         }
         Ok(())
+    }
+
+    /// Revalidate the real device list and force the live pipeline to reopen
+    /// on its next sync. This does not claim a camera exists or request any
+    /// permission itself.
+    fn retry_camera(&mut self) {
+        let devices = self.available_camera_devices();
+        if let Some(selected) = &self.selected_camera
+            && !devices.contains(selected)
+        {
+            self.selected_camera = None;
+        }
+        #[cfg(feature = "live-capture")]
+        {
+            self.camera = None;
+            self.cam_config = None;
+        }
+        self.camera_issue = None;
+        self.camera_chooser_open = false;
+        self.toast = Some(if devices.is_empty() {
+            "No cameras found. Connect one, then refresh".into()
+        } else {
+            "Refreshing camera".into()
+        });
+    }
+
+    fn open_camera_privacy_settings(&mut self) {
+        // `settings://` is delegated to the desktop's registered settings
+        // handler, just as scanned URLs use the OS handler. It is deliberately
+        // an external effect, never a fabricated in-app permission grant.
+        if open_external("settings://privacy/camera") {
+            self.toast = Some("Opening camera privacy settings".into());
+        } else {
+            self.toast = Some("Couldn't open camera privacy settings".into());
+        }
+    }
+
+    fn open_camera_chooser(&mut self) {
+        let devices = self.available_camera_devices();
+        if devices.len() > 1 {
+            self.camera_chooser_open = true;
+        } else {
+            self.toast = Some("Only one camera is available".into());
+        }
+    }
+
+    fn select_camera(&mut self, device: &str) {
+        // Revalidate exactly when an agent, semantic action, or pointer asks
+        // to select: a stale /dev/video node must not become a pretend lens.
+        if !self.available_camera_devices().iter().any(|d| d == device) {
+            self.camera_chooser_open = false;
+            self.toast = Some("That camera is no longer available".into());
+            return;
+        }
+        self.selected_camera = Some(device.to_string());
+        self.camera_chooser_open = false;
+        #[cfg(feature = "live-capture")]
+        {
+            self.camera = None;
+            self.cam_config = None;
+        }
+        self.camera_issue = None;
+        self.toast = Some(format!("Selected {device}"));
     }
 
     /// Decode a code out of a library photo by id. Real work: the photo is
@@ -958,7 +1135,7 @@ impl CameraApp {
         let label = actions.get(i).copied().unwrap_or("Copy");
         match label {
             "Open link" | "Open map" | "Compose" | "Call" => {
-                open_external(&s.raw);
+                let _ = open_external(&s.raw);
                 ui::clipboard_copy(&s.raw);
                 self.toast = Some(format!("{label} · copied to clipboard"));
             }
@@ -1022,7 +1199,12 @@ impl CameraApp {
             Facing::Front => 1,
             Facing::Wide => 2,
         };
-        let device = devices.get(idx).or_else(|| devices.first()).cloned();
+        let device = self
+            .selected_camera
+            .as_ref()
+            .filter(|selected| devices.contains(selected))
+            .cloned()
+            .or_else(|| devices.get(idx).or_else(|| devices.first()).cloned());
         let (rw, rh) = capture_request_dims(self.settings.resolution);
         let want = device.map(|d| (d, rw, rh));
 
@@ -1032,10 +1214,31 @@ impl CameraApp {
             self.camera = None;
             if let Some((d, w, h)) = &want {
                 // Try the requested size, then fall back to a broadly-supported
-                // mode so the feed stays alive on modest webcams.
-                self.camera = crate::capture::Capture::open(d, *w, *h)
+                // mode so the feed stays alive on modest webcams. Preserve a
+                // meaningful failure category for the honest empty state.
+                match crate::capture::Capture::open(d, *w, *h)
                     .or_else(|_| crate::capture::Capture::open(d, 1280, 720))
-                    .ok();
+                {
+                    Ok(camera) => {
+                        self.camera = Some(camera);
+                        self.camera_issue = None;
+                    }
+                    Err(error) => {
+                        let message = error.to_string().to_ascii_lowercase();
+                        self.camera_issue = Some(
+                            if message.contains("permission")
+                                || message.contains("not permitted")
+                                || message.contains("access denied")
+                            {
+                                CameraIssue::PermissionDenied
+                            } else {
+                                CameraIssue::StartFailed
+                            },
+                        );
+                    }
+                }
+            } else if std::env::var_os("CAMERA_SHOT_CAMERA_STATE").is_none() {
+                self.camera_issue = None;
             }
             self.cam_config = want;
         }
@@ -1078,6 +1281,11 @@ fn capture_request_dims(res: Resolution) -> (u32, u32) {
 }
 
 fn now_secs() -> i64 {
+    if let Ok(value) = std::env::var("CAMERA_SHOT_NOW")
+        && let Ok(now) = value.parse::<i64>()
+    {
+        return now.max(0);
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
@@ -1103,12 +1311,13 @@ fn fmt_dur(ms: i64) -> String {
 
 /// Best-effort hand-off to the system default handler for a URI. Never
 /// blocks and ignores failures — the clipboard copy is the guaranteed path.
-fn open_external(uri: &str) {
-    let _ = std::process::Command::new("xdg-open")
+fn open_external(uri: &str) -> bool {
+    std::process::Command::new("xdg-open")
         .arg(uri)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+        .is_ok()
 }
 
 fn frame_image_fill(buf: FrameBuf) -> Image {
@@ -1246,6 +1455,17 @@ impl Widget for CameraApp {
         self.settings = doc::read_settings(state, path);
         self.favorites = doc::read_favorites(state, path);
         self.scans = doc::read_scans(state, path);
+
+        // Offscreen fixtures may request a concrete unavailable state without
+        // fabricating a feed. Production state below still comes from an
+        // actual device-open result.
+        if matches!(self.storage, Storage::Disk(_)) {
+            self.camera_issue = match std::env::var("CAMERA_SHOT_CAMERA_STATE").ok().as_deref() {
+                Some("permission") => Some(CameraIssue::PermissionDenied),
+                Some("error") => Some(CameraIssue::StartFailed),
+                _ => self.camera_issue,
+            };
+        }
 
         #[cfg(feature = "live-capture")]
         self.poll_camera();
@@ -1436,6 +1656,11 @@ impl Widget for CameraApp {
                         "4" => Some(Action::Nav(Screen::Settings)),
                         "g" | "G" => Some(Action::ToggleGrid),
                         "f" | "F" => Some(Action::CycleFacing),
+                        "r" | "R"
+                            if matches!(self.screen, Screen::Camera) && !self.feed_active() =>
+                        {
+                            Some(Action::RetryCamera)
+                        }
                         " " if matches!(self.screen, Screen::Camera) => Some(Action::Shutter),
                         _ => None,
                     },
@@ -1518,9 +1743,24 @@ impl Widget for CameraApp {
         }
     }
     fn needs_redraw(&self) -> bool {
-        // Keep animating while recording so the elapsed timer advances and the
-        // hermetic frame-synth keeps feeding the encoder.
-        self.dirty || self.recording.is_some()
+        self.dirty
+    }
+    fn needs_animation_frame(&self) -> bool {
+        // Recording is an operational frame pump, not a decorative effect:
+        // it advances the elapsed indicator and drains the real camera worker.
+        // Reduced-motion users receive the same capture correctness through a
+        // low-frequency wake deadline below, without a continuous UI loop.
+        self.recording.is_some() && !self.motion_reduced
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.recording
+            .as_ref()
+            .filter(|_| self.motion_reduced)
+            .map(|_| Instant::now() + Duration::from_millis(33))
+    }
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
+        self.dirty = true;
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -1550,6 +1790,14 @@ struct EmptyStateContent<'a> {
     title: &'a str,
     subtitle: Option<&'a str>,
     glass: bool,
+    recovery: bool,
+}
+
+/// Geometry returned by the shared sparse-state renderer so its owner can add
+/// real recovery controls without duplicating the card layout.
+struct EmptyStateLayout {
+    panel: Rect,
+    icon: Rect,
 }
 
 impl CameraApp {
@@ -1592,7 +1840,7 @@ impl CameraApp {
             1.9,
         );
         let hit = Rect::new(cx - r, cy - r, cx + r, cy + r);
-        self.push_region(hit, action);
+        self.push_tap_region(hit, action);
         hit
     }
 
@@ -1689,7 +1937,7 @@ impl CameraApp {
                 p::alpha(c.text_primary, 0.78)
             };
             p::text_in(scene, tr, seg, &label, 13.0, col);
-            self.push_region(seg, action);
+            self.push_tap_region(seg, action);
         }
     }
 
@@ -1707,7 +1955,7 @@ impl CameraApp {
         // pill. The existing region hit-test still fires the toggle action.
         let hovered = rect.contains(self.last_mouse);
         Toggle::paint(scene, t, theme, &ToggleFace::new(rect, on).hovered(hovered));
-        self.push_region(rect, action);
+        self.push_tap_region(rect, action);
     }
 
     /// A centred "status" card for sparse states (no camera, empty library):
@@ -1723,18 +1971,25 @@ impl CameraApp {
         theme: &Theme,
         area: Rect,
         content: &EmptyStateContent<'_>,
-    ) -> Rect {
+    ) -> EmptyStateLayout {
         let EmptyStateContent {
             icon,
             title,
             subtitle,
             glass,
+            recovery,
         } = *content;
         let c = &theme.tokens.colors;
         // Bounded card, centred in `area`: wide enough to read as a panel,
         // capped so it never stretches edge-to-edge on ultra-wide windows.
         let pw = 360.0_f64.min((area.width() - 48.0).max(240.0));
-        let base_h: f64 = if subtitle.is_some() { 208.0 } else { 172.0 };
+        let base_h: f64 = if recovery {
+            288.0
+        } else if subtitle.is_some() {
+            208.0
+        } else {
+            172.0
+        };
         let ph = base_h.min((area.height() - 32.0).max(140.0));
         let cx = area.center().x;
         let cy = area.center().y;
@@ -1772,11 +2027,16 @@ impl CameraApp {
         let icon_r = Rect::new(icx - 24.0, icy - 24.0, icx + 24.0, icy + 24.0);
         p::icon(scene, t, icon, icon_r, icon_col, 2.0);
         let ty = panel.y0 + 116.0;
-        p::text_center(scene, tr, icx, ty, title, 16.0, title_col);
+        let title = ellipsize(tr, title, 16.0, panel.width() - 24.0);
+        p::text_center(scene, tr, icx, ty, &title, 16.0, title_col);
         if let Some(sub) = subtitle {
-            p::text_center(scene, tr, icx, ty + 24.0, sub, 12.5, sub_col);
+            let sub = ellipsize(tr, sub, 12.5, panel.width() - 24.0);
+            p::text_center(scene, tr, icx, ty + 24.0, &sub, 12.5, sub_col);
         }
-        icon_r
+        EmptyStateLayout {
+            panel,
+            icon: icon_r,
+        }
     }
 
     /// A full-bleed "camera unavailable" placeholder for the camera screen
@@ -1784,17 +2044,19 @@ impl CameraApp {
     /// honest rather than faking a feed; the message sits in a centred card so
     /// it stays anchored at wide widths.
     fn draw_no_feed(
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        subtitle: &str,
+        copy: (&str, &str),
     ) {
+        let (title, subtitle) = copy;
         let c = &theme.tokens.colors;
         p::fill_rect(scene, t, rect, c.neutral[0]);
         // Centre the message in the whole window — the viewfinder is full-bleed.
-        let ic = Self::draw_empty_state(
+        let layout = Self::draw_empty_state(
             scene,
             t,
             tr,
@@ -1802,27 +2064,133 @@ impl CameraApp {
             rect,
             &EmptyStateContent {
                 icon: "camera",
-                title: "No camera connected",
+                title,
                 subtitle: Some(subtitle),
                 glass: true,
+                recovery: true,
             },
         );
         // Slash across the icon to read as "no camera".
         p::line(
             scene,
             t,
-            ic.x0 + 3.0,
-            ic.y0 + 3.0,
-            ic.x1 - 3.0,
-            ic.y1 - 3.0,
+            layout.icon.x0 + 3.0,
+            layout.icon.y0 + 3.0,
+            layout.icon.x1 - 3.0,
+            layout.icon.y1 - 3.0,
             p::alpha(white(), 0.5),
             2.2,
         );
+        self.draw_camera_recovery_actions(scene, t, tr, theme, layout.panel);
+    }
+
+    fn draw_camera_recovery_actions(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+    ) {
+        let devices = self.available_camera_devices();
+        let mut actions = Vec::new();
+        if self.camera_issue == Some(CameraIssue::PermissionDenied) {
+            actions.push(("Open privacy settings", Action::OpenCameraPrivacySettings));
+        }
+        actions.push(("Refresh", Action::RetryCamera));
+        if devices.len() > 1 {
+            actions.push(("Choose camera", Action::OpenCameraChooser));
+        }
+        let count = actions.len();
+        let gap = 8.0;
+        let max_w = panel.width() - 28.0;
+        let width = ((max_w - gap * (count.saturating_sub(1) as f64)) / count as f64).max(44.0);
+        let y = panel.y1 - 52.0;
+        for (index, (label, action)) in actions.into_iter().enumerate() {
+            let x = panel.x0 + 14.0 + index as f64 * (width + gap);
+            let button = Rect::new(x, y, x + width, y + 38.0);
+            // Keep the visual label inside a narrow two-action recovery row;
+            // the a11y action retains the complete “Open camera privacy
+            // settings” name from the shared Action mapping.
+            let label = recovery_button_label(&action, label, width);
+            let primary = matches!(
+                action,
+                Action::OpenCameraPrivacySettings | Action::RetryCamera
+            );
+            p::fill_round(
+                scene,
+                t,
+                button,
+                12.0,
+                if primary {
+                    theme.accent_primary
+                } else {
+                    p::alpha(theme.tokens.colors.neutral[2], 0.92)
+                },
+            );
+            p::stroke_round(
+                scene,
+                t,
+                button,
+                12.0,
+                p::alpha(theme.tokens.colors.border_standard, 0.55),
+                1.0,
+            );
+            p::text_in(scene, tr, button, label, 11.5, white());
+            self.push_tap_region(button, action);
+        }
+
+        if self.camera_chooser_open && devices.len() > 1 {
+            let row_h = 38.0;
+            let chooser_h = devices.len() as f64 * row_h + 16.0;
+            let chooser = Rect::new(
+                panel.x0 + 14.0,
+                panel.y1 + 10.0,
+                panel.x1 - 14.0,
+                panel.y1 + 10.0 + chooser_h,
+            );
+            p::fill_round(scene, t, chooser, 14.0, theme.tokens.colors.surfaces.raised);
+            p::stroke_round(
+                scene,
+                t,
+                chooser,
+                14.0,
+                p::alpha(theme.tokens.colors.border_standard, 0.65),
+                1.0,
+            );
+            for (index, device) in devices.iter().enumerate() {
+                let row = Rect::new(
+                    chooser.x0 + 8.0,
+                    chooser.y0 + 8.0 + index as f64 * row_h,
+                    chooser.x1 - 8.0,
+                    chooser.y0 + 8.0 + (index + 1) as f64 * row_h,
+                );
+                let selected = self.selected_camera.as_deref() == Some(device.as_str());
+                if selected {
+                    p::fill_round(scene, t, row, 10.0, theme.accent_primary);
+                }
+                p::text_in(scene, tr, row, device, 12.0, white());
+                self.push_tap_region(row, Action::SelectCamera(device.clone()));
+            }
+        }
     }
 
     fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let Some(msg) = self.toast.as_deref() else {
             return;
+        };
+        // Do not colour device/file failures as successes. The app keeps a
+        // compact text toast state, so classify only the truthful failure
+        // prefixes produced by its own operation paths.
+        let kind = if msg.starts_with("Save failed") || msg.starts_with("Couldn't") {
+            ToastKind::Error
+        } else if msg.starts_with("Connect a camera")
+            || msg.starts_with("Nothing recorded")
+            || msg.starts_with("No code found")
+        {
+            ToastKind::Warning
+        } else {
+            ToastKind::Success
         };
         paint_transient(
             scene,
@@ -1831,7 +2199,7 @@ impl CameraApp {
             theme,
             self.rect,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, ToastKind::Success),
+            &ToastCard::new(msg, kind),
         );
     }
 
@@ -1970,14 +2338,8 @@ impl CameraApp {
                 self.draw_rec_indicator(scene, t, tr, full);
             }
         } else {
-            Self::draw_no_feed(
-                scene,
-                t,
-                tr,
-                theme,
-                full,
-                "Connect a camera to start the viewfinder",
-            );
+            let (title, subtitle) = self.no_feed_copy();
+            self.draw_no_feed(scene, t, tr, theme, full, (title, subtitle));
         }
 
         // Settings gear, top-right — opens Settings as an overlay sheet. Drawn
@@ -2154,7 +2516,7 @@ impl CameraApp {
                 active: false,
             },
         );
-        self.push_region(r, Action::CycleResolution);
+        self.push_tap_region(r, Action::CycleResolution);
         x = r.x1 + gap;
 
         let r = Self::ctrl_pill(
@@ -2169,7 +2531,7 @@ impl CameraApp {
                 active: self.settings.hdr,
             },
         );
-        self.push_region(r, Action::ToggleHdr);
+        self.push_tap_region(r, Action::ToggleHdr);
         x = r.x1 + gap;
 
         let next_timer = cycle(&Timer::ALL, self.settings.timer);
@@ -2190,7 +2552,7 @@ impl CameraApp {
                 active: self.settings.timer != Timer::Off,
             },
         );
-        self.push_region(r, Action::SetTimer(next_timer));
+        self.push_tap_region(r, Action::SetTimer(next_timer));
         x = r.x1 + gap;
 
         let r = Self::ctrl_pill(
@@ -2205,7 +2567,7 @@ impl CameraApp {
                 active: self.settings.grid,
             },
         );
-        self.push_region(r, Action::ToggleGrid);
+        self.push_tap_region(r, Action::ToggleGrid);
     }
 
     /// The bottom capture cluster floating over the viewfinder: a gallery
@@ -2890,7 +3252,7 @@ impl CameraApp {
             card.y0 + 34.0,
         );
         p::icon(scene, t, "close", xr, p::alpha(white(), 0.6), 1.8);
-        self.push_region(xr, Action::DismissScan);
+        self.push_tap_region(xr, Action::DismissScan);
 
         let actions = s.kind.actions();
         let mut bx = card.x0 + 16.0;
@@ -2906,7 +3268,7 @@ impl CameraApp {
                 p::fill_round(scene, t, br, 15.0, c.lift(0.72));
                 p::text_in(scene, tr, br, label, 13.0, p::alpha(white(), 0.92));
             }
-            self.push_region(br, Action::Scan(i));
+            self.push_tap_region(br, Action::Scan(i));
             bx += bw + 10.0;
         }
     }
@@ -3092,7 +3454,7 @@ impl CameraApp {
         let detail_gap = if detail_w > 0.0 { 18.0 } else { 0.0 };
         let grid = Rect::new(
             content.x0 + pad,
-            content.y0 + 64.0,
+            content.y0 + if content.width() < 460.0 { 104.0 } else { 64.0 },
             content.x1 - pad - detail_w - detail_gap,
             content.y1 - pad,
         );
@@ -3133,7 +3495,7 @@ impl CameraApp {
     ) {
         let area = Rect::new(
             content.x0 + pad,
-            content.y0 + 64.0,
+            content.y0 + if content.width() < 460.0 { 104.0 } else { 64.0 },
             content.x1 - pad,
             content.y1 - pad,
         );
@@ -3156,6 +3518,7 @@ impl CameraApp {
                 title: msg,
                 subtitle: sub,
                 glass: false,
+                recovery: false,
             },
         );
     }
@@ -3241,7 +3604,7 @@ impl CameraApp {
             c.text_primary,
             1.9,
         );
-        self.push_region(
+        self.push_tap_region(
             Rect::new(
                 back_btn.x - 16.0,
                 back_btn.y - 16.0,
@@ -3280,14 +3643,24 @@ impl CameraApp {
         content: Rect,
         pad: f64,
     ) {
-        let seg_w = 320.0_f64
-            .min(content.width() - 2.0 * pad - 120.0)
-            .max(200.0);
+        // On a phone the filter owns the row below the title rather than
+        // forcing a desktop-width strip off either edge of the viewport.
+        let narrow = content.width() < 460.0;
+        let available = (content.width() - 2.0 * pad).max(1.0);
+        let seg_w = available.min(320.0);
         let seg = Rect::new(
             content.x1 - pad - seg_w,
-            content.y0 + 16.0,
+            if narrow {
+                content.y0 + 56.0
+            } else {
+                content.y0 + 16.0
+            },
             content.x1 - pad,
-            content.y0 + 48.0,
+            if narrow {
+                content.y0 + 88.0
+            } else {
+                content.y0 + 48.0
+            },
         );
         let items: Vec<(String, bool, Action)> = GalleryFilter::ALL
             .iter()
@@ -3486,7 +3859,7 @@ impl CameraApp {
             );
             p::fill_round(scene, t, xr, 12.0, p::alpha(c.neutral[2], 0.9));
             p::icon(scene, t, "close", shrink(xr, 6.0), c.text_primary, 1.8);
-            self.push_region(xr, Action::CloseDetail);
+            self.push_tap_region(xr, Action::CloseDetail);
         }
 
         let preview_bottom = self.draw_gallery_detail_preview(scene, t, panel, cap, overlay);
@@ -3659,7 +4032,7 @@ impl CameraApp {
                 1.8,
             );
             p::text(scene, tr, ix + 22.0, br.center().y - 7.0, label, 11.5, col);
-            self.push_region(br, action);
+            self.push_tap_region(br, action);
         }
     }
 }
@@ -3688,6 +4061,16 @@ fn human_size(bytes: u64) -> String {
         format!("{:.0} KB", b / 1_000.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+/// The concise narrow label is paint-only; accessibility retains the full
+/// operation name from [`CameraApp::a11y_node`].
+fn recovery_button_label<'a>(action: &Action, label: &'a str, width: f64) -> &'a str {
+    if matches!(action, Action::OpenCameraPrivacySettings) && width < 142.0 {
+        "Privacy settings"
+    } else {
+        label
     }
 }
 
@@ -3770,7 +4153,7 @@ impl CameraApp {
         );
         p::fill_round(scene, t, xr, 12.0, p::alpha(c.neutral[2], 0.9));
         p::icon(scene, t, "close", shrink(xr, 8.0), c.text_primary, 1.8);
-        self.push_region(xr, Action::Back);
+        self.push_tap_region(xr, Action::Back);
 
         if max_scroll > 0.0 {
             Self::draw_scrollbar(
@@ -4349,6 +4732,62 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_camera_recovery_is_semantic_and_has_touch_targets() {
+        let dir = std::env::temp_dir().join("camera-recovery-test-no-device");
+        let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        app.camera_issue = Some(CameraIssue::PermissionDenied);
+        render_at(&mut app, &mut doc, &root, 320.0, 680.0);
+        let tree = app.accessibility().expect("camera has semantics");
+        let privacy = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Open camera privacy settings"))
+            .expect("privacy recovery action");
+        let refresh = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Refresh available cameras"))
+            .expect("refresh recovery action");
+        for node in [privacy, refresh] {
+            let bounds = node.bounds.expect("recovery has bounds");
+            assert!(bounds.x1 - bounds.x0 >= 44.0 && bounds.y1 - bounds.y0 >= 44.0);
+        }
+        assert!(app.perform_semantic_action(
+            "camera.retry-camera",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("No cameras found. Connect one, then refresh")
+        );
+    }
+
+    #[test]
+    fn narrow_privacy_recovery_label_fits_a_two_action_row() {
+        assert_eq!(
+            recovery_button_label(
+                &Action::OpenCameraPrivacySettings,
+                "Open privacy settings",
+                117.0
+            ),
+            "Privacy settings"
+        );
+        assert_eq!(
+            recovery_button_label(
+                &Action::OpenCameraPrivacySettings,
+                "Open privacy settings",
+                160.0
+            ),
+            "Open privacy settings"
+        );
+    }
+
+    #[test]
     fn set_mode_persists_and_locks_while_recording() {
         let (mut app, mut doc, root) = sample_app();
         assert_eq!(app.mode, CaptureMode::Photo);
@@ -4390,6 +4829,17 @@ mod tests {
                 .unwrap_or("")
                 .starts_with("Video saved")
         );
+    }
+
+    #[test]
+    fn recording_requests_frames_and_reduced_motion_uses_a_wake_deadline() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(Widget::needs_animation_frame(&app));
+        app.set_motion_reduced(true);
+        assert!(!Widget::needs_animation_frame(&app));
+        assert!(Widget::next_wake_deadline(&app).is_some());
     }
 
     #[test]
