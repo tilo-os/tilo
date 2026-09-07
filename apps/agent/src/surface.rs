@@ -374,7 +374,7 @@ fn photos_product(_view: &View, doc: &AutoCommit) -> Option<Product> {
     let rendered = photos::pixels::render(&decoded, edits.crop, edits.rotate_quarters);
     let png = photos::pixels::encode_png(&rendered)?;
     Some(Product::Content {
-        hash: qdoc::blobstore::put(&png),
+        hash: qdoc::blobstore::put(&png)?,
     })
 }
 
@@ -1402,7 +1402,7 @@ mod tests {
         // touched the file.
         let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32))
             .expect("the fixture encodes");
-        let hash = qdoc::blobstore::put(&png);
+        let hash = qdoc::blobstore::put(&png).expect("test fixture fits blob quota");
 
         // The document, as this participant receives it: a path under
         // another session's runtime directory, which is not a path here.
