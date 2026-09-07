@@ -176,6 +176,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 widget.debug_show_remote_account(&account, true);
             }
+            Some("loading") => widget.debug_show_loading_state(),
+            Some("error") => widget.debug_show_error_state(),
             _ => {}
         }
         render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;
