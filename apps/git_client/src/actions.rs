@@ -50,6 +50,7 @@ use qos_actions::{
     OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
+use crate::model::{ChangeArea, FileChange, RepoModel};
 use crate::settings::{self, DiffLayout, Settings};
 
 /// Registry `type_id` for every git-client action.
@@ -61,9 +62,22 @@ pub enum GitClientOperation {
     ShowChanges,
     ShowHistory,
     ShowBranches,
+    OpenChange { area: String, path: String },
+    OpenCommit { id: String },
     StageAll,
     UnstageAll,
+    StageFile { path: String },
+    UnstageFile { path: String },
+    DiscardFile { path: String },
     Commit { message: String },
+    CreateBranch { name: String },
+    CheckoutBranch { name: String },
+    DeleteBranch { name: String },
+    SaveStash { message: String },
+    ApplyStash { index: usize },
+    Fetch { remote: String },
+    Pull { remote: String },
+    Push { remote: String },
 }
 
 fn operation(
@@ -76,11 +90,27 @@ fn operation(
     match value {
         GitClientOperation::ShowChanges
         | GitClientOperation::ShowHistory
-        | GitClientOperation::ShowBranches => Some(spec.retry_policy(RetryPolicy::Idempotent)),
-        GitClientOperation::StageAll | GitClientOperation::UnstageAll => {
+        | GitClientOperation::ShowBranches
+        | GitClientOperation::OpenChange { .. }
+        | GitClientOperation::OpenCommit { .. } => Some(spec.retry_policy(RetryPolicy::Idempotent)),
+        GitClientOperation::StageAll
+        | GitClientOperation::UnstageAll
+        | GitClientOperation::StageFile { .. }
+        | GitClientOperation::UnstageFile { .. } => {
             Some(spec.reversible().retry_policy(RetryPolicy::Idempotent))
         }
-        GitClientOperation::Commit { .. } => Some(spec),
+        GitClientOperation::CheckoutBranch { .. } | GitClientOperation::Fetch { .. } => {
+            Some(spec.retry_policy(RetryPolicy::Idempotent))
+        }
+        GitClientOperation::DiscardFile { .. } | GitClientOperation::DeleteBranch { .. } => {
+            Some(spec.destructive())
+        }
+        GitClientOperation::Commit { .. }
+        | GitClientOperation::CreateBranch { .. }
+        | GitClientOperation::SaveStash { .. }
+        | GitClientOperation::ApplyStash { .. }
+        | GitClientOperation::Pull { .. }
+        | GitClientOperation::Push { .. } => Some(spec),
     }
 }
 
@@ -167,6 +197,204 @@ pub fn set_diff_layout_action(layout: DiffLayout) -> GitClientAction {
 // Resource tree
 // ===========================================================================
 
+/// Keep the palette's contextual tree cheap even for monorepos. Every omitted
+/// item is still addressable through [`ResourceProvider::resource`].
+pub const MAX_CONTEXT_CHANGES: usize = 48;
+pub const MAX_CONTEXT_COMMITS: usize = 48;
+pub const MAX_CONTEXT_REFS: usize = 32;
+pub const MAX_CONTEXT_STASHES: usize = 24;
+pub const MAX_CONTEXT_REMOTES: usize = 16;
+
+fn stable_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
+    for byte in value.as_bytes() {
+        use std::fmt::Write as _;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+fn change_area_name(area: ChangeArea) -> &'static str {
+    match area {
+        ChangeArea::Staged => "staged",
+        ChangeArea::Unstaged => "unstaged",
+        ChangeArea::Untracked => "untracked",
+    }
+}
+
+fn change_resource_id(area: ChangeArea, path: &str) -> String {
+    format!(
+        "git_client.diff:{}:{}",
+        change_area_name(area),
+        stable_component(path)
+    )
+}
+
+fn commit_resource_id(id: &str) -> String {
+    format!("git_client.commit:{id}")
+}
+
+fn branch_resource_id(name: &str) -> String {
+    format!("git_client.branch:{}", stable_component(name))
+}
+
+fn tag_resource_id(name: &str) -> String {
+    format!("git_client.tag:{}", stable_component(name))
+}
+
+fn remote_resource_id(name: &str) -> String {
+    format!("git_client.remote:{}", stable_component(name))
+}
+
+fn change_resource(change: &FileChange) -> Resource {
+    let area = change_area_name(change.area);
+    let open = GitClientOperation::OpenChange {
+        area: area.into(),
+        path: change.path.clone(),
+    };
+    let mut resource = Resource::new(
+        change_resource_id(change.area, &change.path),
+        "git_client.diff",
+        format!("{} — {area}", change.path),
+    );
+    if let Some(spec) = operation("open", "Open diff", OperationKind::View, &open) {
+        resource = resource.with_action(spec);
+    }
+    let mutation = match change.area {
+        ChangeArea::Staged => Some((
+            "unstage",
+            "Unstage file",
+            GitClientOperation::UnstageFile {
+                path: change.path.clone(),
+            },
+        )),
+        ChangeArea::Unstaged | ChangeArea::Untracked => Some((
+            "stage",
+            "Stage file",
+            GitClientOperation::StageFile {
+                path: change.path.clone(),
+            },
+        )),
+    };
+    if let Some((id, label, value)) = mutation
+        && let Some(spec) = operation(id, label, OperationKind::Effect, &value)
+    {
+        resource = resource.with_action(spec);
+    }
+    if change.area != ChangeArea::Staged
+        && let Some(spec) = operation(
+            "discard",
+            "Discard file changes",
+            OperationKind::Effect,
+            &GitClientOperation::DiscardFile {
+                path: change.path.clone(),
+            },
+        )
+    {
+        resource = resource.with_action(spec);
+    }
+    resource
+}
+
+fn commit_resource(commit: &crate::model::Commit) -> Resource {
+    let mut resource = Resource::new(
+        commit_resource_id(&commit.id),
+        "git_client.commit",
+        commit.summary.clone(),
+    );
+    if let Some(spec) = operation(
+        "open",
+        "Open commit",
+        OperationKind::View,
+        &GitClientOperation::OpenCommit {
+            id: commit.id.clone(),
+        },
+    ) {
+        resource = resource.with_action(spec);
+    }
+    resource.with_children(commit.files.iter().take(16).map(|file| {
+        Resource::new(
+            format!(
+                "git_client.commit-file:{}:{}",
+                commit.id,
+                stable_component(&file.path)
+            ),
+            "git_client.commit-file",
+            file.path.clone(),
+        )
+    }))
+}
+
+fn branch_resource(branch: &crate::model::Branch) -> Resource {
+    let mut resource = Resource::new(
+        branch_resource_id(&branch.name),
+        "git_client.branch",
+        branch.name.clone(),
+    );
+    if !branch.is_head
+        && let Some(spec) = operation(
+            "checkout",
+            "Check out branch",
+            OperationKind::Effect,
+            &GitClientOperation::CheckoutBranch {
+                name: branch.name.clone(),
+            },
+        )
+    {
+        resource = resource.with_action(spec);
+    }
+    if !branch.is_head
+        && !branch.is_remote
+        && let Some(spec) = operation(
+            "delete",
+            "Delete branch",
+            OperationKind::Effect,
+            &GitClientOperation::DeleteBranch {
+                name: branch.name.clone(),
+            },
+        )
+    {
+        resource = resource.with_action(spec);
+    }
+    resource
+}
+
+fn remote_resource(remote: &crate::model::Remote) -> Resource {
+    let mut resource = Resource::new(
+        remote_resource_id(&remote.name),
+        "git_client.remote",
+        remote.name.clone(),
+    );
+    for (id, label, value) in [
+        (
+            "fetch",
+            "Fetch remote",
+            GitClientOperation::Fetch {
+                remote: remote.name.clone(),
+            },
+        ),
+        (
+            "pull",
+            "Pull from remote",
+            GitClientOperation::Pull {
+                remote: remote.name.clone(),
+            },
+        ),
+        (
+            "push",
+            "Push to remote",
+            GitClientOperation::Push {
+                remote: remote.name.clone(),
+            },
+        ),
+    ] {
+        if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
+            resource = resource.with_action(spec);
+        }
+    }
+    resource
+}
+
 /// The four preference toggles, exported as Ctrl+K actions on the open
 /// repository resource. Each is an immediate action that sets the preference to
 /// the *opposite* of its current document value, so choosing it in the palette
@@ -177,15 +405,21 @@ pub fn set_diff_layout_action(layout: DiffLayout) -> GitClientAction {
     clippy::too_many_lines,
     reason = "the resource catalogue keeps every repository action beside its label, contract, and live preference state in one auditable tree"
 )]
-pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
+pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
     let s = Settings::read_only(doc);
+    let repo_name = model.name.as_str();
     let label = if repo_name.trim().is_empty() {
         "Repository".to_string()
     } else {
         repo_name.to_string()
     };
+    let identity = if model.workdir.is_empty() {
+        repo_name
+    } else {
+        model.workdir.as_str()
+    };
     let mut repo = Resource::new(
-        format!("git_client.repo:{repo_name}"),
+        format!("git_client.repo:{}", stable_component(identity)),
         "git_client.repo",
         label,
     );
@@ -320,15 +554,212 @@ pub fn provide_resources(repo_name: &str, doc: &AutoCommit) -> Vec<Resource> {
         .with_description("Create a commit from the currently staged changes"),
     );
 
+    repo = repo.with_action(ActionSpec::prompted_operation(
+        "create-branch",
+        "Create branch",
+        "Branch name",
+        "feature/name",
+        OperationKind::Effect,
+        GIT_CLIENT_OPERATION_TYPE,
+        |name| {
+            EncodedAction::encode_operation(
+                GIT_CLIENT_OPERATION_TYPE,
+                &GitClientOperation::CreateBranch {
+                    name: name.to_string(),
+                },
+            )
+            .unwrap_or_else(|error| EncodedAction {
+                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("git branch operation could not be serialized: {error}")
+                    .into_bytes(),
+            })
+        },
+    ));
+    repo = repo.with_action(ActionSpec::prompted_operation(
+        "save-stash",
+        "Stash working changes",
+        "Stash message",
+        "work in progress",
+        OperationKind::Effect,
+        GIT_CLIENT_OPERATION_TYPE,
+        |message| {
+            EncodedAction::encode_operation(
+                GIT_CLIENT_OPERATION_TYPE,
+                &GitClientOperation::SaveStash {
+                    message: message.to_string(),
+                },
+            )
+            .unwrap_or_else(|error| EncodedAction {
+                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("git stash operation could not be serialized: {error}")
+                    .into_bytes(),
+            })
+        },
+    ));
+
+    let changes = model
+        .staged
+        .iter()
+        .chain(model.unstaged.iter())
+        .chain(model.untracked.iter())
+        .take(MAX_CONTEXT_CHANGES)
+        .map(change_resource);
+    repo = repo.with_child(
+        Resource::new("git_client.changes", "git_client.collection", "Changes")
+            .with_children(changes),
+    );
+    repo = repo.with_child(
+        Resource::new("git_client.history", "git_client.collection", "History").with_children(
+            model
+                .commits
+                .iter()
+                .take(MAX_CONTEXT_COMMITS)
+                .map(commit_resource),
+        ),
+    );
+    repo = repo.with_child(
+        Resource::new("git_client.branches", "git_client.collection", "Branches").with_children(
+            model
+                .branches
+                .iter()
+                .take(MAX_CONTEXT_REFS)
+                .map(branch_resource),
+        ),
+    );
+    repo = repo.with_child(
+        Resource::new("git_client.tags", "git_client.collection", "Tags").with_children(
+            model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
+                Resource::new(
+                    tag_resource_id(&tag.name),
+                    "git_client.tag",
+                    tag.name.clone(),
+                )
+            }),
+        ),
+    );
+    repo = repo.with_child(
+        Resource::new("git_client.stashes", "git_client.collection", "Stashes").with_children(
+            model.stashes.iter().take(MAX_CONTEXT_STASHES).map(|stash| {
+                let mut resource = Resource::new(
+                    format!("git_client.stash:{}", stash.index),
+                    "git_client.stash",
+                    stash.message.clone(),
+                );
+                if let Some(spec) = operation(
+                    "apply",
+                    "Apply stash",
+                    OperationKind::Effect,
+                    &GitClientOperation::ApplyStash { index: stash.index },
+                ) {
+                    resource = resource.with_action(spec);
+                }
+                resource
+            }),
+        ),
+    );
+    repo = repo.with_child(
+        Resource::new("git_client.remotes", "git_client.collection", "Remotes").with_children(
+            model
+                .remotes
+                .iter()
+                .take(MAX_CONTEXT_REMOTES)
+                .map(remote_resource),
+        ),
+    );
+
     vec![repo]
+}
+
+/// Resolve an arbitrary current repository item without building the complete
+/// hierarchy. This keeps search/history/agent addresses valid beyond the
+/// contextual caps above while rejecting stale ids after a fetch or checkout.
+pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    let root = provide_resources(model, doc).into_iter().next()?;
+    if root.id.as_str() == id {
+        return Some(root);
+    }
+    if let Some(collection) = root.children.iter().find(|child| child.id.as_str() == id) {
+        return Some(collection.clone());
+    }
+    for change in model
+        .staged
+        .iter()
+        .chain(model.unstaged.iter())
+        .chain(model.untracked.iter())
+    {
+        if change_resource_id(change.area, &change.path) == id {
+            return Some(change_resource(change));
+        }
+    }
+    if let Some(commit) = model
+        .commits
+        .iter()
+        .find(|commit| commit_resource_id(&commit.id) == id)
+    {
+        return Some(commit_resource(commit));
+    }
+    for commit in &model.commits {
+        if let Some(file) = commit.files.iter().find(|file| {
+            format!(
+                "git_client.commit-file:{}:{}",
+                commit.id,
+                stable_component(&file.path)
+            ) == id
+        }) {
+            return Some(Resource::new(
+                id,
+                "git_client.commit-file",
+                file.path.clone(),
+            ));
+        }
+    }
+    if let Some(branch) = model
+        .branches
+        .iter()
+        .find(|branch| branch_resource_id(&branch.name) == id)
+    {
+        return Some(branch_resource(branch));
+    }
+    if let Some(tag) = model
+        .tags
+        .iter()
+        .find(|tag| tag_resource_id(&tag.name) == id)
+    {
+        return Some(Resource::new(id, "git_client.tag", tag.name.clone()));
+    }
+    if let Some(stash) = model
+        .stashes
+        .iter()
+        .find(|stash| format!("git_client.stash:{}", stash.index) == id)
+    {
+        let mut resource = Resource::new(id, "git_client.stash", stash.message.clone());
+        if let Some(spec) = operation(
+            "apply",
+            "Apply stash",
+            OperationKind::Effect,
+            &GitClientOperation::ApplyStash { index: stash.index },
+        ) {
+            resource = resource.with_action(spec);
+        }
+        return Some(resource);
+    }
+    model
+        .remotes
+        .iter()
+        .find(|remote| remote_resource_id(&remote.name) == id)
+        .map(remote_resource)
 }
 
 impl ResourceProvider for crate::app::GitClientApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.resource_repo_label() {
-            Some(name) => provide_resources(&name, doc),
+        match self.resource_model() {
+            Some(model) => provide_resources(model, doc),
             None => Vec::new(),
         }
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resolve_resource(self.resource_model()?, doc, id)
     }
 }
 
@@ -367,6 +798,13 @@ mod tests {
         Settings::default().write(&mut doc);
         doc.commit();
         doc
+    }
+
+    fn repo_model() -> RepoModel {
+        RepoModel {
+            name: "qos".into(),
+            ..RepoModel::default()
+        }
     }
 
     /// Each preference action writes its absolute value into `root["settings"]`.
@@ -412,12 +850,12 @@ mod tests {
     #[test]
     fn ctrl_k_publishes_the_repo_and_preference_actions() {
         let doc = seeded();
-        let resources = provide_resources("qos", &doc);
+        let resources = provide_resources(&repo_model(), &doc);
         assert_eq!(resources.len(), 1, "one repository root");
         let repo = &resources[0];
         assert_eq!(repo.kind, "git_client.repo");
         assert_eq!(repo.label, "qos");
-        assert_eq!(repo.id.as_str(), "git_client.repo:qos");
+        assert_eq!(repo.id.as_str(), "git_client.repo:716f73");
 
         let ids: Vec<&str> = repo.actions.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(
@@ -433,6 +871,8 @@ mod tests {
                 "stage-all",
                 "unstage-all",
                 "commit",
+                "create-branch",
+                "save-stash",
             ],
         );
 
@@ -463,7 +903,7 @@ mod tests {
         s.write(&mut doc);
         doc.commit();
 
-        let resources = provide_resources("qos", &doc);
+        let resources = provide_resources(&repo_model(), &doc);
         let spec = resources[0]
             .actions
             .iter()
@@ -557,7 +997,7 @@ mod tests {
     #[test]
     fn palette_and_builder_encode_identically() {
         let doc = seeded(); // unified → the exported toggle targets side-by-side
-        let resources = provide_resources("qos", &doc);
+        let resources = provide_resources(&repo_model(), &doc);
         let spec = resources[0]
             .actions
             .iter()
@@ -570,6 +1010,84 @@ mod tests {
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "diff-layout is one source of truth"
+        );
+    }
+
+    #[test]
+    fn repository_resources_cover_git_objects_and_confirmation_contracts() {
+        let (model, _) = crate::sample::model();
+        let doc = seeded();
+        let root = provide_resources(&model, &doc).remove(0);
+        let kinds: std::collections::HashSet<_> = root
+            .children
+            .iter()
+            .flat_map(|collection| collection.children.iter())
+            .map(|resource| resource.kind.as_str())
+            .collect();
+        for expected in [
+            "git_client.diff",
+            "git_client.commit",
+            "git_client.branch",
+            "git_client.tag",
+            "git_client.stash",
+            "git_client.remote",
+        ] {
+            assert!(kinds.contains(expected), "missing {expected}: {kinds:?}");
+        }
+        let discard = root
+            .children
+            .iter()
+            .flat_map(|collection| &collection.children)
+            .find(|resource| resource.kind == "git_client.diff")
+            .and_then(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "discard")
+            });
+        if let Some(discard) = discard {
+            assert_eq!(
+                discard.contract.confirmation,
+                qos_actions::ConfirmationPolicy::Confirm,
+                "agent/palette discard must pass the host confirmation gate"
+            );
+            assert_eq!(discard.contract.risk, qos_actions::RiskLevel::Destructive);
+        }
+    }
+
+    #[test]
+    fn contextual_resources_are_bounded_but_omitted_items_resolve() {
+        let (mut model, _) = crate::sample::model();
+        let template = model.commits[0].clone();
+        model.commits = (0..MAX_CONTEXT_COMMITS + 9)
+            .map(|index| {
+                let mut commit = template.clone();
+                commit.id = format!("{index:040x}");
+                commit.summary = format!("Commit {index}");
+                commit
+            })
+            .collect();
+        let omitted = commit_resource_id(&model.commits[MAX_CONTEXT_COMMITS + 3].id);
+        let doc = seeded();
+        let root = provide_resources(&model, &doc).remove(0);
+        let history = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "git_client.history")
+            .unwrap();
+        assert_eq!(history.children.len(), MAX_CONTEXT_COMMITS);
+        assert!(
+            history
+                .children
+                .iter()
+                .all(|resource| resource.id.as_str() != omitted)
+        );
+        assert_eq!(
+            resolve_resource(&model, &doc, &omitted)
+                .expect("omitted commit resolves lazily")
+                .id
+                .as_str(),
+            omitted
         );
     }
 }
