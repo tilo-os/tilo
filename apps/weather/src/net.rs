@@ -38,7 +38,17 @@ pub enum Request {
     },
 }
 
-/// A completed job (or an error string for the status line).
+/// Identifies which request produced a response. Keeping this on failures is
+/// important: a geocoding failure must not complete an unrelated forecast
+/// refresh that happens to be running at the same time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestKind {
+    Forecast,
+    AirQuality,
+    Geocode,
+}
+
+/// A completed job (or a classified error for the status line).
 pub enum Response {
     Forecast(WeatherSnapshot),
     AirQuality(AirQuality),
@@ -46,7 +56,10 @@ pub enum Response {
         seq: u64,
         results: Vec<SavedLocation>,
     },
-    Error(String),
+    Error {
+        kind: RequestKind,
+        message: String,
+    },
 }
 
 /// Handle to the background worker. Dropping it closes the request channel
@@ -95,7 +108,10 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
     {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = res_tx.send(Response::Error(format!("tokio init: {e}")));
+            let _ = res_tx.send(Response::Error {
+                kind: RequestKind::Forecast,
+                message: format!("tokio init: {e}"),
+            });
             return;
         }
     };
@@ -119,11 +135,17 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
                             let _ = res_tx.send(Response::Forecast(snap));
                         }
                         Err(e) => {
-                            let _ = res_tx.send(Response::Error(e));
+                            let _ = res_tx.send(Response::Error {
+                                kind: RequestKind::Forecast,
+                                message: e,
+                            });
                         }
                     },
                     Err(e) => {
-                        let _ = res_tx.send(Response::Error(e));
+                        let _ = res_tx.send(Response::Error {
+                            kind: RequestKind::Forecast,
+                            message: e,
+                        });
                     }
                 }
             }
@@ -139,11 +161,17 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
                             let _ = res_tx.send(Response::AirQuality(aq));
                         }
                         Err(e) => {
-                            let _ = res_tx.send(Response::Error(e));
+                            let _ = res_tx.send(Response::Error {
+                                kind: RequestKind::AirQuality,
+                                message: e,
+                            });
                         }
                     },
                     Err(e) => {
-                        let _ = res_tx.send(Response::Error(e));
+                        let _ = res_tx.send(Response::Error {
+                            kind: RequestKind::AirQuality,
+                            message: e,
+                        });
                     }
                 }
             }
@@ -155,11 +183,17 @@ fn worker(req_rx: &Receiver<Request>, res_tx: &Sender<Response>) {
                             let _ = res_tx.send(Response::Geocode { seq, results });
                         }
                         Err(e) => {
-                            let _ = res_tx.send(Response::Error(e));
+                            let _ = res_tx.send(Response::Error {
+                                kind: RequestKind::Geocode,
+                                message: e,
+                            });
                         }
                     },
                     Err(e) => {
-                        let _ = res_tx.send(Response::Error(e));
+                        let _ = res_tx.send(Response::Error {
+                            kind: RequestKind::Geocode,
+                            message: e,
+                        });
                     }
                 }
             }
