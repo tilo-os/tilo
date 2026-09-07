@@ -1088,13 +1088,13 @@ mod tests {
         for index in 0..1_000 {
             let id = format!("document:a{index:04}");
             catalog
-                .upsert(&id, "abcXbcd", catalog_hit(&id, "False candidate"))
+                .upsert(&id, "abc c d", catalog_hit(&id, "False candidate"))
                 .unwrap();
         }
         catalog
             .upsert(
                 "document:z-target",
-                "the exact abcd resource",
+                "the exact abc d resource",
                 catalog_hit("document:z-target", "Target"),
             )
             .unwrap();
@@ -1103,7 +1103,7 @@ mod tests {
         let mut found = Vec::new();
         let mut pages = 0;
         loop {
-            let page = catalog.query_page("abcd", cursor.as_ref(), 31, 4);
+            let page = catalog.query_page("abc d", cursor.as_ref(), 31, 4);
             assert!(page.inspected <= 31);
             pages += 1;
             found.extend(page.results);
