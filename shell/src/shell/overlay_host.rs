@@ -1481,7 +1481,14 @@ impl ShellOverlayHost {
             theme,
             flags,
         );
-        self.draw_strip_chrome(&mut workspace, transform, theme);
+        let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
+        self.draw_strip_chrome(
+            &mut workspace,
+            transform,
+            theme,
+            flags,
+            quick_settings_transition_visible,
+        );
         let quick_settings_bounds = self.draw_quick_settings_dropdown(
             &mut quick_settings,
             transform,
@@ -7921,7 +7928,9 @@ impl ShellOverlayHost {
         {
             return false;
         }
-        self.apply_print_screen_priority();
+        if !key.repeat {
+            self.apply_print_screen_priority();
+        }
         *handled = true;
         true
     }
@@ -7935,6 +7944,7 @@ impl ShellOverlayHost {
         &mut self,
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
+        repeat: bool,
         state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -7955,7 +7965,9 @@ impl ShellOverlayHost {
         // Keep the same arbitration here for direct widget dispatch and any
         // future backend that enters through this keyboard-only helper.
         if matches!(logical_key, Key::Named(NamedKey::PrintScreen)) {
-            self.apply_print_screen_priority();
+            if !repeat {
+                self.apply_print_screen_priority();
+            }
             *handled = true;
             return true;
         }
@@ -7996,19 +8008,21 @@ impl ShellOverlayHost {
         let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
             || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
         if help_chord {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.shortcut_help = !st.overlays.shortcut_help;
-                st.bump();
+            if !repeat {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                    st.bump();
+                }
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+                self.shortcut_guide_focus =
+                    self.overlay_flags()
+                        .shortcut_help
+                        .then_some(ShortcutGuideFocus::Binding(
+                            settings_store::hardware::ShortcutAction::FocusPreviousWindow,
+                        ));
             }
-            self.shortcut_rebind = None;
-            self.shortcut_rebind_message = None;
-            self.shortcut_guide_focus =
-                self.overlay_flags()
-                    .shortcut_help
-                    .then_some(ShortcutGuideFocus::Binding(
-                        settings_store::hardware::ShortcutAction::FocusPreviousWindow,
-                    ));
             *handled = true;
             return true;
         }
@@ -8058,25 +8072,31 @@ impl ShellOverlayHost {
         }
         use settings_store::hardware::ShortcutAction;
         if shortcut_pressed(ShortcutAction::Search) {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-            self.refresh_search_results(state, path);
+            if !repeat {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.refresh_search_results(state, path);
+            }
             *handled = true;
             return true;
         }
         if shortcut_pressed(ShortcutAction::WorkspaceOverview) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.overview = !st.overlays.overview;
-                st.bump();
+            if !repeat {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.overview = !st.overlays.overview;
+                    st.bump();
+                }
             }
             *handled = true;
             return true;
         }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.quick_settings = !st.overlays.quick_settings;
-                st.bump();
+            if !repeat {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.quick_settings = !st.overlays.quick_settings;
+                    st.bump();
+                }
             }
             *handled = true;
             return true;
@@ -8100,7 +8120,9 @@ impl ShellOverlayHost {
             && !shift_down
             && matches!(logical_key, Key::Named(NamedKey::F4))
         {
-            let _ = self.close_focused_tab();
+            if !repeat {
+                let _ = self.close_focused_tab();
+            }
             *handled = true;
             return true;
         }
@@ -8247,8 +8269,10 @@ impl ShellOverlayHost {
         // escape hatch. Alt+Space is configurable-free application input.
         let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
         if is_space && super_down {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-            self.refresh_search_results(state, path);
+            if !repeat {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.refresh_search_results(state, path);
+            }
             *handled = true;
             return true;
         }
@@ -8260,6 +8284,7 @@ impl ShellOverlayHost {
                 logical_key,
                 super_down,
                 shift_down,
+                repeat,
                 state,
                 path,
                 handled,
@@ -8354,6 +8379,7 @@ impl ShellOverlayHost {
         logical_key: &Key,
         super_down: bool,
         shift_down: bool,
+        repeat: bool,
         state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -8365,6 +8391,10 @@ impl ShellOverlayHost {
             && s.eq_ignore_ascii_case("h")
             && let Some(chrome) = self.chrome.clone()
         {
+            if repeat {
+                *handled = true;
+                return true;
+            }
             if shift_down {
                 self.room_activity
                     .set_view(crate::shell::room_activity::ActivityView::Explore);
@@ -8390,7 +8420,9 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("p")
         {
-            let _ = self.open_capture_studio(ui::widget::CaptureMode::Pip);
+            if !repeat {
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Pip);
+            }
             *handled = true;
             return true;
         }
@@ -8402,9 +8434,11 @@ impl ShellOverlayHost {
             && s.eq_ignore_ascii_case("p")
             && let Some(chrome) = self.chrome.clone()
         {
-            let mut st = chrome.borrow_mut();
-            st.overlays.projection = !st.overlays.projection;
-            st.bump();
+            if !repeat {
+                let mut st = chrome.borrow_mut();
+                st.overlays.projection = !st.overlays.projection;
+                st.bump();
+            }
             *handled = true;
             return true;
         }
@@ -8413,12 +8447,12 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("r")
         {
-            if self.capture_studio.is_replay_active() {
+            if !repeat && self.capture_studio.is_replay_active() {
                 // A warming buffer deliberately accepts no speculative save;
                 // the chord is still shell-owned and the pill keeps saying
                 // Buffering until a decodable tail exists.
                 let _ = self.capture_studio.save_recent_replay();
-            } else if !self.capture_studio.is_recording_active() {
+            } else if !repeat && !self.capture_studio.is_recording_active() {
                 let _ = self.open_capture_studio(ui::widget::CaptureMode::Recording);
             }
             *handled = true;
@@ -8429,7 +8463,9 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("s")
         {
-            let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            if !repeat {
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            }
             *handled = true;
             return true;
         }
@@ -8442,17 +8478,26 @@ impl ShellOverlayHost {
             && matches!(logical_key, Key::Named(NamedKey::Enter))
             && let Some(chrome) = self.chrome.clone()
         {
-            let mut st = chrome.borrow_mut();
-            crate::shell::window_actions::open_terminal(
-                &mut st,
-                crate::shell::window_actions::Destination::Beside,
-            );
+            if !repeat {
+                let mut st = chrome.borrow_mut();
+                crate::shell::window_actions::open_terminal(
+                    &mut st,
+                    crate::shell::window_actions::Destination::Beside,
+                );
+            }
             *handled = true;
             return true;
         }
         if super_down
             && let Key::Character(s) = logical_key
-            && self.handle_shell_window_open_chords(s.as_str(), super_down, state, path, handled)
+            && self.handle_shell_window_open_chords(
+                s.as_str(),
+                super_down,
+                repeat,
+                state,
+                path,
+                handled,
+            )
         {
             return true;
         }
@@ -8468,6 +8513,7 @@ impl ShellOverlayHost {
         &mut self,
         s: &str,
         super_down: bool,
+        repeat: bool,
         state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -8476,6 +8522,10 @@ impl ShellOverlayHost {
             // Chord form of the tab strip's "+": same
             // question, same picker.
             "t" | "T" => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 let group = self
                     .chrome
                     .as_ref()
@@ -8499,6 +8549,10 @@ impl ShellOverlayHost {
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
@@ -8518,7 +8572,10 @@ impl ShellOverlayHost {
             // most browsers/terminals/editors, and the
             // shell would swallow it ahead of the client.
             "w" | "W" => {
-                if self.close_focused_tab() {
+                if repeat {
+                    *handled = true;
+                    true
+                } else if self.close_focused_tab() {
                     *handled = true;
                     true
                 } else {
@@ -8528,6 +8585,10 @@ impl ShellOverlayHost {
             // Super+D — a second instance of what you are
             // already looking at.
             "d" | "D" => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     if let Err(err) = crate::shell::window_actions::duplicate_active_tab(&mut st) {
@@ -8548,6 +8609,10 @@ impl ShellOverlayHost {
             // the right end. Super specifically, not
             // `is_mod`: Ctrl+S is save in nearly every app.
             "s" | "S" if super_down => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     let next = match st.wheel_summon() {
@@ -11158,11 +11223,19 @@ impl Widget for ShellOverlayHost {
                 KeyEvent {
                     logical_key,
                     state: ElementState::Pressed,
+                    repeat,
                     ..
                 },
             ..
         } = event
-            && self.handle_shell_keyboard_event(logical_key, *modifiers, state, path, handled)
+            && self.handle_shell_keyboard_event(
+                logical_key,
+                *modifiers,
+                *repeat,
+                state,
+                path,
+                handled,
+            )
         {
             return;
         }
@@ -12262,10 +12335,22 @@ impl ShellOverlayHost {
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
-    fn draw_strip_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if !self.overlay_flags().overview {
-            let ribbon = self.strip_ribbon();
-            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+    fn draw_strip_chrome(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        flags: crate::shell::chrome_state::OverlayFlags,
+        quick_settings_transition_visible: bool,
+    ) {
+        if !flags.overview {
+            // Keep the retained section recording identical to the dense
+            // composition: Quick Settings visually replaces the ribbon for
+            // its complete open/close transition, while the rail remains.
+            if !flags.quick_settings && !quick_settings_transition_visible {
+                let ribbon = self.strip_ribbon();
+                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            }
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
@@ -16968,6 +17053,25 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn edge_triggered_shell_shortcuts_absorb_repeats_without_reopening() {
+        let (mut host, chrome) = host_with_chrome();
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            winit::event::Modifiers::default(),
+            true,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(
+            !chrome.borrow().overlays.shortcut_help,
+            "a repeated F1 must be consumed without toggling the guide"
+        );
+    }
+
+    #[test]
     fn shortcut_accessibility_names_workspace_and_group_navigation() {
         let (host, chrome) = host_with_chrome();
         chrome.borrow_mut().overlays.shortcut_help = true;
@@ -17005,6 +17109,7 @@ mod palette_dispatch_tests {
         assert!(host.handle_shell_keyboard_event(
             &Key::Named(NamedKey::Escape),
             winit::event::Modifiers::default(),
+            false,
             &AutoCommit::new(),
             &automerge::ROOT,
             &mut key_handled,
@@ -17025,6 +17130,7 @@ mod palette_dispatch_tests {
         assert!(host.handle_shell_keyboard_event(
             &Key::Named(NamedKey::Tab),
             winit::event::Modifiers::default(),
+            false,
             &AutoCommit::new(),
             &automerge::ROOT,
             &mut handled,
@@ -17040,6 +17146,7 @@ mod palette_dispatch_tests {
         assert!(host.handle_shell_keyboard_event(
             &Key::Named(NamedKey::Enter),
             winit::event::Modifiers::default(),
+            false,
             &AutoCommit::new(),
             &automerge::ROOT,
             &mut handled,

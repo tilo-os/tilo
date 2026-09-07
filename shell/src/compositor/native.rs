@@ -4811,6 +4811,9 @@ pub fn run() -> ! {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            if let Some(xwayland) = xwayland.as_mut() {
+                xwayland.reload_keyboard_settings();
+            }
             // Shortcut ownership is decided before a focused client sees the
             // press. Refresh the host's validated snapshot in the same settings
             // transaction so changes made in Settings take effect live rather
