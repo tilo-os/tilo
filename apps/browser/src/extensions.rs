@@ -47,6 +47,15 @@ const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4_096;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// The manager and resource surface materialize at most this many locally
+/// installed extensions. This keeps a hostile or accidentally huge profile
+/// from turning a refresh into unbounded filesystem work.
+pub const MAX_INSTALLED_EXTENSIONS: usize = 100;
+const MAX_EXTENSION_NAME_BYTES: usize = 512;
+const MAX_EXTENSION_VERSION_BYTES: usize = 128;
+const MAX_EXTENSION_DESCRIPTION_BYTES: usize = 8 * 1024;
+const MAX_EXTENSION_PERMISSIONS: usize = 128;
+const MAX_EXTENSION_PERMISSION_BYTES: usize = 512;
 
 impl std::fmt::Display for ExtensionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -187,15 +196,25 @@ pub fn list_installed() -> Vec<ExtensionInfo> {
     list_in(&extensions_dir())
 }
 
+/// Stable, address-safe resource identity for an installed extension.
+///
+/// Extension identifiers are validated when manifests are parsed, so this
+/// preserves the user-visible add-on identity without admitting an action
+/// address separator or a filesystem path.
+pub fn resource_id(id: &str) -> String {
+    format!("browser.extension:{id}")
+}
+
 fn list_in(root: &Path) -> Vec<ExtensionInfo> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
     let mut found: Vec<ExtensionInfo> = entries
+        .take(MAX_INSTALLED_EXTENSIONS)
         .flatten()
         .filter_map(|entry| {
             let manifest = entry.path().join("manifest.json");
-            let text = std::fs::read_to_string(manifest).ok()?;
+            let text = read_manifest(&manifest).ok()?;
             let mut info = parse_manifest(&text).ok()?;
             info.path = entry.path();
             Some(info)
@@ -203,6 +222,16 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
         .collect();
     found.sort_by(|a, b| a.name.cmp(&b.name));
     found
+}
+
+fn read_manifest(path: &Path) -> Result<String, ExtensionError> {
+    let length = std::fs::metadata(path)?.len();
+    if length > MAX_MANIFEST_BYTES {
+        return Err(ExtensionError::Manifest(
+            "manifest.json is too large".into(),
+        ));
+    }
+    std::fs::read_to_string(path).map_err(ExtensionError::Io)
 }
 
 /// `.crx` files wrap the zip in a small header; `.xpi` files ARE zips.
@@ -243,33 +272,55 @@ fn strip_crx_header(bytes: &[u8]) -> Result<&[u8], ExtensionError> {
 fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| ExtensionError::Manifest(e.to_string()))?;
-    let name = value
-        .get("name")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ExtensionError::Manifest("manifest has no name".into()))?
-        .to_string();
-    let version = value
-        .get("version")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ExtensionError::Manifest("manifest has no version".into()))?
-        .to_string();
+    let name = bounded_manifest_string(
+        value
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ExtensionError::Manifest("manifest has no name".into()))?,
+        "name",
+        MAX_EXTENSION_NAME_BYTES,
+    )?;
+    let version = bounded_manifest_string(
+        value
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ExtensionError::Manifest("manifest has no version".into()))?,
+        "version",
+        MAX_EXTENSION_VERSION_BYTES,
+    )?;
     let manifest_version = value
         .get("manifest_version")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(2);
-    let description = value
-        .get("description")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    let description = bounded_manifest_string(
+        value
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default(),
+        "description",
+        MAX_EXTENSION_DESCRIPTION_BYTES,
+    )?;
     let permissions = value
         .get("permissions")
         .and_then(serde_json::Value::as_array)
         .map(|a| {
+            if a.len() > MAX_EXTENSION_PERMISSIONS {
+                return Err(ExtensionError::Manifest(
+                    "manifest has too many permissions".into(),
+                ));
+            }
             a.iter()
                 .filter_map(|p| p.as_str().map(str::to_string))
-                .collect()
+                .map(|permission| {
+                    bounded_manifest_string(
+                        &permission,
+                        "permission",
+                        MAX_EXTENSION_PERMISSION_BYTES,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
         })
+        .transpose()?
         .unwrap_or_default();
     // Firefox packages carry a stable add-on id.
     let nested_id = |top: &str| {
@@ -301,6 +352,19 @@ fn parse_manifest(text: &str) -> Result<ExtensionInfo, ExtensionError> {
     })
 }
 
+fn bounded_manifest_string(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<String, ExtensionError> {
+    if value.len() > max_bytes {
+        return Err(ExtensionError::Manifest(format!(
+            "manifest {field} exceeds the safety limit"
+        )));
+    }
+    Ok(value.to_string())
+}
+
 fn slug(name: &str) -> String {
     let mut out: String = name
         .to_lowercase()
@@ -311,7 +375,15 @@ fn slug(name: &str) -> String {
     while out.contains("--") {
         out = out.replace("--", "-");
     }
-    out.trim_matches('-').to_string()
+    let out = out.trim_matches('-');
+    if out.is_empty() {
+        // Keep international display names valid even when no ASCII letter is
+        // available for a filesystem component. A deterministic digest avoids
+        // the dangerous empty component (`root.join(\"\") == root`).
+        format!("extension-{:.16}", blake3::hash(name.as_bytes()).to_hex())
+    } else {
+        out.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -414,6 +486,55 @@ mod tests {
         let info = parse_manifest(manifest).unwrap();
         assert_eq!(info.id, "safe-name");
         assert!(!info.id.contains('/'));
+    }
+
+    #[test]
+    fn non_ascii_name_gets_a_nonempty_safe_fallback_identifier() {
+        let manifest = r#"{"manifest_version": 3, "name": "🌙", "version": "1.0"}"#;
+        let info = parse_manifest(manifest).unwrap();
+        assert!(info.id.starts_with("extension-"));
+        assert!(info.id.len() > "extension-".len());
+        assert_eq!(
+            resource_id(&info.id),
+            format!("browser.extension:{}", info.id)
+        );
+    }
+
+    #[test]
+    fn inventory_skips_manifests_larger_than_the_install_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let extension = root.path().join("oversized");
+        std::fs::create_dir(&extension).unwrap();
+        std::fs::write(
+            extension.join("manifest.json"),
+            vec![b' '; MAX_MANIFEST_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        assert!(list_in(root.path()).is_empty());
+    }
+
+    #[test]
+    fn manifest_fields_and_permission_lists_are_bounded() {
+        let oversized_name = "a".repeat(MAX_EXTENSION_NAME_BYTES + 1);
+        let manifest =
+            format!(r#"{{"manifest_version": 3, "name": "{oversized_name}", "version": "1.0"}}"#);
+        assert!(matches!(
+            parse_manifest(&manifest),
+            Err(ExtensionError::Manifest(_))
+        ));
+
+        let permissions = std::iter::repeat_n("tabs", MAX_EXTENSION_PERMISSIONS + 1)
+            .map(|permission| format!("\"{permission}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let manifest = format!(
+            r#"{{"manifest_version": 3, "name": "Safe", "version": "1.0", "permissions": [{permissions}]}}"#
+        );
+        assert!(matches!(
+            parse_manifest(&manifest),
+            Err(ExtensionError::Manifest(_))
+        ));
     }
 
     #[test]
