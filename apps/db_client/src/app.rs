@@ -1244,7 +1244,12 @@ impl Widget for DbClientApp {
         if self.scrim_rect.width() > 0.0 {
             // Scrim opacity tracks the reveal so it fades in with the flap.
             let alpha = (self.flap.reveal() * 128.0).round().clamp(0.0, 255.0) as u8;
-            let scrim = Color::from_rgba8(0, 0, 0, alpha);
+            let scrim = theme
+                .tokens
+                .colors
+                .surfaces
+                .scrim
+                .with_alpha(f32::from(alpha) / 255.0);
             scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
         }
         if self.sidebar_visible() {
@@ -1666,7 +1671,11 @@ impl DbClientApp {
             scene,
             "Run",
             12.0,
-            Color::WHITE,
+            theme
+                .tokens
+                .colors
+                .on_surface(theme.tokens.colors.semantic.danger)
+                .ink,
             t * Affine::translate((
                 self.confirm_run_btn.x0 + 21.0,
                 self.confirm_run_btn.y0 + 8.0,
