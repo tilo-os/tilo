@@ -968,11 +968,14 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
 }
 
 /// Env var naming the compositor's privileged Wayland socket, exported to
-/// anything the session starts outside a sandbox — clipboard-manager clients connect here instead of `WAYLAND_DISPLAY`.
+/// trusted session services outside app sandboxes. Clipboard managers and
+/// the session-lock integration connect here instead of `WAYLAND_DISPLAY`.
 pub const PRIVILEGED_SOCKET_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
 
 /// Bind the privileged Wayland socket and publish its name, carrying the
-/// compositor's pid so concurrent sessions can't collide.
+/// compositor's pid so concurrent sessions can't collide. The pid is only a
+/// collision-free socket name; authorization comes from which acceptor made
+/// the immutable per-connection `ClientState`.
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
     let name = format!("qos-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
@@ -1691,6 +1694,11 @@ fn forward_test_control_touch(
         return;
     };
     let target = client_input::touch_target(state, fb, &touch);
+    if let Some((surface_id, _)) = target
+        && matches!(touch, crate::compositor::backend::TouchEvent::Down { .. })
+    {
+        client_input::focus_touch_target(state, fb, surface_id);
+    }
     state.forward_client_touch(touch, target);
 }
 
@@ -4121,10 +4129,9 @@ pub fn run() -> ! {
         }
     };
 
-    // A second Wayland socket for clients the session trusts with the
-    // clipboard-manager protocols — identical set except
-    // `zwlr_data_control_manager_v1`/`ext_data_control_manager_v1` are visible
-    // here; see `compositor::selection` for why not on the public one.
+    // A second Wayland socket for clients the session trusts with
+    // authority-bearing protocols — clipboard-manager access and session
+    // locking are visible here, never on the public app socket.
     //
     // The privilege is the socket, not a client request: the sandbox launcher
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
@@ -4736,6 +4743,15 @@ pub fn run() -> ! {
                     ) || (!session.is_locked() && client_input_allowed(&frame_builder))
                     {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
+                        if let Some((surface_id, _)) = target
+                            && matches!(touch, crate::compositor::backend::TouchEvent::Down { .. })
+                        {
+                            client_input::focus_touch_target(
+                                &mut state,
+                                &frame_builder,
+                                surface_id,
+                            );
+                        }
                         state.forward_client_touch(touch, target);
                     }
                 }
@@ -5101,7 +5117,7 @@ pub fn run() -> ! {
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
-                let _ = crate::compositor::tab_binding::close_tab_for_destroyed_surface(
+                let _ = crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
                     &mut state.workspace_tree,
                     surface_id,
                 );
@@ -5171,24 +5187,6 @@ pub fn run() -> ! {
             &output_globals,
             backend.outputs(),
         );
-        state.popup_manager.cleanup();
-        // Popup geometry is relative to its parent surface, whose actual
-        // rectangle lives in the rendered widget tree.  Resolve that live
-        // geometry before asking State to apply xdg-positioner constraints and
-        // emit the first/reposition configure.
-        let mut popup_parents = HashMap::new();
-        for parent_id in state.popup_parent_ids() {
-            if let Some(rect) = frame_builder.foreign_surface_rect(parent_id) {
-                popup_parents.insert(parent_id, rect);
-            } else if let Some(rect) = frame_builder.floating_surface_rect(parent_id) {
-                popup_parents.insert(parent_id, rect);
-            } else if let Some(rect) = frame_builder.popup_surface_rect(parent_id) {
-                popup_parents.insert(parent_id, rect);
-            }
-        }
-        let popup_surfaces = state.layout_xdg_popups(&popup_parents);
-        frame_builder.set_popup_surfaces(&popup_surfaces);
-
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &frame_builder);
 
@@ -5212,12 +5210,10 @@ pub fn run() -> ! {
                 (surface.surface_id, (center.x, center.y))
             }));
             placements.extend(state.output_presentation_placements());
-            placements.extend(frame_builder.popup_surface_rects().into_iter().map(
-                |(surface_id, rect)| {
-                    let center = rect.center();
-                    (surface_id, (center.x, center.y))
-                },
-            ));
+            placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
+                let center = rect.center();
+                (*surface_id, (center.x, center.y))
+            }));
             state.update_surface_scales(&placements);
         }
         // An output change has already installed the backend's new geometry,
@@ -7282,7 +7278,7 @@ fn visible_surface_rects(frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
     if let Some(surface) = frame_builder.fullscreen_surface_rect() {
         surfaces.push(surface);
     }
-    surfaces.extend(frame_builder.popup_surface_rects());
+    surfaces.extend(frame_builder.transient_surface_rects());
     if let Some(surface) = frame_builder.osk_surface_rect() {
         surfaces.push(surface);
     }
