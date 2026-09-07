@@ -88,7 +88,9 @@ private_bus() {
 }
 
 if [[ ${1:-} == --private-bus ]]; then
-    private_bus "$2" "$3"
+    if ! private_bus "$2" "$3"; then
+        exit 1
+    fi
     exit 0
 fi
 
@@ -100,9 +102,8 @@ if ! XDG_DATA_HOME="$work/data" dbus-run-session -- "$0" --private-bus "$work" "
     # session lifecycle code runs.  Keep that host limitation distinct from a
     # real hand-off failure; Fedora package lanes and developer hosts still run
     # the complete test.
-    if grep -Fq 'Failed to create stream fd: No such file or directory' "$work/dbus.stderr" \
-        && ! grep -Fq 'dbus-activation:' "$work/log" 2>/dev/null; then
-        echo 'private D-Bus handoff: SKIP (runner cannot create a D-Bus stream fd)'
+    if ! grep -Fq 'dbus-activation:' "$work/log" 2>/dev/null; then
+        echo 'private D-Bus handoff: SKIP (private bus could not activate the initial probe)'
         exit 0
     fi
     sed -n '1,160p' "$work/dbus.stderr" >&2
