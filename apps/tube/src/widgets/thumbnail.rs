@@ -4,9 +4,10 @@
 //! so we paint a deterministic two-stop gradient derived from the video's
 //! seed (so every tile is distinct but the wall stays harmonious), plus
 //! the chrome a real thumbnail carries: a duration pill, an optional
-//! watched-progress bar, an optional LIVE badge, and — when `DeArrow` is on
-//! and has data — a small "`DeArrow`" marker noting the frame was swapped
-//! for a community-chosen, non-clickbait one.
+//! watched-progress bar, and an optional LIVE badge. `DeArrow` corrections are
+//! intentionally reflected in the chosen title/image themselves: putting a
+//! provider badge on every ordinary card makes normal browsing feel like a
+//! diagnostics screen.
 
 use std::collections::HashMap;
 
@@ -27,14 +28,13 @@ use crate::util::{duration_hms, seed_gradient};
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent display toggle (live, dearrow, hero) or render \
+    reason = "each bool is an independent display toggle (live, hero) or render \
               cache (dirty), not a state machine"
 )]
 pub struct Thumbnail {
     seed: String,
     duration: u32,
     height: f32,
-    dearrow: bool,
     live: bool,
     progress: Option<f32>,
     hero: bool,
@@ -67,7 +67,6 @@ impl Thumbnail {
             seed: seed.to_string(),
             duration,
             height: 169.0,
-            dearrow: false,
             live: false,
             progress: None,
             hero: false,
@@ -101,11 +100,6 @@ impl Thumbnail {
     #[must_use]
     pub fn height(mut self, h: f32) -> Self {
         self.height = h;
-        self
-    }
-    #[must_use]
-    pub fn dearrow(mut self, on: bool) -> Self {
-        self.dearrow = on;
         self
     }
     #[must_use]
@@ -250,23 +244,6 @@ impl Thumbnail {
                     fg: Color::WHITE,
                     anchor: Point::new(self.rect.x1 - 8.0, self.rect.y1 - 26.0),
                     right_align: true,
-                },
-            );
-        }
-
-        // DeArrow marker, top-left.
-        if self.dearrow {
-            Self::pill(
-                scene,
-                transform,
-                text_renderer,
-                "DeArrow",
-                &PillSpec {
-                    size: 10.0,
-                    bg: Color::from_rgb8(0x9b, 0x59, 0xb6),
-                    fg: Color::WHITE,
-                    anchor: Point::new(self.rect.x0 + 8.0, self.rect.y0 + 8.0),
-                    right_align: false,
                 },
             );
         }
