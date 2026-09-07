@@ -525,6 +525,10 @@ pub struct Collaborator {
 pub enum SignedSendError {
     /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
     NoIdentity,
+    /// The identity has signed every representable sequence number. Reusing
+    /// one would make a fresh edit indistinguishable from a replay attack, so
+    /// the identity must be rotated before any more operations are signed.
+    SequenceExhausted,
     /// Canonical-bytes serialisation of the envelope failed; in practice
     /// only fires for unrepresentable values.
     Canonical(collab_types::CanonicalError),
@@ -535,6 +539,9 @@ impl std::fmt::Display for SignedSendError {
         match self {
             SignedSendError::NoIdentity => {
                 f.write_str("CollaborationManager has no signing identity bound")
+            }
+            SignedSendError::SequenceExhausted => {
+                f.write_str("collaboration signing sequence exhausted; rotate the identity")
             }
             SignedSendError::Canonical(e) => write!(f, "canonical encoder failed: {e}"),
         }
@@ -584,16 +591,20 @@ impl SigningIdentity {
     ///
     /// # Errors
     ///
-    /// Returns [`collab_types::CanonicalError`] when `payload` fails to
-    /// canonicalize for signing.
+    /// Returns [`SignedSendError::SequenceExhausted`] rather than ever reusing
+    /// a sequence number, or [`SignedSendError::Canonical`] when `payload`
+    /// fails to canonicalize for signing.
     pub fn sign_op(
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
-    ) -> Result<collab_types::SignedOp, collab_types::CanonicalError> {
+    ) -> Result<collab_types::SignedOp, SignedSendError> {
         let timestamp = std::time::SystemTime::now();
-        self.seq = self.seq.wrapping_add(1);
+        let sequence = self
+            .seq
+            .checked_add(1)
+            .ok_or(SignedSendError::SequenceExhausted)?;
         let mut op = collab_types::SignedOp::new_unsigned(
             payload,
             artifact,
@@ -601,9 +612,10 @@ impl SigningIdentity {
             self.attestation_id,
             op_class,
             timestamp,
-            self.seq,
+            sequence,
         );
-        collab_types::sign_op(&mut op, &self.secret_key)?;
+        collab_types::sign_op(&mut op, &self.secret_key).map_err(SignedSendError::Canonical)?;
+        self.seq = sequence;
         Ok(op)
     }
 }
@@ -1258,7 +1270,8 @@ impl CollaborationManager {
     /// # Errors
     ///
     /// Returns [`SignedSendError::NoIdentity`] when no signing identity is
-    /// bound, or [`SignedSendError::Canonical`] when `payload` fails to
+    /// bound, [`SignedSendError::SequenceExhausted`] before a sequence could
+    /// be reused, or [`SignedSendError::Canonical`] when `payload` fails to
     /// canonicalize for signing.
     pub fn send_signed_op(
         &mut self,
@@ -1267,9 +1280,7 @@ impl CollaborationManager {
         op_class: collab_types::OpClass,
     ) -> Result<(), SignedSendError> {
         let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity
-            .sign_op(payload, artifact, op_class)
-            .map_err(SignedSendError::Canonical)?;
+        let envelope = identity.sign_op(payload, artifact, op_class)?;
         self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
@@ -3957,6 +3968,32 @@ mod tests {
         assert_eq!(typing_publishes, vec![(expected_key_bytes.clone(), 4, 10)]);
         assert_eq!(arrived, vec![expected_key_bytes.clone()]);
         assert_eq!(left, vec![expected_key_bytes]);
+    }
+
+    #[test]
+    fn signing_identity_refuses_sequence_reuse_at_u64_boundary() {
+        let secret_key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
+        let mut identity = SigningIdentity::new(secret_key, collab_types::AttestationId::new());
+        identity.seq = u64::MAX - 1;
+        let artifact = collab_types::ArtifactId::new();
+
+        let final_op = identity
+            .sign_op(
+                b"last unique operation".to_vec(),
+                artifact,
+                collab_types::OpClass::Splice,
+            )
+            .expect("the final unique sequence remains valid");
+        assert_eq!(final_op.seq, u64::MAX);
+        assert_eq!(identity.seq, u64::MAX);
+
+        let exhausted = identity.sign_op(
+            b"must not reuse zero".to_vec(),
+            artifact,
+            collab_types::OpClass::Splice,
+        );
+        assert!(matches!(exhausted, Err(SignedSendError::SequenceExhausted)));
+        assert_eq!(identity.seq, u64::MAX, "failure is non-mutating");
     }
 
     #[test]
