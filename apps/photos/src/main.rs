@@ -148,7 +148,11 @@ fn render_scenario(
     // its real background thumbnail worker can settle; the live UI never
     // waits for a decode.
     let settle_frames = if matches!(scenario, "library" | "album-manage") {
-        24
+        // A library queues one bounded thumbnail job per sync.  Give the
+        // deterministic offscreen gallery enough frames to show the fully
+        // materialised shelf without changing the live app's non-blocking
+        // scheduling policy.
+        96
     } else {
         2
     };
