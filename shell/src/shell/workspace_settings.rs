@@ -1015,7 +1015,8 @@ fn draw_empty_state(
     let colors = &tokens.colors;
     let glyph = 28.0_f64;
     let cx = rect.center().x;
-    let top = rect.y0 + (rect.height() * 0.28).min(96.0);
+    let stack_height = glyph + 58.0;
+    let top = rect.y0 + ((rect.height() - stack_height) / 2.0).clamp(12.0, 48.0);
     draw_icon(
         scene,
         transform,
@@ -1977,9 +1978,18 @@ pub fn draw_members_pane(
 
     let roster_count = ordered_roster(ws).len();
     let transfer_status = ownership_transfer_status(ws, local_user);
-    let member_help = transfer_status.as_deref().unwrap_or(
-        "Removing someone blocks future sync and edits; copies already downloaded stay with them.",
-    );
+    let member_help_owned;
+    let member_help = if let Some(status) = transfer_status.as_deref() {
+        member_help_owned = elide(
+            status,
+            theme.tokens.typography.scale.xs,
+            (pane_rect.width() - 294.0).max(120.0),
+            text_renderer,
+        );
+        member_help_owned.as_str()
+    } else {
+        "Removing someone blocks future sync and edits; copies already downloaded stay with them."
+    };
     let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
         .actions
         .is_empty();
@@ -2051,6 +2061,7 @@ pub fn draw_members_pane(
         draw_member_row(
             scene,
             transform,
+            ws,
             row,
             local_user,
             is_owner,
@@ -2084,25 +2095,33 @@ pub fn ownership_transfer_status(ws: &Workspace, local_user: &UserId) -> Option<
     if &recipient == local_user {
         Some(format!(
             "{} offered you ownership. Review the workspace and explicitly accept before the offer expires.",
-            short_id(&owner)
+            member_name_or_short_id(ws, &owner)
         ))
     } else if &owner == local_user {
         Some(format!(
             "Waiting for {} to explicitly accept ownership. You can cancel until acceptance.",
-            short_id(&recipient)
+            member_name_or_short_id(ws, &recipient)
         ))
     } else {
         Some(format!(
             "Ownership transfer to {} is awaiting that person's acceptance.",
-            short_id(&recipient)
+            member_name_or_short_id(ws, &recipient)
         ))
     }
+}
+
+fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
+    ws.collaborators
+        .iter()
+        .find(|person| person.id == user && !person.name.trim().is_empty())
+        .map_or_else(|| short_id(user), |person| person.name.trim().to_string())
 }
 
 /// Paint one [`MemberRow`] — avatar, name, role chip, Remove button.
 fn draw_member_row(
     scene: &mut Scene,
     transform: Affine,
+    ws: &Workspace,
     row: &MemberRow,
     local_user: &UserId,
     is_owner: bool,
@@ -2120,7 +2139,11 @@ fn draw_member_row(
         row.row_rect.x0 + 12.0 + avatar_size,
         row.row_rect.center().y + avatar_size / 2.0,
     );
-    let name = short_id(&row.user);
+    // Membership authority is keyed by the durable id, but the row should
+    // lead with the person's known display name. Falling back to a shortened
+    // key keeps an unrecognised invite identifiable without presenting raw
+    // cryptographic material as normal desktop copy.
+    let name = ws_member_display_name(ws, row, local_user);
     draw_avatar(scene, transform, avatar, &name, false, text_renderer, theme);
 
     // Person ids are hex keys; a name alone doesn't say which row is you.
@@ -2198,6 +2221,18 @@ fn draw_member_row(
         text_renderer,
         theme,
     );
+}
+
+fn ws_member_display_name(ws: &Workspace, row: &MemberRow, local_user: &UserId) -> String {
+    if &row.user == local_user {
+        return "You".to_string();
+    }
+    if let Some(person) = ws.collaborators.iter().find(|person| person.id == row.user)
+        && !person.name.trim().is_empty()
+    {
+        return person.name.trim().to_string();
+    }
+    short_id(&row.user)
 }
 
 /// The role chip half of [`draw_member_row`] — its fill, label and the
@@ -3072,6 +3107,10 @@ fn layout_capability_rows(
     card: Rect,
 ) {
     let entries = listed_capabilities(ws);
+    // Keep a dedicated footer band for overflow/authority copy. Rows must
+    // never consume that space and then have explanatory text painted over
+    // their final line.
+    let footer_top = pane_rect.y1 - PANE_PAD_TOP - 34.0;
     let mut cursor_y = card.y1 + 16.0;
     let mut last_kind: Option<SubjectKind> = None;
     let mut placed = 0usize;
@@ -3083,7 +3122,7 @@ fn layout_capability_rows(
             0.0
         };
         let row_y0 = cursor_y + header_h;
-        if row_y0 + ROW_HEIGHT > pane_rect.y1 - PANE_PAD_TOP {
+        if row_y0 + ROW_HEIGHT > footer_top {
             break;
         }
         let row_rect = Rect::new(
@@ -3160,7 +3199,15 @@ pub fn draw_permissions_pane(
 
     // ---- Capability rows ------------------------------------------
     if layout.rows.is_empty() {
-        let body = Rect::new(pane_rect.x0, card.y1, pane_rect.x1, pane_rect.y1);
+        // Empty content belongs directly to the composer it explains. A
+        // full-height body centred the message in otherwise blank space and
+        // made the owner-only explanation look detached at the footer.
+        let body = Rect::new(
+            pane_rect.x0,
+            card.y1 + 8.0,
+            pane_rect.x1,
+            (card.y1 + 122.0).min(pane_rect.y1 - 54.0),
+        );
         draw_empty_state(
             scene,
             transform,
@@ -3928,6 +3975,34 @@ mod members_pane_tests {
                 .contains("offered you ownership")
         );
         assert_eq!(role_verb(CapRole::Owner), None);
+    }
+
+    #[test]
+    fn ownership_status_prefers_a_known_person_name_to_a_key() {
+        let mut ws = ws_with_two_members();
+        let owner_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+        let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[18; 32]);
+        let owner_public =
+            collab_types::Ed25519PublicKey::from_bytes(owner_key.verifying_key().to_bytes());
+        let recipient_public =
+            collab_types::Ed25519PublicKey::from_bytes(recipient_key.verifying_key().to_bytes());
+        let owner = public_key_member_id(owner_public);
+        let recipient = public_key_member_id(recipient_public);
+        ws.collaborators
+            .push(crate::shell::state::Collaborator::new(recipient.clone(), "Morgan").as_invited());
+        ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
+            ws.room.to_string(),
+            [23; 32],
+            owner_public,
+            recipient_public,
+            u64::MAX,
+            &owner_key,
+        )
+        .ok();
+
+        let status = ownership_transfer_status(&ws, &owner).unwrap();
+        assert!(status.contains("Morgan"));
+        assert!(!status.contains(&short_id(&recipient)));
     }
 
     #[test]

@@ -57,8 +57,8 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
         (
             ShortcutAction::ShortcutHelp,
             "shortcuts.help",
-            "Shortcut guide",
-            "Show the always-available desktop controls overlay",
+            "Desktop help",
+            "F1 opens the desktop guide anywhere; Super+? is the configurable shortcut for the same guide",
         ),
         (
             ShortcutAction::FocusPreviousWindow,
@@ -488,6 +488,18 @@ mod tests {
             ShortcutPane::read_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
             Some("Super+k")
         );
+    }
+
+    #[test]
+    fn help_setting_explains_fixed_and_configurable_routes() {
+        let (_, _, label, description) = entries()
+            .into_iter()
+            .find(|(action, ..)| *action == ShortcutAction::ShortcutHelp)
+            .expect("help shortcut entry");
+        assert_eq!(label, "Desktop help");
+        assert!(description.contains("Super+?"));
+        assert!(description.contains("F1"));
+        assert!(description.contains("same guide"));
     }
     #[test]
     fn conflicting_edit_is_rolled_back() {
