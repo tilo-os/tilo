@@ -104,13 +104,36 @@ pub fn sweep(store: &Store, max_bytes: u64) -> Result<GcReport, StoreError> {
 mod tests {
     use super::*;
     use crate::registry::RegistryEntry;
+    use pkg::blobs::{BlobStore, Collection};
     use pkg::id::PackageId;
+    use pkg::signed::SignedRoot;
     use std::fs;
 
     fn write_payload(root: &std::path::Path, id: PackageId, bytes: usize) {
         let dir = root.join("payloads").join(id.to_hex());
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("data.bin"), vec![0u8; bytes]).unwrap();
+    }
+
+    fn install_graph(store: &Store, seed: u8, pinning: Pinning, last_used_unix: u64) -> PackageId {
+        let id = store.with_blobs(|blobs| {
+            let payload_hash = blobs.put(&vec![seed; 1024]).unwrap();
+            let collection = Collection::from_entries([("data.bin".into(), payload_hash)]);
+            let collection_hash = blobs.put(&collection.encode()).unwrap();
+            let manifest_hash = blobs.put(format!("manifest-{seed}").as_bytes()).unwrap();
+            let root = SignedRoot::unsigned(manifest_hash, collection_hash, [seed; 32]);
+            PackageId::from_bytes(blobs.put(&root.encode()).unwrap().0)
+        });
+        write_payload(&store.root(), id, 1024);
+        let mut entry = RegistryEntry::new_now(
+            id,
+            pinning,
+            store.payloads_root().join(id.to_hex()),
+            String::new(),
+        );
+        entry.last_used_unix = last_used_unix;
+        store.put_entry(entry).unwrap();
+        id
     }
 
     #[test]
@@ -135,35 +158,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         // 3 packages of 1KB each; 2 tried (t=1, t=2), one pinned.
-        let a = PackageId::from_bytes([1u8; 32]);
-        let b = PackageId::from_bytes([2u8; 32]);
-        let p = PackageId::from_bytes([3u8; 32]);
-        for id in [a, b, p] {
-            write_payload(dir.path(), id, 1024);
-        }
-        let mut ea = RegistryEntry::new_now(
-            a,
-            Pinning::Tried,
-            dir.path().join("payloads").join(a.to_hex()),
-            String::new(),
-        );
-        ea.last_used_unix = 1;
-        let mut eb = RegistryEntry::new_now(
-            b,
-            Pinning::Tried,
-            dir.path().join("payloads").join(b.to_hex()),
-            String::new(),
-        );
-        eb.last_used_unix = 2;
-        let ep = RegistryEntry::new_now(
-            p,
-            Pinning::Pinned,
-            dir.path().join("payloads").join(p.to_hex()),
-            String::new(),
-        );
-        store.put_entry(ea).unwrap();
-        store.put_entry(eb).unwrap();
-        store.put_entry(ep).unwrap();
+        let a = install_graph(&store, 1, Pinning::Tried, 1);
+        let _newer_tried = install_graph(&store, 2, Pinning::Tried, 2);
+        let p = install_graph(&store, 3, Pinning::Pinned, 3);
 
         // Cap at 1 KiB — only Pinned should survive.
         let r = sweep(&store, 1024).unwrap();
