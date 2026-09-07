@@ -21,6 +21,12 @@ use std::collections::HashMap;
 
 use crate::dict::Dictionary;
 
+/// Bound the local adaptation cache. Prediction is helpful only while it is
+/// cheap and private; it must never turn an unusually long typing session into
+/// an unbounded in-memory profile.
+const MAX_LEARNED_CONTEXTS: usize = 512;
+const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
+
 /// Embedded bigram table: `w1<TAB>w2<TAB>weight` per line. ~40k common pairs.
 const BIGRAMS_TXT: &str = include_str!("../data/bigrams.txt");
 
@@ -97,6 +103,14 @@ impl Predictor {
             return;
         }
         let context = previous.map(str::to_lowercase).unwrap_or_default();
+        if !self.learned.contains_key(&context) && self.learned.len() >= MAX_LEARNED_CONTEXTS {
+            return;
+        }
+        if self.learned.get(&context).is_some_and(|words| {
+            !words.contains_key(&word) && words.len() >= MAX_LEARNED_WORDS_PER_CONTEXT
+        }) {
+            return;
+        }
         let count = self
             .learned
             .entry(context)
@@ -104,6 +118,19 @@ impl Predictor {
             .entry(word)
             .or_default();
         *count = count.saturating_add(1);
+    }
+
+    /// Forget all on-device adaptation immediately. The embedded dictionary
+    /// and bundled bigram model remain available, but no typed words stay in
+    /// this process after a privacy reset.
+    pub fn clear_learned(&mut self) {
+        self.learned.clear();
+    }
+
+    /// Number of retained local adaptation contexts, for settings UIs and
+    /// bounded-resource tests. This intentionally reveals no typed content.
+    pub fn learned_context_count(&self) -> usize {
+        self.learned.len()
     }
 
     /// Predict the next/completion words, ranked best-first, as
@@ -298,5 +325,16 @@ mod tests {
             Some("mood"),
             "repeated personal usage should outrank the generic corpus"
         );
+    }
+
+    #[test]
+    fn local_adaptation_is_bounded_and_clearable() {
+        let mut predictor = small();
+        for index in 0..(MAX_LEARNED_CONTEXTS + 10) {
+            predictor.learn_transition(Some(&format!("context-{index}")), "word");
+        }
+        assert_eq!(predictor.learned_context_count(), MAX_LEARNED_CONTEXTS);
+        predictor.clear_learned();
+        assert_eq!(predictor.learned_context_count(), 0);
     }
 }
