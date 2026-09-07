@@ -42,7 +42,9 @@ use ui::widget::{
     ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind, WebView, Widget,
 };
 
-use crate::actions::{BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id};
+use crate::actions::{
+    BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, history_resource_id,
+};
 use crate::address_overlay::AddressSuggestions;
 use crate::history::History;
 use crate::library::Bookmarks;
@@ -101,6 +103,10 @@ const URL_INPUT_ID: &str = "browser.url_input";
 const PIP_FEEDBACK_LIFETIME: std::time::Duration = std::time::Duration::from_millis(4200);
 const PIP_FEEDBACK_FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const SEARCH_QUERY_TOKEN: &str = "{query}";
+/// A `WebView` backend is external work: it can fail to produce either a load
+/// completion or an explicit failure.  Never leave an accepted resource
+/// invocation pending forever in that case.
+const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Browser's public navigation boundary. Keep this separate from the generic
 /// embedded-view helper: Browser's manifest advertises only these schemes.
@@ -347,6 +353,7 @@ pub struct BrowserWidget {
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
     resource_navigation_invocation: Option<ui::qos_actions::InvocationId>,
     resource_navigation_result: Option<ui::qos_actions::InvocationUpdate>,
+    resource_navigation_deadline: Option<std::time::Instant>,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
     published_pip_region: Option<Rect>,
@@ -459,6 +466,7 @@ impl BrowserWidget {
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
             resource_navigation_invocation: None,
             resource_navigation_result: None,
+            resource_navigation_deadline: None,
             pending_pip: None,
             pending_pip_region_update: None,
             published_pip_region: None,
@@ -1227,9 +1235,6 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
-        if !self.show_settings && self.progress < 1.0 {
-            column = column.push(Box::new(ProgressBar::new(self.progress as f32)));
-        }
         // The content region is either the settings pane or the live page.
         let content: Box<dyn Widget> = if self.show_settings {
             Box::new(
@@ -1249,6 +1254,25 @@ impl BrowserWidget {
             )
         } else {
             Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
+        };
+        // A percentage-height WebView cannot be a third direct flex child:
+        // with toolbar + progress it can claim the outer column's full
+        // height and paint over the chrome.  Give loading content its own
+        // remaining-height flex region so the fixed progress strip always
+        // sits beneath the toolbar, above the page.
+        let content = if !self.show_settings && self.progress < 1.0 {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_gap(0.0)
+                    .with_fill_remaining_height()
+                    .push(Box::new(
+                        ProgressBar::new(self.progress as f32).with_label("Page loading"),
+                    ))
+                    .push(content),
+            ) as Box<dyn Widget>
+        } else {
+            content
         };
         column = column.push(content);
         Box::new(column)
@@ -1324,10 +1348,7 @@ impl BrowserWidget {
             LibrarySection::History => {
                 let mut rows = Column::new().with_no_padding().with_intrinsic_height();
                 for (index, entry) in self.history.entries().iter().rev().take(12).enumerate() {
-                    let resource_id = format!(
-                        "browser.history.{}",
-                        blake3::hash(entry.url.as_bytes()).to_hex()
-                    );
+                    let resource_id = history_resource_id(&entry.url);
                     let title = if entry.title.trim().is_empty() {
                         entry.url.as_str()
                     } else {
@@ -1644,6 +1665,13 @@ impl BrowserWidget {
         for event in self.engine.drain_events() {
             match event {
                 WebViewEvent::UriChanged(uri) => {
+                    // Deterministic visual-audit states own their displayed
+                    // address.  The headless engine is pre-navigated to the
+                    // flat test page, and its bootstrap event must not make
+                    // an offline/loading capture claim a different URL.
+                    if self.forced_load_error || self.forced_loading {
+                        continue;
+                    }
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
                     }
@@ -1652,9 +1680,13 @@ impl BrowserWidget {
                     }
                     self.current_uri = uri;
                 }
-                WebViewEvent::TitleChanged(title) => self.title = title,
+                WebViewEvent::TitleChanged(title)
+                    if !self.forced_load_error && !self.forced_loading =>
+                {
+                    self.title = title;
+                }
                 WebViewEvent::LoadProgress(p) if !self.forced_loading => self.progress = p,
-                WebViewEvent::LoadProgress(_) => {}
+                WebViewEvent::TitleChanged(_) | WebViewEvent::LoadProgress(_) => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
@@ -1669,6 +1701,7 @@ impl BrowserWidget {
                         let _ = self.history.save();
                     }
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
+                        self.resource_navigation_deadline = None;
                         self.resource_navigation_result =
                             Some(ui::qos_actions::InvocationUpdate::Succeeded {
                                 invocation,
@@ -1683,6 +1716,7 @@ impl BrowserWidget {
                     self.load_error = Some(error.chars().take(240).collect());
                     self.structure_dirty = true;
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
+                        self.resource_navigation_deadline = None;
                         self.resource_navigation_result =
                             Some(ui::qos_actions::InvocationUpdate::Failed {
                                 invocation,
@@ -2070,9 +2104,6 @@ impl Widget for BrowserWidget {
     )]
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         const MATERIALIZED_LIMIT: usize = 100;
-        let resource_id = |kind: &str, url: &str| {
-            format!("browser.{kind}.{}", blake3::hash(url.as_bytes()).to_hex())
-        };
         let operation =
             |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
                 ActionSpec::operation(
@@ -2207,7 +2238,7 @@ impl Widget for BrowserWidget {
                 entry.title.as_str()
             };
             let mut child = Resource::new(
-                resource_id("history", &entry.url),
+                history_resource_id(&entry.url),
                 "browser.history-entry",
                 title,
             );
@@ -2450,11 +2481,14 @@ impl Widget for BrowserWidget {
                 ui::qos_actions::ActionOutput::default(),
             )));
         }
-        if self.resource_navigation_invocation.is_some() {
+        if self.resource_navigation_invocation.is_some()
+            || self.resource_navigation_result.is_some()
+        {
             return Err("another browser navigation is already running".into());
         }
         self.perform_browser_operation(operation)?;
         self.resource_navigation_invocation = Some(invocation);
+        self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
@@ -2470,10 +2504,28 @@ impl Widget for BrowserWidget {
             .as_ref()
             .is_some_and(|update| update.invocation() == invocation)
         {
-            self.resource_navigation_result.take()
-        } else {
-            None
+            return self.resource_navigation_result.take();
         }
+        if self.resource_navigation_invocation == Some(invocation)
+            && self
+                .resource_navigation_deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            self.resource_navigation_invocation = None;
+            self.resource_navigation_deadline = None;
+            return Some(ui::qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: ui::qos_actions::ActionFailure {
+                    code: "browser.navigation_timed_out".into(),
+                    message: "The page did not finish loading in time.".into(),
+                    details: Some(serde_json::json!({
+                        "timeout_seconds": NAVIGATION_TIMEOUT.as_secs(),
+                    })),
+                    retryable: true,
+                },
+            });
+        }
+        None
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -3191,6 +3243,57 @@ mod tests {
         let viewport = widget.find_rect("browser.surface").unwrap();
         assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
         assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
+    }
+
+    #[test]
+    fn loading_progress_keeps_toolbar_above_the_page_surface() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_loading();
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        widget.sync(&mut state, &root);
+        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+        widget.sync(&mut state, &root);
+        let layout_root = tree
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(900.0),
+                        height: Dimension::length(620.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let measure_nodes = nodes.clone();
+        tree.compute_layout_with_measure(
+            layout_root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(900.0),
+                height: taffy::AvailableSpace::Definite(620.0),
+            },
+            |known, available, node, _, _| {
+                measure_nodes
+                    .get(&node)
+                    .map_or(taffy::Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, &mut text)
+                    })
+            },
+        )
+        .unwrap();
+        widget.apply_layout(&tree, child, Point::ORIGIN);
+        let toolbar = widget.find_rect("browser.reload").unwrap();
+        let viewport = widget.find_rect("browser.surface").unwrap();
+        assert!(toolbar.height() > 0.0);
+        assert!(
+            viewport.y0 > toolbar.y1,
+            "loading must reserve a strip below the toolbar, not let WebView cover it"
+        );
     }
 
     #[test]
