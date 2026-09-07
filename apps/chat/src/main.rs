@@ -105,11 +105,19 @@ pub fn main() {
                 "thread-narrow",
                 "collaboration",
                 "context",
+                "msgmenu",
                 "attach",
                 "attach-loading",
                 "attach-error",
                 "edit",
                 "composer",
+                "call",
+                "share",
+                "floating-call-attached",
+                "floating-call",
+                "floating-call-hover",
+                "floating-call-returning",
+                "floating-call-returned",
             ])
             .open_state(open_state)
             .configure_app(|app| chat::actions::register(app.action_registry_mut())),
@@ -134,7 +142,11 @@ fn render_shot_to_png(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    };
+    }
+    .with_reduce_motion(matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
