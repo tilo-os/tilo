@@ -108,43 +108,67 @@ impl<T> LocalState<T> {
     }
 
     /// Replace the value and invalidate widgets bound to this handle.
+    ///
+    /// At revision exhaustion this is a no-op. Use [`Self::try_set`] when the
+    /// caller needs to observe that failure.
     pub fn set(&self, value: T) {
-        let _ = self.replace(value);
+        let _ = self.try_set(value);
     }
 
-    fn replace(&self, value: T) -> u64 {
+    /// As [`Self::set`], reporting whether the replacement was published.
+    /// Returns `false` once the revision namespace is exhausted; the value is
+    /// then left untouched, so a bound widget cannot mistake a new value for
+    /// one it already observed under a wrapped revision.
+    pub fn try_set(&self, value: T) -> bool {
+        self.replace(value).is_some()
+    }
+
+    fn replace(&self, value: T) -> Option<u64> {
         let mut current = self
             .inner
             .value
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revision = self.next_revision()?;
         *current = value;
-        let revision = self.advance_revision();
+        self.inner.revision.store(revision, Ordering::Release);
         drop(current);
-        revision
+        Some(revision)
     }
 
     /// Mutate the value and invalidate widgets bound to this handle once.
+    /// At revision exhaustion this is a no-op. Use [`Self::try_update`] when
+    /// the caller needs to observe that failure.
     pub fn update(&self, update: impl FnOnce(&mut T)) {
+        let _ = self.try_update(update);
+    }
+
+    /// As [`Self::update`], reporting whether `update` ran. Returns `false`
+    /// at revision exhaustion without invoking `update`.
+    pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
         let mut value = self
             .inner
             .value
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(revision) = self.next_revision() else {
+            return false;
+        };
         update(&mut value);
-        self.advance_revision();
+        self.inner.revision.store(revision, Ordering::Release);
         drop(value);
+        true
     }
 
     pub(crate) fn revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Acquire)
     }
 
-    fn advance_revision(&self) -> u64 {
-        self.inner
-            .revision
-            .fetch_add(1, Ordering::Release)
-            .wrapping_add(1)
+    fn next_revision(&self) -> Option<u64> {
+        // Every caller holds `value`'s write lock, which serializes revision
+        // allocation. Publish only after replacing the protected value so a
+        // binding that sees the new revision cannot read the old value.
+        self.inner.revision.load(Ordering::Relaxed).checked_add(1)
     }
 
     /// Create a thread-safe writer that wakes the application after mutation.
@@ -199,8 +223,10 @@ impl<T: Clone> LocalBinding<T> {
     }
 
     pub(crate) fn publish_by(&mut self, value: &T, equal: impl FnOnce(&T, &T) -> bool) {
-        if !self.state.with(|current| equal(current, value)) {
-            self.observed_revision = self.state.replace(value.clone());
+        if !self.state.with(|current| equal(current, value))
+            && let Some(revision) = self.state.replace(value.clone())
+        {
+            self.observed_revision = revision;
         }
     }
 }
@@ -257,24 +283,42 @@ impl<T> LatestRequest<T> {
     }
 
     /// Start a request, invalidating any older completion capability.
-    pub fn begin(&mut self) -> RequestCompletion<T> {
+    pub fn begin(&mut self) -> Option<RequestCompletion<T>> {
+        // Reserve `u64::MAX` as a terminal invalidation marker. It is never
+        // handed to a completion capability, so an exhausted counter cannot
+        // make an old completion current again.
         let generation = self
             .generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1).filter(|next| *next != u64::MAX)
+            })
+            .ok()
+            .and_then(|generation| generation.checked_add(1))?;
         self.pending = Some(generation);
-        RequestCompletion {
+        Some(RequestCompletion {
             sender: self.sender.clone(),
             generation: Arc::clone(&self.generation),
             request_generation: generation,
             wake: WakeHandle::new(),
-        }
+        })
     }
 
     /// Invalidate outstanding work without publishing a replacement.
-    pub fn cancel(&mut self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
+    ///
+    /// Returns `false` only after the terminal invalidation marker has already
+    /// been reached. A failed cancellation leaves the pending state untouched.
+    pub fn cancel(&mut self) -> bool {
+        if self
+            .generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .is_err()
+        {
+            return false;
+        }
         self.pending = None;
+        true
     }
 
     #[must_use]
@@ -358,7 +402,7 @@ impl<T> LatestTask<T> {
 
     /// Begin a new run and return its background-safe completion capability.
     /// Any earlier capability becomes stale before `running` is published.
-    pub fn begin(&self, running: T) -> TaskCompletion<T>
+    pub fn begin(&self, running: T) -> Option<TaskCompletion<T>>
     where
         T: Send + Sync + 'static,
     {
@@ -366,31 +410,39 @@ impl<T> LatestTask<T> {
             .generation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *generation = generation.wrapping_add(1);
-        let run = *generation;
+        let run = generation.checked_add(1).filter(|next| *next != u64::MAX)?;
         // Keep generation and state publication in one critical section so a
         // prior worker cannot pass its check between these operations.
-        self.state.set(running);
+        if !self.state.try_set(running) {
+            return None;
+        }
+        *generation = run;
         drop(generation);
-        TaskCompletion {
+        Some(TaskCompletion {
             writer: self.state.writer(),
             generation: Arc::clone(&self.generation),
             run,
-        }
+        })
     }
 
     /// Invalidate the current run and publish its replacement state. A worker
     /// that finishes afterward cannot overwrite this value.
-    pub fn cancel(&self, cancelled: T) {
+    pub fn cancel(&self, cancelled: T) -> bool {
         let mut generation = self
             .generation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *generation = generation.wrapping_add(1);
+        let Some(next) = generation.checked_add(1) else {
+            return false;
+        };
         // Invalidating the run and publishing cancellation are one atomic
         // ordering boundary with respect to `TaskCompletion::complete`.
-        self.state.set(cancelled);
+        if !self.state.try_set(cancelled) {
+            return false;
+        }
+        *generation = next;
         drop(generation);
+        true
     }
 }
 
@@ -425,9 +477,9 @@ impl<T> TaskCompletion<T> {
         }
         // Hold the generation guard until the accepted value is committed;
         // begin/cancel cannot interleave after the freshness check.
-        self.writer.set(value);
+        let accepted = self.writer.try_set(value);
         drop(generation);
-        true
+        accepted
     }
 }
 
@@ -442,15 +494,35 @@ impl<T> Clone for LocalStateWriter<T> {
 
 impl<T> LocalStateWriter<T> {
     /// Replace the value and schedule synchronization and redraw.
+    /// At revision exhaustion this is a no-op. Use [`Self::try_set`] to learn
+    /// whether a wake was scheduled.
     pub fn set(&self, value: T) {
-        self.state.set(value);
+        let _ = self.try_set(value);
+    }
+
+    /// As [`Self::set`], reporting whether the replacement was published.
+    pub fn try_set(&self, value: T) -> bool {
+        if !self.state.try_set(value) {
+            return false;
+        }
         (self.wake)();
+        true
     }
 
     /// Mutate the value once and schedule synchronization and redraw.
+    /// At revision exhaustion this is a no-op. Use [`Self::try_update`] to
+    /// learn whether a wake was scheduled.
     pub fn update(&self, update: impl FnOnce(&mut T)) {
-        self.state.update(update);
+        let _ = self.try_update(update);
+    }
+
+    /// As [`Self::update`], reporting whether the mutation was published.
+    pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
+        if !self.state.try_update(update) {
+            return false;
+        }
         (self.wake)();
+        true
     }
 
     #[cfg(test)]
@@ -475,7 +547,9 @@ impl LocalState<String> {
     /// boilerplate out of application code.
     pub fn text_sink(&self) -> impl FnMut(&str) + 'static {
         let state = self.clone();
-        move |value| state.set(value.to_owned())
+        move |value| {
+            state.set(value.to_owned());
+        }
     }
 }
 
@@ -556,8 +630,8 @@ mod tests {
     fn latest_task_rejects_an_older_completion() {
         let task = LatestTask::new(0);
         let state = task.state();
-        let first = task.begin(1);
-        let second = task.begin(2);
+        let first = task.begin(1).unwrap();
+        let second = task.begin(2).unwrap();
 
         assert!(!first.is_current());
         assert!(second.is_current());
@@ -571,9 +645,9 @@ mod tests {
     fn latest_task_cancel_prevents_a_late_worker_overwrite() {
         let task = LatestTask::new("idle");
         let state = task.state();
-        let completion = task.begin("loading");
+        let completion = task.begin("loading").unwrap();
 
-        task.cancel("cancelled");
+        assert!(task.cancel("cancelled"));
 
         assert!(!completion.is_current());
         assert!(!completion.complete("late result"));
@@ -583,8 +657,8 @@ mod tests {
     #[test]
     fn latest_request_drains_only_the_current_completion() {
         let mut request = LatestRequest::new();
-        let first = request.begin();
-        let second = request.begin();
+        let first = request.begin().unwrap();
+        let second = request.begin().unwrap();
 
         assert!(!first.is_current());
         assert!(second.is_current());
@@ -599,13 +673,59 @@ mod tests {
     #[test]
     fn latest_request_cancel_rejects_late_work() {
         let mut request = LatestRequest::new();
-        let completion = request.begin();
+        let completion = request.begin().unwrap();
 
-        request.cancel();
+        assert!(request.cancel());
 
         assert!(!completion.is_current());
         assert!(!completion.complete(42));
         assert!(!request.is_pending());
         assert_eq!(request.try_take(), None);
+    }
+
+    #[test]
+    fn exhausted_local_state_revision_leaves_value_and_callback_untouched() {
+        let state = LocalState::new(String::from("before"));
+        state.inner.revision.store(u64::MAX, Ordering::Release);
+        let called = AtomicUsize::new(0);
+
+        assert!(!state.try_set(String::from("after")));
+        assert!(!state.try_update(|value| {
+            called.fetch_add(1, Ordering::Relaxed);
+            value.push_str(" mutated");
+        }));
+        assert_eq!(state.get(), "before");
+        assert_eq!(called.load(Ordering::Relaxed), 0);
+        assert_eq!(state.revision(), u64::MAX);
+    }
+
+    #[test]
+    fn exhausted_latest_request_never_reissues_a_completion_generation() {
+        let mut request = LatestRequest::<()>::new();
+        request.generation.store(u64::MAX - 1, Ordering::Release);
+
+        assert!(request.begin().is_none());
+        assert!(!request.is_pending());
+        assert!(
+            request.cancel(),
+            "the terminal invalidation is still available"
+        );
+        assert_eq!(request.generation.load(Ordering::Acquire), u64::MAX);
+        assert!(!request.cancel());
+        assert!(request.begin().is_none());
+    }
+
+    #[test]
+    fn exhausted_latest_task_does_not_publish_a_new_run() {
+        let task = LatestTask::new("idle");
+        let state = task.state();
+        *task.generation.lock().unwrap() = u64::MAX - 1;
+
+        assert!(task.begin("running").is_none());
+        assert_eq!(state.get(), "idle");
+        assert!(task.cancel("cancelled"));
+        assert_eq!(state.get(), "cancelled");
+        assert!(!task.cancel("later"));
+        assert_eq!(state.get(), "cancelled");
     }
 }
