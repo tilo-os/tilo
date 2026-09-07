@@ -24,7 +24,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
-use ui::a11y::{AccessNode, Politeness, Role};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -38,6 +38,7 @@ use crate::backend::{Backend, Mode};
 use crate::doc::FirewallDoc;
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, ServiceCatalog, Target, Zone, ZoneKind,
+    validate_port, validate_source,
 };
 use crate::paint;
 
@@ -159,6 +160,7 @@ struct Layout {
     services_visible: bool,
 
     header: Rect,
+    recover_btn: Rect,
     enable_pill: Rect,
     panic_btn: Rect,
     apply_btn: Rect,
@@ -202,6 +204,7 @@ enum FirewallEffect {
     Apply,
     SetEnabled(bool),
     SetPanic(bool),
+    Retry,
 }
 
 struct PendingFirewallEffect {
@@ -239,6 +242,10 @@ pub struct FirewallApp {
     /// unavailable state instead of any fabricated ruleset.
     available: bool,
 
+    /// A locally armed destructive action. The first trash tap selects this
+    /// rule; the second, explicit confirmation performs the shared mutation.
+    pending_delete: Option<RuleId>,
+
     /// Framework-owned action dispatch: every on-screen affordance routes its
     /// [`FirewallAction`] through here so it brackets exactly **one** undo
     /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
@@ -273,6 +280,46 @@ impl FirewallApp {
         Self::from_parts(crate::sample::sample_config(), true)
     }
 
+    /// Deterministic, presentation-only screenshot states. These never run in
+    /// the live constructor and never touch the host firewall; they let visual
+    /// regression review cover empty, invalid, confirmation, and changed states.
+    pub fn pose_fixture(&mut self, name: &str) {
+        match name {
+            "empty" => {
+                self.selected_zone = ZoneKind::Drop;
+                self.status =
+                    "No custom rules in this zone — add only what this network needs".into();
+            }
+            "error" => {
+                self.selected_zone = ZoneKind::Public;
+                self.form.is_service = false;
+                self.form.port.set_text("70000");
+                self.form.source.set_text("not-a-network");
+                self.status = "Rule not added: use a port from 1 to 65535".into();
+            }
+            "confirmation" => {
+                self.selected_zone = ZoneKind::Public;
+                self.pending_delete = self
+                    .selected_zone_ref()
+                    .and_then(|zone| zone.rules.first())
+                    .map(|rule| rule.id);
+                self.status =
+                    "Delete rule? Click its trash button again to confirm (Esc cancels)".into();
+            }
+            "active-change" => {
+                self.selected_zone = ZoneKind::Home;
+                self.config.default_zone = ZoneKind::Home;
+                self.status = "home is now the active zone — apply when ready".into();
+            }
+            "service-error" => {
+                self.config = FirewallConfig::empty();
+                self.available = false;
+                self.status = "Permission denied while contacting firewalld. Check administrator authorization, then retry.".into();
+            }
+            _ => {}
+        }
+    }
+
     fn from_parts(config: FirewallConfig, available: bool) -> Self {
         let selected_zone = config.default_zone;
         Self {
@@ -296,6 +343,7 @@ impl FirewallApp {
             last_json: None,
             seeded: false,
             available,
+            pending_delete: None,
             actions: ui::ActionHost::new(),
             pending_effect: None,
             completed_effect: None,
@@ -387,6 +435,16 @@ impl FirewallApp {
         l.services_visible = services_visible;
 
         let by = Self::layout_header(r, &mut l, narrow);
+        let unavailable_area = Rect::new(r.x0, l.header.y1, r.x1, r.y1);
+        let card_w = 520.0_f64.min((unavailable_area.width() - 48.0).max(160.0));
+        let card_x = unavailable_area.x0 + (unavailable_area.width() - card_w) / 2.0;
+        let card_y = unavailable_area.y0 + (unavailable_area.height() - 220.0) / 2.0;
+        l.recover_btn = Rect::new(
+            card_x + 24.0,
+            card_y + 172.0,
+            card_x + 184.0,
+            card_y + 206.0,
+        );
         let content = self.layout_rail(r, &mut l, by);
         self.layout_center(r, &mut l, content, narrow, services_visible);
 
@@ -711,6 +769,39 @@ impl FirewallApp {
         self.form.source.set_focus(f == Some(FocusField::Source));
     }
 
+    /// Re-query the host after the user has started firewalld or fixed an
+    /// authorization problem. This is intentionally read-only until a valid
+    /// live configuration is found; recovery never seeds demo data.
+    fn retry_connect(&mut self, state: &mut AutoCommit) {
+        self.recover_from_probe(crate::backend::import(), state);
+    }
+
+    /// Apply the result of the read-only firewalld probe. Every retry route
+    /// shares this fail-closed behaviour; a failed probe never mutates rules.
+    fn recover_from_probe(&mut self, probe: Option<FirewallConfig>, state: &mut AutoCommit) {
+        match probe {
+            Some(config) if config.validate().is_ok() => {
+                self.selected_zone = config.default_zone;
+                self.config = config;
+                self.available = true;
+                self.pending_delete = None;
+                let json = FirewallDoc::store(state, &self.config);
+                self.last_json = Some(json);
+                self.status = "Connected to firewalld and refreshed the live configuration".into();
+            }
+            Some(_) => {
+                self.status =
+                    "firewalld returned unsupported or unsafe rule data; no changes were made"
+                        .into();
+            }
+            None => {
+                self.status =
+                    "Still unable to reach firewalld. Start the service, authorize it, then retry."
+                        .into();
+            }
+        }
+    }
+
     fn add_rule_from_form(&mut self, state: &mut AutoCommit) {
         // Nothing to append to if the selected zone isn't in the config.
         if self.config.zone(self.selected_zone).is_none() {
@@ -719,6 +810,16 @@ impl FirewallApp {
         let matcher = self.form.matcher();
         let source = self.form.source.value().trim().to_string();
         let action = self.form.action;
+        if let Matcher::Port { port, .. } = &matcher
+            && let Err(message) = validate_port(port)
+        {
+            self.status = format!("Rule not added: {message}");
+            return;
+        }
+        if let Err(message) = validate_source(&source) {
+            self.status = format!("Rule not added: {message}");
+            return;
+        }
         let label = matcher.label();
         // Mint the rule (id and all) at authoring time, then dispatch it as the
         // action both the form and the palette build.
@@ -741,6 +842,7 @@ impl FirewallApp {
             self.selected_rule = None;
         }
         self.status = "Rule deleted".to_string();
+        self.pending_delete = None;
     }
 
     fn toggle_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
@@ -874,6 +976,7 @@ impl Widget for FirewallApp {
             "firewall.apply",
             "firewall.set-enabled",
             "firewall.set-panic",
+            "firewall.retry",
         ]
     }
 
@@ -885,13 +988,17 @@ impl Widget for FirewallApp {
             // An unavailable firewall has no zones, so nothing fabricated is
             // ever written into the shared document.
             if let Some(json) = FirewallDoc::load_json(state) {
-                if let Some(cfg) = FirewallConfig::from_json(&json) {
+                if let Some(cfg) = FirewallConfig::from_json(&json)
+                    && cfg.validate().is_ok()
+                {
                     self.config = cfg;
                     self.available = true;
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
                     self.last_json = Some(json);
+                } else {
+                    self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
             } else if !self.config.zones.is_empty() {
                 let json = FirewallDoc::store(state, &self.config);
@@ -905,6 +1012,14 @@ impl Widget for FirewallApp {
                 FirewallEffect::Apply => self.apply(),
                 FirewallEffect::SetEnabled(on) => self.set_enabled_and_apply(state, on),
                 FirewallEffect::SetPanic(on) => self.set_panic_and_apply(state, on),
+                FirewallEffect::Retry => {
+                    self.retry_connect(state);
+                    if self.available {
+                        Ok(())
+                    } else {
+                        Err(self.status.clone())
+                    }
+                }
             };
             self.completed_effect = Some(match result {
                 Ok(()) => qos_actions::InvocationUpdate::Succeeded {
@@ -927,11 +1042,15 @@ impl Widget for FirewallApp {
             && self.last_json.as_deref() != Some(json.as_str())
             && let Some(cfg) = FirewallConfig::from_json(&json)
         {
-            self.config = cfg;
-            if self.config.zone(self.selected_zone).is_none() {
-                self.selected_zone = self.config.default_zone;
+            if cfg.validate().is_ok() {
+                self.config = cfg;
+                if self.config.zone(self.selected_zone).is_none() {
+                    self.selected_zone = self.config.default_zone;
+                }
+                self.last_json = Some(json);
+            } else {
+                self.status = "Shared firewall configuration was rejected as invalid".into();
             }
-            self.last_json = Some(json);
         }
     }
 
@@ -1097,6 +1216,69 @@ impl Widget for FirewallApp {
                     .with_live(Politeness::Polite),
             );
         }
+        if !self.available {
+            root.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Retry connection to firewalld")
+                    .with_description("Re-read the host firewall without changing rules")
+                    .with_action_target("firewall.retry")
+                    .with_bounds(self.layout.recover_btn)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            return Some(root);
+        }
+        root.children.push(
+            AccessNode::new(Role::Switch)
+                .with_name("Firewall service")
+                .with_value(if self.config.enabled {
+                    "Active"
+                } else {
+                    "Stopped"
+                })
+                .with_bounds(self.layout.enable_pill)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.config.enabled),
+                ),
+        );
+        root.children.push(
+            AccessNode::new(Role::ToggleButton)
+                .with_name("Panic mode")
+                .with_value(if self.config.panic_mode { "On" } else { "Off" })
+                .with_bounds(self.layout.panic_btn)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.config.panic_mode),
+                ),
+        );
+        root.children.push(
+            AccessNode::new(Role::Button)
+                .with_name("Apply firewall configuration")
+                .with_bounds(self.layout.apply_btn)
+                .with_state(AccessState::new().focusable(true)),
+        );
+        let mut zones = AccessNode::new(Role::List).with_name("Firewall zones");
+        for (index, (zone, bounds)) in self.layout.zone_rows.iter().enumerate() {
+            zones.children.push(
+                AccessNode::new(Role::ListItem)
+                    .with_name(zone.name())
+                    .with_bounds(*bounds)
+                    .with_position(index + 1, ZoneKind::ALL.len())
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(*zone == self.selected_zone),
+                    ),
+            );
+        }
+        root.children.push(zones);
+        root.children.push(
+            AccessNode::new(Role::Table)
+                .with_name(format!("Rules in {}", self.selected_zone.name()))
+                .with_bounds(self.layout.table),
+        );
         Some(root)
     }
 
@@ -1108,7 +1290,38 @@ impl Widget for FirewallApp {
     /// action palette scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
+    #[allow(
+        clippy::expect_used,
+        reason = "the empty string operation payload is always serializable"
+    )]
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        if !self.available {
+            return vec![
+                qos_actions::Resource::new(
+                    "firewall.recovery",
+                    "firewall.recovery",
+                    "Firewall service recovery",
+                )
+                .with_action(
+                    qos_actions::ActionSpec::operation(
+                        "retry",
+                        "Retry firewalld connection",
+                        qos_actions::OperationKind::Effect,
+                        "firewall.retry",
+                        &"",
+                    )
+                    .expect("firewall retry payload is serializable")
+                    .with_contract(qos_actions::ActionContract {
+                        retry: qos_actions::RetryPolicy::Idempotent,
+                        discovery: qos_actions::DiscoveryScope::Launchable,
+                        execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                        result: qos_actions::ResultSpec::Job,
+                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
+                        ..qos_actions::ActionContract::default()
+                    }),
+                ),
+            ];
+        }
         let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
         if let Some(root) = resources.first_mut() {
             root.actions.push(
@@ -1147,7 +1360,7 @@ impl Widget for FirewallApp {
             return Ok(false);
         }
         match type_id {
-            "firewall.apply" | "firewall.set-enabled" | "firewall.set-panic" => {
+            "firewall.apply" | "firewall.set-enabled" | "firewall.set-panic" | "firewall.retry" => {
                 Err("firewall effects require the lifecycle-capable operation host".into())
             }
             _ => Ok(false),
@@ -1166,13 +1379,12 @@ impl Widget for FirewallApp {
         if kind != qos_actions::OperationKind::Effect {
             return Ok(None);
         }
-        if !self.available {
-            return Err("Firewall service is unavailable".into());
-        }
         if self.pending_effect.is_some() {
             return Err("another firewall operation is still running".into());
         }
         let effect = match type_id {
+            "firewall.retry" => FirewallEffect::Retry,
+            _ if !self.available => return Err("Firewall service is unavailable".into()),
             "firewall.apply" => FirewallEffect::Apply,
             "firewall.set-enabled" => FirewallEffect::SetEnabled(
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?,
@@ -1215,6 +1427,20 @@ impl Widget for FirewallApp {
         None
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
+            self.retry_connect(state);
+            return true;
+        }
+        false
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its firewall action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -1242,10 +1468,20 @@ impl FirewallApp {
         if key_event.state != ElementState::Pressed {
             return;
         }
+        if !self.available
+            && matches!(&key_event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("r"))
+        {
+            self.retry_connect(state);
+            *handled = true;
+            return;
+        }
         // Global keys first.
         match &key_event.logical_key {
             Key::Named(NamedKey::Escape) => {
                 self.set_form_focus(None);
+                if self.pending_delete.take().is_some() {
+                    self.status = "Delete cancelled".to_string();
+                }
                 *handled = true;
                 return;
             }
@@ -1342,6 +1578,10 @@ impl FirewallApp {
         // Nothing is interactive while firewalld is unavailable — there is
         // no real config to edit or apply.
         if !self.available {
+            if self.layout.recover_btn.contains(p) {
+                self.retry_connect(state);
+                *handled = true;
+            }
             return;
         }
 
@@ -1468,7 +1708,13 @@ impl FirewallApp {
         // Rule rows: toggle / delete / select.
         for row in &l.rule_rows {
             if row.delete.contains(p) {
-                self.delete_rule(row.id, state);
+                if self.pending_delete == Some(row.id) {
+                    self.delete_rule(row.id, state);
+                } else {
+                    self.pending_delete = Some(row.id);
+                    self.status =
+                        "Delete rule? Click its trash button again to confirm (Esc cancels)".into();
+                }
                 *handled = true;
                 self.set_form_focus(None);
                 return true;
@@ -1698,7 +1944,7 @@ impl FirewallApp {
     ) {
         let area = Rect::new(self.rect.x0, l.header.y1, self.rect.x1, self.rect.y1);
         let cw = 520.0_f64.min(area.width() - 48.0);
-        let ch = 150.0;
+        let ch = 220.0;
         let cx = area.x0 + (area.width() - cw) / 2.0;
         let cy = area.y0 + (area.height() - ch) / 2.0;
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
@@ -1719,9 +1965,17 @@ impl FirewallApp {
             tr,
             scene,
             t,
-            "The firewalld service is not installed or not running, so there",
+            if self.status.is_empty() {
+                "The firewalld service is not installed or not running."
+            } else {
+                &self.status
+            },
             13.0,
-            theme.text_dim,
+            if self.status.is_empty() {
+                theme.text_dim
+            } else {
+                theme.tokens.colors.semantic.danger
+            },
             card.x0 + 24.0,
             card.y0 + 62.0,
             cw - 48.0,
@@ -1730,23 +1984,36 @@ impl FirewallApp {
             tr,
             scene,
             t,
-            "is no live firewall to display. Start firewalld to manage zones.",
+            "No live firewall is displayed, and no rules have been changed.",
             13.0,
             theme.text_dim,
             card.x0 + 24.0,
-            card.y0 + 84.0,
+            card.y0 + 106.0,
             cw - 48.0,
         );
         paint::label(
             tr,
             scene,
             t,
-            "Run:  sudo systemctl enable --now firewalld",
+            "Start or authorize firewalld, then retry (keyboard: R).",
             12.0,
             theme.text_dim,
             card.x0 + 24.0,
-            card.y0 + 116.0,
+            card.y0 + 132.0,
             cw - 48.0,
+        );
+        paint::fill_rrect(scene, t, l.recover_btn, 8.0, theme.accent_primary);
+        paint::label_v(
+            tr,
+            scene,
+            t,
+            "Retry connection",
+            12.0,
+            Color::WHITE,
+            l.recover_btn.x0 + 14.0,
+            l.recover_btn.y0,
+            l.recover_btn.height(),
+            l.recover_btn.width() - 28.0,
         );
     }
 
@@ -2480,7 +2747,14 @@ impl FirewallApp {
             Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
         }
 
-        Self::draw_table_row_controls(scene, t, theme, row, rule.enabled);
+        Self::draw_table_row_controls(
+            scene,
+            t,
+            theme,
+            row,
+            rule.enabled,
+            self.pending_delete == Some(row.id),
+        );
     }
 
     /// Two-line row: target + action on top, proto · source beneath. Used
@@ -2654,6 +2928,7 @@ impl FirewallApp {
         theme: &Theme,
         row: &RuleRow,
         enabled: bool,
+        delete_armed: bool,
     ) {
         draw_toggle(scene, t, theme, row.toggle, enabled);
 
@@ -2664,8 +2939,14 @@ impl FirewallApp {
             t,
             d,
             6.0,
-            alpha(theme.tokens.colors.semantic.danger, 30),
+            alpha(
+                theme.tokens.colors.semantic.danger,
+                if delete_armed { 92 } else { 30 },
+            ),
         );
+        if delete_armed {
+            paint::stroke_rrect(scene, t, d, 6.0, theme.tokens.colors.semantic.danger, 1.0);
+        }
         let m = 8.0;
         let dc = theme.tokens.colors.semantic.danger;
         scene.stroke(
@@ -2846,17 +3127,32 @@ impl FirewallApp {
         self.draw_form_source(scene, t, tr, theme, presence, l);
         Self::draw_form_add_button(scene, t, tr, theme, l);
 
-        // Status line (wide only — the stacked form fills its card top to bottom).
-        if !self.status.is_empty() && !l.narrow {
+        // Status is a polite, persistent acknowledgement rather than a transient
+        // toast: keyboard and touch users can read validation and confirmation
+        // feedback before acting again.
+        if !self.status.is_empty() {
+            let status_color = if self.status.starts_with("Rule not added")
+                || self.status.starts_with("Delete rule?")
+                || self.status.starts_with("Apply failed")
+            {
+                theme.tokens.colors.semantic.danger
+            } else {
+                theme.text_dim
+            };
+            let status_y = if l.narrow {
+                card.y0 + 26.0
+            } else {
+                card.y1 - 22.0
+            };
             paint::label(
                 tr,
                 scene,
                 t,
                 &self.status,
                 11.0,
-                theme.text_dim,
+                status_color,
                 card.x0 + 16.0,
-                card.y1 - 22.0,
+                status_y,
                 card.width() - 32.0,
             );
         }
@@ -3067,6 +3363,34 @@ mod tests {
             FirewallDoc::load(&doc).is_none(),
             "the unavailable state must leave the document empty, not seed a config"
         );
+    }
+
+    #[test]
+    fn failed_recovery_keeps_rules_unwritten_and_exports_retry_semantics() {
+        let mut app = FirewallApp::from_parts(FirewallConfig::empty(), false);
+        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        app.relayout();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let semantics = app.accessibility().expect("recovery semantics");
+        assert!(semantics.children.iter().any(|child| {
+            child.action_target.as_deref() == Some("firewall.retry")
+                && child.name.as_deref() == Some("Retry connection to firewalld")
+        }));
+        let resources = Widget::resources(&app, &doc);
+        assert_eq!(resources[0].kind, "firewall.recovery");
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "retry")
+        );
+
+        app.recover_from_probe(None, &mut doc);
+        assert!(!app.available);
+        assert!(FirewallDoc::load(&doc).is_none());
+        assert!(app.status.contains("Still unable to reach firewalld"));
     }
 
     #[test]
