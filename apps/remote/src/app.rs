@@ -15,6 +15,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::{Mutex, PoisonError};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
@@ -88,15 +91,92 @@ struct QosSession {
     id: u64,
     status: SessionStatus,
     size: Option<(u32, u32)>,
-    decoder: qos_callstream::H264Decoder,
+    /// qOS collaboration events arrive on the UI thread. Keep their H.264
+    /// payloads bounded and hand decoding to this private worker so a hostile
+    /// or merely busy peer cannot make event dispatch stutter.
+    /// A replace-latest encoded frame slot plus a capacity-one wake channel.
+    /// It bounds backlog to one frame while ensuring overload retains the
+    /// newest, rather than the oldest, H.264 payload.
+    encoded: Arc<Mutex<Option<Vec<u8>>>>,
+    encoded_wake: SyncSender<()>,
+    decoder_available: Arc<AtomicBool>,
+    decoded: Arc<Mutex<Option<qos_callstream::DecodedFrame>>>,
+}
+
+impl QosSession {
+    fn new(id: u64) -> Result<Self, String> {
+        let (encoded_wake, encoded_rx) = sync_channel::<()>(1);
+        let encoded: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
+        let encoded_worker = Arc::clone(&encoded);
+        let decoder_available = Arc::new(AtomicBool::new(true));
+        let decoder_available_worker = Arc::clone(&decoder_available);
+        // A replace-only latest slot bounds GPU-upload backlog and guarantees
+        // the UI never paints an older decoded frame after a newer one exists.
+        let decoded = Arc::new(Mutex::new(None));
+        let decoded_worker = Arc::clone(&decoded);
+        std::thread::Builder::new()
+            .name("remote-qos-decode".into())
+            .spawn(move || {
+                let mut h264_decoder = qos_callstream::H264Decoder::new();
+                while encoded_rx.recv().is_ok() {
+                    let Some(encoded) = lock_recover(&encoded_worker).take() else {
+                        continue;
+                    };
+                    let Some(frame) = h264_decoder.decode(&encoded) else {
+                        continue;
+                    };
+                    *lock_recover(&decoded_worker) = Some(frame);
+                }
+                decoder_available_worker.store(false, Ordering::Release);
+            })
+            .map_err(|error| format!("could not start qOS frame decoder: {error}"))?;
+        Ok(Self {
+            id,
+            status: SessionStatus::Connecting,
+            size: None,
+            encoded,
+            encoded_wake,
+            decoder_available,
+            decoded,
+        })
+    }
+
+    fn queue_frame(&self, encoded: Vec<u8>) -> Result<(), String> {
+        if !self.decoder_available.load(Ordering::Acquire) {
+            return Err("qOS frame decoder is unavailable".into());
+        }
+        // Store first, then wake. If a wake is already pending, that worker
+        // pass observes this replacement; at most one stale decode can be
+        // in progress and no queue of old frames accumulates.
+        *lock_recover(&self.encoded) = Some(encoded);
+        match self.encoded_wake.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) => Ok(()),
+            Err(TrySendError::Disconnected(())) => {
+                self.decoder_available.store(false, Ordering::Release);
+                Err("qOS frame decoder stopped".into())
+            }
+        }
+    }
+
+    fn take_latest_frame(&self) -> Option<qos_callstream::DecodedFrame> {
+        lock_recover(&self.decoded).take()
+    }
+}
+
+fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 enum PendingResourceOperation {
     Connect {
         invocation: qos_actions::InvocationId,
+        connection_id: ConnectionId,
+        session_generation: u64,
     },
     SshInput {
         invocation: qos_actions::InvocationId,
+        connection_id: ConnectionId,
+        session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
     },
 }
@@ -465,6 +545,10 @@ pub struct RemoteApp {
     vnc_buttons: u8,
     /// Connection id the current session belongs to.
     session_for: Option<ConnectionId>,
+    /// Monotonic identity for a live session. A saved profile can be reopened
+    /// many times; resource-operation completion must never settle an old
+    /// invocation against a newer session for the same connection id.
+    session_generation: u64,
     /// Whether the session surface is scaled to fit (vs. 1:1).
     scale_to_fit: bool,
     /// Whether the session surface is in fullscreen (hides chrome).
@@ -758,6 +842,7 @@ impl RemoteApp {
             fb_canvas: None,
             vnc_buttons: 0,
             session_for: None,
+            session_generation: 0,
             scale_to_fit: true,
             fullscreen: false,
             qos_devices,
@@ -1260,6 +1345,18 @@ impl RemoteApp {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
+        let Some(next_generation) = self.session_generation.checked_add(1) else {
+            // Never recycle a generation: pending actions use it as a
+            // capability to a particular transport attempt. A process that
+            // exhausted u64 attempts must restart rather than aliasing one.
+            self.session_for = Some(id);
+            self.live = Some(LiveSession::Error(
+                "remote session identity exhausted; restart the application".into(),
+            ));
+            self.screen = Screen::Session { id };
+            return;
+        };
+        self.session_generation = next_generation;
         self.session_for = Some(id);
         self.fullscreen = false;
         self.fb_image = None;
@@ -1297,6 +1394,12 @@ impl RemoteApp {
         self.fb_image = None;
         self.fb_canvas = None;
         self.session_for = None;
+        // At the identity boundary opening another transport is rejected, so
+        // retaining MAX here cannot allow a stale operation to alias a new
+        // session.
+        if let Some(next_generation) = self.session_generation.checked_add(1) {
+            self.session_generation = next_generation;
+        }
         self.fullscreen = false;
         self.screen = Screen::List;
     }
@@ -1365,12 +1468,10 @@ impl RemoteApp {
                         session_id: id,
                         target_device: target,
                     });
-                LiveSession::Qos(QosSession {
-                    id,
-                    status: SessionStatus::Connecting,
-                    size: None,
-                    decoder: qos_callstream::H264Decoder::new(),
-                })
+                match QosSession::new(id) {
+                    Ok(session) => LiveSession::Qos(session),
+                    Err(error) => LiveSession::Error(error),
+                }
             }
             // `open_session` preflights RDP as `BackendUnavailable` before
             // reaching this constructor. Keep the defensive branch explicit
@@ -1397,11 +1498,24 @@ impl RemoteApp {
             Some(LiveSession::Vnc(s)) => {
                 if let Some(fb) = s.take_frame() {
                     self.fb_image = Some(PenikoImage {
-                        data: Blob::new(Arc::new(fb.data)),
+                        data: Blob::new(fb.data),
                         format: ImageFormat::Rgba8,
                         alpha_type: ImageAlphaType::Alpha,
                         width: u32::from(fb.width),
                         height: u32::from(fb.height),
+                    });
+                    changed = true;
+                }
+            }
+            Some(LiveSession::Qos(session)) => {
+                if let Some(frame) = session.take_latest_frame() {
+                    session.size = Some((frame.width, frame.height));
+                    self.fb_image = Some(PenikoImage {
+                        data: Blob::new(Arc::new(frame.rgba)),
+                        format: ImageFormat::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width: frame.width,
+                        height: frame.height,
                     });
                     changed = true;
                 }
@@ -1457,7 +1571,7 @@ impl RemoteApp {
     /// live remote desktop, if the pointer is over its canvas.
     fn forward_vnc_pointer(&self, p: Point) {
         if let (Some(s), Some((x, y))) = (self.vnc_session(), self.vnc_pointer_target(p)) {
-            s.send_input(VncInput::Pointer {
+            let _ = s.send_input(VncInput::Pointer {
                 button_mask: self.vnc_buttons,
                 x,
                 y,
@@ -1994,15 +2108,8 @@ impl Widget for RemoteApp {
                 session.status = SessionStatus::Connected;
             }
             runtime_collab::WorkspaceControlEvent::Frame { encoded_h264, .. } => {
-                if let Some(frame) = session.decoder.decode(encoded_h264) {
-                    session.size = Some((frame.width, frame.height));
-                    self.fb_image = Some(PenikoImage {
-                        data: Blob::new(Arc::new(frame.rgba)),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: frame.width,
-                        height: frame.height,
-                    });
+                if let Err(error) = session.queue_frame(encoded_h264.clone()) {
+                    session.status = SessionStatus::Failed(error);
                 }
             }
             runtime_collab::WorkspaceControlEvent::Closed(reason) => {
@@ -2119,7 +2226,7 @@ impl Widget for RemoteApp {
                     Some(LiveSession::Ssh(session))
                         if session.status() == SessionStatus::Connected =>
                     {
-                        session.send_input(text.into_bytes());
+                        session.send_input(text.into_bytes())?;
                         self.dirty = true;
                     }
                     _ => return Err("text input requires a connected SSH terminal".to_string()),
@@ -2213,8 +2320,11 @@ impl Widget for RemoteApp {
                 self.open_session(connection_id);
                 match self.live.as_ref().map(LiveSession::status) {
                     Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation =
-                            Some(PendingResourceOperation::Connect { invocation });
+                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                            invocation,
+                            connection_id,
+                            session_generation: self.session_generation,
+                        });
                         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
                     }
                     Some(SessionStatus::Connected) => {
@@ -2247,6 +2357,8 @@ impl Widget for RemoteApp {
                 };
                 self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
                     invocation,
+                    connection_id,
+                    session_generation: self.session_generation,
                     acknowledgement,
                 });
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
@@ -2264,82 +2376,156 @@ impl Widget for RemoteApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
+    )]
     fn poll_resource_operation(
         &mut self,
         invocation: qos_actions::InvocationId,
-        _cancellation_requested: bool,
+        cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<qos_actions::InvocationUpdate> {
-        let update = match self.pending_resource_operation.as_ref()? {
+        let pending = self.pending_resource_operation.as_ref()?;
+        if cancellation_requested
+            && let PendingResourceOperation::Connect {
+                invocation: pending_invocation,
+                connection_id,
+                session_generation,
+            } = pending
+            && *pending_invocation == invocation
+        {
+            // Connect has not completed yet, so dropping its exact generation
+            // cancels the socket/relay attempt. Do not let a cancellation for
+            // an old invocation tear down a newer reconnect of the same saved
+            // profile.
+            if self.session_for == Some(*connection_id)
+                && self.session_generation == *session_generation
+            {
+                self.disconnect_session();
+            }
+            self.pending_resource_operation = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("remote connection attempt cancelled".into()),
+            });
+        }
+        let update = match pending {
             PendingResourceOperation::Connect {
                 invocation: pending,
-            } if *pending == invocation => match self.live.as_ref().map(LiveSession::status) {
-                Some(SessionStatus::Connecting) => return None,
-                Some(SessionStatus::Connected) => qos_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: qos_actions::ActionOutput::default(),
-                },
-                Some(SessionStatus::Failed(message)) => qos_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: qos_actions::ActionFailure {
-                        code: "remote.connect_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-                Some(SessionStatus::Unavailable(message)) => {
+                connection_id,
+                session_generation,
+            } if *pending == invocation => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
                     qos_actions::InvocationUpdate::Failed {
                         invocation,
                         error: qos_actions::ActionFailure {
-                            code: "remote.transport_unavailable".into(),
-                            message,
+                            code: "remote.session_replaced".into(),
+                            message: "the connection attempt was superseded by a newer session"
+                                .into(),
                             details: None,
                             retryable: false,
                         },
                     }
+                } else {
+                    match self.live.as_ref().map(LiveSession::status) {
+                        Some(SessionStatus::Connecting) => return None,
+                        Some(SessionStatus::Connected) => {
+                            qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: qos_actions::ActionOutput::default(),
+                            }
+                        }
+                        Some(SessionStatus::Failed(message)) => {
+                            qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "remote.connect_failed".into(),
+                                    message,
+                                    details: None,
+                                    retryable: false,
+                                },
+                            }
+                        }
+                        Some(SessionStatus::Unavailable(message)) => {
+                            qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "remote.transport_unavailable".into(),
+                                    message,
+                                    details: None,
+                                    retryable: false,
+                                },
+                            }
+                        }
+                        Some(SessionStatus::Closed) | None => {
+                            qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "remote.connection_closed".into(),
+                                    message: "remote connection closed before it became ready"
+                                        .into(),
+                                    details: None,
+                                    retryable: false,
+                                },
+                            }
+                        }
+                    }
                 }
-                Some(SessionStatus::Closed) | None => qos_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: qos_actions::ActionFailure {
-                        code: "remote.connection_closed".into(),
-                        message: "remote connection closed before it became ready".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            },
+            }
             PendingResourceOperation::SshInput {
                 invocation: pending,
+                connection_id,
+                session_generation,
                 acknowledgement,
-            } if *pending == invocation => match acknowledgement.try_recv() {
-                Ok(Ok(())) => qos_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: qos_actions::ActionOutput::default(),
-                },
-                Ok(Err(message)) => qos_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: qos_actions::ActionFailure {
-                        code: "remote.input_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            } if *pending == invocation => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
                     qos_actions::InvocationUpdate::Failed {
                         invocation,
                         error: qos_actions::ActionFailure {
-                            code: "remote.input_worker_lost".into(),
-                            message: "remote input worker stopped before acknowledgement".into(),
+                            code: "remote.session_replaced".into(),
+                            message: "the SSH session ended before input delivery was acknowledged"
+                                .into(),
                             details: None,
                             retryable: false,
                         },
                     }
+                } else {
+                    match acknowledgement.try_recv() {
+                        Ok(Ok(())) => qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        },
+                        Ok(Err(message)) => qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "remote.input_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "remote.input_worker_lost".into(),
+                                    message: "remote input worker stopped before acknowledgement"
+                                        .into(),
+                                    details: None,
+                                    retryable: false,
+                                },
+                            }
+                        }
+                    }
                 }
-            },
+            }
             _ => return None,
         };
         self.pending_resource_operation = None;
@@ -3647,7 +3833,10 @@ impl RemoteApp {
             match &self.live {
                 Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
                     if let Some(bytes) = Self::ssh_key_bytes(key, text, mods) {
-                        s.send_input(bytes);
+                        // Interactive key events are best-effort when the
+                        // bounded queue is full; the resource action path
+                        // reports that condition exactly to agents.
+                        let _ = s.send_input(bytes);
                         self.dirty = true;
                         *handled = true;
                         return true;
@@ -3655,11 +3844,11 @@ impl RemoteApp {
                 }
                 Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
                     if let Some(sym) = Self::vnc_keysym(key, text) {
-                        s.send_input(VncInput::Key {
+                        let _ = s.send_input(VncInput::Key {
                             down: true,
                             key: sym,
                         });
-                        s.send_input(VncInput::Key {
+                        let _ = s.send_input(VncInput::Key {
                             down: false,
                             key: sym,
                         });
@@ -7233,7 +7422,13 @@ mod tests {
             readiness: TransportReadiness::BackendUnavailable,
             kind: ConnectionKind::Rdp,
         });
-        app.pending_resource_operation = Some(PendingResourceOperation::Connect { invocation });
+        let id = app.first_of_kind(ConnectionKind::Rdp).unwrap();
+        app.session_for = Some(id);
+        app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+            invocation,
+            connection_id: id,
+            session_generation: app.session_generation,
+        });
 
         let update = app
             .poll_resource_operation(invocation, false, &doc(), &automerge::ROOT)
@@ -7243,6 +7438,64 @@ mod tests {
             qos_actions::InvocationUpdate::Failed { error, .. }
                 if error.code == "remote.transport_unavailable" && !error.retryable
         ));
+    }
+
+    #[test]
+    fn cancelling_connect_settles_only_the_matching_session_generation() {
+        let mut app = RemoteApp::new_demo();
+        let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        app.session_for = Some(id);
+        app.session_generation = 42;
+        app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
+        app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+            invocation,
+            connection_id: id,
+            session_generation: 42,
+        });
+
+        assert!(matches!(
+            app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(app.live.is_none());
+        assert!(app.pending_resource_operation.is_none());
+
+        // A delayed cancel for an older generation reports terminally but
+        // cannot tear down a replacement session for the same saved profile.
+        let stale = qos_actions::InvocationId::new();
+        app.session_for = Some(id);
+        app.session_generation = 99;
+        app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
+        app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+            invocation: stale,
+            connection_id: id,
+            session_generation: 98,
+        });
+        assert!(matches!(
+            app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(
+            app.live.is_some(),
+            "stale cancellation kept replacement live"
+        );
+    }
+
+    #[test]
+    fn exhausted_session_generation_fails_closed_without_reuse() {
+        let mut app = RemoteApp::new_demo();
+        let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
+        app.session_generation = u64::MAX;
+
+        app.open_session(id);
+        assert_eq!(app.session_generation, u64::MAX);
+        assert!(matches!(app.live, Some(LiveSession::Error(_))));
+
+        app.disconnect_session();
+        app.open_session(id);
+        assert_eq!(app.session_generation, u64::MAX);
+        assert!(matches!(app.live, Some(LiveSession::Error(_))));
     }
 
     #[test]
