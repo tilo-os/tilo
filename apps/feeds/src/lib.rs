@@ -109,6 +109,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         // The Add-subscription dialog open over the reader, with a URL typed
         // into the real TextInput (shared caret / clipboard core).
         "add-subscription" => app.stage_add_subscription("https://blog.rust-lang.org/feed.xml"),
+        "tags" => app.stage_tag_editor(),
         _ => {}
     }
     Box::new(app)
