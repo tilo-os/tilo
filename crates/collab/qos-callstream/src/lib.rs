@@ -30,11 +30,14 @@ pub mod session;
 pub mod stream;
 pub mod throttle;
 
-pub use decoder::{DecodedFrame, H264Decoder};
+pub use decoder::{
+    DecodedFrame, H264Decoder, MAX_DECODED_HEIGHT, MAX_DECODED_PIXELS, MAX_DECODED_RGBA_BYTES,
+    MAX_DECODED_WIDTH,
+};
 pub use encoder::{EncodeError, H264Encoder};
 pub use session::{VideoStreamReceiver, VideoStreamSender};
 pub use stream::{
-    FrameError, PeerId, ReceiverEvent, SurfaceFrame, SurfaceId, SurfaceStreamReceiver,
-    SurfaceStreamSender,
+    FrameError, MAX_BUFFERED_STREAM_LEN, MAX_ENCODED_FRAME_LEN, PeerId, ReceiverEvent,
+    SurfaceFrame, SurfaceId, SurfaceStreamReceiver, SurfaceStreamSender,
 };
 pub use throttle::StreamingThrottle;

@@ -2368,16 +2368,16 @@ impl ChatApp {
         text_w: f32,
     ) {
         // Permission boundary: an embed this peer hasn't been granted access to
-        // renders as a locked card and never hydrates its bytes off the FUSE
-        // mount. Same footprint as the real embed so the timeline layout is
+        // renders as a locked card and never requests its shared bytes. Same
+        // footprint as the real embed so the timeline layout is
         // identical whether granted or gated.
-        if !self.embed_allowed(att.path()) {
+        if !self.embed_allowed(att.blob()) {
             Self::draw_gated_embed(scene, tf, tr, theme, att, x, y, text_w);
             return;
         }
         match att {
-            Attachment::Image { name, path, w, h } => {
-                self.draw_image_attachment(scene, tf, tr, theme, name, path, *w, *h, x, y, text_w);
+            Attachment::Image { name, blob, w, h } => {
+                self.draw_image_attachment(scene, tf, tr, theme, name, blob, *w, *h, x, y, text_w);
             }
             Attachment::Video {
                 name, w, h, size, ..
@@ -2406,7 +2406,7 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         name: &str,
-        path: &str,
+        blob: &str,
         img_w: u32,
         img_h: u32,
         x: f64,
@@ -2416,11 +2416,10 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let (tw, th) = image_thumb_size(img_w, img_h, f64::from(text_w));
         let rect = Rect::new(x, y, x + tw, y + th);
-        // Real decoded bytes from the shared background image cache
-        // (projected from the FUSE workspace). `get` schedules the
-        // load the first time a path is seen and returns the decoded
+        // Real decoded bytes from the shared background image cache. `get`
+        // schedules the load the first time a blob is seen and returns the decoded
         // image on a later frame; until then we show a neutral tile.
-        if let Some(img) = self.images.get(path) {
+        if let Some(img) = self.images.get(&crate::images::blob_key(blob)) {
             ui::image_store::paint_image_cover(scene, tf, rect, &img, 12.0);
         } else {
             fill_round(scene, tf, rect, 12.0, c.surfaces.raised);
@@ -2438,6 +2437,26 @@ impl ChatApp {
                 dot.y - f64::from(gh) / 2.0,
                 TextWeight::Regular,
                 None,
+            );
+            let status = if blob.starts_with(crate::images::DEMO_SCHEME) {
+                "Loading image…"
+            } else {
+                match qdoc::blobstore::state(blob) {
+                    qdoc::blobstore::BlobState::Pending => "Loading shared image…",
+                    qdoc::blobstore::BlobState::Unavailable => "Shared image unavailable",
+                    qdoc::blobstore::BlobState::Resolved => "Decoding image…",
+                }
+            };
+            let (sw, _) = tr.measure(status, 11.0, None);
+            label(
+                scene,
+                tr,
+                tf,
+                status,
+                11.0,
+                c.text_dim,
+                rect.center().x - f64::from(sw) / 2.0,
+                rect.center().y + 28.0,
             );
         }
         // Caption gradient scrim + filename, then a framing stroke.
@@ -3462,11 +3481,11 @@ impl ChatApp {
             1.0,
         );
 
-        let head_h = 40.0;
+        let head_h = 56.0;
         self.draw_attach_picker_header(scene, tf, tr, theme, panel, head_h);
 
         if self.attach_entries.is_empty() {
-            Self::draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
+            self.draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
             return;
         }
         self.draw_attach_picker_rows(scene, tf, tr, theme, panel, head_h, hits);
@@ -3482,7 +3501,7 @@ impl ChatApp {
             .min(self.rect.x1 - w - 12.0)
             .max(self.rect.x0 + 12.0);
 
-        let head_h = 40.0;
+        let head_h = 56.0;
         let row_h = 52.0;
         let max_rows = 6usize;
         let shown = self.attach_entries.len().min(max_rows);
@@ -3535,6 +3554,26 @@ impl ChatApp {
             panel.x1 - f64::from(cw) - 14.0,
             panel.y0 + 14.0,
         );
+        if let Some(status) = &self.attachment_status
+            && !(self.attachment_picker_pending.is_some() && status == "Loading attachments…")
+        {
+            let color = if status.contains("failed") || status.contains("cancelled") {
+                c.semantic.danger
+            } else {
+                c.text_dim
+            };
+            let status = truncate_to(tr, status, 10.5, panel.width() - 28.0);
+            label(
+                scene,
+                tr,
+                tf,
+                &status,
+                10.5,
+                color,
+                panel.x0 + 14.0,
+                panel.y0 + 30.0,
+            );
+        }
         hline(
             scene,
             tf,
@@ -3548,6 +3587,7 @@ impl ChatApp {
     /// The "no media found" message shown in place of the row list when the
     /// workspace has nothing shareable.
     fn draw_attach_picker_empty(
+        &self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -3556,8 +3596,12 @@ impl ChatApp {
         head_h: f64,
     ) {
         let c = &theme.tokens.colors;
-        let dir = crate::picker::attach_dir();
-        let s = format!("No media in {}", dir.display());
+        let s = if self.attachment_picker_pending.is_some() {
+            "Loading attachments…".to_owned()
+        } else {
+            let dir = crate::picker::attach_dir();
+            format!("No attachments in {}", dir.display())
+        };
         let s = truncate_to(tr, &s, 12.5, panel.width() - 28.0);
         label(
             scene,
@@ -3576,7 +3620,8 @@ impl ChatApp {
     /// that.
     #[allow(
         clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
+        clippy::too_many_lines,
+        reason = "draw-context bundle and one bounded picker-row presentation, not incidental coupling"
     )]
     fn draw_attach_picker_rows(
         &self,
@@ -3617,16 +3662,23 @@ impl ChatApp {
                     TextWeight::Regular,
                     None,
                 );
-            } else if let Some(img) = self.images.get(&key) {
+            } else if crate::picker::is_image_name(&e.name)
+                && let Some(img) = self.images.get(&key)
+            {
                 ui::image_store::paint_image_cover(scene, tf, thumb, &img, 8.0);
             } else {
                 fill_round(scene, tf, thumb, 8.0, c.surfaces.raised);
-                let (gw, gh) = tr.measure("🖼", 16.0, None);
+                let glyph = if crate::picker::is_image_name(&e.name) {
+                    "🖼"
+                } else {
+                    "📄"
+                };
+                let (gw, gh) = tr.measure(glyph, 16.0, None);
                 text(
                     scene,
                     tr,
                     tf,
-                    "🖼",
+                    glyph,
                     16.0,
                     c.text_dim,
                     thumb.center().x - f64::from(gw) / 2.0,
@@ -3664,7 +3716,9 @@ impl ChatApp {
                 thumb.x1 + 12.0,
                 row.center().y + 3.0,
             );
-            ChatApp::push_hit(hits, row, Hit::AttachPick(key));
+            if self.attachment_pending.is_none() {
+                ChatApp::push_hit(hits, row, Hit::AttachPick(key));
+            }
             y += row_h;
         }
         if self.attach_entries.len() > max_rows {

@@ -114,7 +114,8 @@ fn substream_carries_frames_gossip_carries_announcements() {
     // Production would write_all(f.encode()) on the wire; push_bytes matches.
     let mut rx = SurfaceStreamReceiver::new();
     for f in [&f0, &f1, &f2] {
-        rx.push_bytes(&f.encode());
+        rx.push_bytes(&f.encode().expect("test frame fits wire limit"))
+            .expect("bounded test input");
     }
     let events = rx.drain().expect("drain");
     assert_eq!(events.len(), 3, "no sequence gaps expected");

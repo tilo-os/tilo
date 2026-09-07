@@ -105,6 +105,8 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"collaboration"` — the desktop thread plus active huddle state.
 /// * `"context"` — open a channel context menu.
 /// * `"attach"` — open the workspace file picker over the composer.
+/// * `"attach-loading"` / `"attach-error"` — bounded attachment lifecycle
+///   feedback in the same picker.
 /// * `"edit"` — show the shared inline editor on a sent message.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ChatApp::new_ephemeral();
