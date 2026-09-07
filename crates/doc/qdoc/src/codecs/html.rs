@@ -882,8 +882,9 @@ fn insert_image(doc: &mut DocMut, st: &mut ImportState, attrs: &str) {
         doc.splice_text(&id, 0, 0, &alt);
     }
     if let Some(bytes) = decode_data_uri(&src) {
-        let hash = doc.put_blob(&bytes);
-        doc.set_attr(&id, "blob", hash.as_str());
+        if let Some(hash) = doc.put_blob(&bytes) {
+            doc.set_attr(&id, "blob", hash.as_str());
+        }
     } else if !src.is_empty() {
         // Keep an http/relative src for later resolution; the alt is the fallback.
         doc.set_attr(&id, "src", src.as_str());

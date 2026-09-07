@@ -1652,10 +1652,22 @@ impl WordProcessor {
     /// Decodable bytes record intrinsic pixel `width`/`height` as attrs (matching
     /// ODF import); undecodable bytes still produce a valid block (a placeholder).
     pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
-        self.delete_selection(state);
         let Some(containers) = self.containers.clone() else {
             return;
         };
+        // Store before changing the selection/text.  A quota rejection must be
+        // a no-op, not a split paragraph with a dangling blob reference.
+        let Some(hash) = self.ids.as_mut().and_then(|ids| {
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
+            dm.put_blob(bytes)
+        }) else {
+            return;
+        };
+        self.delete_selection(state);
         // Decode intrinsic dimensions up front (no doc borrow held), so the image
         // block can carry width/height attrs like the ODF importer does.
         let intrinsic = ui::widget::Image::from_encoded(bytes)
@@ -1671,36 +1683,31 @@ impl WordProcessor {
         let tail: String = text.chars().skip(offset).collect();
 
         if let Some(ids) = self.ids.as_mut() {
-            let hash = {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                let hash = dm.put_blob(bytes);
-                // Trim the caret block down to the head before the caret.
-                if offset < char_count {
-                    dm.splice_text(&block, offset, num::isize_of_usize(char_count - offset), "");
-                }
-                let img = dm.insert_block(Some(&block), "image");
-                dm.set_attr(&img, "blob", hash.as_str());
-                if let Some((w, h)) = intrinsic {
-                    dm.set_attr(&img, "width", i64::from(w));
-                    dm.set_attr(&img, "height", i64::from(h));
-                }
-                // A paragraph after the image carries the split-off tail and hosts
-                // the caret so editing continues beneath the image.
-                let after = dm.insert_block(Some(&img), "paragraph");
-                if !tail.is_empty() {
-                    dm.splice_text(&after, 0, 0, &tail);
-                }
-                self.caret = Caret {
-                    block: after,
-                    offset: 0,
-                };
-                hash
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
             };
-            let _ = hash;
+            // Trim the caret block down to the head before the caret.
+            if offset < char_count {
+                dm.splice_text(&block, offset, num::isize_of_usize(char_count - offset), "");
+            }
+            let img = dm.insert_block(Some(&block), "image");
+            dm.set_attr(&img, "blob", hash.as_str());
+            if let Some((w, h)) = intrinsic {
+                dm.set_attr(&img, "width", i64::from(w));
+                dm.set_attr(&img, "height", i64::from(h));
+            }
+            // A paragraph after the image carries the split-off tail and hosts
+            // the caret so editing continues beneath the image.
+            let after = dm.insert_block(Some(&img), "paragraph");
+            if !tail.is_empty() {
+                dm.splice_text(&after, 0, 0, &tail);
+            }
+            self.caret = Caret {
+                block: after,
+                offset: 0,
+            };
         }
         self.selection_anchor = None;
     }

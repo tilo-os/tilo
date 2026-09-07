@@ -45,7 +45,7 @@ pub fn store_asset(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES {
         return None;
     }
-    let hash = qdoc::blobstore::put(bytes);
+    let hash = qdoc::blobstore::put(bytes)?;
     // `put` is intentionally fallible at its storage boundary. Do not create
     // a CRDT reference until the exact bytes are retrievable and re-verified.
     let stored = qdoc::blobstore::get(&hash)?;

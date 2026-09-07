@@ -87,7 +87,9 @@ fn an_image_survives_a_merge_with_a_document_that_has_none() {
         let mut mine = Document::new();
         let p = mine.insert_block(None, "paragraph");
         mine.splice_text(&p, 0, 0, "the quarterly figures");
-        let hash = mine.put_blob(&[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4]);
+        let hash = mine
+            .put_blob(&[0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4])
+            .expect("test image fits blob quota");
         let img = mine.insert_block(Some(&p), "image");
         mine.as_mut().set_attr(&img, "blob", hash.as_str());
 
