@@ -80,7 +80,10 @@ pub const RECORD_INDEX_V3_XATTR: &str = "user.qos.record-index.v3";
 /// be reopened without materialising a mount catalogue.
 pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.qos.record-index.by-id.";
 pub const RECORD_INDEX_V2_VERSION: u16 = 2;
-pub const RECORD_INDEX_PAGE_ENTRIES: usize = 128;
+/// Keep a worst-case ordinary page within a single Linux filesystem xattr
+/// block. Some supported hosts (including ext4-backed containers) reject
+/// larger values with `ENOSPC` even when the volume has free space.
+pub const RECORD_INDEX_PAGE_ENTRIES: usize = 32;
 pub const MAX_RECORD_INDEX_PAGE_BYTES: usize = 48 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
