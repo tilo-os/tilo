@@ -681,7 +681,7 @@ impl RemoteApp {
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::from_rgba8(0, 0, 0, 255).at_alpha(0.62),
+            tokens.colors.surfaces.scrim.at_alpha(0.62),
             None,
             &self.rect,
         );
