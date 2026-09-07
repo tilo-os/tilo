@@ -189,7 +189,7 @@ impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
     /// (real PTY, falls back to a `Stub`), Files, Notes, Editor, and a
     /// Browser chrome. Production launches the packaged WPE-backed browser;
-    /// this in-process workspace mirror uses the same BrowserWidget contract.
+    /// this in-process workspace mirror uses the same `BrowserWidget` contract.
     pub fn new_with_default_demo_workspace() -> Self {
         let DemoTabs {
             tabs,
@@ -882,7 +882,9 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
         // foreign surface and a peer window wear the catch-all `Settings`
         // glyph — and keep wearing it when a `PeerWindow` binds in and
         // becomes `Foreign`, so the pill doesn't change under the user.
-        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } => UiKind::Settings,
+        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } | ShellTile::LocalApp { .. } => {
+            UiKind::Settings
+        }
     }
 }
 
@@ -903,6 +905,14 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
         ShellTile::PeerWindow { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: note.clone(),
+        },
+        ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
+            title: label.clone(),
+            detail: if note.is_empty() {
+                "Restoring this window…".into()
+            } else {
+                note.clone()
+            },
         },
         ShellTile::AppPlaceholder { kind, label } => match kind {
             ShellKind::Terminal => match TerminalWidget::spawn_default() {
@@ -1092,9 +1102,9 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     let topbar_ptr = &raw mut *topbar;
 
     let mut content_col = Column::new()
-        // Fills the viewport height remaining AFTER the topbar's 40px
+        // Fills the viewport height remaining after the persistent top bar.
         // sibling in `foreground_col`; without it the column's
-        // `percent(1.0)` height overflowed the viewport by 40px and apps
+        // `percent(1.0)` height overflowed the viewport by the bar height and apps
         // painted right up to the absolute bottom.
         .with_fill_remaining_height()
         // 8px is the minimum keeping the active-tile bottom from clipping

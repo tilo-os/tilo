@@ -23,6 +23,13 @@ before GNOME, KDE, or another session is selected next.
 The portal frontend and filtered D-Bus proxy are hard package dependencies, so
 sandboxed qOS applications do not silently lose desktop APIs on minimal hosts.
 
+The package-owned wrapper sends compositor stdout and stderr directly to the
+user journal with `SYSLOG_IDENTIFIER=qos-session`. After returning to another
+desktop, startup, portal, application-launch, and crash diagnostics remain
+available with `journalctl --user -t qos-session`; no GDM-specific session-log
+path is required. The wrapper records no environment dump or credentials, and
+the journal keeps the host's normal per-user/root access controls.
+
 ## Supported outputs
 
 | Distribution | Release files | Architectures |
@@ -81,23 +88,45 @@ sudo apt update
 sudo apt install qos-session
 ```
 
-Use `trixie` instead of `noble` on Debian 13. Fedora 44 users can add the RPM
-registry and install directly with `dnf` on a traditional mutable system:
+Use `trixie` instead of `noble` on Debian 13. Fedora 44 users must first
+bootstrap the RPM release key and maintained repo definition from the exact
+`desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo
+file does not advertise a qOS key or enable package verification; the release
+workflow publishes a repo definition with those settings already present:
+`https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo` is the upstream
+Forgejo-generated endpoint, retained for diagnostics and private-server
+fallbacks only.
 
 ```bash
-sudo dnf config-manager addrepo \
-  --from-repofile=https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo
+QOS_DESKTOP_VERSION=0.1.5
+sudo install -d -m 0755 /etc/pki/rpm-gpg
+sudo curl --fail --location \
+  --output /etc/pki/rpm-gpg/qos-rpm-signing-key.asc \
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-rpm-signing-key.asc"
+sudo curl --fail --location \
+  --output /etc/yum.repos.d/qos.repo \
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-fedora-44.repo"
+```
+
+`gpgcheck=1` makes DNF/rpm-ostree verify every qOS RPM. Forgejo's native RPM
+registry's generated `.repo` does not publish `repomd.xml.asc`, so the
+maintained definition uses `repo_gpgcheck=0`; HTTPS protects the unsigned
+metadata and the package signature protects the payload. Compare the release
+key's full fingerprint with the fingerprint published through an independent
+qOS channel before trusting it. No manual repo-file edit is needed on the
+public path.
+
+On a traditional mutable Fedora system, install from the configured repo with:
+
+```bash
 sudo dnf install qos-session
 ```
 
 On Fedora Atomic desktops such as Silverblue, Kinoite, or an rpm-ostree-based
-derivative, add the same repository and layer the package into the next
+derivative, use the same configured repo and layer the package into the next
 deployment instead:
 
 ```bash
-sudo curl --fail --location \
-  --output /etc/yum.repos.d/qos.repo \
-  https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo
 sudo rpm-ostree install qos-session
 ```
 
@@ -110,10 +139,81 @@ desktop in GDM whenever you want to switch back. Removing qOS later uses
 `sudo rpm-ostree uninstall qos-session` and another reboot. Do not use the
 development subpackage for an ordinary installation.
 
+If a later host or qOS deployment is unhealthy, choose the previous deployment
+from the boot menu or run `sudo rpm-ostree rollback`, then reboot. Rollback and
+uninstall change only the immutable deployment/package layer; the existing
+home directory, layered applications, and Flatpak data remain untouched.
+
 When this repository publishes a newer `qos-session`, the normal
 `sudo rpm-ostree update` command (an alias for `rpm-ostree upgrade`) resolves
 it into the next deployment together with the host OS update. Users do not
 download or reinstall release RPMs by hand.
+
+If the qOS Forgejo organization is still private, the registry requires
+authenticated package-read access. Public qOS organization/package visibility
+is the preferred release setup: it avoids credentials at install time and lets
+the public repository work with both `dnf` and `rpm-ostree` without any extra
+configuration.
+
+For a private registry, Forgejo requires authentication for both the generated
+`.repo` file and every later metadata/RPM request. Do not assume that
+`dnf config-manager` persists credentials for you. Fedora's DNF5/librepo
+repository parser accepts `username=` and `password=` options, so put those
+options in the repo stanza rather than embedding the token in `baseurl`.
+The following fetches the repo definition with a temporary netrc (the token is
+not a command-line argument or shell-history entry), installs it with
+root-only permissions, and asks you to add the two options to the generated
+stanza (the maintained release file already contains the qOS verification
+settings):
+
+```bash
+read -r -p 'Forgejo username: ' QOS_FORGEJO_USER
+read -r -s -p 'Forgejo read:package token: ' QOS_FORGEJO_TOKEN
+printf '\n'
+QOS_NETRC=$(mktemp)
+QOS_REPO=$(mktemp)
+QOS_KEY=$(mktemp)
+trap 'rm -f -- "$QOS_NETRC" "$QOS_REPO" "$QOS_KEY"' EXIT
+chmod 600 "$QOS_NETRC"
+printf 'machine code.sandbox.example login %s password %s\n' \
+  "$QOS_FORGEJO_USER" "$QOS_FORGEJO_TOKEN" > "$QOS_NETRC"
+QOS_DESKTOP_VERSION=0.1.5
+curl --fail --location --netrc-file "$QOS_NETRC" \
+  --output "$QOS_REPO" \
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-fedora-44.repo"
+curl --fail --location --netrc-file "$QOS_NETRC" \
+  --output "$QOS_KEY" \
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-rpm-signing-key.asc"
+sudo install -o root -g root -m 0600 "$QOS_REPO" /etc/yum.repos.d/qos.repo
+sudo install -o root -g root -m 0644 "$QOS_KEY" \
+  /etc/pki/rpm-gpg/qos-rpm-signing-key.asc
+unset QOS_FORGEJO_USER QOS_FORGEJO_TOKEN
+sudoedit /etc/yum.repos.d/qos.repo
+```
+
+Inside the repo stanza, add the actual values (not the placeholders) and save:
+
+```ini
+username=<Forgejo username>
+password=<PAT with read:package>
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/qos-rpm-signing-key.asc
+```
+
+Keep the file mode at `0600`; the token is necessarily stored there so future
+metadata and RPM fetches can authenticate. After saving, use `sudo dnf install
+qos-session` on a mutable Fedora host or `sudo rpm-ostree install qos-session`
+on Fedora Atomic. Do not put a PAT in this repository or paste it into a
+shared terminal. The Forgejo administrator must enable the package registry,
+grant the user read access to the `qos` organization/packages, and keep the
+HTTPS reverse proxy's `/api/packages` routes reachable. Without public
+organization visibility or those authenticated settings, an install (and
+therefore a future `rpm-ostree update`) is expected to fail with HTTP 401/403.
+The key URL is intentionally pinned to the release tag used for bootstrap;
+keep using that key for ordinary updates. For a signing-key rotation, bootstrap
+the replacement key and update `gpgkey=` before publishing RPMs made only with
+the new key.
 
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
@@ -194,9 +294,17 @@ both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
 so dependency resolution, ELF linkage, package metadata, installation, and
 `ldd` verification all exercise the target ABI. The runner must expose Docker
 and allow ordinary Docker create/copy/export/start operations. The deferred
-cross-architecture path additionally needs unprivileged `ptrace`. No publishing secret
-beyond the existing `REGISTRY_TOKEN` is introduced; it must have repository and
-package write permission for tag releases.
+cross-architecture path additionally needs unprivileged `ptrace`. RPM tag
+publication additionally requires protected `QOS_RPM_SIGNING_KEY_B64` and
+`QOS_RPM_SIGNING_KEY_ID` secrets plus the protected
+`QOS_RPM_SIGNING_FINGERPRINT` variable. The key must be an unencrypted armored
+private key because non-interactive `rpmsign` cannot prompt for a passphrase;
+the signing workflow imports it only into a mode-0700 temporary keyring and
+never publishes it. If policy requires a passphrase-protected key, add an
+approved RPM-signing credential-broker implementation before enabling release
+publication. The existing `REGISTRY_TOKEN` remains the package-upload
+credential and must have repository and package write permission for tag
+releases.
 
 Every distro job first checks the architecture visible inside its container,
 builds inside its target distribution, and then installs both the main and

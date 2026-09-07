@@ -31,6 +31,9 @@ pub enum GesturePhase {
     Begin,
     Update,
     End,
+    /// The input source lost/canceled this contact. Unlike [`Self::End`],
+    /// cancellation must never commit a terminal tap, swipe, or pinch.
+    Cancel,
 }
 
 /// Accumulated horizontal travel (physical px) that commits a two-finger
@@ -149,6 +152,14 @@ impl TouchGestureArena {
         self.max_fingers >= 3 && !self.contacts.is_empty()
     }
 
+    /// Drop every direct-touch contact without producing a terminal gesture.
+    /// Used when the compositor loses the input source or transfers the whole
+    /// seat to the lock screen.
+    pub fn cancel_all(&mut self) {
+        self.contacts.clear();
+        self.reset();
+    }
+
     pub fn on_touch(
         &mut self,
         id: u64,
@@ -232,6 +243,13 @@ impl TouchGestureArena {
                     self.reset();
                 }
                 terminal.into_iter().collect()
+            }
+            GesturePhase::Cancel => {
+                self.contacts.remove(&id);
+                if self.contacts.is_empty() {
+                    self.reset();
+                }
+                Vec::new()
             }
         }
     }
@@ -331,7 +349,7 @@ impl NavGestureRecognizer {
         if phase == GesturePhase::Begin || idle {
             self.reset_swipe();
         }
-        if phase == GesturePhase::End {
+        if matches!(phase, GesturePhase::End | GesturePhase::Cancel) {
             self.reset_swipe();
             return None;
         }
@@ -403,7 +421,7 @@ impl NavGestureRecognizer {
                 }
                 dir
             }
-            GesturePhase::End => {
+            GesturePhase::End | GesturePhase::Cancel => {
                 self.touches.remove(&id);
                 None
             }
@@ -625,6 +643,26 @@ mod tests {
         arena.on_touch(2, Point::new(40.0, 20.0), GesturePhase::End);
         assert!(arena.shell_owns_current());
         arena.on_touch(3, Point::new(60.0, 20.0), GesturePhase::End);
+        assert!(!arena.shell_owns_current());
+    }
+
+    #[test]
+    fn cancelling_a_three_finger_stream_never_emits_a_terminal_shell_swipe() {
+        let mut arena = TouchGestureArena::new();
+        for (id, x) in [(1, 100.0), (2, 140.0), (3, 180.0)] {
+            arena.on_touch(id, Point::new(x, 80.0), GesturePhase::Begin);
+        }
+        for (id, x) in [(1, 20.0), (2, 60.0), (3, 100.0)] {
+            arena.on_touch(id, Point::new(x, 80.0), GesturePhase::Update);
+        }
+        for (id, x) in [(1, 20.0), (2, 60.0), (3, 100.0)] {
+            assert!(
+                arena
+                    .on_touch(id, Point::new(x, 80.0), GesturePhase::Cancel)
+                    .is_empty(),
+                "cancellation is disposal, never gesture completion"
+            );
+        }
         assert!(!arena.shell_owns_current());
     }
 

@@ -824,13 +824,26 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "Mouse & Keyboard",
     );
     sec = sec.with_action(bool_flip_spec(
-        "natural_scroll",
-        panes::mouse_keyboard::NATURAL_SCROLL_KEY,
+        "touchpad_natural_scroll",
+        panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
         b(
-            panes::mouse_keyboard::NATURAL_SCROLL_KEY,
-            d.input.natural_scroll,
+            panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
+            d.input
+                .touchpad_natural_scroll
+                .unwrap_or(d.input.natural_scroll),
         ),
-        "natural scrolling",
+        "touchpad natural scrolling",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "mouse_natural_scroll",
+        panes::mouse_keyboard::MOUSE_NATURAL_SCROLL_KEY,
+        b(
+            panes::mouse_keyboard::MOUSE_NATURAL_SCROLL_KEY,
+            d.input
+                .mouse_natural_scroll
+                .unwrap_or(d.input.natural_scroll),
+        ),
+        "mouse natural scrolling",
     ));
     sec = sec.with_action(bool_flip_spec(
         "tap_to_click",
@@ -839,9 +852,17 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         "tap to click",
     ));
     sec = sec.with_action(float_prompt_spec(
-        "pointer_speed",
-        "Set pointer speed",
-        panes::mouse_keyboard::POINTER_SPEED_KEY,
+        "touchpad_pointer_speed",
+        "Set touchpad speed",
+        panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
+        "0.0 – 1.0",
+        0.0,
+        1.0,
+    ));
+    sec = sec.with_action(float_prompt_spec(
+        "mouse_pointer_speed",
+        "Set mouse speed",
+        panes::mouse_keyboard::MOUSE_POINTER_SPEED_KEY,
         "0.0 – 1.0",
         0.0,
         1.0,

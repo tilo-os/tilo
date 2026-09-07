@@ -6,6 +6,7 @@
 //! stable detail URI. The Store then shows provenance and offers the current
 //! revalidated install action; palette activation never downloads software.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::portal::desktop_services::DynamicLauncherRecord;
@@ -79,8 +80,8 @@ fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
 
 fn app_detail(needle: &str, app: &InstalledApp) -> String {
     let metadata = match app.category.as_deref() {
-        Some(category) => format!("{category} · {}", app.package_id),
-        None => format!("{} · {}", app.package_id, app.version),
+        Some(category) => format!("qOS · {category} · {}", app.package_id),
+        None => format!("qOS · {} · {}", app.package_id, app.version),
     };
     if needle.is_empty() {
         format!(
@@ -94,8 +95,8 @@ fn app_detail(needle: &str, app: &InstalledApp) -> String {
 
 fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
     let metadata = match app.category.as_deref() {
-        Some(category) => format!("{category} · {}", app.package_id),
-        None => format!("{} · {}", app.package_id, app.version),
+        Some(category) => format!("qOS · {category} · {}", app.package_id),
+        None => format!("qOS · {} · {}", app.package_id, app.version),
     };
     if needle.is_empty() {
         format!(
@@ -240,7 +241,14 @@ impl ApplicationsProvider {
                                 state.push_notification_full(
                                     Notification::new(
                                         format!("Couldn't open {name}"),
-                                        format!("{error:?}"),
+                                        // The URI resolver's Debug output may
+                                        // contain package ids, paths, or
+                                        // multiline backend details. Keep the
+                                        // full value in the refusal returned
+                                        // to the caller/log and give the
+                                        // fixed-height toast a bounded recovery
+                                        // instruction instead.
+                                        "The shortcut could not be opened. Check its target and try again.",
                                     )
                                     .with_severity(NotificationSeverity::Error)
                                     .with_app_name("Applications"),
@@ -257,17 +265,35 @@ impl ApplicationsProvider {
     /// Score not-yet-installed apps and build Store-detail rows. `installed`
     /// keeps an app from being offered twice between an install finishing and the
     /// catalogue refetching.
+    #[cfg(test)]
     pub(crate) fn catalogue_results_for(
         &self,
         needle: &str,
         apps: Vec<CatalogueApp>,
         installed: &[String],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
+        self.catalogue_results_for_with_hosts(needle, apps, installed, &[], open_target)
+    }
+
+    fn catalogue_results_for_with_hosts(
+        &self,
+        needle: &str,
+        apps: Vec<CatalogueApp>,
+        installed: &[String],
+        host_apps: &[crate::shell::host_apps::HostApp],
         _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
+        let mut seen = HashSet::new();
         for app in apps {
-            if installed.contains(&app.package_id) {
+            if installed.contains(&app.package_id)
+                || host_apps
+                    .iter()
+                    .any(|host| catalogue_aliases_host(&app, host))
+                || !seen.insert(app.package_id.clone())
+            {
                 continue;
             }
             let name_lower = app.display_name.to_lowercase();
@@ -301,8 +327,15 @@ impl ApplicationsProvider {
                 score: presentation_score(needle, &app.package_id, score)
                     .saturating_sub(NOT_INSTALLED_TIEBREAK),
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                    // Captured now, not re-read after the Store is launched:
-                    // the palette selection names this exact stable package.
+                    // A palette can be opened and activated repeatedly while
+                    // catalogue installation is still running. Keep one
+                    // in-flight operation and one acknowledgement; replacing
+                    // the pending id would strand the first card forever.
+                    if catalogue::pending_notice(&package_id).is_some() {
+                        return Ok(());
+                    }
+                    // Captured now, not re-read at launch: the window may be
+                    // a minute away and the user's selection can change.
                     let context = {
                         let st = chrome.borrow();
                         let tree = st.tree();
@@ -322,10 +355,11 @@ impl ApplicationsProvider {
                         st.push_notification_full(
                             Notification::new(
                                 format!("Couldn't open App Store for {display_name}"),
-                                launcher::LaunchError::NoWorkspace.user_message(),
+                                launcher::LaunchError::NoWorkspace.notification_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
-                            .with_app_name("Applications"),
+                            .with_app_name("Applications")
+                            .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                         );
                         st.bump();
                         // The notification is how the person at the machine
@@ -379,6 +413,18 @@ fn store_detail_uri(package_id: &str) -> Result<String, ActionError> {
         ));
     }
     Ok(format!("qos-store:app/{package_id}"))
+}
+
+fn catalogue_aliases_host(
+    catalogue: &CatalogueApp,
+    host: &crate::shell::host_apps::HostApp,
+) -> bool {
+    // Display names and reverse-DNS tails are presentation, not identity:
+    // GNOME Calendar and qOS Calendar are two real applications, as are the
+    // many unrelated programs named Notes or Terminal.  Until the signed
+    // catalogue contract grows explicit aliases, only the complete canonical
+    // ID is strong enough evidence to collapse a cross-provider row.
+    catalogue.package_id.eq_ignore_ascii_case(&host.desktop_id)
 }
 
 /// The package id of the file manager qOS ships as a system app.
@@ -483,6 +529,11 @@ pub(crate) fn launch_installed_app(
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);
         return Ok(());
     }
+    // The app is already being installed/launched. Repeated activation should
+    // be idempotent: one worker, one pending notice, one eventual window.
+    if catalogue::pending_notice(package_id).is_some() {
+        return Ok(());
+    }
     // Say the app is opening before the work starts, so the
     // acknowledgement lands on the same frame as the keystroke. Retired by
     // the window appearing (`retire_notices_for_opened_windows`), not a timer.
@@ -519,7 +570,17 @@ pub(crate) fn launch_installed_app(
     // rest arrive as launch events drained each frame.
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
     if let Err(err) = outcome {
+        // The preflight failed before a toplevel could claim the placement
+        // note. Do not let a later app inherit this dead launch's target.
+        launcher::clear_pending_placement(package_id);
         let message = err.user_message();
+        tracing::error!(
+            target: "qos::app_launch",
+            package_id,
+            display_name,
+            detail = %message,
+            "application launch was refused before spawn"
+        );
         {
             let mut st = chrome.borrow_mut();
             // Claimed back rather than left to expire, or the next window
@@ -528,9 +589,13 @@ pub(crate) fn launch_installed_app(
                 st.dismiss_notification(id);
             }
             st.push_notification_full(
-                Notification::new(format!("Couldn't open {display_name}"), message.clone())
-                    .with_severity(NotificationSeverity::Error)
-                    .with_app_name("Applications"),
+                Notification::new(
+                    launcher::launch_failure_title(display_name),
+                    err.notification_message(),
+                )
+                .with_severity(NotificationSeverity::Error)
+                .with_app_name("Applications")
+                .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
             );
             st.bump();
         }
@@ -574,10 +639,11 @@ impl SearchProvider for ApplicationsProvider {
             Self::dynamic_apps(),
             ctx.chrome.open_target,
         ));
-        out.extend(self.catalogue_results_for(
+        out.extend(self.catalogue_results_for_with_hosts(
             ctx.needle,
             Self::catalogue_apps(),
             &installed_ids,
+            &crate::shell::host_apps::host_apps(),
             ctx.chrome.open_target,
         ));
         out
@@ -703,6 +769,25 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(launch_events)]
+    fn repeated_activation_while_opening_is_idempotent() {
+        let chrome = chrome_rc();
+        let package_id = "dev.qos.repeated-open-fixture";
+        let notice = chrome
+            .borrow_mut()
+            .push_notification("Opening Fixture", "Loading…");
+        catalogue::note_pending_notice(package_id, notice);
+
+        assert!(launch_installed_app(&chrome, package_id, "Fixture").is_ok());
+        assert_eq!(
+            chrome.borrow().notifications().len(),
+            1,
+            "a second activation must not create another worker or opening card"
+        );
+        assert_eq!(catalogue::take_pending_notice(package_id), Some(notice));
+    }
+
+    #[test]
     fn matching_app_offers_an_open_row() {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
@@ -716,7 +801,7 @@ mod tests {
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · dev.qos.hello · 0.1.0"),
+            Some("Opens beside · qOS · dev.qos.hello · 0.1.0"),
             "the row names the package it will launch"
         );
     }
@@ -751,6 +836,96 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_registry_offers_produce_one_application_row() {
+        let p = ApplicationsProvider::new();
+        let app = offered("dev.qos.notes", "Notes", Some("Office"));
+        let out = p.catalogue_results_for("notes", vec![app.clone(), app], &[], OpenTarget::Beside);
+        assert_eq!(out.len(), 1, "registry mirrors must not duplicate an app");
+    }
+
+    #[test]
+    fn an_exact_host_package_identity_hides_its_catalogue_alias() {
+        let p = ApplicationsProvider::new();
+        let hosts = vec![crate::shell::host_apps::HostApp {
+            desktop_id: "dev.qos.notes".into(),
+            name: "Notes".into(),
+            source_label: "Flatpak",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            window_identities: vec!["dev.qos.notes".into()],
+        }];
+        let out = p.catalogue_results_for_with_hosts(
+            "notes",
+            vec![offered("dev.qos.notes", "Notes", Some("Office"))],
+            &[],
+            &hosts,
+            OpenTarget::Beside,
+        );
+        assert!(
+            out.is_empty(),
+            "opening an existing app must not offer a duplicate fetch"
+        );
+    }
+
+    fn catalogue_rows_with_host(
+        catalogue_id: &str,
+        catalogue_name: &str,
+        host_id: &str,
+        host_name: &str,
+    ) -> Vec<SearchResult> {
+        let p = ApplicationsProvider::new();
+        let hosts = vec![crate::shell::host_apps::HostApp {
+            desktop_id: host_id.into(),
+            name: host_name.into(),
+            source_label: "System",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            window_identities: vec![host_id.into()],
+        }];
+        p.catalogue_results_for_with_hosts(
+            catalogue_name,
+            vec![offered(catalogue_id, catalogue_name, None)],
+            &[],
+            &hosts,
+            OpenTarget::Beside,
+        )
+    }
+
+    #[test]
+    fn gnome_calendar_does_not_hide_qos_calendar() {
+        let rows = catalogue_rows_with_host(
+            "dev.qos.calendar",
+            "Calendar",
+            "org.gnome.Calendar",
+            "Calendar",
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].subtitle.as_deref().unwrap().contains("qOS"));
+    }
+
+    #[test]
+    fn host_terminal_does_not_hide_qos_terminal() {
+        let rows = catalogue_rows_with_host(
+            "dev.qos.terminal",
+            "Terminal",
+            "org.gnome.Console",
+            "Terminal",
+        );
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn a_generic_shared_name_is_not_cross_provider_identity() {
+        let rows = catalogue_rows_with_host(
+            "dev.qos.notes",
+            "Notes",
+            "org.example.PrivateNotes",
+            "Notes",
+        );
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
     fn declared_category_is_matchable_and_replaces_the_version_subtitle() {
         let p = ApplicationsProvider::new();
         let out = p.results_for(
@@ -766,7 +941,7 @@ mod tests {
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · Office · dev.qos.sheets"),
+            Some("Opens beside · qOS · Office · dev.qos.sheets"),
             "a declared category is the more useful second line than the version"
         );
     }
@@ -1124,6 +1299,7 @@ mod tests {
     /// Must say so in the same words an installed app's launch uses, not
     /// fail silently. Drives the real `on_open` closure.
     #[test]
+    #[serial_test::serial(launch_events)]
     fn activating_with_no_workspace_reports_it_the_same_way() {
         let p = ApplicationsProvider::new();
         let c = chrome_rc();
@@ -1151,7 +1327,7 @@ mod tests {
         assert_eq!(n.severity, NotificationSeverity::Error);
         assert_eq!(
             n.body,
-            launcher::LaunchError::NoWorkspace.user_message(),
+            launcher::LaunchError::NoWorkspace.notification_message(),
             "the same failure gets the same words whichever list the app \
              came from"
         );

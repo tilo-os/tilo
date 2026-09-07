@@ -90,13 +90,10 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     // 3) Click "Save" → the pane builds the account, autofills the servers,
     //    persists it to the shared store, and seals the password in the vault.
     pane.submit_form_for_test();
-    for _ in 0..100 {
-        pane.sync(&mut doc, &root);
-        if !pane.form_open() {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    assert!(
+        pane.finish_form_submission_for_test(&mut doc, &root),
+        "bounded account probe and disk transaction complete"
+    );
     assert!(!pane.form_open(), "a successful save closes the form");
 
     // ---- Now read it back the way MAIL does, through Mail's own loader. ----

@@ -24,17 +24,20 @@ strip changes context; switching a window or tab changes focus within it.
 |---|---|---|
 | Search current app | Ctrl+K | Search |
 | Search all qOS | Super+K, Super+Space; Alt+Space when nested | Search |
-| Open/close Overview | Ctrl+Tab or Super+Tab | Overview button |
+| Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
-| Previous/next workspace | Ctrl+Up/Down or Super+Up/Down | Workspace arrows/wheel |
-| Previous/next strip | Ctrl+Shift+Up/Down or Super+Shift+Up/Down | Strip navigation |
-| Previous/next window group | Super+Left/Right | Select group |
+| Previous/next workspace | Super+Up/Down | Workspace arrows/wheel |
+| Previous/next strip | Super+Shift+Up/Down | Strip navigation |
+| Cycle previous/next window | Alt+Shift+Tab / Alt+Tab | Select group/tab |
+| Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
 | Dismiss top transient surface | Escape | Scrim/close action |
 
 Ctrl+Left/Right is deliberately never captured: text fields and editors retain
-word-wise movement. Escape is captured only while shell chrome is open.
+word-wise movement. Ctrl+Up/Down likewise remains application-owned. Escape is
+captured only while shell chrome is open. Alt+Tab wraps at the strip edges;
+Super+Left/Right clamps because it describes a spatial direction.
 
 ## Window and tab actions
 
@@ -45,6 +48,7 @@ word-wise movement. Escape is captured only while shell chrome is open.
 | Open recovery terminal | Super+Enter | Global search/open Terminal |
 | Close focused tab | Super+W | Tab close |
 | Duplicate focused tab | Super+D | Tab action |
+| Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
 | Open wireless display picker | Super+P | Quick Settings / display route |
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions

@@ -12,6 +12,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
@@ -84,6 +85,12 @@ pub fn login_account_display_name() -> String {
 /// writes via the UI's identity-flow ceremony.
 const PRIMARY_IDENTITY_FILE: &str = "primary.json";
 
+/// Version of the host-session input import. It lives in the input section
+/// because this is a compatibility migration for that section, not a global
+/// settings-document schema version.
+const HOST_INPUT_MIGRATION_VERSION_KEY: &str = "host_input_migration_version";
+const HOST_INPUT_MIGRATION_VERSION: u64 = 2;
+
 /// Sequence for same-directory temporary owner-claim files.  The final claim
 /// is a hard link, not this name; `create_new` simply prevents a stale temp
 /// file from ever being overwritten.
@@ -101,6 +108,268 @@ pub fn run() -> Result<(), Box<dyn Error>> {
         std::env::var_os("XDG_CONFIG_HOME"),
         std::env::var_os("HOME"),
     )
+}
+
+/// Import existing GNOME input preferences on the first host-session login.
+///
+/// Version 2 splits pointer settings by device class and preserves the host's
+/// physical keyboard repeat values. Existing qOS choices always win. The
+/// migration marker is only written after at least one host setting could be
+/// read (or the qOS section was already complete), so a temporarily unavailable
+/// settings service is retried on the next login.
+///
+/// # Errors
+///
+/// Returns an error when the shared settings store cannot persist the imported
+/// values. Missing schemas or unreadable host values are ignored individually.
+pub fn import_host_input_settings() -> Result<(), Box<dyn Error>> {
+    let existing = settings_store::load_section("input");
+    let updates = host_input_migration_updates(&existing, gsettings_get);
+    if updates.is_empty() {
+        return Ok(());
+    }
+    settings_store::update_section("input", updates)?;
+    tracing::info!(
+        version = HOST_INPUT_MIGRATION_VERSION,
+        "firstboot: migrated host input settings"
+    );
+    Ok(())
+}
+
+fn host_input_migration_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    mut read: impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    if existing
+        .get(HOST_INPUT_MIGRATION_VERSION_KEY)
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|version| version >= HOST_INPUT_MIGRATION_VERSION)
+    {
+        return serde_json::Map::new();
+    }
+
+    let mut host_read_succeeded = false;
+    let mut tracked_read = |schema: &str, key: &str| {
+        let value = read(schema, key);
+        host_read_succeeded |= value.is_some();
+        value
+    };
+    let mut updates = host_keyboard_updates(existing, &mut tracked_read);
+    updates.extend(host_pointer_updates(existing, &mut tracked_read));
+    updates.extend(host_key_repeat_updates(existing, &mut tracked_read));
+    drop(tracked_read);
+
+    if host_read_succeeded || host_input_settings_complete(existing) {
+        updates.insert(
+            HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+            serde_json::json!(HOST_INPUT_MIGRATION_VERSION),
+        );
+    }
+    updates
+}
+
+fn host_input_settings_complete(existing: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let keyboard =
+        existing.contains_key("keyboard_layout") || existing.contains_key("keyboard_layouts");
+    let pointer = [
+        "touchpad_natural_scroll",
+        "mouse_natural_scroll",
+        "touchpad_pointer_speed",
+        "mouse_pointer_speed",
+        "tap_to_click",
+        "tap_drag",
+        "disable_while_typing",
+        "left_handed",
+    ]
+    .iter()
+    .all(|key| existing.contains_key(*key));
+    let repeat = existing.contains_key("key_repeat")
+        || (existing.contains_key("key_repeat_delay_ms")
+            && existing.contains_key("key_repeat_rate_hz"));
+    keyboard && pointer && repeat
+}
+
+fn host_keyboard_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    read: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut input = serde_json::Map::new();
+    if existing.contains_key("keyboard_layout") || existing.contains_key("keyboard_layouts") {
+        return input;
+    }
+    let Some(raw_sources) = read("org.gnome.desktop.input-sources", "sources") else {
+        return input;
+    };
+    let source_ids = parse_gnome_xkb_sources(&raw_sources);
+    let Some(active) = source_ids.first() else {
+        return input;
+    };
+    input.insert("keyboard_layout".into(), serde_json::json!(active));
+    input.insert("keyboard_layouts".into(), serde_json::json!(source_ids));
+    if !existing.contains_key("compose_key")
+        && let Some(compose) = read("org.gnome.desktop.input-sources", "xkb-options")
+            .and_then(|raw| parse_gnome_compose_key(&raw))
+    {
+        input.insert("compose_key".into(), serde_json::json!(compose));
+    }
+    input
+}
+
+fn parse_gnome_xkb_sources(value: &str) -> Vec<String> {
+    let mut sources = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("('xkb', '") {
+        rest = &rest[start + 9..];
+        let Some(end) = rest.find('\'') else { break };
+        let id = rest[..end].replacen('+', ":", 1);
+        if settings_store::hardware::KeyboardInputSource::parse(&id).is_some()
+            && !sources.contains(&id)
+            && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+        {
+            sources.push(id);
+        }
+        rest = &rest[end + 1..];
+    }
+    sources
+}
+
+fn parse_gnome_compose_key(value: &str) -> Option<String> {
+    ["ralt", "menu", "caps", "rwin", "lwin"]
+        .into_iter()
+        .find(|key| value.contains(&format!("compose:{key}")))
+        .map(str::to_string)
+}
+
+fn host_pointer_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    read: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut input = serde_json::Map::new();
+    {
+        let mut insert_bool = |key: &str, schema: &str, setting: &str| {
+            if !existing.contains_key(key)
+                && let Some(value) = read(schema, setting).and_then(|raw| match raw.trim() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                })
+            {
+                input.insert(key.into(), serde_json::json!(value));
+            }
+        };
+        insert_bool(
+            "touchpad_natural_scroll",
+            "org.gnome.desktop.peripherals.touchpad",
+            "natural-scroll",
+        );
+        insert_bool(
+            "mouse_natural_scroll",
+            "org.gnome.desktop.peripherals.mouse",
+            "natural-scroll",
+        );
+        insert_bool(
+            "tap_to_click",
+            "org.gnome.desktop.peripherals.touchpad",
+            "tap-to-click",
+        );
+        insert_bool(
+            "tap_drag",
+            "org.gnome.desktop.peripherals.touchpad",
+            "tap-and-drag",
+        );
+        insert_bool(
+            "disable_while_typing",
+            "org.gnome.desktop.peripherals.touchpad",
+            "disable-while-typing",
+        );
+        insert_bool(
+            "left_handed",
+            "org.gnome.desktop.peripherals.mouse",
+            "left-handed",
+        );
+    }
+
+    for (key, schema) in [
+        (
+            "touchpad_pointer_speed",
+            "org.gnome.desktop.peripherals.touchpad",
+        ),
+        ("mouse_pointer_speed", "org.gnome.desktop.peripherals.mouse"),
+    ] {
+        if existing.contains_key(key) {
+            continue;
+        }
+        if let Some(speed) = read(schema, "speed")
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+            .filter(|speed| speed.is_finite())
+        {
+            input.insert(key.into(), serde_json::json!(host_pointer_speed(speed)));
+        }
+    }
+    input
+}
+
+fn parse_gnome_bool(value: &str) -> Option<bool> {
+    match value.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn host_key_repeat_updates(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    read: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    const SCHEMA: &str = "org.gnome.desktop.peripherals.keyboard";
+    let mut updates = serde_json::Map::new();
+    if existing.contains_key("key_repeat")
+        || existing.contains_key("key_repeat_delay_ms")
+        || existing.contains_key("key_repeat_rate_hz")
+    {
+        return updates;
+    }
+    let Some(repeat) = read(SCHEMA, "repeat").and_then(|raw| parse_gnome_bool(&raw)) else {
+        return updates;
+    };
+    if !repeat {
+        updates.insert("key_repeat_delay_ms".into(), serde_json::json!(500));
+        updates.insert("key_repeat_rate_hz".into(), serde_json::json!(0));
+        return updates;
+    }
+    let Some(delay) = read(SCHEMA, "delay")
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|value| (1..=5_000).contains(value))
+    else {
+        return updates;
+    };
+    let Some(interval) = read(SCHEMA, "repeat-interval")
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|value| (1..=5_000).contains(value))
+    else {
+        return updates;
+    };
+    updates.insert("key_repeat_delay_ms".into(), serde_json::json!(delay));
+    updates.insert(
+        "key_repeat_rate_hz".into(),
+        serde_json::json!((1_000_u32 / interval).clamp(1, 1_000)),
+    );
+    updates
+}
+
+fn host_pointer_speed(speed: f64) -> f64 {
+    speed.midpoint(1.0).clamp(0.0, 1.0)
+}
+
+fn gsettings_get(schema: &str, key: &str) -> Option<String> {
+    let output = Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Current wall-clock time as nanoseconds since the epoch, clamped to
@@ -690,6 +959,173 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_pointer_speed_maps_libinput_range_to_qos_range() {
+        assert_eq!(host_pointer_speed(-1.0), 0.0);
+        assert_eq!(host_pointer_speed(0.0), 0.5);
+        assert_eq!(host_pointer_speed(1.0), 1.0);
+        assert_eq!(host_pointer_speed(4.0), 1.0);
+    }
+
+    #[test]
+    fn host_input_migration_splits_legacy_scroll_and_is_idempotent() {
+        let legacy =
+            serde_json::Map::from_iter([("natural_scroll".into(), serde_json::json!(true))]);
+        let updates = host_input_migration_updates(&legacy, |schema, key| match (schema, key) {
+            ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
+            ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
+            _ => None,
+        });
+        assert_eq!(
+            updates.get("touchpad_natural_scroll"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            updates.get("mouse_natural_scroll"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            updates.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+            Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
+        );
+
+        let mut migrated = legacy;
+        migrated.extend(updates);
+        assert!(
+            host_input_migration_updates(&migrated, |_, _| panic!("must not read twice"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn host_pointer_import_keeps_device_classes_independent() {
+        let existing = serde_json::Map::new();
+        let updates = host_pointer_updates(&existing, &mut |schema, key| match (schema, key) {
+            ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
+            ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
+            ("org.gnome.desktop.peripherals.touchpad", "speed") => Some("0.4".into()),
+            ("org.gnome.desktop.peripherals.mouse", "speed") => Some("-0.6".into()),
+            _ => None,
+        });
+        assert_eq!(
+            updates.get("touchpad_natural_scroll"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            updates.get("mouse_natural_scroll"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            updates.get("touchpad_pointer_speed"),
+            Some(&serde_json::json!(0.7))
+        );
+        assert_eq!(
+            updates.get("mouse_pointer_speed"),
+            Some(&serde_json::json!(0.2))
+        );
+    }
+
+    #[test]
+    fn host_keyboard_import_is_complete_and_never_overwrites_qos_choices() {
+        let empty = serde_json::Map::new();
+        let imported = host_keyboard_updates(&empty, &mut |_, key| match key {
+            "sources" => Some("[('xkb', 'de+nodeadkeys'), ('xkb', 'us')]".into()),
+            "xkb-options" => Some("['compose:rwin']".into()),
+            _ => None,
+        });
+        assert_eq!(
+            imported.get("keyboard_layout"),
+            Some(&serde_json::json!("de:nodeadkeys"))
+        );
+        assert_eq!(
+            imported.get("keyboard_layouts"),
+            Some(&serde_json::json!(["de:nodeadkeys", "us"]))
+        );
+        assert_eq!(
+            imported.get("compose_key"),
+            Some(&serde_json::json!("rwin"))
+        );
+
+        let existing = serde_json::Map::from_iter([
+            ("keyboard_layout".into(), serde_json::json!("us")),
+            ("compose_key".into(), serde_json::json!("caps")),
+        ]);
+        assert!(
+            host_keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into())).is_empty(),
+            "an existing qOS keyboard selection must win as one coherent preference"
+        );
+    }
+
+    #[test]
+    fn host_input_migration_preserves_explicit_per_device_qos_choices() {
+        let existing = serde_json::Map::from_iter([
+            ("touchpad_natural_scroll".into(), serde_json::json!(false)),
+            ("mouse_natural_scroll".into(), serde_json::json!(true)),
+            ("touchpad_pointer_speed".into(), serde_json::json!(0.8)),
+        ]);
+        let updates = host_input_migration_updates(&existing, |_, key| match key {
+            "natural-scroll" => Some("true".into()),
+            "speed" => Some("-0.5".into()),
+            _ => None,
+        });
+        assert!(!updates.contains_key("touchpad_natural_scroll"));
+        assert!(!updates.contains_key("mouse_natural_scroll"));
+        assert!(!updates.contains_key("touchpad_pointer_speed"));
+        assert_eq!(
+            updates.get("mouse_pointer_speed"),
+            Some(&serde_json::json!(0.25))
+        );
+    }
+
+    #[test]
+    fn host_repeat_import_preserves_exact_values_and_disabled_state() {
+        let enabled = host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
+            match (schema, key) {
+                ("org.gnome.desktop.peripherals.keyboard", "repeat") => Some("true".into()),
+                ("org.gnome.desktop.peripherals.keyboard", "delay") => Some("300".into()),
+                ("org.gnome.desktop.peripherals.keyboard", "repeat-interval") => Some("25".into()),
+                _ => None,
+            }
+        });
+        assert_eq!(
+            enabled.get("key_repeat_delay_ms"),
+            Some(&serde_json::json!(300))
+        );
+        assert_eq!(
+            enabled.get("key_repeat_rate_hz"),
+            Some(&serde_json::json!(40))
+        );
+
+        let disabled = host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
+            (schema == "org.gnome.desktop.peripherals.keyboard" && key == "repeat")
+                .then(|| "false".into())
+        });
+        assert_eq!(
+            disabled.get("key_repeat_rate_hz"),
+            Some(&serde_json::json!(0))
+        );
+    }
+
+    #[test]
+    fn unavailable_host_settings_are_retried_instead_of_marked_complete() {
+        let existing = serde_json::Map::new();
+        let unavailable = host_input_migration_updates(&existing, |_, _| None);
+        assert!(unavailable.is_empty());
+
+        let retried = host_input_migration_updates(&existing, |schema, key| {
+            (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                .then(|| "[('xkb', 'de+nodeadkeys')]".into())
+        });
+        assert_eq!(
+            retried.get("keyboard_layout"),
+            Some(&serde_json::json!("de:nodeadkeys"))
+        );
+        assert_eq!(
+            retried.get(HOST_INPUT_MIGRATION_VERSION_KEY),
+            Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
+        );
+    }
     use std::ffi::OsString;
     use std::sync::{Arc, Barrier};
 
@@ -752,6 +1188,25 @@ mod tests {
         // Systemd `Type=oneshot` units fail the whole transaction if ExecStart
         // returns non-zero — first-boot must never break boot over missing env-vars in the unit context.
         run_with_env(None, None).expect("no-env case is a no-op, not an error");
+    }
+
+    #[test]
+    fn gnome_xkb_sources_keep_order_and_variants() {
+        assert_eq!(
+            parse_gnome_xkb_sources(
+                "[('xkb', 'de+nodeadkeys'), ('ibus', 'typing-booster'), ('xkb', 'us')]"
+            ),
+            ["de:nodeadkeys", "us"]
+        );
+    }
+
+    #[test]
+    fn gnome_compose_option_maps_to_the_shared_settings_schema() {
+        assert_eq!(
+            parse_gnome_compose_key("['grp:alt_shift_toggle', 'compose:rwin']").as_deref(),
+            Some("rwin")
+        );
+        assert_eq!(parse_gnome_compose_key("@as []"), None);
     }
 
     #[test]

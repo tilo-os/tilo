@@ -189,7 +189,7 @@ fn headless_renderer_captures_a_widget_tree() {
     );
 }
 
-/// Render the real `TabBar` widget and assert the 40px / 6px-inset-pill
+/// Render the real `TabBar` widget and assert the 44px / 6px-inset-pill
 /// layout shows up in the rasterised output.
 ///
 /// Drawn against a magenta base so every pixel inside the pill shows up as
@@ -210,8 +210,8 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
     use ui::widget::{TabBar, TabDescriptor, Widget};
 
     // 240 wide gives us room for the first 96 px min-width pill + gap;
-    // 40 tall matches TAB_BAR_HEIGHT exactly.
-    let (bar_w, bar_h) = (240u32, 40u32);
+    // 44 tall matches TAB_BAR_HEIGHT exactly.
+    let (bar_w, bar_h) = (240u32, 44u32);
     let Some(mut renderer) = try_new_renderer(bar_w, bar_h) else {
         eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
         return;
@@ -219,8 +219,11 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
 
     let tabs = vec![TabDescriptor::new(1, "a"), TabDescriptor::new(2, "b")];
     let mut bar: Box<dyn Widget> = Box::new(TabBar::new("grp", tabs, 1));
+    // Exercise the visible keyboard focus treatment at a real output scale,
+    // under the theme most likely to expose a low-contrast or cramped ring.
+    bar.set_focus(true);
 
-    let theme = Theme::dark();
+    let theme = Theme::high_contrast().with_text_scale(1.5);
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root = bar.build_layout(&mut taffy, &theme, &mut node_map);
@@ -282,9 +285,9 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
         "drop shadow preserves magenta r==b ratio in top inset"
     );
 
-    // Bottom inset (y > 34): same rationale; the shadow's +6px y-offset
+    // Bottom inset (y > 38): same rationale; the shadow's +6px y-offset
     // means more bleed here, but the r==b / g==0 invariant still holds.
-    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, bar_w, 20, 37);
+    let (r, g, b, _a) = OffscreenRenderer::sample(&rgba, bar_w, 20, 41);
     assert_eq!(
         g, 0x00,
         "no pill body fill in bottom inset (got r={r}, g={g}, b={b})"

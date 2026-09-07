@@ -1,6 +1,7 @@
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
+use crate::text_render::TextStyle;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -92,9 +93,14 @@ pub struct Checkbox {
     enabled: bool,
     /// Optional override for `Widget::test_id()`. Defaults to `"checkbox"`.
     id_override: Option<String>,
-    /// Spoken name for a checkbox with no adjacent text label. When unset
-    /// the checkbox relies on a sibling label resolved by the tree builder.
+    /// Spoken name for a checkbox with no owned visible label. When unset the
+    /// checkbox relies on a sibling label resolved by the tree builder.
     accessible_name: Option<String>,
+    /// Optional visible label owned by the checkbox itself. Unlike a sibling
+    /// `Text`, this makes the entire rendered row one pointer, keyboard and
+    /// accessibility target.
+    label: Option<String>,
+    label_style: TextStyle,
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
     local_state: Option<crate::local_state::LocalBinding<bool>>,
@@ -121,6 +127,8 @@ impl Checkbox {
             enabled: true,
             id_override: None,
             accessible_name: None,
+            label: None,
+            label_style: TextStyle::new(14.0),
             local_state: None,
             on_change: None,
             action: None,
@@ -249,6 +257,17 @@ impl Checkbox {
         self
     }
 
+    /// Add an inline visible label and make its full row activate this
+    /// checkbox. Use this instead of a sibling `Text` when a form sentence is
+    /// meant to be one large click target.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        let label = label.into();
+        self.accessible_name = Some(label.clone());
+        self.label = Some(label);
+        self
+    }
+
     /// Imperatively flip the enabled state.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -365,18 +384,66 @@ impl Widget for Checkbox {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        let labelled = self.label.is_some();
         let node = taffy.leaf_node(Style {
             size: Size {
+                width: if labelled {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::length(self.interaction.minimum_target())
+                },
+                height: if labelled {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(self.interaction.minimum_target())
+                },
+            },
+            min_size: Size {
                 width: Dimension::length(self.interaction.minimum_target()),
                 height: Dimension::length(self.interaction.minimum_target()),
             },
+            flex_shrink: 1.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known_dimensions: Size<Option<f32>>,
+        available_space: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let target = self.interaction.minimum_target();
+        let Some(label) = self.label.as_ref() else {
+            return Size {
+                width: known_dimensions.width.unwrap_or(target),
+                height: known_dimensions.height.unwrap_or(target),
+            };
+        };
+        let gap = 10.0;
+        let available_width = known_dimensions.width.or(match available_space.width {
+            taffy::AvailableSpace::Definite(width) => Some(width),
+            taffy::AvailableSpace::MinContent => Some(target + gap),
+            taffy::AvailableSpace::MaxContent => None,
+        });
+        let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
+        let (label_width, label_height) =
+            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+        Size {
+            width: known_dimensions
+                .width
+                .or(available_width)
+                .unwrap_or(target + gap + label_width),
+            height: known_dimensions
+                .height
+                .unwrap_or_else(|| label_height.max(target)),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -389,15 +456,26 @@ impl Widget for Checkbox {
         );
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        reason = "widget rectangles are finite renderer coordinates already laid out as f32"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        let visual = Rect::from_center_size(self.rect.center(), (24.0, 24.0));
+        let target = f64::from(self.interaction.minimum_target());
+        let visual_center = if self.label.is_some() {
+            Point::new(self.rect.x0 + target / 2.0, self.rect.center().y)
+        } else {
+            self.rect.center()
+        };
+        let visual = Rect::from_center_size(visual_center, (24.0, 24.0));
         Self::paint(
             scene,
             transform,
@@ -407,6 +485,23 @@ impl Widget for Checkbox {
                 .focused(self.is_focused)
                 .disabled(!self.effectively_enabled()),
         );
+        if let Some(label) = self.label.as_ref() {
+            let label = crate::i18n!(label);
+            let gap = 10.0;
+            let x = self.rect.x0 + target + gap;
+            let max_width = (self.rect.x1 - x).max(0.0);
+            let (_, label_height) =
+                text_renderer.measure_style(&label, Some(max_width as f32), &self.label_style);
+            let y = self.rect.y0 + ((self.rect.height() - f64::from(label_height)) / 2.0).max(0.0);
+            text_renderer.draw_style(
+                scene,
+                &label,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((x, y).into()),
+                Some(max_width as f32),
+                &self.label_style,
+            );
+        }
     }
 
     fn handle_event(
@@ -474,10 +569,9 @@ impl Widget for Checkbox {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The checkbox's own label is usually a sibling `Text`, resolved by
-        // the tree builder; an explicit accessible name covers the label-less
-        // case so the control isn't anonymous. The checked state is the
-        // load-bearing semantic.
+        // A visible inline label names itself; an explicit accessible name
+        // covers label-less uses so the control is never announced as an
+        // anonymous checkbox. The checked state is the load-bearing semantic.
         let name = self
             .accessible_name
             .as_ref()
@@ -673,6 +767,77 @@ mod tests {
         assert_eq!(
             Widget::accessibility(&named).unwrap().name.as_deref(),
             Some("Remember me"),
+        );
+    }
+
+    #[test]
+    fn visible_label_is_part_of_the_checkbox_click_target() {
+        use winit::event::DeviceId;
+
+        let mut checkbox = Checkbox::new("ack", "acknowledged")
+            .with_id("acknowledgement")
+            .with_label("I understand the consequence.");
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let theme = Theme::dark();
+        let node = checkbox.build_layout(&mut tree, &theme, &mut node_map);
+        let mut text = TextRenderer::new();
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(360.0),
+                height: taffy::AvailableSpace::Definite(100.0),
+            },
+            |known, available, node_id, _, _| {
+                node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                    (*ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .expect("labelled checkbox layout");
+        checkbox.apply_layout(&tree, node, Point::ZERO);
+        let row_rect = checkbox.rect;
+        assert!(row_rect.width() > 300.0, "row={row_rect:?}");
+
+        let device: DeviceId = unsafe { std::mem::zeroed() };
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        checkbox.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (320.0, checkbox.rect.center().y).into(),
+            },
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+        checkbox.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+
+        assert!(checkbox.is_checked());
+        assert_eq!(focus, Some(node));
+        assert_eq!(
+            checkbox.accessibility().and_then(|node| node.name),
+            Some("I understand the consequence.".into())
         );
     }
 
