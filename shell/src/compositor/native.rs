@@ -68,6 +68,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
+use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
     combined_geometry, headless,
@@ -86,6 +87,9 @@ use crate::compositor::metrics;
 use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
+use crate::compositor::surface_outputs::{
+    Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
+};
 
 #[derive(Clone)]
 struct PendingLegacyStream {
@@ -133,8 +137,8 @@ use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
-    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, parse_command,
-    serialise_response,
+    self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
+    parse_command, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
@@ -964,11 +968,14 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
 }
 
 /// Env var naming the compositor's privileged Wayland socket, exported to
-/// anything the session starts outside a sandbox — clipboard-manager clients connect here instead of `WAYLAND_DISPLAY`.
+/// trusted session services outside app sandboxes. Clipboard managers and
+/// the session-lock integration connect here instead of `WAYLAND_DISPLAY`.
 pub const PRIVILEGED_SOCKET_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
 
 /// Bind the privileged Wayland socket and publish its name, carrying the
-/// compositor's pid so concurrent sessions can't collide.
+/// compositor's pid so concurrent sessions can't collide. The pid is only a
+/// collision-free socket name; authorization comes from which acceptor made
+/// the immutable per-connection `ClientState`.
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
     let name = format!("qos-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
@@ -1477,6 +1484,10 @@ struct TestControlCtx {
     root_obj: ObjId,
     focus: Option<NodeId>,
     cursor: PhysicalPosition<f64>,
+    /// The headless E2E fixture has no libinput device, but it must exercise
+    /// precisely the ownership handoff DRM uses before emitting real
+    /// `wl_touch` traffic to its Wayland clients.
+    direct_touch: DirectTouchOwnership,
 }
 
 impl TestControlCtx {
@@ -1487,6 +1498,7 @@ impl TestControlCtx {
             root_obj: automerge::ROOT,
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
+            direct_touch: DirectTouchOwnership::default(),
         }
     }
 }
@@ -1509,6 +1521,8 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::End => NamedKey::End,
             NamedKeyTag::PageUp => NamedKey::PageUp,
             NamedKeyTag::PageDown => NamedKey::PageDown,
+            NamedKeyTag::F1 => NamedKey::F1,
+            NamedKeyTag::PrintScreen => NamedKey::PrintScreen,
             NamedKeyTag::Space => NamedKey::Space,
             NamedKeyTag::Shift => NamedKey::Shift,
             NamedKeyTag::Control => NamedKey::Control,
@@ -1576,6 +1590,46 @@ fn client_input_allowed(fb: &FrameBuilder) -> bool {
     !fb.host().onboarding_active()
 }
 
+/// Host palette actions are queued by chrome, then launched here so the
+/// compositor can mint an external xdg-activation token before the child is
+/// spawned. This keeps the token single-use and binds it to the exact user
+/// action rather than accepting an app-id guess later.
+fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+    let requests = crate::shell::host_apps::drain_queued_launches();
+    let mut changed = false;
+    for request in requests {
+        let token = state.issue_host_launch_activation(
+            request.desktop_id.clone(),
+            request.display_name.clone(),
+            request.placement,
+        );
+        if let Err(error) = crate::shell::host_apps::launch_with_document_and_activation(
+            &request.desktop_id,
+            None,
+            request.portal_workspace_id,
+            Some(&token),
+        ) {
+            // Nothing can consume this external token after a preflight
+            // refusal. Remove it immediately, alongside the staged placement.
+            state.cancel_host_launch_activation(&token);
+            frame_builder.with_chrome(|chrome| {
+                chrome.push_notification_full(
+                    crate::shell::notification::Notification::new(
+                        crate::shell::launcher::launch_failure_title(&request.display_name),
+                        error.notification_message(),
+                    )
+                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_app_name("Host Apps")
+                    .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+                );
+                chrome.bump();
+            });
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn to_client(
     state: &mut Option<&mut State>,
     fb: &mut FrameBuilder,
@@ -1609,6 +1663,151 @@ fn dispatch_synth_event(
         &ctx.root_obj,
         &mut ctx.focus,
     );
+}
+
+/// Build the shell-side raw touch event for the test-control adapter. The
+/// adapter delegates ownership to [`DirectTouchOwnership`]; this merely puts
+/// that decision on the same chrome event wire as DRM's `touch_input_event`.
+fn test_touch_input_event(
+    slot: u32,
+    x: f64,
+    y: f64,
+    phase: winit::event::TouchPhase,
+) -> WindowEvent {
+    WindowEvent::Touch(winit::event::Touch {
+        device_id: unsafe { std::mem::zeroed() },
+        phase,
+        location: PhysicalPosition::new(x, y),
+        force: None,
+        id: u64::from(slot),
+    })
+}
+
+/// Send an already arbitrated direct-touch event across the real Wayland
+/// `wl_touch` seat. `touch_target` deliberately runs only for `Down`, where
+/// Wayland establishes touch focus.
+fn forward_test_control_touch(
+    state: &mut Option<&mut State>,
+    fb: &FrameBuilder,
+    touch: crate::compositor::backend::TouchEvent,
+) {
+    let Some(state) = state.as_deref_mut() else {
+        return;
+    };
+    let target = client_input::touch_target(state, fb, &touch);
+    if let Some((surface_id, _)) = target
+        && matches!(touch, crate::compositor::backend::TouchEvent::Down { .. })
+    {
+        client_input::focus_touch_target(state, fb, surface_id);
+    }
+    state.forward_client_touch(touch, target);
+}
+
+/// Run one explicit test-control touchscreen edge. This intentionally uses
+/// the DRM ownership arena rather than reimplementing a test-only notion of
+/// "third finger": E2E assertions therefore cover the exact cancel/frame
+/// decision production hardware uses before the native loop forwards it.
+fn dispatch_test_control_touch(
+    device: &str,
+    slot: u32,
+    phase: TouchPhaseKind,
+    x: f64,
+    y: f64,
+    fb: &mut FrameBuilder,
+    ctx: &mut TestControlCtx,
+    state: &mut Option<&mut State>,
+) {
+    use crate::compositor::backend::TouchEvent as BackendTouchEvent;
+    use winit::event::TouchPhase;
+
+    let key = DirectTouchOwnership::key(device, slot);
+    let raw = |id, raw_x, raw_y, raw_phase, fb: &mut FrameBuilder, ctx: &mut TestControlCtx| {
+        let event = test_touch_input_event(id, raw_x, raw_y, raw_phase);
+        // Direct touch belongs to the shell gesture arena. Unlike pointer
+        // input it must not first be routed as a client pointer event.
+        fb.dispatch_event(
+            &event,
+            &ctx.modifiers,
+            &mut ctx.doc,
+            &ctx.root_obj,
+            &mut ctx.focus,
+        );
+    };
+    let frame = |ownership: &mut DirectTouchOwnership,
+                 state: &mut Option<&mut State>,
+                 fb: &FrameBuilder| {
+        if ownership.take_client_frame() {
+            forward_test_control_touch(state, fb, BackendTouchEvent::Frame);
+        }
+    };
+
+    match phase {
+        TouchPhaseKind::Down => match ctx.direct_touch.down(key, (x, y)) {
+            DirectTouchDown::ForwardToClient(id) => {
+                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                forward_test_control_touch(state, fb, BackendTouchEvent::Down { slot: id, x, y });
+            }
+            DirectTouchDown::CancelClientForShell(id) => {
+                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
+                frame(&mut ctx.direct_touch, state, fb);
+            }
+            DirectTouchDown::ShellOwned(id) => raw(id, x, y, TouchPhase::Started, fb, ctx),
+        },
+        TouchPhaseKind::Motion => {
+            if let Some((id, to_client)) = ctx.direct_touch.motion(&key, (x, y)) {
+                raw(id, x, y, TouchPhase::Moved, fb, ctx);
+                if to_client {
+                    forward_test_control_touch(
+                        state,
+                        fb,
+                        BackendTouchEvent::Motion { slot: id, x, y },
+                    );
+                }
+            }
+        }
+        TouchPhaseKind::Up => {
+            if let Some(((last_x, last_y), id, to_client, emulate_pointer)) =
+                ctx.direct_touch.up(&key)
+            {
+                raw(id, last_x, last_y, TouchPhase::Ended, fb, ctx);
+                if to_client {
+                    forward_test_control_touch(state, fb, BackendTouchEvent::Up { slot: id });
+                }
+                if emulate_pointer {
+                    for event in [
+                        WindowEvent::CursorMoved {
+                            device_id: unsafe { std::mem::zeroed() },
+                            position: PhysicalPosition::new(last_x, last_y),
+                        },
+                        WindowEvent::MouseInput {
+                            device_id: unsafe { std::mem::zeroed() },
+                            state: ElementState::Pressed,
+                            button: MouseButton::Left,
+                        },
+                        WindowEvent::MouseInput {
+                            device_id: unsafe { std::mem::zeroed() },
+                            state: ElementState::Released,
+                            button: MouseButton::Left,
+                        },
+                    ] {
+                        dispatch_synth_event(&event, fb, ctx, state);
+                    }
+                }
+            }
+        }
+        TouchPhaseKind::Cancel => {
+            let forward_cancel = ctx.direct_touch.client_stream_active();
+            for (id, (last_x, last_y)) in ctx.direct_touch.cancel() {
+                raw(id, last_x, last_y, TouchPhase::Cancelled, fb, ctx);
+            }
+            if forward_cancel {
+                forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
+            }
+            frame(&mut ctx.direct_touch, state, fb);
+        }
+        TouchPhaseKind::Frame => frame(&mut ctx.direct_touch, state, fb),
+    }
 }
 
 /// Re-resolve and run one `InvokeAction` — split out of
@@ -1731,6 +1930,13 @@ fn execute_planned_action(
             };
             dispatch_synth_event(&event, fb, ctx, &mut state);
         }
+        PlannedAction::Touch {
+            device,
+            slot,
+            phase,
+            x,
+            y,
+        } => dispatch_test_control_touch(device, *slot, *phase, *x, *y, fb, ctx, &mut state),
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
@@ -1809,11 +2015,20 @@ struct InvokeFailure {
 /// via the same winit→`LockKey` routing; pointer/modifier/snapshot actions
 /// are swallowed (a snapshot must not leak the hidden chrome). A submit
 /// starts an async verify; `lock.poll_verification()` delivers the actual unlock.
-fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
+fn execute_locked_action(
+    action: &PlannedAction,
+    lock: &mut LockController,
+    state: &mut State,
+    ctx: &mut TestControlCtx,
+) {
     match action {
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(&winit_key, *pressed);
+            if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
+                client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
+            }
+            client_input::consume_keyboard_while_captured(state, &event);
             lock.handle_key(winit_event_to_lock_key(&event));
         }
         // Pointer, modifiers, snapshots and action invocations are all swallowed
@@ -1823,6 +2038,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
+        | PlannedAction::Touch { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
@@ -2109,11 +2325,31 @@ fn pump_test_control_conn(
                         // the round-trip that asked for it.
                         frame_builder.relayout();
                         frame_builder.reconcile_native_focus(&mut ctx.focus);
-                        let state = FrameBuilderControlState {
-                            fb: frame_builder,
-                            doc: Some((&ctx.doc, &ctx.root_obj)),
-                        };
-                        test_control::dispatch_command(&cmd, &state)
+                        match cmd {
+                            test_control::Command::MintHostLaunchActivation {
+                                desktop_id,
+                                display_name,
+                            } => {
+                                let token = state.issue_host_launch_activation(
+                                    desktop_id,
+                                    display_name,
+                                    crate::compositor::tab_binding::Placement::NewGroup,
+                                );
+                                (
+                                    test_control::Response::Answer(serde_json::json!({
+                                        "activation_token": token,
+                                    })),
+                                    Vec::new(),
+                                )
+                            }
+                            cmd => {
+                                let state = FrameBuilderControlState {
+                                    fb: frame_builder,
+                                    doc: Some((&ctx.doc, &ctx.root_obj)),
+                                };
+                                test_control::dispatch_command(&cmd, &state)
+                            }
+                        }
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
@@ -2125,7 +2361,7 @@ fn pump_test_control_conn(
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
                         // — actions go to the password field; `poll_verification` delivers unlock.
-                        execute_locked_action(action, lock);
+                        execute_locked_action(action, lock, state, ctx);
                     } else if let Some(outcome) =
                         execute_planned_action(action, frame_builder, ctx, Some(state))
                     {
@@ -2216,6 +2452,43 @@ fn apply_session_transition(
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
+}
+
+/// Result of waiting for the precise lock frame which allows a pending sleep
+/// request to proceed.  Kept pure so the failure policy is testable without a
+/// compositor, logind, seat, or GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SleepLockFrameStatus {
+    /// The frame is still in the healthy render queue.
+    Awaiting,
+    /// The required frame has retired; it is safe to acknowledge the delay
+    /// inhibitor.
+    Retired,
+    /// The render worker exited before retiring the required frame.  This is
+    /// intentionally not an acknowledgement: fail closed and let logind's
+    /// own bounded delay-inhibitor policy decide when to proceed.
+    PresenterLost,
+}
+
+fn sleep_lock_frame_status(
+    serial: u64,
+    presented: u64,
+    presenter_finished: bool,
+) -> SleepLockFrameStatus {
+    if presented >= serial {
+        SleepLockFrameStatus::Retired
+    } else if presenter_finished {
+        SleepLockFrameStatus::PresenterLost
+    } else {
+        SleepLockFrameStatus::Awaiting
+    }
+}
+
+/// Only unlock a failed suspend when the compositor actually entered the
+/// pre-sleep state and that state created the lock. A CanSuspend denial can
+/// arrive before preparation, and must not clear a user's unrelated lock.
+fn should_unlock_after_suspend_failure(was_prepared: bool, was_locked: bool) -> bool {
+    was_prepared && !was_locked
 }
 
 /// Whether an event is the hardware power key being pressed — detected by
@@ -2460,18 +2733,6 @@ fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) -> boo
 }
 
 fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return false;
-    };
-    if event.state != ElementState::Pressed {
-        return false;
-    }
-    let key = match &event.logical_key {
-        Key::Character(s) => s.as_str(),
-        Key::Named(NamedKey::Tab) => "tab",
-        Key::Named(NamedKey::Escape) => "escape",
-        _ => return false,
-    };
     let config = settings_store::hardware::ShortcutConfig::load();
     let Some(chord) = config
         .bindings
@@ -2479,12 +2740,25 @@ fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
     else {
         return false;
     };
-    let state = modifiers.state();
-    (chord.modifiers.contains("Super") == state.super_key())
-        && (chord.modifiers.contains("Ctrl") == state.control_key())
-        && (chord.modifiers.contains("Alt") == state.alt_key())
-        && (chord.modifiers.contains("Shift") == state.shift_key())
-        && chord.key.eq_ignore_ascii_case(key)
+    lock_chord_matches(event, modifiers, chord)
+}
+
+/// Session-lock bindings run before client routing, so their matching must
+/// accept every key the editable shortcut UI can persist.  In particular,
+/// named keys such as F12 are already withheld from the focused client by
+/// `configured_shortcut_matches`.
+fn lock_chord_matches(
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    chord: &settings_store::hardware::KeyChord,
+) -> bool {
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return false;
+    };
+    if event.state != ElementState::Pressed {
+        return false;
+    }
+    crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
 }
 
 /// Map a live winit key event to the lock screen's normalised [`LockKey`]
@@ -3714,6 +3988,9 @@ pub fn run() -> ! {
     let notif_bridge = crate::notifications::NotificationBridge::new();
     frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
     let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    frame_builder
+        .host_mut()
+        .set_session_inhibitors(inhibit_registry.clone());
     let portal_backend = start_portal_backend(
         &mut frame_builder,
         tree_handle.clone(),
@@ -3776,18 +4053,12 @@ pub fn run() -> ! {
     // desktop session is a different trust tier: it promises to keep the
     // distro applications the person already installed usable, including
     // legacy X11 software, and labels those launches as unconfined.
-    let xwayland = if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args())
-    {
-        match super::xwayland::SessionXwayland::start(&socket_name) {
-            Ok(bridge) => Some(bridge),
-            Err(error) => {
-                tracing::warn!(%error, "rootless Xwayland compatibility is unavailable");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let mut xwayland =
+        if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args()) {
+            Some(super::xwayland::XwaylandSupervisor::start(&socket_name))
+        } else {
+            None
+        };
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -3859,10 +4130,9 @@ pub fn run() -> ! {
         }
     };
 
-    // A second Wayland socket for clients the session trusts with the
-    // clipboard-manager protocols — identical set except
-    // `zwlr_data_control_manager_v1`/`ext_data_control_manager_v1` are visible
-    // here; see `compositor::selection` for why not on the public one.
+    // A second Wayland socket for clients the session trusts with
+    // authority-bearing protocols — clipboard-manager access and session
+    // locking are visible here, never on the public app socket.
     //
     // The privilege is the socket, not a client request: the sandbox launcher
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
@@ -3916,12 +4186,14 @@ pub fn run() -> ! {
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
-    // lock-overlay paints. `QOS_IDLE_BLANK_SECS`/`QOS_IDLE_LOCK_SECS` config
-    // (default: blank after 5 min, no auto-lock). Power policy from
-    // `settings.json`, read once at session start — the contract is the JSON on disk, not a shared crate.
-    let power_policy = qos_power_mgmt::config::load_policy();
+    // lock-overlay paints. The power policy from `settings.json` owns the
+    // blank and suspend timeouts at startup and on live reload; environment
+    // values only seed the headless/default config before that policy applies.
+    let mut power_policy = qos_power_mgmt::config::load_policy();
     let mut session = SessionManager::new(
-        IdleConfig::from_env().with_suspend(power_policy.idle_suspend),
+        IdleConfig::from_env()
+            .with_blank(power_policy.idle_blank)
+            .with_suspend(power_policy.idle_suspend),
         Instant::now(),
     );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
@@ -3932,6 +4204,22 @@ pub fn run() -> ! {
     );
     // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
+    // Set by PrepareForSleep and cleared only after the compositor's lock
+    // frame has retired from the presenter (or DPMS is already off).
+    let mut sleep_lock_frame_pending = false;
+    // The exact presenter-frame serial containing that lock UI.  A count of
+    // retired frames is insufficient: a desktop frame already queued when
+    // sleep starts can retire after we lock, but it is not evidence that the
+    // lock scene was ever displayed.
+    let mut sleep_lock_frame_serial = None;
+    // Once the presenter dies before that serial retires, this remains set
+    // until the next independent sleep request.  In particular, losing the
+    // pipe must not make the ordinary synchronous/no-presenter branch issue
+    // a false lock-frame acknowledgement.
+    let mut sleep_lock_frame_failed = false;
+    // Whether the pre-sleep signal found an existing lock. A failed suspend
+    // may clear only a lock installed for that sleep request.
+    let mut sleep_lock_was_locked = false;
     // Suspend-inhibitor registry: apps hold a token via
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
@@ -4073,6 +4361,10 @@ pub fn run() -> ! {
     // `wl_output` globals: advertising the manager without an output means no
     // client learns a display exists. Synced here at startup and on every hotplug.
     let mut output_globals = output_globals::OutputGlobals::new();
+    // Tracks the `wl_surface.enter`/`leave` events we have sent. Unlike an
+    // output global (which exists session-wide), membership is a property of
+    // the surface's current painted geometry.
+    let mut surface_output_memberships = SurfaceOutputMemberships::default();
     let display_handle_for_outputs = display_handle;
     {
         let outs = backend.outputs().to_vec();
@@ -4138,6 +4430,13 @@ pub fn run() -> ! {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        // The bridge is optional, but its published DISPLAY/XAUTHORITY pair
+        // must track its child exactly. Poll before processing launch actions
+        // so an X11/Electron launch in this tick either gets a live bridge or
+        // falls back to the Wayland-only environment.
+        if let Some(xwayland) = xwayland.as_mut() {
+            xwayland.poll(&socket_name, &frame_builder.chrome_handle());
+        }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
                 service,
@@ -4280,6 +4579,16 @@ pub fn run() -> ! {
                     if session.is_locked() {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
+                            // Keep both chord routing and Smithay's XKB state in step even
+                            // while the lock owns the visible key.  Dropping a release here
+                            // would leave the pre-lock modifier pressed after unlock.
+                            client_input::apply_modifier_key(
+                                &mut test_control_ctx.modifiers,
+                                key_ev,
+                            );
+                            client_input::consume_keyboard_while_captured(&mut state, wev);
+                        }
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
@@ -4290,6 +4599,8 @@ pub fn run() -> ! {
                         match power_policy.on_power_key() {
                             Some(qos_power_mgmt::PowerAction::Suspend) => {
                                 tracing::info!(target: "qos::power", "power key: requesting suspend");
+                                sleep_lock_was_locked = session.is_locked();
+                                session_changed = true;
                                 power_bridge.request_suspend();
                             }
                             Some(qos_power_mgmt::PowerAction::Lock) => {
@@ -4365,6 +4676,13 @@ pub fn run() -> ! {
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
+                            // Chrome input can change the active tab/group/workspace. The
+                            // backend may have already queued the next physical key in this
+                            // same batch, so move the Wayland seat now rather than only after
+                            // the batch: click-tab then type must never send the first key to
+                            // the tab that was active before the click.
+                            frame_builder.host_mut().flush_active_tab_writeback();
+                            client_input::sync_keyboard_focus(&mut state, &frame_builder);
                         }
                     }
                 }
@@ -4372,6 +4690,14 @@ pub fn run() -> ! {
                     // Carry the modifier mask forward so the next event dispatched (or the
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
+                }
+                BackendEvent::InputStateReset => {
+                    // A device/VT/keymap boundary can omit releases. Retire
+                    // Smithay's actual pressed-key state, never just the
+                    // chrome's modifier snapshot, before accepting another
+                    // physical event.
+                    state.reset_client_keyboard_state();
+                    test_control_ctx.modifiers = Modifiers::default();
                 }
                 BackendEvent::OutputsChanged => {
                     // A display changed — everything derived from the output set re-derives
@@ -4402,10 +4728,31 @@ pub fn run() -> ! {
                     }
                 }
                 BackendEvent::Touch(touch) => {
-                    // The same finger also arrives as pointer events (backend emits both),
-                    // driving shell chrome; this half is `wl_touch` for real multi-touch clients.
-                    if !session.is_locked() && client_input_allowed(&frame_builder) {
+                    // Direct touch reaches the shell as raw touch first; a
+                    // confirmed one-finger tap later gets one synthesized
+                    // pointer click for chrome. This half is `wl_touch` for
+                    // real multi-touch clients.
+                    // A direct-touch stream can be transferred to a shell
+                    // three-finger gesture after its first contacts reached a
+                    // client. Its mandatory `wl_touch.cancel` must still get
+                    // through even if that gesture also opened chrome which
+                    // now captures ordinary input.
+                    if matches!(
+                        touch,
+                        crate::compositor::backend::TouchEvent::Cancel
+                            | crate::compositor::backend::TouchEvent::Frame
+                    ) || (!session.is_locked() && client_input_allowed(&frame_builder))
+                    {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
+                        if let Some((surface_id, _)) = target
+                            && matches!(touch, crate::compositor::backend::TouchEvent::Down { .. })
+                        {
+                            client_input::focus_touch_target(
+                                &mut state,
+                                &frame_builder,
+                                surface_id,
+                            );
+                        }
                         state.forward_client_touch(touch, target);
                     }
                 }
@@ -4443,13 +4790,45 @@ pub fn run() -> ! {
             session_changed = true;
         }
 
+        state.expire_host_launch_activations();
+        crate::shell::launcher::expire_pending_placements();
+        session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
+
+        // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
+        // client starts auto-repeat after a press and only stops once it sees the
+        // matching release.  Scene construction can occasionally block on a GPU
+        // fence for hundreds of milliseconds, so waiting until the end-of-frame
+        // flush below turns an ordinary tap into a burst (or apparently stuck
+        // repeat) under render pressure.  Flush events queued by this input batch
+        // before doing any layout/render work.  The later flush remains necessary
+        // for protocol events produced while dispatching client requests.
+        if had_backend_events && let Err(err) = display.flush_clients() {
+            eprintln!("nirios compositor: input flush_clients error: {err}");
+            break;
+        }
+
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            if let Some(xwayland) = xwayland.as_mut() {
+                xwayland.reload_keyboard_settings();
+            }
+            // Shortcut ownership is decided before a focused client sees the
+            // press. Refresh the host's validated snapshot in the same settings
+            // transaction so changes made in Settings take effect live rather
+            // than only after the next compositor session.
+            if let Err(error) = frame_builder
+                .host_mut()
+                .set_shortcut_config(settings_store::hardware::ShortcutConfig::load())
+            {
+                tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
+            }
             let policy = qos_power_mgmt::config::load_policy();
+            power_policy = policy;
+            session.set_blank_timeout(policy.idle_blank);
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
@@ -4463,7 +4842,8 @@ pub fn run() -> ! {
 
         // Re-derive everything depending on the output set once, after the whole
         // batch — a dock plug raises several udev edges, and per-edge re-derivation would advertise globals the next edge immediately supersedes.
-        if std::mem::take(&mut outputs_dirty) {
+        let output_geometry_changed = std::mem::take(&mut outputs_dirty);
+        if output_geometry_changed {
             let outs = backend.outputs().to_vec();
             let combined = combined_geometry(&outs);
             tracing::info!(
@@ -4498,6 +4878,14 @@ pub fn run() -> ! {
             // Per-output scale: `wp_fractional_scale` is the scale of the output a
             // surface is on, so a changed layout changes what each client renders at.
             state.set_output_layout(&outs);
+            // A leave has to precede removal of the corresponding `wl_output`
+            // global. Once the global is withdrawn there is no client output
+            // object left to put in `wl_surface.leave`.
+            send_surface_output_changes(
+                &state,
+                &output_globals,
+                surface_output_memberships.leave_removed_outputs(&outs),
+            );
             output_globals.sync::<State>(
                 &display_handle_for_outputs,
                 &outs,
@@ -4517,6 +4905,21 @@ pub fn run() -> ! {
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
 
+        // The power menu is shell UI only.  Its Lock row requests this
+        // compositor-owned transition through ChromeState; drain the edge
+        // here so it takes the exact same SessionManager path as Super+L and
+        // hardware/power-service locks (including focus and input cutoff).
+        let mut shell_lock_requested = false;
+        frame_builder.with_chrome(|chrome| {
+            shell_lock_requested = chrome.take_session_lock_request();
+        });
+        if shell_lock_requested {
+            for t in session.request_lock(Instant::now()) {
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+            }
+            session_changed = true;
+        }
+
         // Advance the idle timers and apply any timeout-driven transitions (blank, auto-lock, suspend).
         for t in session.tick(Instant::now()) {
             if t == SessionTransition::Suspend {
@@ -4531,6 +4934,7 @@ pub fn run() -> ! {
                     );
                 } else {
                     tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
+                    sleep_lock_was_locked = session.is_locked();
                     power_bridge.request_suspend();
                 }
             } else {
@@ -4550,14 +4954,48 @@ pub fn run() -> ! {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
+                qos_power_mgmt::PowerSignal::PreparingForSleep => {
+                    // Preserve a lock that was already present at request
+                    // time, and also observe a manual/lid lock that arrived
+                    // while the async suspend request was in flight.
+                    sleep_lock_was_locked |= session.is_locked();
+                    for t in session.prepare_for_sleep(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                    }
+                    sleep_lock_frame_pending = true;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                }
+                qos_power_mgmt::PowerSignal::SuspendFailed => {
+                    let was_prepared = sleep_lock_frame_pending;
+                    sleep_lock_frame_pending = false;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                    session.cancel_suspend();
+                    // A lid/critical request can fail before it ever emits
+                    // PreparingForSleep. Only undo a lock that this pending
+                    // sleep actually installed; never unlock an unrelated
+                    // user lock when CanSuspend is refused.
+                    if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
+                        for t in session.request_unlock(Instant::now()) {
+                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        }
+                    }
+                    sleep_lock_was_locked = false;
+                    tracing::warn!(target: "qos::power", "suspend request failed; session remains awake");
+                }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
-                    for t in session.note_activity(Instant::now()) {
+                    for t in session.resume_from_sleep(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
+                    sleep_lock_frame_pending = false;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                    sleep_lock_was_locked = false;
                     // A resumed panel is scanning out whatever was left in its buffers, so the next frame must be a full one.
                     outputs_dirty = false;
                     session_changed = true;
@@ -4569,6 +5007,38 @@ pub fn run() -> ! {
                 qos_power_mgmt::PowerSignal::Notify(n) => {
                     let inc = power_notification_to_incoming(&notif_bridge, n);
                     notif_bridge.push_incoming(inc);
+                }
+            }
+        }
+        if sleep_lock_frame_pending && session.is_locked() && session.is_blanked() {
+            // DPMS-off already guarantees no client content is visible. Do
+            // not flash the panel on merely to paint before suspend; the
+            // locked state will be the first full frame after resume.
+            power_bridge.lock_screen_drawn();
+            sleep_lock_frame_pending = false;
+            sleep_lock_frame_serial = None;
+            sleep_lock_frame_failed = false;
+        } else if sleep_lock_frame_pending
+            && session.is_locked()
+            && let Some((serial, pipe)) = sleep_lock_frame_serial.zip(present_pipe.as_ref())
+        {
+            match sleep_lock_frame_status(serial, pipe.presented(), pipe.is_finished()) {
+                SleepLockFrameStatus::Awaiting => {}
+                SleepLockFrameStatus::Retired => {
+                    power_bridge.lock_screen_drawn();
+                    sleep_lock_frame_pending = false;
+                    sleep_lock_frame_serial = None;
+                    sleep_lock_frame_failed = false;
+                }
+                SleepLockFrameStatus::PresenterLost => {
+                    if !sleep_lock_frame_failed {
+                        tracing::error!(
+                            target: "qos::power",
+                            serial,
+                            "presenter exited before the required lock frame retired; retaining sleep delay inhibitor"
+                        );
+                        sleep_lock_frame_failed = true;
+                    }
                 }
             }
         }
@@ -4608,6 +5078,19 @@ pub fn run() -> ! {
         // Reset lock-screen input the instant the lock engages, so a fresh lock
         // starts with an empty field and no stale error from a previous episode.
         if session.is_locked() && !prev_locked {
+            // Locking itself does not make a physical release disappear: keep
+            // Smithay's pressed state so a modifier held across this boundary
+            // is still represented until its locked release arrives.  Only
+            // revoke delivery to the now-hidden client. VT/device/keymap loss
+            // separately emits `InputStateReset`, because those paths really
+            // can lose an up edge.
+            state.set_client_keyboard_focus(None);
+            // A lock cuts off the client-facing input stream before its
+            // physical release is guaranteed. Cancel both sides now: the DRM
+            // backend queues `wl_touch.cancel` + frame, while the overlay
+            // clears contacts without committing a terminal shell gesture.
+            backend.cancel_touch();
+            frame_builder.host_mut().cancel_direct_touch_gestures();
             lock.reset();
         }
         if session.is_locked() != prev_locked {
@@ -4622,13 +5105,40 @@ pub fn run() -> ! {
             st.pump_dbus_notifications();
         });
 
-        // Mirror the live fullscreen state (`XdgShellHandler` fullscreen path) into
-        // the rendered scene so a promoted group takes the whole output and exit
-        // restores prior tiling. The overlay host guards against an unhosted group
-        // id (client tree and rendered tree aren't unified yet) — a safe no-op, not a blanked shell.
-        frame_builder.set_fullscreen(state.fullscreen_group);
+        // Client fullscreen is a per-output overlay, never a combined-scene
+        // layout collapse.  Keep the chrome state's legacy group promotion
+        // clear so another monitor's desktop remains visible and interactive.
+        frame_builder.set_fullscreen(None);
 
         {
+            // A close affordance mutates the rendered/persisted tree first, then
+            // queues the protocol surface here. Remove it from the compositor's
+            // authoritative foreign tree before reconciliation, otherwise the
+            // still-live client can be adopted straight back while it handles
+            // xdg_toplevel.close. Sending close asks the application to exit in
+            // the normal desktop way; it is not a process kill.
+            let mut close_requests = Vec::new();
+            frame_builder.with_chrome(|chrome| {
+                close_requests = chrome.take_surface_close_requests();
+            });
+            for surface_id in close_requests {
+                let _ = crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                    &mut state.workspace_tree,
+                    surface_id,
+                );
+                if let Some(toplevel) = state
+                    .xdg_shell_state
+                    .toplevel_surfaces()
+                    .iter()
+                    .find(|toplevel| {
+                        crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+                    })
+                    .cloned()
+                {
+                    toplevel.send_close();
+                }
+            }
+
             // Mirror foreign toplevels adopted at the protocol layer into the rendered
             // tab tree, reaping tabs whose client went away — a diff of protocol tree
             // against rendered, so idempotent and self-healing (no phantom tabs from a
@@ -4645,21 +5155,16 @@ pub fn run() -> ! {
             // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
             state.client_input.clear_pending();
         }
-        // Every client surface must be associated with at least one output.
-        // GTK3/LibreOffice waits for `wl_surface.enter` before finishing its
-        // initial scale setup; Qt and GTK4 happen to tolerate its absence.
-        // `Output::enter` is idempotent, so this also covers surfaces created
-        // after startup without duplicating protocol events.
-        if let Some(primary) = backend.outputs().first()
-            && let Some(output) = output_globals.handle(primary.id)
-        {
-            for surface in state.surface_handles.values() {
-                output.enter(surface);
-            }
-        }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
-        client_input::sync_keyboard_focus(&mut state, &frame_builder);
+        if session.is_locked() {
+            // `chrome_captures_input` deliberately does not know about the
+            // lock scene (it is rendered outside chrome), so do not let its
+            // ordinary active-tab reconciliation re-enter an app here.
+            state.set_client_keyboard_focus(None);
+        } else {
+            client_input::sync_keyboard_focus(&mut state, &frame_builder);
+        }
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
@@ -4681,7 +5186,12 @@ pub fn run() -> ! {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
-
+        reconcile_fullscreen_overlay(
+            &mut state,
+            &mut frame_builder,
+            &output_globals,
+            backend.outputs(),
+        );
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
         client_input::pump_chrome_drag(&mut state, &frame_builder);
 
@@ -4705,7 +5215,25 @@ pub fn run() -> ! {
                 (surface.surface_id, (center.x, center.y))
             }));
             placements.extend(state.output_presentation_placements());
+            placements.extend(transient_surfaces.iter().map(|(surface_id, rect)| {
+                let center = rect.center();
+                (*surface_id, (center.x, center.y))
+            }));
             state.update_surface_scales(&placements);
+        }
+        // An output change has already installed the backend's new geometry,
+        // but the frame builder still exposes the previous frame's tile rects
+        // until `relayout` below. Diffing that mismatched pair would send a
+        // false transition and then reverse it after layout. Keep the last
+        // correct memberships until the new geometry is actually paintable.
+        if surface_output_geometry_is_current(output_geometry_changed) {
+            reconcile_surface_output_memberships(
+                &mut surface_output_memberships,
+                &state,
+                &frame_builder,
+                backend.outputs(),
+                &output_globals,
+            );
         }
 
         // Decide whether this frame needs repainting before the expensive layout
@@ -5010,6 +5538,17 @@ pub fn run() -> ! {
             let t_layout_start = Instant::now();
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+            // `relayout` publishes a new tile rect (for a tab switch, move,
+            // fullscreen or hotplug) immediately before painting it. Reconcile
+            // here as well as above so the client gets the output transition in
+            // the same frame rather than one idle tick later.
+            reconcile_surface_output_memberships(
+                &mut surface_output_memberships,
+                &state,
+                &frame_builder,
+                backend.outputs(),
+                &output_globals,
+            );
             native_accessibility.set_window_focus(true);
             if session.is_locked() {
                 let lock_outputs: Vec<LockOutput> = backend
@@ -5018,6 +5557,7 @@ pub fn run() -> ! {
                     .map(|o| LockOutput {
                         origin: (f64::from(o.position.0), f64::from(o.position.1)),
                         size: (f64::from(o.size.0), f64::from(o.size.1)),
+                        scale: f64::from(o.scale),
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
@@ -5025,6 +5565,7 @@ pub fn run() -> ! {
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
+                        scale: 1.0,
                     }]
                 } else {
                     lock_outputs
@@ -5041,7 +5582,11 @@ pub fn run() -> ! {
                     verifying: lock.is_verifying(),
                 };
                 native_accessibility.update_if_active(|| {
-                    lock_screen::build_accessibility_tree(&lock_outputs, &view)
+                    lock_screen::build_accessibility_tree(
+                        &lock_outputs,
+                        frame_builder.theme(),
+                        &view,
+                    )
                 });
             } else {
                 native_accessibility.update_if_active(|| {
@@ -5063,6 +5608,7 @@ pub fn run() -> ! {
                     .map(|o| LockOutput {
                         origin: (f64::from(o.position.0), f64::from(o.position.1)),
                         size: (f64::from(o.size.0), f64::from(o.size.1)),
+                        scale: f64::from(o.scale),
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
@@ -5070,6 +5616,7 @@ pub fn run() -> ! {
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
+                        scale: 1.0,
                     }]
                 } else {
                     lock_outputs
@@ -5119,6 +5666,7 @@ pub fn run() -> ! {
                         &mut frame_paint.scene,
                         surface.surface_id,
                         surface.rect,
+                        frame_builder.theme(),
                     );
                 }
                 if presentation_frame_changed || !state.output_presentation_surfaces.is_empty() {
@@ -5324,6 +5872,17 @@ pub fn run() -> ! {
             let mut render_thread_lost = false;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
                 render_thread_lost = !pipe.submit_frame(frame_paint, OutputId(0));
+                // This serial belongs to the scene submitted above.  Do not
+                // use a before/after presentation count here: an older
+                // desktop frame can be in flight when sleep locks, and its
+                // retirement must never release logind's sleep-delay lock.
+                if !render_thread_lost
+                    && sleep_lock_frame_pending
+                    && sleep_lock_frame_serial.is_none()
+                    && session.is_locked()
+                {
+                    sleep_lock_frame_serial = Some(pipe.submitted());
+                }
                 true
             } else {
                 backend.submit_frame_with_damage(&frame_paint, OutputId(0));
@@ -5336,6 +5895,15 @@ pub fn run() -> ! {
                     "nirios compositor: render thread gone; presentation stopped \
                      (clients keep running)"
                 );
+                if sleep_lock_frame_pending {
+                    // The just-submitted lock frame (or an earlier accepted
+                    // one) might have been lost with the worker.
+                    // `present_pipe = None` normally means synchronous
+                    // presentation and is acknowledged below; latch this
+                    // exception so that fallback cannot release the sleep
+                    // delay on an unproven lock scene.
+                    sleep_lock_frame_failed = true;
+                }
                 present_pipe = None;
             } else {
                 output_presentation_repaint_pending = false;
@@ -5349,6 +5917,16 @@ pub fn run() -> ! {
             // Advance the deadline series off the moment the frame was handed to the
             // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
             frame_clock.note_presented(submit_done);
+            if sleep_lock_frame_pending
+                && !sleep_lock_frame_failed
+                && session.is_locked()
+                && present_pipe.is_none()
+            {
+                power_bridge.lock_screen_drawn();
+                sleep_lock_frame_pending = false;
+                sleep_lock_frame_serial = None;
+                sleep_lock_frame_failed = false;
+            }
             last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass can bump
             // the revision, so capture the post-paint value or the next idle tick sees a phantom change.
@@ -5363,6 +5941,13 @@ pub fn run() -> ! {
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
             frame_builder.relayout();
             frame_builder.reconcile_native_focus(&mut test_control_ctx.focus);
+            reconcile_surface_output_memberships(
+                &mut surface_output_memberships,
+                &state,
+                &frame_builder,
+                backend.outputs(),
+                &output_globals,
+            );
         }
         let t_paint_done = iter_t0.elapsed();
 
@@ -5410,6 +5995,10 @@ pub fn run() -> ! {
         }
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
+
+        // Off-thread foreign-buffer reads release Smithay commit barriers;
+        // transaction application must return to the compositor-owning thread.
+        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
 
         // Drain wayland client traffic and push updates back out: `dispatch_clients`
         // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
@@ -5598,6 +6187,146 @@ mod tests {
         assert!(portal_screencast_should_publish(true, false));
         assert!(!portal_screencast_should_publish(true, true));
         assert!(!portal_screencast_should_publish(false, false));
+    }
+
+    #[test]
+    fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
+        use crate::compositor::tab_binding::{self, Placement};
+
+        const FIRST_SURFACE: u64 = 71_001;
+        const SECOND_SURFACE: u64 = 71_002;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+
+        let mut ids = None;
+        fb.with_chrome(|chrome| {
+            let mut tree = chrome.tree_mut();
+            let first = tab_binding::adopt_toplevel_at(
+                &mut tree,
+                FIRST_SURFACE,
+                Some("org.example.first".into()),
+                Placement::NewGroup,
+            );
+            let (strip, group) = tree
+                .active_workspace()
+                .and_then(|workspace| {
+                    workspace.strips.iter().find_map(|strip| {
+                        strip
+                            .window_groups
+                            .iter()
+                            .find(|group| group.tabs.iter().any(|tab| tab.id == first))
+                            .map(|group| (strip.id, group.id))
+                    })
+                })
+                .expect("the first foreign tab has a group");
+            let second = tab_binding::adopt_toplevel_at(
+                &mut tree,
+                SECOND_SURFACE,
+                Some("org.example.second".into()),
+                Placement::TabIn(group),
+            );
+            ids = Some((strip, group, first, second));
+            drop(tree);
+            chrome.bump();
+        });
+        let (strip, group, first, _second) = ids.expect("fixture ids");
+        let _ = fb.paint_settled();
+
+        let output = Output {
+            id: OutputId(0),
+            position: (0, 0),
+            size: (1600, 900),
+            scale: 1.0,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
+        };
+        let mut memberships = SurfaceOutputMemberships::default();
+        assert_eq!(
+            visible_tiled_surface_rects(&fb)
+                .into_iter()
+                .map(|(surface, _)| surface)
+                .collect::<Vec<_>>(),
+            vec![SECOND_SURFACE],
+            "only the active tab is painted"
+        );
+        assert_eq!(
+            memberships.reconcile(&[output.clone()], &visible_tiled_surface_rects(&fb)),
+            vec![SurfaceOutputChange::Enter {
+                surface_id: SECOND_SURFACE,
+                output: OutputId(0),
+            }]
+        );
+
+        assert!(
+            fb.host_mut().focus_window_widget(strip, group, first),
+            "the existing tab can be focused through the production widget path"
+        );
+        fb.host_mut().flush_active_tab_writeback();
+        let _ = fb.paint_settled();
+        assert_eq!(
+            visible_tiled_surface_rects(&fb)
+                .into_iter()
+                .map(|(surface, _)| surface)
+                .collect::<Vec<_>>(),
+            vec![FIRST_SURFACE]
+        );
+        let changes = memberships.reconcile(&[output], &visible_tiled_surface_rects(&fb));
+        assert_eq!(changes.len(), 2);
+        assert!(changes.contains(&SurfaceOutputChange::Leave {
+            surface_id: SECOND_SURFACE,
+            output: OutputId(0),
+        }));
+        assert!(changes.contains(&SurfaceOutputChange::Enter {
+            surface_id: FIRST_SURFACE,
+            output: OutputId(0),
+        }));
+    }
+
+    #[test]
+    fn changed_output_geometry_waits_for_relayout_before_membership_diff() {
+        let output = |id, x| Output {
+            id: OutputId(id),
+            position: (x, 0),
+            size: (100, 100),
+            scale: 1.0,
+            transform: settings_store::hardware::OutputTransform::Normal,
+            color_profile: None,
+        };
+        let old_outputs = [output(0, 0), output(1, 100)];
+        let moved_outputs = [output(0, 100), output(1, 0)];
+        let old_rect = Rect::new(10.0, 10.0, 60.0, 60.0);
+        let relaid_rect = Rect::new(110.0, 10.0, 160.0, 60.0);
+        let mut memberships = SurfaceOutputMemberships::default();
+        memberships.reconcile(&old_outputs, &[(7, old_rect)]);
+
+        let mut counterexample = SurfaceOutputMemberships::default();
+        counterexample.reconcile(&old_outputs, &[(7, old_rect)]);
+        assert_eq!(
+            counterexample.reconcile(&moved_outputs, &[(7, old_rect)]),
+            vec![
+                SurfaceOutputChange::Leave {
+                    surface_id: 7,
+                    output: OutputId(0),
+                },
+                SurfaceOutputChange::Enter {
+                    surface_id: 7,
+                    output: OutputId(1),
+                },
+            ],
+            "old tile coordinates compared with new outputs create false wire transitions"
+        );
+
+        assert!(
+            !surface_output_geometry_is_current(true),
+            "the pre-layout reconciliation must be skipped after an output change"
+        );
+        assert!(
+            memberships
+                .reconcile(&moved_outputs, &[(7, relaid_rect)])
+                .is_empty(),
+            "post-layout geometry keeps the surface on the same physical output"
+        );
     }
 
     #[test]
@@ -6325,9 +7054,26 @@ mod tests {
     fn super_l_press_is_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
         assert!(is_lock_chord(&ev, mods_with_super(true)));
-        // Upper-case 'L' (Shift+Super+L) also counts.
+        // A layout/caps state may report an upper-case logical key without an
+        // extra Shift modifier; key comparison remains case-insensitive.
         let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
         assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
+    }
+
+    #[test]
+    fn other_super_chords_and_extra_modifiers_do_not_lock() {
+        let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
+        assert!(
+            !is_lock_chord(&search, mods_with_super(true)),
+            "Super+K must reach Search instead of locking the session"
+        );
+
+        let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
+        let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
+        assert!(
+            !is_lock_chord(&lock, shifted),
+            "an extra modifier must not broaden Super+L into a lock chord"
+        );
     }
 
     /// Without Super held, plain `l` is not the lock chord (it types).
@@ -6342,6 +7088,34 @@ mod tests {
     fn super_l_release_is_not_lock_chord() {
         let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
         assert!(!is_lock_chord(&ev, mods_with_super(true)));
+    }
+
+    #[test]
+    fn configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours() {
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        let f12 = settings_store::hardware::KeyChord::parse("Ctrl+F12")
+            .expect("the shortcut editor accepts named function keys");
+        let f12_press = keyboard_input_event(&Key::Named(NamedKey::F12), true);
+        assert!(lock_chord_matches(&f12_press, ctrl, &f12));
+
+        let f11_press = keyboard_input_event(&Key::Named(NamedKey::F11), true);
+        assert!(
+            !lock_chord_matches(&f11_press, ctrl, &f12),
+            "a nearby client-owned function key must not be claimed"
+        );
+        let f12_release = keyboard_input_event(&Key::Named(NamedKey::F12), false);
+        assert!(
+            !lock_chord_matches(&f12_release, ctrl, &f12),
+            "only the captured press may lock; its release stays non-actioning"
+        );
+
+        let navigation = settings_store::hardware::KeyChord::parse("Ctrl+Left")
+            .expect("the shortcut editor accepts named navigation keys");
+        let left_press = keyboard_input_event(&Key::Named(NamedKey::ArrowLeft), true);
+        assert!(
+            lock_chord_matches(&left_press, ctrl, &navigation),
+            "a named navigation binding must use the same matcher as the editor"
+        );
     }
 
     /// `Super+Esc` on press is the remote-input kill switch.
@@ -6447,6 +7221,32 @@ mod tests {
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
     }
+
+    #[test]
+    fn sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss() {
+        // A prior desktop frame has retired, but lock frame #42 has not: it
+        // cannot release the sleep-delay inhibitor.  If the presenter dies
+        // first, the only safe result is likewise no acknowledgement.
+        assert_eq!(
+            sleep_lock_frame_status(42, 41, false),
+            SleepLockFrameStatus::Awaiting
+        );
+        assert_eq!(
+            sleep_lock_frame_status(42, 42, false),
+            SleepLockFrameStatus::Retired
+        );
+        assert_eq!(
+            sleep_lock_frame_status(42, 41, true),
+            SleepLockFrameStatus::PresenterLost
+        );
+    }
+
+    #[test]
+    fn failed_suspend_only_unlocks_a_lock_it_prepared() {
+        assert!(should_unlock_after_suspend_failure(true, false));
+        assert!(!should_unlock_after_suspend_failure(true, true));
+        assert!(!should_unlock_after_suspend_failure(false, false));
+    }
 }
 
 /// The refresh rate to advertise on `wl_output`, in millihertz. Derived
@@ -6469,6 +7269,113 @@ fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u
                 .clamp(0.0, f64::from(u32::MAX)) as u32;
             mhz
         })
+}
+
+/// Rectangles of Wayland root surfaces that are actually visible in the
+/// compositor's current frame. Inactive tabs deliberately do not appear here:
+/// keyboard focus and painting both follow the active tab, so associating an
+/// inactive tab with an output would advertise a monitor on which it has no
+/// pixels. Floating and OSK surfaces use their live widget geometry for the
+/// same reason.
+fn visible_surface_rects(frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
+    let mut surfaces = visible_tiled_surface_rects(frame_builder);
+    surfaces.extend(frame_builder.floating_surface_rects());
+    if let Some(surface) = frame_builder.fullscreen_surface_rect() {
+        surfaces.push(surface);
+    }
+    surfaces.extend(frame_builder.transient_surface_rects());
+    if let Some(surface) = frame_builder.osk_surface_rect() {
+        surfaces.push(surface);
+    }
+    surfaces
+}
+
+/// Before `FrameBuilder::relayout`, its surface rectangles belong to the
+/// preceding output geometry. They can only be compared with the backend's
+/// output table when that table did not change this tick.
+const fn surface_output_geometry_is_current(output_geometry_changed: bool) -> bool {
+    !output_geometry_changed
+}
+
+/// Visible tiled clients are the active foreign tab of each painted group,
+/// not every client that has ever been placed in that group. Keeping this on
+/// the same [`client_input::foreign_tiles`] traversal used for hit testing
+/// makes output membership agree with the pixels and input target after a tab
+/// switch.
+fn visible_tiled_surface_rects(frame_builder: &FrameBuilder) -> Vec<(u64, Rect)> {
+    let chrome = frame_builder.chrome();
+    let tree = chrome.tree();
+    client_input::foreign_tiles(&tree, frame_builder.host())
+        .into_iter()
+        .map(|hit| (hit.surface_id, hit.rect))
+        .collect()
+}
+
+/// Emit the diff calculated by [`surface_outputs::Memberships`] against the
+/// live Smithay objects. The tracker guarantees at most one transition of a
+/// given kind for `(surface, output)`; Smithay's own output object supplies a
+/// second idempotence guard at the protocol boundary.
+fn send_surface_output_changes(
+    state: &State,
+    output_globals: &output_globals::OutputGlobals,
+    changes: Vec<SurfaceOutputChange>,
+) {
+    for change in changes {
+        let (surface_id, output_id) = match change {
+            SurfaceOutputChange::Enter { surface_id, output }
+            | SurfaceOutputChange::Leave { surface_id, output } => (surface_id, output),
+        };
+        let Some(surface) = state.surface_handles.get(&surface_id) else {
+            // Destruction needs no final protocol leave: the client has
+            // already destroyed the resource. Drop the tracker entry on its
+            // next geometry reconciliation instead of resurrecting it here.
+            continue;
+        };
+        let Some(output) = output_globals.handle(output_id) else {
+            // Call ordering makes this an invariant breach, not a retryable
+            // state: removed outputs leave before sync withdraws their global,
+            // and current outputs reconcile after synchronous sync created or
+            // updated every handle. If a handle nevertheless vanished, there
+            // is no client-side output object on which a leave can be sent.
+            tracing::error!(
+                surface_id,
+                output = output_id.0,
+                "wl_surface output transition has no advertised wl_output handle"
+            );
+            continue;
+        };
+        match change {
+            SurfaceOutputChange::Enter { .. } => output.enter(surface),
+            SurfaceOutputChange::Leave { .. } => output.leave(surface),
+        }
+    }
+}
+
+fn reconcile_surface_output_memberships(
+    memberships: &mut SurfaceOutputMemberships,
+    state: &State,
+    frame_builder: &FrameBuilder,
+    outputs: &[Output],
+    output_globals: &output_globals::OutputGlobals,
+) {
+    // `OutputGlobals::sync` is synchronous and precedes this call. Filtering
+    // is a defensive backstop: never advance the tracker into an Enter that
+    // cannot be emitted. If the handle appears on a later sync, that output
+    // joins this list and reconciliation produces the still-needed Enter.
+    let advertised_outputs: Vec<Output> = outputs
+        .iter()
+        .filter(|output| output_globals.handle(output.id).is_some())
+        .cloned()
+        .collect();
+    if advertised_outputs.len() != outputs.len() {
+        tracing::error!(
+            backend_outputs = outputs.len(),
+            advertised_outputs = advertised_outputs.len(),
+            "wl_output registry is behind the backend output table"
+        );
+    }
+    let changes = memberships.reconcile(&advertised_outputs, &visible_surface_rects(frame_builder));
+    send_surface_output_changes(state, output_globals, changes);
 }
 
 /// Perform the navigation a claimed touchpad gesture resolved to — a second
@@ -6522,6 +7429,75 @@ fn output_geometry(
             height: f64::from(o.size.1),
         })
         .collect()
+}
+
+/// Resolve an xdg fullscreen request to one live backend output and paint it
+/// above the normal tiled scene.  The requested `wl_output` wins; if it was
+/// removed, use the output currently containing the window's centre, then the
+/// first live output as a deterministic hotplug fallback.
+fn reconcile_fullscreen_overlay(
+    state: &mut State,
+    frame: &mut FrameBuilder,
+    globals: &output_globals::OutputGlobals,
+    outputs: &[crate::compositor::backend::Output],
+) {
+    let Some(target) = state.fullscreen_target.as_mut() else {
+        frame.set_fullscreen_surface(None);
+        return;
+    };
+    let requested_id = target
+        .requested_output
+        .as_ref()
+        .and_then(|output| globals.id_for_resource(output));
+    let current_rect = frame.foreign_surface_rect(target.surface_id);
+    let centre = current_rect.map(|rect| rect.center());
+    let output = select_fullscreen_output(requested_id, centre, outputs);
+    let Some(output) = output else {
+        frame.set_fullscreen_surface(None);
+        return;
+    };
+    let size = size_to_signed(output.size);
+    if target.configured_size != Some(size) {
+        target.surface.with_pending_state(|pending| {
+            pending.states.set(
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+            );
+            pending.size = Some(size.into());
+        });
+        target.surface.send_configure();
+        target.configured_size = Some(size);
+    }
+    let rect = vello::kurbo::Rect::new(
+        f64::from(output.position.0),
+        f64::from(output.position.1),
+        f64::from(output.position.0) + f64::from(output.size.0),
+        f64::from(output.position.1) + f64::from(output.size.1),
+    );
+    frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
+}
+
+fn select_fullscreen_output(
+    requested: Option<crate::compositor::backend::OutputId>,
+    current_center: Option<vello::kurbo::Point>,
+    outputs: &[crate::compositor::backend::Output],
+) -> Option<&crate::compositor::backend::Output> {
+    requested
+        .and_then(|id| outputs.iter().find(|output| output.id == id))
+        .or_else(|| {
+            current_center.and_then(|point| {
+                outputs.iter().find(|output| {
+                    point.x >= f64::from(output.position.0)
+                        && point.x < f64::from(output.position.0) + f64::from(output.size.0)
+                        && point.y >= f64::from(output.position.1)
+                        && point.y < f64::from(output.position.1) + f64::from(output.size.1)
+                })
+            })
+        })
+        .or_else(|| {
+            outputs
+                .iter()
+                .find(|output| output.size.0 > 0 && output.size.1 > 0)
+        })
 }
 
 /// Logical output rectangles exposed as `InputCapture` zones.  Invalid outputs
@@ -6716,7 +7692,7 @@ mod gesture_wireup_tests {
 
 #[cfg(test)]
 mod output_geometry_tests {
-    use super::output_geometry;
+    use super::{output_geometry, select_fullscreen_output};
     use crate::compositor::backend::{Output, OutputId};
 
     /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
@@ -6760,6 +7736,39 @@ mod output_geometry_tests {
             Output::new(OutputId(1), (0, 0), 1.0),
         ];
         assert_eq!(output_geometry(&outs).len(), 1);
+    }
+
+    #[test]
+    fn fullscreen_prefers_requested_output_then_rehomes_after_hotplug() {
+        let outputs = [
+            Output::new(OutputId(0), (1600, 900), 1.0),
+            Output {
+                id: OutputId(1),
+                position: (1600, 0),
+                size: (1920, 1080),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+            },
+        ];
+        let centre = vello::kurbo::Point::new(2000.0, 400.0);
+        assert_eq!(
+            select_fullscreen_output(Some(OutputId(1)), Some(centre), &outputs).map(|out| out.id),
+            Some(OutputId(1)),
+            "requested wl_output wins over the old tiled placement"
+        );
+        let remaining = &outputs[..1];
+        assert_eq!(
+            select_fullscreen_output(Some(OutputId(1)), Some(centre), remaining).map(|out| out.id),
+            Some(OutputId(0)),
+            "removed requested output deterministically rehomes fullscreen"
+        );
+        assert_eq!(
+            select_fullscreen_output(None, Some(vello::kurbo::Point::new(300.0, 400.0)), &outputs)
+                .map(|out| out.id),
+            Some(OutputId(0)),
+            "no requested output uses the window's owning display"
+        );
     }
 }
 

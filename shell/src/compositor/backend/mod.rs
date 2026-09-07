@@ -18,7 +18,7 @@ pub use drm::DrmBackend;
 pub use headless::HeadlessBackend;
 pub use winit::WinitBackend;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct OutputId(pub u32);
 
 #[derive(Clone, Debug)]
@@ -162,6 +162,10 @@ pub enum BackendEvent {
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.
     ModifiersChanged(Modifiers),
+    /// The backend lost the ability to promise matching releases for keys it
+    /// previously reported (keyboard unplug, VT pause, or keymap replacement).
+    /// The compositor must retire its seat state before accepting new input.
+    InputStateReset,
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
@@ -261,6 +265,10 @@ pub trait Backend {
     /// when the Settings app writes a change, so pointer speed and
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
+
+    /// Cancel raw direct-touch contacts at a compositor ownership boundary.
+    /// Display-only and hosted backends have no such source to retire.
+    fn cancel_touch(&mut self) {}
 
     /// Switch to another virtual terminal.
     ///

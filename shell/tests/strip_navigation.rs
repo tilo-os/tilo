@@ -126,7 +126,9 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let (tree, strip, groups, tabs) = strip_tree();
-        let (host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .expect("the built-in shortcut table is valid");
         let mut h = Harness {
             host,
             chrome,
@@ -211,7 +213,7 @@ impl Harness {
             self.host.refresh_search_results_for_shots(&mut doc, &root);
         }
         self.host.tick_clear_stale_open_target_for_tests();
-        self.host.tick_active_tab_writeback_for_tests();
+        self.host.flush_active_tab_writeback();
         self.host.tick_scroll_active_into_view_for_tests();
         // Run the focus-follow pan (an eased curve on wall time) to its end via
         // `tick_snap_at`, rather than asserting mid-animation.
@@ -349,6 +351,33 @@ fn the_fixture_strip_is_wider_than_its_viewport() {
         max > 0.0,
         "fixture must overflow the viewport, else every pan assertion \
          passes because there is nowhere to pan (max_scroll_x = {max})"
+    );
+}
+
+/// A tab click mutates the widget-owned selection before the next regular
+/// update. The compositor flushes that writeback between backend events so a
+/// key already queued behind the click resolves to the newly visible tab.
+#[test]
+fn a_clicked_tab_can_be_flushed_before_the_next_input_event() {
+    let mut h = Harness::new();
+    let second = h.tabs[0][1];
+    let pill = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.tab_rects().get(1).copied())
+        .expect("the second tab must have a laid-out pill");
+
+    h.click(pill.center());
+    assert_eq!(
+        h.active_window().1,
+        h.tabs[0][0],
+        "the durable tree is intentionally stale until the input-boundary flush"
+    );
+    h.host.flush_active_tab_writeback();
+    assert_eq!(
+        h.active_window().1,
+        second,
+        "the next input event must see the tab selected by the click"
     );
 }
 
@@ -629,19 +658,42 @@ fn the_apps_filter_does_not_outlive_the_picker() {
 }
 
 #[test]
-fn bracket_keys_cycle_tabs_inside_the_focused_group() {
+fn ctrl_tab_cycles_tabs_inside_the_focused_group() {
     let mut h = Harness::new();
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-    h.key(Key::Character("]".into()), ModifiersState::SUPER);
+    h.key(Key::Named(NamedKey::Tab), ModifiersState::CONTROL);
     assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
 
-    h.key(Key::Character("]".into()), ModifiersState::SUPER);
+    h.key(Key::Named(NamedKey::Tab), ModifiersState::CONTROL);
     assert_eq!(
         h.active_window(),
         (h.groups[0], h.tabs[0][0]),
         "tab cycling wraps within the group rather than leaving it"
     );
+}
+
+#[test]
+fn conventional_workspace_page_keys_use_the_same_clamped_workspace_axis() {
+    let mut h = Harness::new();
+    let first = h.chrome.borrow().tree().active;
+    let second = WorkspaceId::new();
+    h.chrome
+        .borrow_mut()
+        .tree_mut()
+        .workspaces
+        .push(Workspace::test_default(second, "Second"));
+
+    h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
+    assert_eq!(h.chrome.borrow().tree().active, second);
+    h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
+    assert_eq!(
+        h.chrome.borrow().tree().active,
+        second,
+        "Super+PageDown clamps at the final workspace"
+    );
+    h.key(Key::Named(NamedKey::PageUp), ModifiersState::SUPER);
+    assert_eq!(h.chrome.borrow().tree().active, first);
 }
 
 #[test]
@@ -680,6 +732,256 @@ fn shifted_arrow_reorders_the_focused_group() {
     };
     assert_eq!(order[0], h.groups[1]);
     assert_eq!(order[1], h.groups[0]);
+}
+
+/// The visible close button must be the same durable operation as Super+W.
+/// This was a separate widget-only path: it faded the tab, never removed it
+/// from the tree and never sent xdg_toplevel.close, so the next unrelated
+/// revision visibly restored the window.
+#[test]
+fn clicking_close_commits_the_exact_surface_and_survives_restart() {
+    let mut h = Harness::new();
+    let state_dir = tempfile::tempdir().expect("temporary state directory");
+    let state_path = state_dir.path().join("state.json");
+    let tab = h.tabs[0][0];
+    {
+        let state = h.chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+            app_id: "com.openai.chatgpt".into(),
+            surface_id: 41,
+        };
+        // Real sessions always carry a room document. Lifecycle operations
+        // intentionally refuse a cache-only mutation because the next peer
+        // revision would undo it.
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+    }
+
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(tab))
+        .expect("active tab must expose a real close hit target after layout");
+    h.click(close.center());
+
+    {
+        let state = h.chrome.borrow();
+        let tree = state.tree();
+        let live_tabs = &tree.workspaces[0].strips[0].window_groups[0].tabs;
+        assert!(
+            live_tabs.iter().all(|candidate| candidate.id != tab),
+            "the pointer close must remove the tab from the durable tree in the same event"
+        );
+    }
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![41],
+        "the close must address the exact surface, not an app id shared by other windows"
+    );
+
+    // Both historical resurrection edges: a later chrome revision and a
+    // fresh compositor load.
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    assert!(
+        h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|candidate| candidate.id != tab),
+        "an unrelated revision must not restore the clicked-close tab"
+    );
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("pointer close must atomically persist a loadable state");
+    assert!(
+        restarted.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|candidate| candidate.id != tab),
+        "a normal restart must keep the clicked-close tab absent"
+    );
+
+    // Close the remaining tab through its newly laid-out hit target. The
+    // whole group must disappear durably as one consequence of its last
+    // window closing; this is the live-session "closed group came back"
+    // failure, not merely the two-tabs case above.
+    let remaining = h.tabs[0][1];
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(remaining))
+        .expect("remaining tab must expose a close hit target after resync");
+    h.click(close.center());
+    assert!(
+        h.chrome.borrow().tree().workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .all(|group| group.id != h.groups[0]),
+        "closing the last tab must remove its whole group in the same event"
+    );
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("last-tab close must atomically persist a loadable state");
+    assert!(
+        restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .all(|group| group.id != h.groups[0]),
+        "revision plus restart must not resurrect a group closed by pointer"
+    );
+}
+
+#[test]
+fn alt_f4_uses_the_same_exact_durable_close_as_the_frame_and_super_w() {
+    let mut h = Harness::new();
+    let first = h.tabs[0][0];
+    let second = h.tabs[0][1];
+    {
+        let state = h.chrome.borrow_mut();
+        let ws = state.tree().active;
+        let mut tree = state.tree_mut();
+        let group = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter_mut()
+            .find(|group| group.id == h.groups[0])
+            .expect("focused group");
+        group.tabs[0].tile = TileContent::Foreign {
+            surface_id: 0xF401,
+            app_id: "org.example.First".into(),
+        };
+        group.tabs[1].tile = TileContent::Foreign {
+            surface_id: 0xF402,
+            app_id: "org.example.Second".into(),
+        };
+        group.active_tab = first;
+        tree.active = ws;
+    }
+
+    h.key(Key::Named(NamedKey::F4), ModifiersState::ALT);
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xF401]
+    );
+    assert_eq!(h.active_window(), (h.groups[0], second));
+    assert!(
+        h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|tab| tab.id != first),
+        "Alt+F4 must remove the exact durable tab before asking the client to close"
+    );
+}
+
+/// Drive the two independent close affordances and then ordinary group
+/// navigation as one user session.  This deliberately runs a frame between
+/// each mutation: historically the stale widget tree written back on the
+/// following frame was enough to resurrect a just-closed group.
+#[test]
+fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
+    let mut h = Harness::new();
+    let state_dir = tempfile::tempdir().expect("temporary state directory");
+    let state_path = state_dir.path().join("state.json");
+    {
+        let state = h.chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        for (tab, surface_id) in [(h.tabs[0][0], 0xA11CE_u64), (h.tabs[0][1], 0xA11CF_u64)] {
+            let tab = tree.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter_mut()
+                .find(|candidate| candidate.id == tab)
+                .expect("fixture tab");
+            tab.tile = TileContent::Foreign {
+                app_id: "org.example.ExternalEditor".into(),
+                surface_id,
+            };
+        }
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+    }
+
+    let first = h.tabs[0][0];
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(first))
+        .expect("pointer close target");
+    h.click(close.center());
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xA11CE],
+        "the pointer path must issue one exact client close"
+    );
+    h.tick();
+
+    h.key(Key::Character("w".into()), ModifiersState::SUPER);
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xA11CF],
+        "Super+W must issue one exact client close for the remaining tab"
+    );
+    h.tick();
+
+    let after_close: Vec<_> = h.chrome.borrow().tree().workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .map(|group| group.id)
+        .collect();
+    assert!(
+        !after_close.contains(&h.groups[0]),
+        "closing the last tab removes the complete group before later input"
+    );
+    assert_eq!(h.active_window().0, h.groups[1]);
+
+    h.key(
+        Key::Named(NamedKey::ArrowRight),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    h.tick();
+    let reordered: Vec<_> = h.chrome.borrow().tree().workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .map(|group| group.id)
+        .collect();
+    assert_eq!(&reordered[..2], &[h.groups[2], h.groups[1]]);
+    assert_eq!(h.active_window().0, h.groups[1]);
+
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window(),
+        (h.groups[1], h.tabs[1][1]),
+        "focus first advances within the moved live group"
+    );
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window().0,
+        h.groups[3],
+        "focus navigation must continue past the moved group, never a closed one"
+    );
+
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("the complete interaction sequence persists a loadable state");
+    let restarted_groups = &restarted.workspaces[0].strips[0].window_groups;
+    assert!(restarted_groups.iter().all(|group| group.id != h.groups[0]));
+    assert_eq!(
+        restarted_groups
+            .iter()
+            .map(|group| group.id)
+            .take(2)
+            .collect::<Vec<_>>(),
+        vec![h.groups[2], h.groups[1]],
+        "restart retains keyboard reorder after pointer and keyboard closes"
+    );
+    let active = restarted
+        .active_group_for(h.strip)
+        .expect("restart keeps an active group");
+    assert!(restarted_groups.iter().any(|group| group.id == active));
 }
 
 #[test]

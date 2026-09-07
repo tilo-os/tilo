@@ -20,6 +20,9 @@ if sed -n '/^fedora-44)/,/^    ;;/p' "$package_job" | grep -Eq '\bgit[[:space:]]
 fi
 
 "$repo_root/dist/session/tests/host-session-lifecycle.sh"
+"$repo_root/dist/session/tests/private-dbus-handoff.sh"
+"$repo_root/dist/session/tests/private-user-manager-handoff.sh"
+"$repo_root/dist/rpm/test-signing-contract.sh"
 
 # Host packages ship only the compositor from the shell crate. Keep every FHS
 # builder explicit so adding another developer binary to that crate cannot
@@ -31,6 +34,17 @@ for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; 
         exit 1
     }
 done
+
+# A local Atomic trial must install only the runtime RPM unless the developer
+# entry is explicitly requested; a broad qos-session*.rpm glob regresses that
+# contract by silently layering qos-session-devel too.
+overlay_helper="$repo_root/dist/rpm/usroverlay-install.sh"
+grep -Fq -- "-name 'qos-session-[0-9]*.rpm'" "$overlay_helper"
+grep -Fq -- 'include_devel=1' "$overlay_helper"
+if grep -Fq -- "-name 'qos-session*.rpm'" "$overlay_helper"; then
+    echo "usroverlay helper still selects the optional developer RPM by default" >&2
+    exit 1
+fi
 
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/licenses/qos-session}
@@ -77,6 +91,9 @@ install -m644 "$repo_root/os/usr/lib/systemd/user/qos-graphical-session.target" 
 install -m644 "$repo_root/LICENSE" "$nix/share/licenses/qos-session/LICENSE"
 sed -i \
     -e "s#QOS_SHELL=/usr/bin/qos-shell#QOS_SHELL=$nix/bin/qos-shell#" \
+    -e 's#SYSTEMCTL=/usr/bin/systemctl#SYSTEMCTL=/nix/store/fixture-systemd/bin/systemctl#' \
+    -e 's#SYSTEMD_CAT=/usr/bin/systemd-cat#SYSTEMD_CAT=/nix/store/fixture-systemd/bin/systemd-cat#' \
+    -e 's#DBUS_UPDATE=/usr/bin/dbus-update-activation-environment#DBUS_UPDATE=/nix/store/fixture-dbus/bin/dbus-update-activation-environment#' \
     "$nix/libexec/qos-session"
 sed -i \
     -e "s#Exec=/usr/libexec/qos-session#Exec=$nix/libexec/qos-session#" \

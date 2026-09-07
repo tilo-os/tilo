@@ -222,6 +222,10 @@ pub struct WindowGroup {
     pending_search_open: Option<u64>,
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
+    /// Close-button requests still awaiting the shell's durable workspace
+    /// and client-lifecycle transaction. The widget owns the fade; the
+    /// shell owns whether a window actually remains open.
+    pending_close_commit: Vec<u64>,
     /// `None` while alive; `Some` once the last tab-close drains with no
     /// tabs or in-flight closing hosts left. `GroupRow` prunes the group
     /// once `close_complete()` is true.
@@ -278,6 +282,7 @@ impl WindowGroup {
             pending_tab_reorder: None,
             pending_search_open: None,
             pending_new_tab: None,
+            pending_close_commit: Vec::new(),
         }
     }
     pub fn width(&self) -> WindowWidth {
@@ -422,6 +427,13 @@ impl WindowGroup {
         self.pending_new_tab.take()
     }
 
+    /// Drain user-initiated close intents for the shell lifecycle owner.
+    /// Programmatic closes do not enter this queue because their caller has
+    /// already committed the workspace mutation before starting the fade.
+    pub fn take_pending_close_commits(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.pending_close_commit)
+    }
+
     pub fn new_tab_rect(&self) -> Rect {
         self.bar.new_tab_rect()
     }
@@ -496,6 +508,8 @@ impl WindowGroup {
             .find(|(id, _)| *id == active_id)
             .map(|(_, host)| host)?;
         let capture_rect = host.complete_content_rect()?;
+        self.bar
+            .set_group_focused(self.focused || self.search_active);
         self.bar.draw(scene, transform, tr, theme, presence);
         if let Some(name) = opening_name.as_deref() {
             host.set_opening_name(name);
@@ -533,6 +547,7 @@ impl WindowGroup {
         // Drop lingering close-fade state for the moved id, or a stale
         // entry keeps `needs_animation_frame` pumping until it ages out.
         self.closing_hosts.remove(&tab_id);
+        self.pending_close_commit.retain(|id| *id != tab_id);
         self.bar.finalize_close(tab_id);
         Some((desc, host))
     }
@@ -546,6 +561,25 @@ impl WindowGroup {
         let clamped = idx.min(self.hosts.len());
         host.start_spawn_animation();
         self.hosts.insert(clamped, (id, host));
+    }
+
+    /// Move an existing tab to a persisted order without producing a
+    /// user-gesture one-shot.  The tab bar and content hosts are parallel
+    /// vectors, so a document-driven reorder has to move both or the pill
+    /// and visible application diverge.
+    pub fn reorder_tab(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.hosts.len() || to >= self.hosts.len() || from == to {
+            return false;
+        }
+        debug_assert_eq!(
+            self.bar.tabs().len(),
+            self.hosts.len(),
+            "WindowGroup parallel-vec invariant violated before a programmatic reorder"
+        );
+        self.bar.reorder(from, to);
+        let host = self.hosts.remove(from);
+        self.hosts.insert(to, host);
+        true
     }
 
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
@@ -579,6 +613,7 @@ impl WindowGroup {
             pending_tab_reorder: None,
             pending_search_open: None,
             pending_new_tab: None,
+            pending_close_commit: Vec::new(),
         }
     }
 
@@ -627,8 +662,14 @@ impl WindowGroup {
     /// per-frame harvest mirrors it into the persisted tree), so a
     /// programmatic focus jump must land here, not only in the tree.
     pub fn set_active_tab(&mut self, id: u64) -> bool {
-        if self.bar.active_id() == id || !self.bar.tabs().iter().any(|t| t.id == id) {
+        if !self.bar.tabs().iter().any(|t| t.id == id) {
             return false;
+        }
+        // An already-selected tab is still a valid address. Callers use the
+        // return value to distinguish a live target from a stale window id;
+        // `false` must therefore mean "missing", not merely "no repaint".
+        if self.bar.active_id() == id {
+            return true;
         }
         self.bar.set_active(id);
         true
@@ -707,8 +748,18 @@ impl WindowGroup {
     }
 
     #[cfg(any(test, debug_assertions))]
+    pub fn close_rect_for_tests(&self, tab_id: u64) -> Option<Rect> {
+        self.bar.close_rect_for_tests(tab_id)
+    }
+
+    #[cfg(any(test, debug_assertions))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn active_host_rect_for_tests(&self) -> Option<Rect> {
+        self.active_host().map(Widget::get_rect)
     }
 
     #[cfg(any(test, debug_assertions))]
@@ -810,7 +861,9 @@ impl WindowGroup {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
-                self.hover_resize = handle_rect.contains(pt);
+                // A maximized group owns the output; its former tiled-width
+                // grip must neither paint nor remain an active resize target.
+                self.hover_resize = !self.maximized && handle_rect.contains(pt);
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
@@ -831,9 +884,15 @@ impl WindowGroup {
                 // chrome stops painting over a tile it no longer owns.
                 let active_id = self.bar.active_id();
                 self.bar.start_closing(active_id);
+                // This direct-input branch returns before
+                // `drain_bar_signals`, so consume and publish the close here.
+                let _ = self.bar.take_close();
                 self.closing_hosts
                     .entry(active_id)
                     .or_insert_with(Instant::now);
+                if !self.pending_close_commit.contains(&active_id) {
+                    self.pending_close_commit.push(active_id);
+                }
                 self.maximized = false;
                 self.pending_maximize_change = Some(false);
                 true
@@ -853,7 +912,7 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.hover_resize => {
+            } if !self.maximized && self.hover_resize => {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
@@ -936,6 +995,9 @@ impl WindowGroup {
             self.closing_hosts
                 .entry(close_id)
                 .or_insert_with(Instant::now);
+            if !self.pending_close_commit.contains(&close_id) {
+                self.pending_close_commit.push(close_id);
+            }
             handled = true;
         }
 
@@ -964,20 +1026,9 @@ impl WindowGroup {
         // `bar.tabs` and `hosts` are a strictly-aligned 1:1 mapping; a
         // refactor that permutes only one would desync pill `i` from
         // content `i` — the debug_assert documents that invariant.
-        if let Some((from, to)) = self.bar.take_reorder() {
-            debug_assert_eq!(
-                self.bar.tabs().len(),
-                self.hosts.len(),
-                "WindowGroup parallel-vec invariant violated: bar.tabs.len() \
-                 ({}) != hosts.len() ({}). The bar's pill list and the host \
-                 content list must stay 1:1 — every mutation of one must be \
-                 mirrored on the other.",
-                self.bar.tabs().len(),
-                self.hosts.len(),
-            );
-            self.bar.reorder(from, to);
-            let item = self.hosts.remove(from);
-            self.hosts.insert(to, item);
+        if let Some((from, to)) = self.bar.take_reorder()
+            && self.reorder_tab(from, to)
+        {
             self.pending_tab_reorder = Some((from, to));
             handled = true;
         }
@@ -1486,6 +1537,8 @@ impl Widget for WindowGroup {
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
         if !self.maximized {
+            self.bar
+                .set_group_focused(self.focused || self.search_active);
             self.bar.draw(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
@@ -1508,7 +1561,9 @@ impl Widget for WindowGroup {
             h.draw(scene, transform, tr, theme, presence);
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        self.draw_resize_grip(scene, transform, theme);
+        if !self.maximized {
+            self.draw_resize_grip(scene, transform, theme);
+        }
 
         // No outline rings around `self.rect` for drag/search/maximize:
         // per `ui/HIG.md` §9.4 the accent means *live*, not *chosen*.
@@ -3343,6 +3398,11 @@ mod tests {
         assert!(
             g.has_closing_host(1),
             "closing_hosts must carry the active id so the host fade runs",
+        );
+        assert_eq!(
+            g.take_pending_close_commits(),
+            vec![1],
+            "the maximized close must also reach the shell's durable lifecycle path",
         );
         assert!(
             !g.is_closing(),

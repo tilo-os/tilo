@@ -164,6 +164,12 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     assert!(offset0.abs() < 0.5, "starts unscrolled, got {offset0}");
 
     // Wheel down: the content pane's Scrollable shifts its child up.
+    let content_point = Point::new(800.0, 170.0);
+    let cursor = WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
+    };
+    h.dispatch(&cursor);
     h.wheel(3.0);
     h.relayout();
     let (one, _, _) = content_scroll(&h.app);

@@ -154,12 +154,20 @@ impl Default for DisplayPrefs {
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct InputPrefs {
+    /// Compatibility fallback for pre per-device input documents.
     pub natural_scroll: bool,
+    pub touchpad_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     /// 0.0..=1.0 pointer acceleration.
     pub pointer_speed: f64,
+    pub touchpad_pointer_speed: Option<f64>,
+    pub mouse_pointer_speed: Option<f64>,
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
+    /// Exact host-imported repeat pair. A qOS slider selection clears both.
+    pub key_repeat_delay_ms: Option<u32>,
+    pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
     pub keyboard_layout: String,
     pub tap_drag: bool,
@@ -182,9 +190,17 @@ impl Default for InputPrefs {
     fn default() -> Self {
         Self {
             natural_scroll: false,
+            touchpad_natural_scroll: Some(
+                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            ),
+            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             pointer_speed: 0.5,
+            touchpad_pointer_speed: None,
+            mouse_pointer_speed: None,
             key_repeat: 0.5,
+            key_repeat_delay_ms: None,
+            key_repeat_rate_hz: None,
             keyboard_layout: "us".to_string(),
             tap_drag: true,
             disable_while_typing: true,
@@ -200,12 +216,41 @@ impl Default for InputPrefs {
 }
 
 impl InputPrefs {
+    /// Decode the input object while preserving the pre-split global scrolling
+    /// preference. A missing document receives the independent touchpad and
+    /// mouse defaults shared with the compositor.
+    fn from_json_value(value: &serde_json::Value) -> Option<Self> {
+        let section = value.as_object()?;
+        let mut input: InputPrefs = serde_json::from_value(value.clone()).ok()?;
+        let legacy_natural_scroll = section
+            .get("natural_scroll")
+            .and_then(serde_json::Value::as_bool);
+        input.natural_scroll = legacy_natural_scroll.unwrap_or(false);
+        input.touchpad_natural_scroll = section
+            .get("touchpad_natural_scroll")
+            .and_then(serde_json::Value::as_bool)
+            .or(legacy_natural_scroll)
+            .or(Some(
+                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            ));
+        input.mouse_natural_scroll = section
+            .get("mouse_natural_scroll")
+            .and_then(serde_json::Value::as_bool)
+            .or(legacy_natural_scroll)
+            .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
+        Some(input)
+    }
+
     /// Reconcile the legacy active layout with the ordered source list using
     /// the same validation and bounds the compositor enforces.
     pub fn normalise_keyboard_sources(&mut self) {
         let mut config = settings_store::hardware::RichInputConfig {
             pointer_speed: self.pointer_speed,
+            touchpad_pointer_speed: self.touchpad_pointer_speed,
+            mouse_pointer_speed: self.mouse_pointer_speed,
             natural_scroll: self.natural_scroll,
+            touchpad_natural_scroll: self.touchpad_natural_scroll,
+            mouse_natural_scroll: self.mouse_natural_scroll,
             tap_to_click: self.tap_to_click,
             tap_drag: self.tap_drag,
             disable_while_typing: self.disable_while_typing,
@@ -217,6 +262,8 @@ impl InputPrefs {
                 settings_store::hardware::AccelProfile::Adaptive
             },
             key_repeat: self.key_repeat,
+            key_repeat_delay_ms: self.key_repeat_delay_ms,
+            key_repeat_rate_hz: self.key_repeat_rate_hz,
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
             compose_key: self.compose_key.clone(),
@@ -804,7 +851,7 @@ impl SystemPrefs {
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
             input: section("input")
-                .and_then(|v| serde_json::from_value(v).ok())
+                .and_then(|value| InputPrefs::from_json_value(&value))
                 .unwrap_or_default(),
             power: section("power")
                 .and_then(|v| serde_json::from_value(v).ok())
@@ -989,6 +1036,8 @@ mod tests {
         assert!(p.audio.event_sounds);
         assert!(!p.display.night_light);
         assert!(p.input.tap_to_click);
+        assert_eq!(p.input.touchpad_natural_scroll, Some(true));
+        assert_eq!(p.input.mouse_natural_scroll, Some(false));
         assert_eq!(p.input.keyboard_layout, "us");
         assert!(p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 10);
@@ -1028,6 +1077,17 @@ mod tests {
         let prefs = SystemPrefs::from_json(r#"{"input":{"keyboard_layout":"de"}}"#);
         assert_eq!(prefs.input.keyboard_layout, "de");
         assert_eq!(prefs.input.keyboard_layouts, ["de"]);
+    }
+
+    #[test]
+    fn input_scroll_defaults_are_per_device_but_keep_legacy_global_documents() {
+        let empty = SystemPrefs::from_json(r#"{"input":{}}"#);
+        assert_eq!(empty.input.touchpad_natural_scroll, Some(true));
+        assert_eq!(empty.input.mouse_natural_scroll, Some(false));
+
+        let legacy = SystemPrefs::from_json(r#"{"input":{"natural_scroll":false}}"#);
+        assert_eq!(legacy.input.touchpad_natural_scroll, Some(false));
+        assert_eq!(legacy.input.mouse_natural_scroll, Some(false));
     }
 
     #[test]

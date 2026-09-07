@@ -87,7 +87,12 @@ fn chrome_with_pending_grant(
     let chrome = ChromeState::new(tree);
     {
         let mut st = chrome.borrow_mut();
-        let owner = st.local_user_id.clone();
+        let room = st
+            .tree()
+            .active_workspace()
+            .expect("fixture workspace")
+            .room;
+        let owner = st.local_user_for_room(&room);
         st.tree_mut().adopt_ownerless_workspaces(&owner);
         st.pending_grants
             .push_back(PendingPrompt::new(app_id.to_string(), capability));

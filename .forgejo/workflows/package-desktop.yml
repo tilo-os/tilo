@@ -178,6 +178,14 @@ jobs:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
           QOS_LANE_TARGETS: ${{ matrix.targets }}
+          # RPM signing is restricted to protected desktop tags and happens in
+          # the Fedora packaging userspace, where rpm-sign is installed. The
+          # key is never available to pull requests or ordinary branch builds.
+          QOS_RPM_SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0' }}
+          QOS_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}
+          QOS_RPM_SIGNING_KEY_B64: ${{ secrets.QOS_RPM_SIGNING_KEY_B64 }}
+          QOS_RPM_SIGNING_KEY_ID: ${{ secrets.QOS_RPM_SIGNING_KEY_ID }}
+          QOS_RPM_SIGNING_FINGERPRINT: ${{ vars.QOS_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
           status=0

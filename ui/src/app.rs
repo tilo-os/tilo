@@ -3888,7 +3888,7 @@ impl App {
                     crate::state::RemoteCursor {
                         x: 0.0,
                         y: 0.0,
-                        color: Color::WHITE,
+                        color: self.theme.text_primary,
                         name: String::new(),
                     },
                 );
@@ -4390,6 +4390,20 @@ impl App {
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
         modal_rect.is_none() || self.focus_trap_active
+    }
+
+    /// Tab normally belongs to the host's focus order. A focused editor-like
+    /// widget may explicitly claim it first (for indentation or completion),
+    /// without broadening that exception to arbitrary widgets or escaping an
+    /// active focus trap.
+    fn focused_widget_wants_tab_input(&self) -> bool {
+        self.focused_node
+            .and_then(|node| self.node_map.get(&node).copied())
+            .is_some_and(|widget| {
+                // `node_map` owns pointers into the retained widget tree and
+                // remains valid until the next layout rebuild.
+                unsafe { (*widget).wants_tab_input() }
+            })
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -5489,7 +5503,7 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.5),
             cursor_transform,
-            Color::WHITE,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
             None,
             &path,
         );
@@ -5498,7 +5512,7 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
             scene,
             &cursor.name,
             10.0,
-            Color::WHITE,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
             {
                 #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
                 let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
@@ -5951,7 +5965,7 @@ impl AppHandler {
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
-                base_color: Color::BLACK,
+                base_color: self.app.theme.bg_app,
                 damage_regions,
                 full_redraw: true,
             })
@@ -7043,6 +7057,7 @@ impl AppHandler {
         }
 
         if !handled
+            && !app.focused_widget_wants_tab_input()
             && app.keyboard_nav_allowed(modal_rect)
             && let WindowEvent::KeyboardInput {
                 event:
@@ -7092,9 +7107,8 @@ impl AppHandler {
             let map_phase = |p: winit::event::TouchPhase| match p {
                 winit::event::TouchPhase::Started => GesturePhase::Begin,
                 winit::event::TouchPhase::Moved => GesturePhase::Update,
-                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                    GesturePhase::End
-                }
+                winit::event::TouchPhase::Ended => GesturePhase::End,
+                winit::event::TouchPhase::Cancelled => GesturePhase::Cancel,
             };
             let nav = match &event {
                 WindowEvent::MouseWheel { delta, phase, .. } => {

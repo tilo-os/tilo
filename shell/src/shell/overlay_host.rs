@@ -576,6 +576,19 @@ enum AccessibleOverlay {
     ShortcutHelp,
 }
 
+/// The result of asking whether the global Print Screen shortcut may change
+/// the desktop's modal stack. Capture is a temporary input owner: it may sit
+/// above an OOBE, portal, consent, or file-selection dialog, but it must not
+/// mutate that dialog's state. Escaping capture returns to the exact workflow
+/// the person was inspecting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrintScreenArbitration {
+    /// Close only presentation-only chrome and enter Capture Studio.
+    OpenCapture,
+    /// Do not stack a second capture over an in-progress capture/markup flow.
+    Blocked(&'static str),
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -605,6 +618,11 @@ pub struct ShellOverlayHost {
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
+    /// The effective shortcut table for this compositor session.  Input is
+    /// routed to a focused foreign client before it reaches this host, so the
+    /// router must consult this same snapshot rather than reconstructing the
+    /// default chord set on its own.
+    shortcut_config: settings_store::hardware::ShortcutConfig,
     content: Box<dyn Widget>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
@@ -701,9 +719,22 @@ pub struct ShellOverlayHost {
     qs_transition: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
+    /// Offset into notification history in newest-first order. This is
+    /// session-local view state: notifications themselves remain owned by
+    /// `ChromeState`, while this only says which retained records the compact
+    /// Quick Settings pane is currently showing.
+    qs_notification_history_start: usize,
+    /// Fractional touchpad-wheel movement waiting to become a whole history
+    /// row. Keeping it here makes pixel scrolling work without a tiny motion
+    /// either leaking into the desktop or jumping a full card at a time.
+    qs_notification_wheel_remainder: f64,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
+    /// Portal session-operation inhibitors shared with the backend serving
+    /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
+    /// this exact registry before any irreversible OS action is spawned.
+    session_inhibitors: qos_power_mgmt::InhibitRegistry,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
@@ -1450,7 +1481,7 @@ impl ShellOverlayHost {
             theme,
             flags,
         );
-        self.draw_strip_chrome(&mut workspace, transform, theme);
+        let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
         let quick_settings_bounds = self.draw_quick_settings_dropdown(
             &mut quick_settings,
             transform,
@@ -1458,6 +1489,23 @@ impl ShellOverlayHost {
             theme,
             flags,
         );
+        if flags.quick_settings || quick_settings_transition_visible {
+            self.draw_strip_chrome(
+                &mut quick_settings,
+                transform,
+                theme,
+                flags,
+                quick_settings_transition_visible,
+            );
+        } else {
+            self.draw_strip_chrome(
+                &mut workspace,
+                transform,
+                theme,
+                flags,
+                quick_settings_transition_visible,
+            );
+        }
         self.power_menu.draw(
             self.rect,
             &mut above_quick_settings,
@@ -1538,6 +1586,7 @@ impl ShellOverlayHost {
                 matches!(
                     chrome.borrow().quick_settings.current_level(),
                     crate::shell::quick_settings::QsLevel::Root
+                        | crate::shell::quick_settings::QsLevel::Notifications
                 )
             })
         {
@@ -1624,6 +1673,7 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
+            shortcut_config: settings_store::hardware::ShortcutConfig::load(),
             content,
             workspace_scene_parts: None,
             onboarding: None,
@@ -1659,7 +1709,10 @@ impl ShellOverlayHost {
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
+            qs_notification_history_start: 0,
+            qs_notification_wheel_remainder: 0.0,
             power_menu: PowerMenu::default(),
+            session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
@@ -1687,7 +1740,10 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
-            qs_root: QuickSettingsRoot::default(),
+            // User intent is durable, while the root filters it against the
+            // live hardware snapshot when it paints.  Tests that construct a
+            // root directly still receive deterministic defaults.
+            qs_root: QuickSettingsRoot::load_persisted(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
@@ -1843,6 +1899,19 @@ impl ShellOverlayHost {
 
     pub fn capture_studio_open(&self) -> bool {
         self.capture_studio.is_open()
+    }
+
+    /// Whether an inner shell surface currently owns the seat even though it
+    /// is not represented by one of the ordinary chrome overlay flags.
+    ///
+    /// Capture Studio deliberately stops being modal after recording starts,
+    /// so `capture_studio_open` is too broad for this boundary: the recording
+    /// pill must leave applications interactive. Screenshot markup and the
+    /// power confirmation remain modal for their whole lifetime.
+    pub(crate) fn inner_surface_captures_input(&self) -> bool {
+        self.power_menu.is_open()
+            || self.screenshot_markup.is_some()
+            || self.capture_studio.modal_capture().is_some()
     }
 
     pub fn open_screenshot_markup(
@@ -2324,6 +2393,19 @@ impl ShellOverlayHost {
         self
     }
 
+    /// Supply the durable Quick Settings arrangement explicitly. Production
+    /// uses the persisted per-user configuration; embedders and interaction
+    /// tests can inject a deterministic arrangement without reading or
+    /// rewriting the desktop user's settings file.
+    #[must_use]
+    pub fn with_quick_settings_config(
+        mut self,
+        config: settings_store::hardware::QuickSettingsConfig,
+    ) -> Self {
+        self.qs_root = QuickSettingsRoot::with_config(config);
+        self
+    }
+
     /// Install the live-status bridge. Only the compositor's real-session
     /// constructors do this; without it the tray's readings stay `None`
     /// and it draws no indicators, which is what keeps golden renders
@@ -2489,6 +2571,12 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().peer_sync_enabled = enabled;
         }
+    }
+
+    /// Attach the registry exported by this compositor's portal backend.
+    /// Headless and screenshot hosts keep an empty private registry.
+    pub fn set_session_inhibitors(&mut self, registry: qos_power_mgmt::InhibitRegistry) {
+        self.session_inhibitors = registry;
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -3194,6 +3282,16 @@ impl ShellOverlayHost {
                         any_change = true;
                     }
                 }
+                // A row can already contain every group while its order no
+                // longer matches the document (for example, an Automerge
+                // revision from another device reorders two existing
+                // windows). Splicing alone misses that case and leaves the
+                // screen disagreeing with the durable layout until restart.
+                for (idx, group) in strip.window_groups.iter().enumerate() {
+                    if row.reorder_group_by_id(group.id, idx) {
+                        any_change = true;
+                    }
+                }
                 // Reconcile tabs inside groups that already exist — the
                 // group-level splice above only fires for whole new
                 // groups, so a tab adopted into an existing one (an
@@ -3244,6 +3342,23 @@ impl ShellOverlayHost {
                     for stale in live_tab_ids.difference(&tree_tab_ids) {
                         if live.detach_tab(*stale).is_some() {
                             tab_tiles.remove(stale);
+                            any_change = true;
+                        }
+                    }
+                    // As with groups, a replicated tab reorder changes no
+                    // membership and therefore needs an explicit ordering
+                    // pass. `WindowGroup::reorder_tab` moves its matching
+                    // host at the same time, preserving the pill/content
+                    // identity invariant.
+                    for (idx, tab) in g.tabs.iter().enumerate() {
+                        let Some(from) = live
+                            .tabs()
+                            .iter()
+                            .position(|live_tab| live_tab.id == tab.id)
+                        else {
+                            continue;
+                        };
+                        if live.reorder_tab(from, idx) {
                             any_change = true;
                         }
                     }
@@ -3478,6 +3593,10 @@ impl ShellOverlayHost {
                 .into_iter()
                 .filter(|tab| tree.continuation_file_references.contains_key(tab))
                 .collect();
+            // Selection is session state, not merely paint state. Persist it
+            // in the same input/frame boundary that accepted the click so a
+            // compositor crash cannot restore the previously visible tab.
+            tree.flush_to_disk();
             drop(tree);
             drop(st);
             for tab in activated_file_tabs {
@@ -3515,6 +3634,7 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            tree.flush_to_disk();
         }
         // `RuntimeGroup::set_width` flags its own style dirty; the
         // frame loop's structure sweep is what rebuilds the taffy node
@@ -3546,17 +3666,88 @@ impl ShellOverlayHost {
                 if g.id != gid {
                     continue;
                 }
+                let tab_id = tab.unwrap_or_else(|| g.active_tab_id());
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                if !Self::commit_tab_close(&chrome, gid, tab_id) {
+                    return false;
+                }
+                // The durable tree/document mutation must succeed before the
+                // widget begins its close animation. A visual-only close is
+                // precisely what allowed the next resync to restore a window.
                 let closed = match tab {
                     Some(id) => g.request_close_tab(id),
                     None => g.request_close_active_tab(),
                 };
-                // No `bump()`: closing a tab has no tree-side counterpart
-                // (no `doc_remove_tab`), so a revision bump would resync
-                // this row from the tree and splice the tab straight back.
+                debug_assert!(closed, "tree and rendered tab strip diverged before close");
                 return closed;
             }
         }
         false
+    }
+
+    /// Commit one close to the replicated tree, atomic local state and the
+    /// exact foreign surface, in that order. Both keyboard/context-menu
+    /// closes and pointer closes converge here; the latter have already
+    /// started their widget animation when this runs.
+    fn commit_tab_close(chrome: &Chrome, gid: GroupId, tab_id: u64) -> bool {
+        let mut st = chrome.borrow_mut();
+        let surface = {
+            let tree = st.tree();
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .find(|group| group.id == gid)
+                .and_then(|group| group.tabs.iter().find(|tab| tab.id == tab_id))
+                .and_then(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                        Some(*surface_id)
+                    }
+                    _ => None,
+                })
+        };
+        let removed = {
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::remove_tab(&mut tree, tab_id)
+        };
+        if !removed {
+            return false;
+        }
+        // Close is durable before the client is asked to exit. A crash, an
+        // unrelated revision or a slow client must all observe absence.
+        st.tree().flush_to_disk();
+        if let Some(surface_id) = surface {
+            st.request_surface_close(surface_id);
+        }
+        st.bump();
+        true
+    }
+
+    /// Drain close buttons from the rendered rows into the same lifecycle
+    /// transaction used by keyboard closes. This is intentionally run in
+    /// the input dispatch that produced the request, not on a later frame.
+    fn harvest_pending_tab_closes(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let mut requests = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                requests.extend(
+                    group
+                        .take_pending_close_commits()
+                        .into_iter()
+                        .map(|tab| (group.id, tab)),
+                );
+            }
+        }
+        requests.into_iter().fold(false, |changed, (group, tab)| {
+            Self::commit_tab_close(&chrome, group, tab) || changed
+        })
     }
 
     fn harvest_pending_width_changes(&self) {
@@ -3580,8 +3771,8 @@ impl ShellOverlayHost {
             return;
         }
         let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
         for (_strip_id, group_id, new_value) in changes {
-            let mut tree = st.tree_mut();
             for ws in &mut tree.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
@@ -3590,6 +3781,7 @@ impl ShellOverlayHost {
                 }
             }
         }
+        tree.flush_to_disk();
     }
 
     /// Mirrors a completed whole-group reorder drag into the persisted
@@ -3699,15 +3891,24 @@ impl ShellOverlayHost {
         let Some(group) = requested else {
             return false;
         };
+        self.open_new_tab_palette_for_group(group);
+        true
+    }
+
+    /// Configure the application picker opened by a group's `+` affordance.
+    /// Split from the widget one-shot harvest so its scope/placement contract
+    /// has direct regression coverage.
+    fn open_new_tab_palette_for_group(&mut self, group: GroupId) {
         // Must run before the palette's scope resolution and launch path
         // read the active pointers.
         self.harvest_active_tab_writeback();
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
-            // `All`, not `ActiveApp`: a "+" asks what to open, and only the
-            // widest scope offers something not already running.
-            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            // The group is the placement target and its workspace is the
+            // search boundary. Machine-wide search belongs to Super+K; a
+            // local "+" must not silently reach into other workspaces.
+            st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
             st.bump();
         }
         // Narrowed to kinds that can *be* a tab, so results aren't buried
@@ -3723,7 +3924,6 @@ impl ShellOverlayHost {
         // Re-run the query even when the palette was already up: the rows
         // carry a placement hint that just changed.
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-        true
     }
 
     /// Drops a stale `OpenTarget::Here` and kind filter once the palette
@@ -3967,16 +4167,47 @@ impl ShellOverlayHost {
             let Some(&dest_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
                 continue;
             };
-            let dest_row: &mut GroupRow = unsafe { &mut *dest_ptr };
-            dest_row.accept_cross_strip_drop(payload.desc, payload.host, release);
-            // Mirror into the persisted tree so a restart sees the tab
-            // in its new strip.
-            if dest_strip_id != src_strip_id
-                && let Some(chrome) = self.chrome.clone()
-            {
-                let st = chrome.borrow_mut();
-                st.tree_mut()
-                    .move_tab_across_strips(src_strip_id, dest_strip_id, payload.tab_id);
+            // One globally unique id is shared by the rendered group, the
+            // durable cache and the replicated document. Generating an id
+            // independently inside each strip made a later resync unable to
+            // identify the group the person had just moved.
+            let new_group_id = crate::shell::state::next_id();
+            let destination = {
+                let dest_row: &GroupRow = unsafe { &*dest_ptr };
+                dest_row
+                    .gap_index_for(release)
+                    .unwrap_or(dest_row.groups.len())
+                    .min(dest_row.groups.len())
+            };
+            // Commit the cache + replicated document before moving the live
+            // host. If the destination or document is stale, returning the
+            // payload to its source avoids a visual-only layout that a later
+            // resync would appear to resurrect.
+            let committed = dest_strip_id == src_strip_id
+                || self.chrome.clone().is_some_and(|chrome| {
+                    let st = chrome.borrow_mut();
+                    st.tree_mut().move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        payload.tab_id,
+                        new_group_id,
+                        destination,
+                    )
+                });
+            if committed {
+                let Some(&target_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
+                    continue;
+                };
+                let target_row: &mut GroupRow = unsafe { &mut *target_ptr };
+                target_row.accept_cross_strip_drop(
+                    new_group_id,
+                    payload.desc,
+                    payload.host,
+                    release,
+                );
+            } else if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
+                let source_row: &mut GroupRow = unsafe { &mut *source_ptr };
+                source_row.restore_cross_strip_detach(payload);
             }
         }
     }
@@ -3986,6 +4217,9 @@ impl ShellOverlayHost {
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
+        // Expiry is independent of new launcher events: a daemonising parent
+        // can exit and never produce another event or window.
+        crate::shell::launcher::expire_pending_placements();
         let events = crate::shell::launcher::drain_events();
         if events.is_empty() {
             return false;
@@ -3999,47 +4233,61 @@ impl ShellOverlayHost {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
             }
-            // Only a failure settles the "Opening…" notice here. `Started`
+            // A failure settles the "Opening…" notice here. `Started`
             // doesn't — the window is still seconds away — that's
-            // [`Self::retire_notices_for_opened_windows`]'s job; `Exited`
-            // doesn't either, by then the app has run.
+            // [`Self::retire_notices_for_opened_windows`]'s job. A clean
+            // exit also settles it: a process can quit before presenting a
+            // window, and leaving "Loading…" visible for two minutes would
+            // falsely claim that launch is still in flight.
             if matches!(
                 event.kind,
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
-            ) && let Some(notice) =
-                crate::shell::catalogue::take_pending_notice(&event.package_id)
-            {
-                let mut st = chrome_handle.borrow_mut();
-                st.dismiss_notification(notice);
-                st.bump();
-                posted = true;
+            ) {
+                // A failed process can never claim its promised toplevel, so
+                // clear it at the same boundary as the opening notice.
+                crate::shell::launcher::clear_pending_placement(&event.package_id);
+                if let Some(notice) =
+                    crate::shell::catalogue::take_pending_notice(&event.package_id)
+                {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.dismiss_notification(notice);
+                    st.bump();
+                    posted = true;
+                }
             }
-            let (title, body) = match event.kind {
+            if matches!(event.kind, LaunchEventKind::Exited) {
+                // A successful launcher parent may have daemonised. Its GUI
+                // child still owns this launch for a short bounded interval,
+                // so dismiss the loading card now but keep placement until a
+                // matching toplevel claims it or the grace expires.
+                crate::shell::launcher::retire_pending_placement_after_grace(&event.package_id);
+                if let Some(notice) =
+                    crate::shell::catalogue::take_pending_notice(&event.package_id)
+                {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.dismiss_notification(notice);
+                    st.bump();
+                    posted = true;
+                }
+            }
+            match &event.kind {
                 LaunchEventKind::Started { pid } => {
                     eprintln!("shell: launched {} (pid {pid})", event.package_id);
                     continue;
                 }
                 LaunchEventKind::Exited => continue,
-                LaunchEventKind::SpawnFailed { detail } => {
-                    (format!("Couldn't open {}", event.display_name), detail)
-                }
-                LaunchEventKind::Failed { code, stderr_tail } => {
-                    let reason = if stderr_tail.trim().is_empty() {
-                        match code {
-                            Some(c) => format!("the launcher exited with status {c}"),
-                            None => "the launcher was killed by a signal".to_string(),
-                        }
-                    } else {
-                        stderr_tail
-                    };
-                    (format!("{} stopped", event.display_name), reason)
-                }
+                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. } => {}
+            }
+            event.log_failure();
+            let Some(notice) = event.failure_notice() else {
+                continue;
             };
             let mut st = chrome_handle.borrow_mut();
             st.push_notification_full(
-                crate::shell::notification::Notification::new(title, body)
+                crate::shell::notification::Notification::new(notice.title, notice.body)
                     .with_severity(crate::shell::notification::NotificationSeverity::Error)
-                    .with_app_name("Applications"),
+                    .with_app_name("Applications")
+                    .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
             );
             st.bump();
             posted = true;
@@ -4303,11 +4551,10 @@ impl ShellOverlayHost {
         self.harvest_pending_new_tab()
     }
 
-    /// Test-only: mirrors the widget-side active tab into the tree. Must run
-    /// before the focus-follow scroll, or the tree reads one frame behind
-    /// the clicks that just happened.
-    #[cfg(any(test, debug_assertions))]
-    pub fn tick_active_tab_writeback_for_tests(&mut self) {
+    /// Mirrors the widget-side active tab into the tree immediately after
+    /// input dispatch. The native compositor uses this before routing the
+    /// next event in a backend batch; tests use it to model the same boundary.
+    pub fn flush_active_tab_writeback(&mut self) {
         self.harvest_active_tab_writeback();
     }
 
@@ -4364,6 +4611,27 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             let tree = st.tree();
             crate::compositor::client_input::step_active_window(&tree, steps)
+        };
+        let Some((strip, group, tab)) = target else {
+            return false;
+        };
+        self.focus_window_on_strip(strip, group, tab)
+    }
+
+    /// Alt+Tab-style traversal of the active strip. Unlike spatial
+    /// Super+Arrow movement, a conventional switcher is a ring: continuing
+    /// past either end returns to the opposite end.
+    pub fn cycle_focus_along_strip(&mut self, direction: i32) -> bool {
+        if direction == 0 {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let target = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            crate::compositor::client_input::cycle_active_window(&tree, direction)
         };
         let Some((strip, group, tab)) = target else {
             return false;
@@ -4463,6 +4731,7 @@ impl ShellOverlayHost {
                 return false;
             }
             group.width = crate::shell::state::WindowWidth::Fraction(next);
+            tree.flush_to_disk();
             let result = (group_id, next);
             drop(tree);
             drop(st);
@@ -4532,10 +4801,36 @@ impl ShellOverlayHost {
                   last use, and the block already ends right there"
     )]
     pub fn focus_window_on_strip(&mut self, strip: StripId, group: GroupId, tab: u64) -> bool {
-        self.focus_window_widget(strip, group, tab);
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        // Both the durable tree and the live row have to still address the
+        // target. A rail/keyboard event can race a close in either
+        // direction: before resync the widget still has the old tab, and
+        // after resync an event can still carry its old id. Do not stamp an
+        // absent address into the persistent focus pointers in either case.
+        let tree_has_target = {
+            let state = chrome.borrow();
+            state
+                .tree()
+                .active_workspace()
+                .and_then(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .find(|candidate| candidate.id == strip)
+                })
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|candidate| candidate.id == group)
+                })
+                .is_some_and(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
+        };
+        if !tree_has_target || !self.focus_window_widget(strip, group, tab) {
+            return false;
+        }
         let mut changed = false;
         {
             let st = chrome.borrow_mut();
@@ -4552,6 +4847,9 @@ impl ShellOverlayHost {
             if tree.active_group_for(strip) != Some(group) {
                 tree.set_active_group(strip, group);
                 changed = true;
+            }
+            if changed {
+                tree.flush_to_disk();
             }
         }
         if changed {
@@ -5004,12 +5302,33 @@ impl ShellOverlayHost {
             &chrome,
             &crate::shell::search::action_api::ActionArgs::none(),
         ) {
-            chrome
-                .borrow_mut()
-                .push_warning_notification(format!("Can't open {display_name}"), error.to_string());
+            // Application actions own their user-facing launch notice (the
+            // callback has already translated any typed LaunchError into a
+            // bounded, actionable card). Keep this outer launchpad adapter
+            // from adding a second raw ActionError card, which used to put
+            // paths/backend details into the fixed top-right toast and leave
+            // the user with two conflicting errors.
+            Self::report_launchpad_action_failure(display_name, &error);
         } else {
             self.palette_visible = false;
         }
+    }
+
+    /// The application action callback owns the user-facing notice for a
+    /// launch refusal. The launchpad adapter only records the detailed cause
+    /// for diagnostics; adding another notification here would duplicate the
+    /// callback's bounded card and expose raw backend details in top-right
+    /// chrome.
+    fn report_launchpad_action_failure(
+        display_name: &str,
+        error: &crate::shell::search::action_api::ActionError,
+    ) {
+        tracing::error!(
+            target: "qos::app_launch",
+            display_name,
+            detail = %error,
+            "launchpad application action was refused"
+        );
     }
 
     /// Refreshes the palette's rows by fanning the query out to every
@@ -5340,6 +5659,7 @@ impl ShellOverlayHost {
         }
         tree.active_strip.insert(ws_id, strip_id);
         tree.active_group.insert(strip_id, group_id);
+        tree.flush_to_disk();
         drop(tree);
         drop(st);
         // Marks this strip at rest so a click doesn't also pan: the
@@ -5498,6 +5818,12 @@ impl ShellOverlayHost {
     /// would otherwise go stale inside that window.
     pub fn note_pointer(&mut self, p: Point) {
         self.last_cursor = Some(p);
+    }
+
+    /// Retire raw direct-touch contacts at a compositor ownership boundary
+    /// without interpreting the disappearance as a completed shell gesture.
+    pub fn cancel_direct_touch_gestures(&mut self) {
+        self.touch_gestures.cancel_all();
     }
 
     /// Whether the workspace wheel is summoned. Read alongside
@@ -5682,6 +6008,12 @@ impl ShellOverlayHost {
         if !self.overlay_flags().quick_settings {
             return;
         }
+        // This hook replaces the normal draw-time rising edge. Mirror the
+        // user-visible open contract completely: keyboard traversal starts
+        // on Edit instead of inheriting stale focus from a previous open.
+        if !self.qs_was_open {
+            self.qs_root.reset_focus();
+        }
         self.qs_was_open = true;
         self.qs_transition = ui::Transition::open();
     }
@@ -5695,6 +6027,34 @@ impl ShellOverlayHost {
         }
         self.qs_was_open = true;
         self.qs_transition = ui::Transition::capture_open_at(permille);
+    }
+
+    /// Screenshot-driver hook for the real Quick Settings edit surface.
+    pub fn force_quick_settings_edit_for_visual_test(&mut self, dragging: bool) {
+        if !self.overlay_flags().quick_settings {
+            return;
+        }
+        if dragging {
+            let rect = self.quick_settings_rect();
+            self.qs_root.start_edit_drag_for_visual_test(rect);
+        } else {
+            self.qs_root.set_edit_mode_for_visual_test(true);
+        }
+    }
+
+    /// Open the real session menu and optionally arm Shut down, then pin its
+    /// entrance animation so deterministic screenshots capture the resting
+    /// production surface rather than a wall-clock-dependent intermediate.
+    pub fn force_power_menu_for_visual_test(&mut self, arm_shutdown: bool) {
+        self.power_menu.open();
+        if arm_shutdown {
+            use winit::keyboard::{Key, NamedKey};
+            for _ in 0..5 {
+                let _ = self.power_menu.key(&Key::Named(NamedKey::ArrowDown), false);
+            }
+            let _ = self.power_menu.key(&Key::Named(NamedKey::Enter), false);
+        }
+        self.power_menu.force_settled_for_visual_test();
     }
 
     /// Folds every reading the quick-settings workers delivered into
@@ -5730,6 +6090,7 @@ impl ShellOverlayHost {
             volume,
             wifi,
             bluetooth,
+            bluetooth_available,
             power,
             wired,
             battery,
@@ -5743,6 +6104,7 @@ impl ShellOverlayHost {
         if let Some(vpns) = vpns {
             st.quick_settings.vpns = vpns;
         }
+        st.quick_settings.bluetooth_available = bluetooth_available;
         st.quick_settings.privacy = privacy;
         (
             brightness,
@@ -5846,10 +6208,10 @@ impl ShellOverlayHost {
         self.workspace_settings_overlay.force_settled();
     }
 
-    /// Font size the overview sets the current room's name at — the
-    /// largest thing on the panel, since naming where you are is the
-    /// first question it answers. A method, not a constant, so it tracks
-    /// the active theme's typography token.
+    /// Font size the overview sets the current room's name at. It leads the
+    /// panel without becoming a display headline that overwhelms the actual
+    /// destinations below. A method, not a constant, so it tracks the active
+    /// theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
     }
@@ -5922,8 +6284,7 @@ impl ShellOverlayHost {
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        // Largest step in the type scale — currently 40 px.
-        tokens.typography.scale.x4l
+        tokens.typography.scale.x3l
     }
 
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
@@ -5933,16 +6294,201 @@ impl ShellOverlayHost {
             .unwrap_or_default()
     }
 
-    /// Mirror of the geometry in `draw_quick_settings` — the popover rect
-    /// anchored under the top-right tray pill. Width matches the concept's
-    /// `w-80` (320px); height sums the section bands in
-    /// [`Self::draw_quick_settings`], including three rows of system tiles.
+    /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
+    /// from the controls actually visible on this device, not a fixed grid of
+    /// unavailable radios.
     fn quick_settings_rect(&self) -> Rect {
-        let popover_w = 320.0_f64;
-        let popover_h = 552.0_f64;
+        let popover_w = if self.rect.width() >= 720.0 {
+            400.0
+        } else {
+            320.0
+        };
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
+        let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
+            let state = chrome.borrow();
+            self.quick_settings_preferred_height(&state)
+        });
+        let popover_h = desired_h.min((self.rect.y1 - y0 - 16.0).max(1.0));
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
+    }
+
+    /// A drill-in is a compact continuation of Quick Settings, not a blank
+    /// fixed-height sheet. Its height follows the actual rows and grows only
+    /// when discovery gives us something to show. This keeps an empty Wi-Fi
+    /// scan, Bluetooth list or VPN list from visually swallowing the desktop
+    /// while retaining room for a useful bounded set of results.
+    fn quick_settings_preferred_height(
+        &self,
+        state: &crate::shell::chrome_state::ChromeState,
+    ) -> f64 {
+        use crate::shell::quick_settings::QsLevel;
+        match state.quick_settings.current_level() {
+            QsLevel::Root => self.qs_root.preferred_height(&state.quick_settings),
+            QsLevel::Wifi | QsLevel::WifiDetails(_) => {
+                if state.quick_settings.wifi_password.is_some() {
+                    // Header, explanation, field/status and a comfortable
+                    // footer for Cancel/Connect.
+                    244.0
+                } else {
+                    let rows = state.quick_settings.wifi_networks.len();
+                    // The Hotspot card occupies 56..108, then discovery rows
+                    // are 52 high on a 56px rhythm.
+                    (124.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                        .clamp(192.0, 552.0)
+                }
+            }
+            QsLevel::Bluetooth | QsLevel::BluetoothDetails(_) => {
+                let rows = state.quick_settings.bt_devices.len();
+                (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+            QsLevel::Vpn => {
+                let rows = state.quick_settings.vpns.len();
+                (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+            QsLevel::Notifications => {
+                let rows = state.notification_history().len().min(7);
+                (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+        }
+    }
+
+    /// Number of complete notification cards the current compact pane can
+    /// show. The status/footer band is reserved even when the history is
+    /// short, so its position and keyboard hint never overlap the final body
+    /// line on small displays or at enlarged text sizes.
+    fn qs_notification_visible_rows(&self) -> usize {
+        const HEADER_AND_STATUS_HEIGHT: f64 = 76.0;
+        const FOOTER_HEIGHT: f64 = 52.0;
+        const ROW_HEIGHT: f64 = 70.0;
+        f64_floor_to_usize_saturating(
+            (self.quick_settings_rect().height() - HEADER_AND_STATUS_HEIGHT - FOOTER_HEIGHT)
+                / ROW_HEIGHT,
+        )
+        .max(1)
+    }
+
+    /// Largest valid newest-first notification offset for the current pane.
+    fn qs_notification_max_start(&self, history_len: usize) -> usize {
+        history_len.saturating_sub(self.qs_notification_visible_rows())
+    }
+
+    /// Keep the current window valid when records expire, are cleared, or the
+    /// viewport shrinks. Returns whether a paint is needed to show the new
+    /// position.
+    fn clamp_qs_notification_history_start(&mut self, history_len: usize) -> bool {
+        let max_start = self.qs_notification_max_start(history_len);
+        let next = self.qs_notification_history_start.min(max_start);
+        let changed = next != self.qs_notification_history_start;
+        self.qs_notification_history_start = next;
+        changed
+    }
+
+    /// Move through retained notifications in newest-first order. Positive
+    /// movement reveals older records; negative movement returns toward the
+    /// newest. This is intentionally row-based so mouse wheels and keyboard
+    /// arrows have identical, predictable landing positions.
+    fn scroll_qs_notification_history(&mut self, movement: isize) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let history_len = chrome.borrow().notification_history().len();
+        let max_start = self.qs_notification_max_start(history_len);
+        let current = self.qs_notification_history_start.min(max_start);
+        let next = if movement.is_negative() {
+            current.saturating_sub(movement.unsigned_abs())
+        } else {
+            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.qs_notification_history_start {
+            return false;
+        }
+        self.qs_notification_history_start = next;
+        chrome.borrow_mut().bump();
+        true
+    }
+
+    /// Scroll the notification history from a pointer wheel event. Pixel
+    /// deltas accumulate into 48px card steps; line-wheel deltas already name
+    /// rows and apply immediately.
+    fn handle_qs_notification_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
+        let notifications_open = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+        });
+        if !notifications_open
+            || !self
+                .last_cursor
+                .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
+        };
+        if rows.abs() <= f64::EPSILON {
+            return true;
+        }
+        self.qs_notification_wheel_remainder += rows;
+        // `trunc` preserves direction. A small touchpad movement remains
+        // owned by this pane until it accumulates to a complete row rather
+        // than accidentally scrolling the desktop below it.
+        let whole = self.qs_notification_wheel_remainder.trunc();
+        if whole.abs() >= 1.0 {
+            self.qs_notification_wheel_remainder -= whole;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
+            )]
+            let movement = whole as isize;
+            let _ = self.scroll_qs_notification_history(movement);
+        }
+        true
+    }
+
+    /// Keyboard navigation for the notification drill-in. It is deliberately
+    /// available without pointer hover so the retained error history remains
+    /// usable by keyboard and assistive-technology users.
+    fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
+        let history_len = self
+            .chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        let page = isize::try_from(self.qs_notification_visible_rows()).unwrap_or(isize::MAX);
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let _ = self.scroll_qs_notification_history(1);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let _ = self.scroll_qs_notification_history(-1);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let _ = self.scroll_qs_notification_history(page);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let _ = self.scroll_qs_notification_history(-page);
+            }
+            Key::Named(NamedKey::Home) => {
+                let _ = self.scroll_qs_notification_history(-isize::MAX);
+            }
+            Key::Named(NamedKey::End) => {
+                let _ = self.scroll_qs_notification_history(isize::MAX);
+            }
+            _ => return false,
+        }
+        // Consume at either edge too: arrows should not start moving a hidden
+        // workspace after the visible history has reached its beginning/end.
+        let _ = self.clamp_qs_notification_history_start(history_len);
+        true
     }
 
     /// The strip ribbon for the active workspace, anchored to the content
@@ -6720,6 +7266,7 @@ impl ShellOverlayHost {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
+                let finishing_layout_drag = self.qs_root.edit_mode();
                 let commit = self
                     .chrome
                     .as_ref()
@@ -6738,6 +7285,11 @@ impl ShellOverlayHost {
                         );
                     }
                     None => {}
+                }
+                if finishing_layout_drag && let Some(chrome) = self.chrome.as_ref() {
+                    // `finish_drag` commits the shared reorder controller on
+                    // release; publish that one durable layout change.
+                    chrome.borrow_mut().bump();
                 }
                 *handled = true;
                 true
@@ -6891,9 +7443,31 @@ impl ShellOverlayHost {
             }
         };
         if let Err(error) = result {
-            chrome
-                .borrow_mut()
-                .push_notification(format!("Couldn't open {}", target.label), error.to_string());
+            // A previous document/app launch can have staged a one-shot
+            // placement for this package. This history action did not claim
+            // a toplevel, so a preflight refusal must retire any note before
+            // a later unrelated window gets adopted into the old target.
+            crate::shell::launcher::clear_pending_placement(app_id);
+            // LaunchError's full Display includes package ids, paths, and
+            // backend diagnostics. Keep those in the structured log; the
+            // fixed-height top-right card gets the same short recovery copy
+            // used by palette launches.
+            tracing::error!(
+                target: "qos::app_launch",
+                app_id,
+                label = %target.label,
+                detail = %error,
+                "workspace activity application launch was refused"
+            );
+            chrome.borrow_mut().push_notification_full(
+                crate::shell::notification::Notification::new(
+                    crate::shell::launcher::launch_failure_title(&target.label),
+                    error.notification_message(),
+                )
+                .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                .with_app_name("Applications")
+                .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+            );
         }
     }
 
@@ -7106,12 +7680,9 @@ impl ShellOverlayHost {
         true
     }
 
-    /// Global shortcuts: `Ctrl+K` opens search scoped to the focused
-    /// tab; `Super+K`/`Super+Space`/`Alt+Space` open in global scope
-    /// (`Alt+Space` is the nested-Wayland-client substitute, since a
-    /// host DE running qOS as a client swallows Super first).
-    /// `Super+H` toggles workspace history; `Ctrl+Tab`/`Super+Tab` toggle the overview; Esc closes the top
-    /// overlay. Only called for a `Pressed` `KeyboardInput`.
+    /// Capture a chord for the shortcut editor.  Validation is shared with
+    /// Settings and persisted loading, so capture cannot create an effective
+    /// table the compositor would later reject or repair.
     fn capture_shortcut_chord(
         &mut self,
         action: settings_store::hardware::ShortcutAction,
@@ -7126,16 +7697,25 @@ impl ShellOverlayHost {
                 Some("Add Super, Ctrl, Alt or Shift to printable keys.".into());
             return;
         }
-        let mut config = settings_store::hardware::ShortcutConfig::load();
-        if let Err(other) = config.set(action, chord) {
-            self.shortcut_rebind_message = Some(format!(
-                "Already used to {}. Press another shortcut.",
-                shortcut_action_label(other)
-            ));
+        let mut config = self.shortcut_config.clone();
+        if let Err(error) = config.set(action, chord) {
+            self.shortcut_rebind_message = Some(match error {
+                settings_store::hardware::ShortcutConfigError::Conflict(other) => format!(
+                    "Already used to {}. Press another shortcut.",
+                    shortcut_action_label(other)
+                ),
+                settings_store::hardware::ShortcutConfigError::ReservedSystemKey => {
+                    "F1 and Print Screen are reserved by the desktop.".into()
+                }
+                settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                    "That shortcut is not supported. Press another shortcut.".into()
+                }
+            });
             return;
         }
         match config.save() {
             Ok(()) => {
+                self.shortcut_config = config;
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
             }
@@ -7146,13 +7726,44 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Replace the effective shortcut table after Settings has accepted a
+    /// change.  The compositor's foreign-client pre-routing reads this
+    /// snapshot, so dispatch and client ownership cannot disagree.
+    ///
+    /// Settings storage has no change-notification transport today: an
+    /// external writer must make this validated handoff after saving, or its
+    /// file change takes effect at the next compositor session.  The shell's
+    /// own shortcut guide does the handoff synchronously after its save.
+    pub fn set_shortcut_config(
+        &mut self,
+        config: settings_store::hardware::ShortcutConfig,
+    ) -> Result<(), settings_store::hardware::ShortcutConfigError> {
+        config.validate()?;
+        self.shortcut_config = settings_store::hardware::ShortcutConfig::normalise(config);
+        Ok(())
+    }
+
+    /// Resolve a press against the effective user-edited shortcut table.
+    ///
+    /// The compositor asks before offering a press to a focused Wayland
+    /// client, and the shell dispatcher uses the returned action.  This is
+    /// deliberately one resolver over the same cached table, including any
+    /// custom binding accepted in Settings.
+    pub(crate) fn configured_shortcut_action(
+        &self,
+        logical_key: &Key,
+        modifiers: winit::event::Modifiers,
+    ) -> Option<settings_store::hardware::ShortcutAction> {
+        configured_shortcut_action(&self.shortcut_config, logical_key, modifiers)
+    }
+
     fn reset_shortcut_pair(
         &mut self,
         first: settings_store::hardware::ShortcutAction,
         second: settings_store::hardware::ShortcutAction,
     ) {
         let defaults = settings_store::hardware::ShortcutConfig::default();
-        let mut candidate = settings_store::hardware::ShortcutConfig::load();
+        let mut candidate = self.shortcut_config.clone();
         candidate.bindings.remove(&first);
         candidate.bindings.remove(&second);
         let restore = [first, second].into_iter().try_for_each(|action| {
@@ -7160,18 +7771,25 @@ impl ShellOverlayHost {
                 .bindings
                 .get(&action)
                 .cloned()
-                .ok_or(action)
+                .ok_or(settings_store::hardware::ShortcutConfigError::InvalidChord)
                 .and_then(|chord| candidate.set(action, chord))
         });
-        if let Err(other) = restore {
-            self.shortcut_rebind_message = Some(format!(
-                "A default is already used to {}. Change that shortcut first.",
-                shortcut_action_label(other)
-            ));
+        if let Err(error) = restore {
+            self.shortcut_rebind_message = Some(match error {
+                settings_store::hardware::ShortcutConfigError::Conflict(other) => format!(
+                    "A default is already used to {}. Change that shortcut first.",
+                    shortcut_action_label(other)
+                ),
+                settings_store::hardware::ShortcutConfigError::ReservedSystemKey
+                | settings_store::hardware::ShortcutConfigError::InvalidChord => {
+                    "Could not restore the default shortcuts.".into()
+                }
+            });
             return;
         }
         match candidate.save() {
             Ok(()) => {
+                self.shortcut_config = candidate;
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
             }
@@ -7187,7 +7805,7 @@ impl ShellOverlayHost {
     )]
     fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
         use settings_store::hardware::ShortcutAction as A;
-        let config = settings_store::hardware::ShortcutConfig::load();
+        let config = &self.shortcut_config;
         let defaults = settings_store::hardware::ShortcutConfig::default();
         let rows = [
             (A::FocusPreviousWindow, A::FocusNextWindow),
@@ -7266,6 +7884,86 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Decide the global screenshot shortcut before any modal gets a chance
+    /// to consume it.  This is intentionally a single policy point shared by
+    /// the early modal gate and ordinary keyboard routing: otherwise Print
+    /// Screen can behave differently merely because a dialog happened to be
+    /// first in the event-dispatch chain.
+    fn arbitrate_print_screen(&self) -> PrintScreenArbitration {
+        if self.screenshot_markup.is_some() || self.capture_studio.is_open() {
+            return PrintScreenArbitration::Blocked(
+                "Finish the current capture before taking another screenshot.",
+            );
+        }
+        PrintScreenArbitration::OpenCapture
+    }
+
+    /// Dismiss presentation-only chrome as one state transition before the
+    /// capture selector opens. Transactional surfaces stay mounted below it:
+    /// Capture Studio must be able to photograph a broken setup page, portal,
+    /// permission prompt, or credential error and then return to it intact.
+    fn dismiss_transient_chrome_for_capture(&mut self) {
+        self.palette_visible = false;
+        if self.shortcut_rebind.is_none() {
+            self.shortcut_rebind_message = None;
+        }
+        self.shortcut_guide_focus = None;
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let mut state = chrome.borrow_mut();
+        state.set_wheel_summon(None);
+        state.overlays.shortcut_help = false;
+        state.overlays.desktop_tour = false;
+        state.overlays.overview = false;
+        if state.quick_settings.wifi_password.is_none() {
+            state.overlays.quick_settings = false;
+        }
+        if state.editing_workspace_name.is_none()
+            && !self.workspace_settings_overlay.member_sheet_is_open()
+            && state.pending_grants.is_empty()
+        {
+            state.overlays.ws_settings = false;
+            state.overlays.collaborators = false;
+            state.overlays.room_activity = false;
+        }
+        state.bump();
+    }
+
+    /// Apply the Print Screen policy. Existing capture work is the only flow
+    /// that blocks a new capture; ordinary dialogs remain mounted below the
+    /// temporary Capture Studio input owner.
+    fn apply_print_screen_priority(&mut self) {
+        match self.arbitrate_print_screen() {
+            PrintScreenArbitration::OpenCapture => {
+                self.dismiss_transient_chrome_for_capture();
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            }
+            PrintScreenArbitration::Blocked(reason) => {
+                tracing::debug!(reason, "Print Screen deferred by modal workflow");
+            }
+        }
+    }
+
+    /// Returns `true` only for a Print Screen press.  It runs before modal
+    /// event gates; [`Self::apply_print_screen_priority`] is also used by the
+    /// normal keyboard dispatcher so the policy cannot drift.
+    fn handle_print_screen_priority(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ElementState::Pressed
+            || !matches!(key.logical_key, Key::Named(NamedKey::PrintScreen))
+        {
+            return false;
+        }
+        if !key.repeat {
+            self.apply_print_screen_priority();
+        }
+        *handled = true;
+        true
+    }
+
     #[allow(
         clippy::items_after_statements,
         clippy::too_many_lines,
@@ -7275,15 +7973,33 @@ impl ShellOverlayHost {
         &mut self,
         logical_key: &Key,
         modifiers: winit::event::Modifiers,
+        repeat: bool,
         state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
         let mstate = modifiers.state();
         let super_down = mstate.super_key();
-        let alt_down = mstate.alt_key();
-        let is_mod = super_down || mstate.control_key();
         let shift_down = mstate.shift_key();
+        // The session action sheet is modal. It owns every key while open so
+        // typing cannot leak into a hosted or Wayland app behind it; the
+        // conventional navigation keys make every action reachable.
+        if self.power_menu.is_open() {
+            let outcome = self.power_menu.key(logical_key, shift_down);
+            self.apply_power_menu_outcome(outcome);
+            *handled = true;
+            return true;
+        }
+        // The usual host event path handles this ahead of modal routing.
+        // Keep the same arbitration here for direct widget dispatch and any
+        // future backend that enters through this keyboard-only helper.
+        if matches!(logical_key, Key::Named(NamedKey::PrintScreen)) {
+            if !repeat {
+                self.apply_print_screen_priority();
+            }
+            *handled = true;
+            return true;
+        }
         if self.handle_member_permission_sheet_keyboard(logical_key, handled) {
             return true;
         }
@@ -7308,32 +8024,34 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.handle_quick_settings_keyboard(logical_key, shift_down, handled) {
+        if self.handle_quick_settings_keyboard(
+            logical_key,
+            shift_down,
+            mstate.control_key(),
+            handled,
+        ) {
             return true;
         }
-        let shortcut_config = settings_store::hardware::ShortcutConfig::load();
-        let shortcut_pressed = |action| {
-            shortcut_config
-                .bindings
-                .get(&action)
-                .is_some_and(|chord| shortcut_chord_matches(logical_key, modifiers, chord))
-        };
+        let configured_action = self.configured_shortcut_action(logical_key, modifiers);
+        let shortcut_pressed = |action| configured_action == Some(action);
         let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
             || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
         if help_chord {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.shortcut_help = !st.overlays.shortcut_help;
-                st.bump();
+            if !repeat {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.shortcut_help = !st.overlays.shortcut_help;
+                    st.bump();
+                }
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+                self.shortcut_guide_focus =
+                    self.overlay_flags()
+                        .shortcut_help
+                        .then_some(ShortcutGuideFocus::Binding(
+                            settings_store::hardware::ShortcutAction::FocusPreviousWindow,
+                        ));
             }
-            self.shortcut_rebind = None;
-            self.shortcut_rebind_message = None;
-            self.shortcut_guide_focus =
-                self.overlay_flags()
-                    .shortcut_help
-                    .then_some(ShortcutGuideFocus::Binding(
-                        settings_store::hardware::ShortcutAction::FocusPreviousWindow,
-                    ));
             *handled = true;
             return true;
         }
@@ -7383,28 +8101,130 @@ impl ShellOverlayHost {
         }
         use settings_store::hardware::ShortcutAction;
         if shortcut_pressed(ShortcutAction::Search) {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-            self.refresh_search_results(state, path);
+            if !repeat {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.refresh_search_results(state, path);
+            }
             *handled = true;
             return true;
         }
         if shortcut_pressed(ShortcutAction::WorkspaceOverview) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.overview = !st.overlays.overview;
-                st.bump();
+            if !repeat {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.overview = !st.overlays.overview;
+                    st.bump();
+                }
             }
             *handled = true;
             return true;
         }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.quick_settings = !st.overlays.quick_settings;
-                st.bump();
+            if !repeat {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.quick_settings = !st.overlays.quick_settings;
+                    st.bump();
+                }
             }
             *handled = true;
             return true;
+        }
+        // Alt+Tab is the conventional window ring and remains a stable
+        // fallback even when spatial navigation is rebound in Settings.
+        // This also keeps first-run discoverability consistent with other
+        // Linux desktops.
+        if mstate.alt_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            let direction = if shift_down { -1 } else { 1 };
+            let _ = self.cycle_focus_along_strip(direction);
+            *handled = true;
+            return true;
+        }
+        // Alt+F4 is the stable Linux close gesture. qOS owns the frame and
+        // its durable tab/group state, so forwarding this to the client would
+        // let toolkits disagree about whether the window actually closed.
+        if mstate.alt_key()
+            && !mstate.control_key()
+            && !super_down
+            && !shift_down
+            && matches!(logical_key, Key::Named(NamedKey::F4))
+        {
+            if !repeat {
+                let _ = self.close_focused_tab();
+            }
+            *handled = true;
+            return true;
+        }
+        // Keep the conventional GNOME workspace aliases in addition to the
+        // editable spatial bindings. They are deliberately clamped by the
+        // same workspace primitive as Super+Up/Down.
+        if super_down
+            && !mstate.control_key()
+            && !mstate.alt_key()
+            && !shift_down
+            && matches!(
+                logical_key,
+                Key::Named(NamedKey::PageUp | NamedKey::PageDown)
+            )
+        {
+            let direction = if matches!(logical_key, Key::Named(NamedKey::PageUp)) {
+                -1
+            } else {
+                1
+            };
+            if let Some(chrome) = self.chrome.clone() {
+                let _ = chrome.borrow_mut().switch_workspace(direction);
+            }
+            *handled = true;
+            return true;
+        }
+        // Optional Vim navigation is intentionally a full Super+Ctrl layer,
+        // never a bare/Ctrl-only text chord. This keeps H/J/K/L available to
+        // terminals and editors and matches the promise in Settings.
+        if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+            && super_down
+            && mstate.control_key()
+            && !mstate.alt_key()
+            && let Key::Character(key) = logical_key
+        {
+            let action = match (key.to_ascii_lowercase().as_str(), shift_down) {
+                ("h", false) => Some(ShortcutAction::FocusPreviousWindow),
+                ("l", false) => Some(ShortcutAction::FocusNextWindow),
+                ("k", false) => Some(ShortcutAction::PreviousStrip),
+                ("j", false) => Some(ShortcutAction::NextStrip),
+                ("h", true) => Some(ShortcutAction::MoveGroupLeft),
+                ("l", true) => Some(ShortcutAction::MoveGroupRight),
+                _ => None,
+            };
+            if let Some(action) = action {
+                match action {
+                    ShortcutAction::FocusPreviousWindow => {
+                        let _ = self.step_focus_along_strip(-1);
+                    }
+                    ShortcutAction::FocusNextWindow => {
+                        let _ = self.step_focus_along_strip(1);
+                    }
+                    ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
+                        let direction = if action == ShortcutAction::PreviousStrip {
+                            -1
+                        } else {
+                            1
+                        };
+                        if let Some(chrome) = self.chrome.clone() {
+                            let _ = chrome.borrow_mut().switch_strip(direction);
+                        }
+                    }
+                    ShortcutAction::MoveGroupLeft => {
+                        let _ = self.reorder_focused_group(-1);
+                    }
+                    ShortcutAction::MoveGroupRight => {
+                        let _ = self.reorder_focused_group(1);
+                    }
+                    _ => {}
+                }
+                *handled = true;
+                return true;
+            }
         }
         let navigation = [
             ShortcutAction::PreviousTab,
@@ -7474,23 +8294,26 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Captured ahead of the modifier-only branch so Character('K')
-        // further down can't also fire.
+        // Super+Space remains an immutable, hardware-neutral global-search
+        // escape hatch. Alt+Space is configurable-free application input.
         let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
-        if is_space && (super_down || alt_down) {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-            self.refresh_search_results(state, path);
+        if is_space && super_down {
+            if !repeat {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.refresh_search_results(state, path);
+            }
             *handled = true;
             return true;
         }
         if self.handle_overview_keyboard_nav(logical_key, handled) {
             return true;
         }
-        if is_mod
+        if super_down
             && self.handle_shell_mod_chords(
                 logical_key,
                 super_down,
                 shift_down,
+                repeat,
                 state,
                 path,
                 handled,
@@ -7573,9 +8396,9 @@ impl ShellOverlayHost {
         true
     }
 
-    /// The `is_mod` (Ctrl or Super held) chord set: search, the
-    /// projection and overview toggles, window-creation chords, and
-    /// focus/workspace stepping.
+    /// Immutable Super-key shell chords: projection/capture actions,
+    /// workspace history, and window creation. Configurable actions are
+    /// resolved before this function from `ShortcutConfig`.
     #[allow(
         clippy::too_many_lines,
         reason = "the existing shell chord router remains one auditable precedence table"
@@ -7585,6 +8408,7 @@ impl ShellOverlayHost {
         logical_key: &Key,
         super_down: bool,
         shift_down: bool,
+        repeat: bool,
         state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -7596,6 +8420,10 @@ impl ShellOverlayHost {
             && s.eq_ignore_ascii_case("h")
             && let Some(chrome) = self.chrome.clone()
         {
+            if repeat {
+                *handled = true;
+                return true;
+            }
             if shift_down {
                 self.room_activity
                     .set_view(crate::shell::room_activity::ActivityView::Explore);
@@ -7613,26 +8441,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if let Key::Character(s) = logical_key
-            && s.as_str().eq_ignore_ascii_case("k")
-        {
-            use crate::shell::chrome_state::SearchScope;
-            // Ctrl+K searches the focused app; Super+K searches
-            // the whole machine, including apps not open.
-            // `ActiveApp` widens to every provider (or `All`)
-            // when nothing claims/has the focused tab.
-            let scope = if super_down {
-                SearchScope::All
-            } else {
-                SearchScope::ActiveApp
-            };
-            self.open_palette_with_scope(scope);
-            // So the palette lands populated (chrome actions
-            // for an empty query) instead of blank.
-            self.refresh_search_results(state, path);
-            *handled = true;
-            return true;
-        }
         // Super+Shift+P is the fast path into live PiP selection. It must be
         // checked before familiar Win+P so the shifted chord cannot briefly
         // flash or toggle the projection sheet underneath the picker.
@@ -7641,7 +8449,9 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("p")
         {
-            let _ = self.open_capture_studio(ui::widget::CaptureMode::Pip);
+            if !repeat {
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Pip);
+            }
             *handled = true;
             return true;
         }
@@ -7653,9 +8463,11 @@ impl ShellOverlayHost {
             && s.eq_ignore_ascii_case("p")
             && let Some(chrome) = self.chrome.clone()
         {
-            let mut st = chrome.borrow_mut();
-            st.overlays.projection = !st.overlays.projection;
-            st.bump();
+            if !repeat {
+                let mut st = chrome.borrow_mut();
+                st.overlays.projection = !st.overlays.projection;
+                st.bump();
+            }
             *handled = true;
             return true;
         }
@@ -7664,12 +8476,12 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("r")
         {
-            if self.capture_studio.is_replay_active() {
+            if !repeat && self.capture_studio.is_replay_active() {
                 // A warming buffer deliberately accepts no speculative save;
                 // the chord is still shell-owned and the pill keeps saying
                 // Buffering until a decodable tail exists.
                 let _ = self.capture_studio.save_recent_replay();
-            } else if !self.capture_studio.is_recording_active() {
+            } else if !repeat && !self.capture_studio.is_recording_active() {
                 let _ = self.open_capture_studio(ui::widget::CaptureMode::Recording);
             }
             *handled = true;
@@ -7680,16 +8492,9 @@ impl ShellOverlayHost {
             && let Key::Character(s) = logical_key
             && s.eq_ignore_ascii_case("s")
         {
-            let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
-            *handled = true;
-            return true;
-        }
-        if matches!(logical_key, Key::Named(NamedKey::Tab))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let mut st = chrome.borrow_mut();
-            st.overlays.overview = !st.overlays.overview;
-            st.bump();
+            if !repeat {
+                let _ = self.open_capture_studio(ui::widget::CaptureMode::Screenshot);
+            }
             *handled = true;
             return true;
         }
@@ -7702,90 +8507,27 @@ impl ShellOverlayHost {
             && matches!(logical_key, Key::Named(NamedKey::Enter))
             && let Some(chrome) = self.chrome.clone()
         {
-            let mut st = chrome.borrow_mut();
-            crate::shell::window_actions::open_terminal(
-                &mut st,
-                crate::shell::window_actions::Destination::Beside,
-            );
+            if !repeat {
+                let mut st = chrome.borrow_mut();
+                crate::shell::window_actions::open_terminal(
+                    &mut st,
+                    crate::shell::window_actions::Destination::Beside,
+                );
+            }
             *handled = true;
             return true;
         }
         if super_down
             && let Key::Character(s) = logical_key
-            && self.handle_shell_window_open_chords(s.as_str(), super_down, state, path, handled)
-        {
-            return true;
-        }
-        self.handle_shell_focus_and_strip_chords(logical_key, super_down, shift_down, handled)
-    }
-
-    /// Focus/workspace stepping: Super+Left/Right along the strip,
-    /// Shift+Up/Down between strips, and unmodified-within-`is_mod`
-    /// Up/Down between workspaces. Split out of `handle_shell_mod_chords`.
-    fn handle_shell_focus_and_strip_chords(
-        &mut self,
-        logical_key: &Key,
-        super_down: bool,
-        shift_down: bool,
-        handled: &mut bool,
-    ) -> bool {
-        // Super+ArrowLeft/Right moves focus one window along the
-        // strip — Super only, not the `is_mod` alias the vertical
-        // pair uses: Ctrl+Left/Right is word-wise cursor motion in
-        // nearly every text field.
-        if super_down
-            && matches!(
-                logical_key,
-                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+            && self.handle_shell_window_open_chords(
+                s.as_str(),
+                super_down,
+                repeat,
+                state,
+                path,
+                handled,
             )
         {
-            let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowLeft)) {
-                -1
-            } else {
-                1
-            };
-            if self.step_focus_along_strip(dir) {
-                *handled = true;
-            }
-            return true;
-        }
-        // Shift+ArrowUp/Down move focus between strips —
-        // workspaces already own the unshifted pair.
-        if shift_down
-            && matches!(
-                logical_key,
-                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
-            )
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let dir = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
-                -1
-            } else {
-                1
-            };
-            let mut st = chrome.borrow_mut();
-            if st.switch_strip(dir) {
-                *handled = true;
-            }
-            return true;
-        }
-        // Cmd+ArrowUp / Cmd+ArrowDown — switch active workspace.
-        if matches!(logical_key, Key::Named(NamedKey::ArrowUp))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let mut st = chrome.borrow_mut();
-            if st.switch_workspace(-1) {
-                *handled = true;
-            }
-            return true;
-        }
-        if matches!(logical_key, Key::Named(NamedKey::ArrowDown))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let mut st = chrome.borrow_mut();
-            if st.switch_workspace(1) {
-                *handled = true;
-            }
             return true;
         }
         false
@@ -7800,6 +8542,7 @@ impl ShellOverlayHost {
         &mut self,
         s: &str,
         super_down: bool,
+        repeat: bool,
         state: &AutoCommit,
         path: &ObjId,
         handled: &mut bool,
@@ -7808,6 +8551,10 @@ impl ShellOverlayHost {
             // Chord form of the tab strip's "+": same
             // question, same picker.
             "t" | "T" => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 let group = self
                     .chrome
                     .as_ref()
@@ -7815,7 +8562,7 @@ impl ShellOverlayHost {
                 if let (Some(chrome), Some(group)) = (self.chrome.clone(), group) {
                     let mut st = chrome.borrow_mut();
                     st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
-                    st.search_scope = crate::shell::chrome_state::SearchScope::All;
+                    st.search_scope = crate::shell::chrome_state::SearchScope::Workspace;
                     st.bump();
                     drop(st);
                     self.active_kind_filter = app_kind_filter();
@@ -7831,6 +8578,10 @@ impl ShellOverlayHost {
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
@@ -7850,7 +8601,10 @@ impl ShellOverlayHost {
             // most browsers/terminals/editors, and the
             // shell would swallow it ahead of the client.
             "w" | "W" => {
-                if self.close_focused_tab() {
+                if repeat {
+                    *handled = true;
+                    true
+                } else if self.close_focused_tab() {
                     *handled = true;
                     true
                 } else {
@@ -7860,6 +8614,10 @@ impl ShellOverlayHost {
             // Super+D — a second instance of what you are
             // already looking at.
             "d" | "D" => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     if let Err(err) = crate::shell::window_actions::duplicate_active_tab(&mut st) {
@@ -7880,6 +8638,10 @@ impl ShellOverlayHost {
             // the right end. Super specifically, not
             // `is_mod`: Ctrl+S is save in nearly every app.
             "s" | "S" if super_down => {
+                if repeat {
+                    *handled = true;
+                    return true;
+                }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     let next = match st.wheel_summon() {
@@ -7956,8 +8718,36 @@ impl ShellOverlayHost {
             return true;
         }
         if st.overlays.quick_settings {
-            st.overlays.quick_settings = false;
-            st.bump();
+            // A drill-in is a nested page, so Escape follows its visible Back
+            // affordance before it dismisses the whole popover. This keeps
+            // keyboard navigation consistent with pointer navigation and
+            // prevents a single mistaken key from losing the user's place in
+            // Quick Settings.
+            if st.quick_settings.wifi_password.take().is_some() {
+                st.bump();
+            } else if !matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ) {
+                st.quick_settings.pop_level();
+                st.bump();
+            } else {
+                st.overlays.quick_settings = false;
+                st.bump();
+            }
+            *handled = true;
+            return true;
+        }
+        // Toasts are transient chrome rather than a modal, so they come
+        // after every real overlay in the dismissal ladder. Escape still
+        // needs to offer a keyboard path out for people who cannot reach the
+        // small close affordance with a pointer.
+        if let Some(id) = st
+            .notifications()
+            .last()
+            .map(|notification| notification.id)
+        {
+            st.dismiss_notification(id);
             *handled = true;
             return true;
         }
@@ -8362,10 +9152,56 @@ impl ShellOverlayHost {
     }
 
     fn handle_power_menu_click(&mut self, p: Point) -> bool {
-        match self.power_menu.click(self.rect, p) {
+        let outcome = self.power_menu.click(self.rect, p);
+        self.apply_power_menu_outcome(outcome)
+    }
+
+    fn apply_power_menu_outcome(&self, outcome: PowerMenuClick) -> bool {
+        match outcome {
             PowerMenuClick::Ignored => false,
             PowerMenuClick::Consumed => true,
+            PowerMenuClick::Lock => {
+                // Do not delegate this to logind: its lock-session request
+                // cannot establish qOS's lock scene or revoke our clients'
+                // focus/input.  The native loop drains this edge through its
+                // compositor-owned SessionManager instead.
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().request_session_lock();
+                } else {
+                    tracing::error!(
+                        target: "qos::power",
+                        "power-menu Lock requested without compositor chrome state"
+                    );
+                }
+                true
+            }
             PowerMenuClick::Execute(action) => {
+                let inhibit_scope = match action {
+                    os_actions::SessionAction::Logout => {
+                        Some(qos_power_mgmt::inhibit::INHIBIT_LOGOUT)
+                    }
+                    os_actions::SessionAction::SwitchUser => {
+                        Some(qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH)
+                    }
+                    _ => None,
+                };
+                if let Some(scope) = inhibit_scope
+                    && self.session_inhibitors.is_inhibited_for(scope)
+                {
+                    let reasons = self.session_inhibitors.active_reasons_for(scope);
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().push_notification(
+                            "Session action blocked",
+                            &format!(
+                                "{} — close the app or finish its work first.",
+                                reasons
+                                    .first()
+                                    .map_or("An app has unsaved work", String::as_str)
+                            ),
+                        );
+                    }
+                    return true;
+                }
                 std::thread::spawn(move || {
                     os_actions::log_result(
                         "session_action",
@@ -8471,7 +9307,14 @@ impl ShellOverlayHost {
         p: Point,
         current_level: &crate::shell::quick_settings::QsLevel,
     ) {
-        let back = self.qs_back_chevron_rect();
+        let back = if matches!(
+            current_level,
+            crate::shell::quick_settings::QsLevel::Notifications
+        ) {
+            self.qs_notification_back_rect()
+        } else {
+            self.qs_back_chevron_rect()
+        };
         // A passphrase prompt owns the pane while up, so
         // its controls (including back) are tested first.
         let prompt_up = self
@@ -8508,10 +9351,11 @@ impl ShellOverlayHost {
         }
         if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
             if let Some(chrome) = self.chrome.clone() {
+                let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
                 let outcome = self.qs_wifi_pane.handle_click(
                     p,
-                    self.quick_settings_rect(),
+                    panel,
                     &mut st.quick_settings,
                     self.qs_actions.as_ref(),
                 );
@@ -8527,12 +9371,11 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::Bluetooth
         ) {
             if let Some(chrome) = self.chrome.clone() {
+                let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
-                let outcome = self.qs_bluetooth_pane.handle_click(
-                    p,
-                    self.quick_settings_rect(),
-                    &st.quick_settings.bt_devices,
-                );
+                let outcome =
+                    self.qs_bluetooth_pane
+                        .handle_click(p, panel, &st.quick_settings.bt_devices);
                 match outcome {
                     DrillInOutcome::Back => st.quick_settings.pop_level(),
                     DrillInOutcome::Changed => {}
@@ -8542,10 +9385,11 @@ impl ShellOverlayHost {
             }
         } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
             if let Some(chrome) = self.chrome.clone() {
+                let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
                 let outcome = self.qs_vpn_pane.handle_click(
                     p,
-                    self.quick_settings_rect(),
+                    panel,
                     &mut st.quick_settings.vpns,
                     self.qs_actions.as_ref(),
                 );
@@ -8563,6 +9407,8 @@ impl ShellOverlayHost {
             && let Some(chrome) = self.chrome.clone()
         {
             chrome.borrow_mut().clear_notification_history();
+            self.qs_notification_history_start = 0;
+            self.qs_notification_wheel_remainder = 0.0;
         }
     }
     /// Routes a click through the root-page component, then applies the
@@ -8571,10 +9417,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let panel = self.quick_settings_rect();
         let action = {
             let mut st = chrome.borrow_mut();
-            self.qs_root
-                .handle_click(p, self.quick_settings_rect(), &mut st.quick_settings)
+            self.qs_root.handle_click(p, panel, &mut st.quick_settings)
         };
         self.apply_quick_settings_root_action(action, &chrome);
     }
@@ -8586,11 +9432,25 @@ impl ShellOverlayHost {
         &mut self,
         logical_key: &Key,
         backwards: bool,
+        control_down: bool,
         handled: &mut bool,
     ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        let notifications_open = {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Notifications
+                )
+        };
+        if notifications_open {
+            let consumed = self.handle_qs_notification_keyboard(logical_key);
+            *handled = consumed;
+            return consumed;
+        }
         let at_root = {
             let state = chrome.borrow();
             state.overlays.quick_settings
@@ -8603,6 +9463,32 @@ impl ShellOverlayHost {
             return false;
         }
 
+        // Edit mode shares the same keyboard contract as every reorderable
+        // qOS list: Ctrl+Up/Down moves the focused control, while ordinary
+        // arrows retain their range-adjustment meaning outside edit mode.
+        if control_down
+            && matches!(
+                logical_key,
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
+            )
+        {
+            let direction = if matches!(logical_key, Key::Named(NamedKey::ArrowUp)) {
+                -1
+            } else {
+                1
+            };
+            let changed = {
+                let state = chrome.borrow();
+                self.qs_root
+                    .reorder_focused(&state.quick_settings, direction)
+            };
+            if changed {
+                chrome.borrow_mut().bump();
+            }
+            *handled = changed;
+            return changed;
+        }
+
         if matches!(logical_key, Key::Named(NamedKey::Tab)) {
             let mut state = chrome.borrow_mut();
             self.qs_root.focus_next(&state.quick_settings, backwards);
@@ -8612,10 +9498,11 @@ impl ShellOverlayHost {
         }
 
         if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            let panel = self.quick_settings_rect();
             let action = {
                 let mut state = chrome.borrow_mut();
                 self.qs_root
-                    .activate_focused(self.quick_settings_rect(), &mut state.quick_settings)
+                    .activate_focused(panel, &mut state.quick_settings)
             };
             self.apply_quick_settings_root_action(action, &chrome);
             *handled = true;
@@ -8682,14 +9569,9 @@ impl ShellOverlayHost {
                 st.quick_settings
                     .push_level(crate::shell::quick_settings::QsLevel::Notifications);
                 st.bump();
-            }
-            RootAction::DisplayNotice => {
-                let mut st = chrome.borrow_mut();
-                st.push_notification(
-                    "Displays",
-                    "Display switching is available in Settings → Displays.",
-                );
-                st.bump();
+                drop(st);
+                self.qs_notification_history_start = 0;
+                self.qs_notification_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -8704,10 +9586,28 @@ impl ShellOverlayHost {
                     pending.power,
                 );
             }
-            RootAction::OpenSettings | RootAction::Privacy | RootAction::OpenPowerMenu => {
+            RootAction::LayoutChanged => {
+                chrome.borrow_mut().bump();
+            }
+            RootAction::OpenSettings => {
+                // This is the device settings affordance, not workspace
+                // sharing settings. Use the same launcher path as the app
+                // palette so placement, duplicate focusing, sandbox grants,
+                // loading feedback and failures all behave consistently.
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.quick_settings = false;
+                    st.bump();
+                }
+                let _ = crate::shell::search::providers::applications::launch_installed_app(
+                    chrome,
+                    "dev.qos.settings",
+                    "Settings",
+                );
+            }
+            RootAction::Privacy | RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
                 match action {
-                    RootAction::OpenSettings => st.overlays.ws_settings = true,
                     RootAction::Privacy => {
                         let active = st.quick_settings.privacy.active_media.clone();
                         if active.is_empty() {
@@ -9319,6 +10219,10 @@ impl ShellOverlayHost {
                 content_child,
                 taffy,
             );
+            // A visible tab/maximized close button begins its animation in
+            // the widget above. Commit that exact tab before this input
+            // dispatch returns so no revision or crash can restore it.
+            let _ = self.harvest_pending_tab_closes();
         }
 
         // Same step as Super+Left/Right, avoiding a park on the window
@@ -9387,7 +10291,13 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
-fn shortcut_chord_matches(
+/// Match a persisted shortcut against a live winit key event.
+///
+/// The native compositor uses this for session-owned bindings too. Keeping
+/// that path on the same key-name translation as the shortcut editor avoids
+/// claiming a configured named key before a client sees it and then failing
+/// to perform its action.
+pub(crate) fn shortcut_chord_matches(
     logical_key: &Key,
     modifiers: winit::event::Modifiers,
     chord: &settings_store::hardware::KeyChord,
@@ -9400,6 +10310,28 @@ fn shortcut_chord_matches(
         && chord.modifiers.contains("Ctrl") == state.control_key()
         && chord.modifiers.contains("Alt") == state.alt_key()
         && chord.modifiers.contains("Shift") == state.shift_key()
+}
+
+/// The sole configurable shortcut resolver.  The input pre-router owns a
+/// press exactly when this returns an action; the shell dispatcher performs
+/// that same action from the same result.
+fn configured_shortcut_action(
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+) -> Option<settings_store::hardware::ShortcutAction> {
+    shortcuts.bindings.iter().find_map(|(action, chord)| {
+        shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
+    })
+}
+
+#[cfg(test)]
+fn configured_shortcut_matches(
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+    logical_key: &Key,
+    modifiers: winit::event::Modifiers,
+) -> bool {
+    configured_shortcut_action(shortcuts, logical_key, modifiers).is_some()
 }
 
 fn shortcut_key_name(logical_key: &Key) -> Option<String> {
@@ -9421,6 +10353,7 @@ fn shortcut_key_name(logical_key: &Key) -> Option<String> {
             NamedKey::Backspace => "backspace",
             NamedKey::Delete => "delete",
             NamedKey::Insert => "insert",
+            NamedKey::PrintScreen => "printscreen",
             NamedKey::F1 => "f1",
             NamedKey::F2 => "f2",
             NamedKey::F3 => "f3",
@@ -9489,7 +10422,61 @@ fn shortcut_action_label(action: settings_store::hardware::ShortcutAction) -> &'
     }
 }
 
+/// Compact, non-editable reference shown below the configurable navigation
+/// pairs. Configurable global actions use their live chord so the guide never
+/// promises a default the user has rebound; the remaining entries correspond
+/// directly to unconditional branches in the production shell dispatcher.
+fn shortcut_reference_rows(
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> Vec<(&'static str, String)> {
+    use settings_store::hardware::ShortcutAction;
+    let chord = |action| {
+        shortcuts
+            .bindings
+            .get(&action)
+            .map(shortcut_guide_chord)
+            .unwrap_or_else(|| "Unassigned".into())
+    };
+    vec![
+        ("Screenshot", "Print Screen".into()),
+        ("Switch windows", "Alt+Tab".into()),
+        ("Close tab", "Alt+F4  /  Super+W".into()),
+        ("Change workspace", "Super+Page Up / Down".into()),
+        ("New window", "Super+N".into()),
+        ("Add tab here", "Super+T".into()),
+        ("Duplicate tab", "Super+D".into()),
+        ("Open terminal", "Super+Enter".into()),
+        ("Global search", chord(ShortcutAction::Search)),
+        ("Global search", "Super+Space".into()),
+        ("Overview", chord(ShortcutAction::WorkspaceOverview)),
+        ("Lock", chord(ShortcutAction::Lock)),
+        ("Quick Settings", chord(ShortcutAction::QuickSettings)),
+        ("This guide", chord(ShortcutAction::ShortcutHelp)),
+        ("Workspace wheel", "Super+S".into()),
+        ("Wireless display", "Super+P".into()),
+        ("Capture screenshot", "Super+Shift+S".into()),
+        ("Picture in picture", "Super+Shift+P".into()),
+        ("Save recent replay", "Super+Shift+R".into()),
+    ]
+}
+
+fn shortcut_guide_chord(chord: &settings_store::hardware::KeyChord) -> String {
+    let display = chord.display();
+    let Some((modifiers, key)) = display.rsplit_once('+') else {
+        return display;
+    };
+    if key.chars().count() == 1 {
+        format!("{modifiers}+{}", key.to_uppercase())
+    } else {
+        display
+    }
+}
+
 impl Widget for ShellOverlayHost {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
         self.interaction = environment;
         for child in self.children_mut() {
@@ -9550,6 +10537,10 @@ impl Widget for ShellOverlayHost {
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
         let content_dirty = self.content.update(doc, path);
+        // Normally drained synchronously by input dispatch. Keep this
+        // fallback for accessibility/synthetic activation paths that can
+        // queue a widget close without returning through pointer dispatch.
+        let close_dirty = self.harvest_pending_tab_closes();
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
@@ -9621,6 +10612,7 @@ impl Widget for ShellOverlayHost {
             chrome.borrow().tree_mut().commit_room_change();
         }
         content_dirty
+            || close_dirty
             || palette_dirty
             || sidebar_dirty
             || notifications_dropped
@@ -9644,7 +10636,14 @@ impl Widget for ShellOverlayHost {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         if let Some(onboarding) = self.onboarding.as_mut() {
-            let child = onboarding.build_layout(taffy, theme, node_map);
+            let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
+            // Setup remains an independent modal workflow, but Print Screen
+            // must be able to put Capture Studio above it without destroying
+            // the setup step.  Keep the capture node in this otherwise
+            // dedicated tree so the chooser has both geometry and an input
+            // target while OOBE is active.
+            let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
+            self.capture_node = Some(capture_node);
             let node = taffy
                 .new_with_children(
                     Style {
@@ -9654,9 +10653,9 @@ impl Widget for ShellOverlayHost {
                         },
                         ..Default::default()
                     },
-                    &[child],
+                    &[onboarding_node, capture_node],
                 )
-                .unwrap_or(child);
+                .unwrap_or(onboarding_node);
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
@@ -9818,6 +10817,13 @@ impl Widget for ShellOverlayHost {
             {
                 onboarding.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
             }
+            if let Some(capture_node) = self.capture_node {
+                self.capture_studio.apply_layout(
+                    taffy,
+                    capture_node,
+                    Point::new(self.rect.x0, self.rect.y0),
+                );
+            }
             return;
         }
         // One more pass if the card sized against a stale host width;
@@ -9942,7 +10948,19 @@ impl Widget for ShellOverlayHost {
     ) {
         if let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.capture_studio
+                .draw(scene, transform, text_renderer, theme, presence);
             return;
+        }
+        // The root needs the active text scale before any of its popover
+        // geometry is resolved below; otherwise a first frame at large type
+        // has a default-height card and clips its two-line controls.
+        self.qs_root.set_layout_text_scale(theme.text_scale);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            let available_height = (self.rect.height() - 64.0).max(1.0);
+            self.qs_root
+                .fit_root_layout_to_height(&state.quick_settings, available_height);
         }
         // Split into four layer passes — was one 372-line function; see
         // each helper (in the other `impl ShellOverlayHost` block) for
@@ -9992,6 +11010,39 @@ impl Widget for ShellOverlayHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Print Screen has an explicit arbitration policy. It must run before
+        // OOBE, portal and consent gates so Capture Studio can temporarily
+        // own input above those preserved workflows instead of being consumed
+        // by whichever modal was first in the dispatch chain.
+        if self.handle_print_screen_priority(event, handled) {
+            return;
+        }
+        // Capture Studio is deliberately above every ordinary session modal:
+        // it lets people capture a broken setup, chooser, or permission
+        // surface, then returns them to the intact workflow on Escape.
+        if self.capture_studio.is_open() {
+            if let Some(capture_node) = self.capture_node {
+                self.capture_studio.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    capture_node,
+                    taffy,
+                );
+            }
+            if !self.capture_studio.is_open()
+                && let Some(chrome) = self.chrome.as_ref()
+            {
+                chrome.borrow_mut().overlays.capture = false;
+            }
+            if *handled || self.capture_studio.modal_capture().is_some() {
+                return;
+            }
+        }
         if let Some(onboarding) = self.onboarding.as_mut() {
             let child_node = taffy
                 .children(node_id)
@@ -10011,8 +11062,23 @@ impl Widget for ShellOverlayHost {
             );
             // First-login is a modal machine surface. Even an event the
             // current control does not consume must never fall through to
-            // hidden desktop chrome.
-            *handled = true;
+            // hidden desktop chrome. Leave the one standard Tab path
+            // unclaimed, though: FrameBuilder owns global focus traversal,
+            // and must be allowed to advance between the onboarding
+            // controls. Modified Tab remains a shell/application chord and
+            // is consumed here with every other event.
+            let is_unmodified_tab = matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(event.logical_key, Key::Named(NamedKey::Tab))
+                        && !modifiers.state().control_key()
+                        && !modifiers.state().alt_key()
+                        && !modifiers.state().super_key()
+            );
+            if !is_unmodified_tab {
+                *handled = true;
+            }
             return;
         }
         // Split into named gates and dispatch stages — was one
@@ -10028,9 +11094,8 @@ impl Widget for ShellOverlayHost {
             let phase = match touch.phase {
                 winit::event::TouchPhase::Started => ui::gesture::GesturePhase::Begin,
                 winit::event::TouchPhase::Moved => ui::gesture::GesturePhase::Update,
-                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                    ui::gesture::GesturePhase::End
-                }
+                winit::event::TouchPhase::Ended => ui::gesture::GesturePhase::End,
+                winit::event::TouchPhase::Cancelled => ui::gesture::GesturePhase::Cancel,
             };
             let point = Point::new(
                 touch.location.x / scale_factor,
@@ -10116,33 +11181,6 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
-        if self.capture_studio.is_open() {
-            if let Some(capture_node) = self.capture_node {
-                self.capture_studio.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    capture_node,
-                    taffy,
-                );
-            }
-            if !self.capture_studio.is_open()
-                && let Some(chrome) = self.chrome.as_ref()
-            {
-                chrome.borrow_mut().overlays.capture = false;
-            }
-            // Source selection remains modal. Once recording begins the same
-            // widget becomes a tiny shell surface: only the pill itself owns
-            // pointer input, while apps remain fully interactive beneath it.
-            if *handled || self.capture_studio.modal_capture().is_some() {
-                return;
-            }
-        }
-
         if self
             .capture_mirrors
             .iter()
@@ -10215,6 +11253,12 @@ impl Widget for ShellOverlayHost {
         if self.route_room_activity_event(event, scale_factor, *modifiers, handled) {
             return;
         }
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.handle_qs_notification_wheel(*delta, scale_factor)
+        {
+            *handled = true;
+            return;
+        }
         if self.route_absorbable_pointer_and_toast_click(event, handled) {
             return;
         }
@@ -10238,11 +11282,19 @@ impl Widget for ShellOverlayHost {
                 KeyEvent {
                     logical_key,
                     state: ElementState::Pressed,
+                    repeat,
                     ..
                 },
             ..
         } = event
-            && self.handle_shell_keyboard_event(logical_key, *modifiers, state, path, handled)
+            && self.handle_shell_keyboard_event(
+                logical_key,
+                *modifiers,
+                *repeat,
+                state,
+                path,
+                handled,
+            )
         {
             return;
         }
@@ -10355,33 +11407,96 @@ impl Widget for ShellOverlayHost {
                     .push(self.room_activity.accessibility_snapshot()),
                 AccessibleOverlay::QuickSettings => {
                     if let Some(chrome) = self.chrome.as_ref() {
-                        root.children.push(
-                            self.qs_root
-                                .accessibility_snapshot(&chrome.borrow().quick_settings),
-                        );
+                        let state = chrome.borrow();
+                        if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Notifications
+                        ) {
+                            let total = state.notification_history().len();
+                            let visible = self.qs_notification_visible_rows();
+                            let start = self.qs_notification_history_start.min(total.saturating_sub(visible));
+                            let shown = visible.min(total.saturating_sub(start));
+                            let description = if total == 0 {
+                                "No retained notifications.".to_string()
+                            } else {
+                                format!(
+                                    "Showing newest notifications {} through {} of {total}. Use Up and Down to move one notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification.",
+                                    start.saturating_add(1),
+                                    start.saturating_add(shown),
+                                )
+                            };
+                            let items = state
+                                .notification_history()
+                                .iter()
+                                .rev()
+                                .skip(start)
+                                .take(shown)
+                                .enumerate()
+                                .map(|(index, notification)| {
+                                    let source = notification
+                                        .app_name
+                                        .as_deref()
+                                        .or(notification.app_id.as_deref())
+                                        .unwrap_or("System");
+                                    let item_description = if notification.body.is_empty() {
+                                        format!("From {source}")
+                                    } else {
+                                        format!("From {source}. {}", notification.body)
+                                    };
+                                    AccessNode::new(Role::ListItem)
+                                        .with_name(notification.title.clone())
+                                        .with_description(item_description)
+                                        .with_position(index.saturating_add(1), shown)
+                                })
+                                .collect();
+                            let history = AccessNode::new(Role::List)
+                                .with_name("Retained notifications")
+                                .with_children(items);
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name("Notifications")
+                                    .with_description(description)
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![history]),
+                            );
+                        } else {
+                            root.children.push(
+                                self.qs_root
+                                    .accessibility_snapshot(&state.quick_settings),
+                            );
+                        }
                     }
                 }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
-                    let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                    let shortcuts = &self.shortcut_config;
                     let chord = |action| {
                         shortcuts
                             .bindings
                             .get(&action)
-                            .map(settings_store::hardware::KeyChord::display)
+                            .map(shortcut_guide_chord)
                             .unwrap_or_else(|| "unassigned".to_string())
                     };
+                    let essential_summary = shortcut_reference_rows(&shortcuts)
+                        .into_iter()
+                        .map(|(label, chord)| format!("{label}: {chord}"))
+                        .collect::<Vec<_>>()
+                        .join("; ");
                     root.children.push(
                         AccessNode::new(Role::Dialog)
                             .with_name("Desktop keyboard and mouse guide")
                             .with_description(format!(
-                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; resize with {} or {}. Click a displayed shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
+                                "Focus windows with {} or {}; tabs with {} or {}; strips with {} or {}; workspaces with {} or {}; move groups with {} or {}; resize with {} or {}. Essential desktop actions: {essential_summary}. Click a displayed navigation shortcut to change it; Escape cancels a pending change. A changed row gets a curved-arrow button that restores its defaults. With a mouse, click windows and tabs, drag tabs or empty tab-bar space to reorder, and drag window gaps to resize. Escape closes this guide.",
                                 chord(ShortcutAction::FocusPreviousWindow),
                                 chord(ShortcutAction::FocusNextWindow),
                                 chord(ShortcutAction::PreviousTab),
                                 chord(ShortcutAction::NextTab),
                                 chord(ShortcutAction::PreviousStrip),
                                 chord(ShortcutAction::NextStrip),
+                                chord(ShortcutAction::PreviousWorkspace),
+                                chord(ShortcutAction::NextWorkspace),
+                                chord(ShortcutAction::MoveGroupLeft),
+                                chord(ShortcutAction::MoveGroupRight),
                                 chord(ShortcutAction::ResizeNarrower),
                                 chord(ShortcutAction::ResizeWider),
                             ))
@@ -10455,7 +11570,7 @@ impl Widget for ShellOverlayHost {
     /// child-node order (sidebar last so it paints over the chrome).
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(onboarding) = self.onboarding.as_ref() {
-            return vec![onboarding];
+            return vec![onboarding, &self.capture_studio];
         }
         let mut out: Vec<&dyn Widget> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
@@ -10478,7 +11593,7 @@ impl Widget for ShellOverlayHost {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if let Some(onboarding) = self.onboarding.as_mut() {
-            return vec![onboarding];
+            return vec![onboarding, &mut self.capture_studio];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
@@ -10579,11 +11694,13 @@ impl ShellOverlayHost {
     /// about the animation rather than about how busy the machine was between
     /// two statements.
     fn needs_animation_frame_at(&self, now: Instant) -> bool {
-        // Onboarding owns the screen while it is up, so its own animation is
-        // the only one that matters. Inside the pinned-clock method rather
-        // than the trait wrapper, so a test can reach this branch too.
+        // OOBE normally owns the screen, except when Capture Studio is
+        // temporarily above it. Keep both animation clocks alive so opening
+        // a screenshot picker during setup cannot freeze its entrance or
+        // leave an opaque frame behind after Escape.
         if let Some(onboarding) = self.onboarding.as_ref() {
-            return onboarding.needs_animation_frame();
+            return onboarding.needs_animation_frame()
+                || self.capture_studio.needs_animation_frame();
         }
         // Continuous redraws while any of the overview crossfade, the
         // workspace slide-swap, quick-settings open/close, or any inner
@@ -11011,7 +12128,12 @@ impl ShellOverlayHost {
 
         // Sidebar wheel: above desktop content, below every overlay
         // (including scrims) — it's part of the desktop, so it dims with it.
-        if let Some(sidebar) = self.sidebar.as_mut() {
+        // The wheel and overview are two ways to navigate the same workspace
+        // set. Showing both under one modal creates competing destinations;
+        // the wheel returns as soon as the overview closes.
+        if !self.overlay_flags().overview
+            && let Some(sidebar) = self.sidebar.as_mut()
+        {
             sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
 
@@ -11247,7 +12369,19 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        self.draw_strip_chrome(scene, transform, theme);
+        // Both drawn under the popovers, hidden under the overview since
+        // it isn't showing strips.
+        if !flags.overview {
+            // The window strip shares the panel's visual edge and looked
+            // like an inexplicable scrollbar beneath Quick Settings. Hide it
+            // throughout the close transition as well as while open.
+            if !flags.quick_settings && !self.qs_transition.is_visible(Instant::now()) {
+                let ribbon = self.strip_ribbon();
+                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            }
+            let rail = self.strip_rail();
+            rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
+        }
 
         let _ = self.draw_quick_settings_dropdown(scene, transform, text_renderer, theme, flags);
 
@@ -11260,10 +12394,22 @@ impl ShellOverlayHost {
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
-    fn draw_strip_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        if !self.overlay_flags().overview {
-            let ribbon = self.strip_ribbon();
-            ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+    fn draw_strip_chrome(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        flags: crate::shell::chrome_state::OverlayFlags,
+        quick_settings_transition_visible: bool,
+    ) {
+        if !flags.overview {
+            // Keep the retained section recording identical to the dense
+            // composition: Quick Settings visually replaces the ribbon for
+            // its complete open/close transition, while the rail remains.
+            if !flags.quick_settings && !quick_settings_transition_visible {
+                let ribbon = self.strip_ribbon();
+                ribbon.draw(scene, transform, theme, self.strip_ribbon_hover, 1.0);
+            }
             let rail = self.strip_rail();
             rail.draw(scene, transform, theme, self.strip_rail_hover, 1.0);
         }
@@ -11518,7 +12664,7 @@ impl ShellOverlayHost {
 
     fn shortcut_help_button_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x1 - 52.0,
+            self.rect.x1 - 156.0,
             self.rect.y1 - 52.0,
             self.rect.x1 - 16.0,
             self.rect.y1 - 16.0,
@@ -11526,9 +12672,11 @@ impl ShellOverlayHost {
     }
 
     fn shortcut_help_panel_rect(&self) -> Rect {
-        let width = (self.rect.width() - 40.0).clamp(0.0, 760.0);
-        let max_height = if width < 620.0 { 620.0 } else { 500.0 };
-        let height = (self.rect.height() - 40.0).clamp(0.0, max_height);
+        // The guide is a desktop reference, not only a binding editor.  The
+        // wider card leaves room for the fixed launch/capture actions without
+        // turning six navigation pairs into a tall, clipped single column.
+        let width = (self.rect.width() - 40.0).clamp(0.0, 1040.0);
+        let height = (self.rect.height() - 40.0).clamp(0.0, 620.0);
         Rect::new(
             self.rect.center().x - width / 2.0,
             self.rect.center().y - height / 2.0,
@@ -11554,7 +12702,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.overlay_flags().shortcut_help {
+        if self.shortcut_help_button_is_suppressed() {
             return;
         }
         let rect = self.shortcut_help_button_rect();
@@ -11567,10 +12715,11 @@ impl ShellOverlayHost {
             &RoundedRect::from_rect(rect, rect.height() / 2.0),
         );
         let size = theme.tokens.typography.scale.sm;
-        let (w, h) = text_renderer.measure("?", size, None);
+        let label = "Keyboard shortcuts  F1";
+        let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text_weighted(
             scene,
-            "?",
+            label,
             size,
             colors.text_primary,
             transform.pre_translate(
@@ -11583,6 +12732,33 @@ impl ShellOverlayHost {
             None,
             TextWeight::Semibold,
         );
+    }
+
+    /// The shortcut-guide affordance is persistent chrome, not modal
+    /// content. Keep it behind every temporary shell-owned surface: drawing
+    /// it later would let its label overlap a popover at small sizes or large
+    /// text, and would make it appear actionable while that surface owns
+    /// input.
+    fn shortcut_help_button_is_suppressed(&self) -> bool {
+        let flags = self.overlay_flags();
+        self.onboarding.is_some()
+            || flags.shortcut_help
+            || flags.desktop_tour
+            || flags.overview
+            || flags.quick_settings
+            || flags.ws_settings
+            || flags.collaborators
+            || flags.room_activity
+            || flags.projection
+            || flags.capture
+            || self.palette_visible
+            || self.palette_transition.is_visible(Instant::now())
+            || self.qs_transition.is_visible(Instant::now())
+            || self.power_menu.is_open()
+            || self.workspace_settings_overlay.member_sheet_is_open()
+            || self.file_picker_overlay.widget().is_some()
+            || self.peer_sync_overlay.visible()
+            || self.portal_dialogs.view().is_some()
     }
 
     #[allow(
@@ -11838,7 +13014,7 @@ impl ShellOverlayHost {
             }
             ui::InputModality::Keyboard | ui::InputModality::Pointer => {
                 use settings_store::hardware::ShortcutAction;
-                let shortcuts = settings_store::hardware::ShortcutConfig::load();
+                let shortcuts = &self.shortcut_config;
                 let defaults = settings_store::hardware::ShortcutConfig::default();
                 let binding = |action| {
                     let chord = shortcuts.bindings.get(&action);
@@ -11886,12 +13062,19 @@ impl ShellOverlayHost {
                         ShortcutAction::ResizeWider,
                     ),
                 ];
-                let narrow = body.width() < 560.0;
+                let compact = body.height() < 390.0;
+                // At compact height this first page teaches the layout model and the few
+                // recovery actions needed to keep using it. Compressing the complete reference
+                // into five tiny columns made every action technically visible but none of it
+                // comfortably readable; the full reference remains available at normal height
+                // and through command search.
+                let reference_columns = if compact { 2 } else { 4 };
+                let navigation_step = if compact { 50.0 } else { 62.0 };
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = if narrow { 0 } else { index % 2 };
-                    let row = if narrow { index } else { index / 2 };
+                    let column = index % 2;
+                    let row = index / 2;
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + usize_to_f64_lossy(row) * if narrow { 55.0 } else { 88.0 };
+                    let y = body.y0 + usize_to_f64_lossy(row) * navigation_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -11983,31 +13166,98 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let pointer_y = body.y0 + if narrow { 342.0 } else { 286.0 };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.neutral[3],
-                    None,
-                    &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
-                );
-                text_renderer.draw_text(
+                let essentials_y = body.y0 + if compact { 158.0 } else { 196.0 };
+                text_renderer.draw_text_weighted(
                     scene,
-                    "Mouse · click a window · drag a tab or group · drag an edge to resize · scroll horizontally to move the view",
-                    theme.tokens.typography.scale.xs,
-                    colors.text_dim,
-                    transform.pre_translate((body.x0, pointer_y + 20.0).into()),
-                    Some(f64_to_f32_lossy(body.width())),
+                    "Essential desktop actions",
+                    theme.tokens.typography.scale.sm,
+                    colors.text_primary,
+                    transform.pre_translate((body.x0, essentials_y).into()),
+                    None,
+                    TextWeight::Semibold,
                 );
-                if settings_store::hardware::DesktopControlsConfig::load().vim_mode {
+                let references = shortcut_reference_rows(&shortcuts);
+                let visible_references = if compact {
+                    &references[..references.len().min(8)]
+                } else {
+                    references.as_slice()
+                };
+                let reference_step = if compact { 32.0 } else { 38.0 };
+                let reference_offset = if compact { 24.0 } else { 28.0 };
+                for (index, (label, chord)) in visible_references.iter().enumerate() {
+                    let column = index % reference_columns;
+                    let row = index / reference_columns;
+                    let cell_width = body.width() / usize_to_f64_lossy(reference_columns);
+                    let x = body.x0 + usize_to_f64_lossy(column) * cell_width;
+                    let y =
+                        essentials_y + reference_offset + usize_to_f64_lossy(row) * reference_step;
                     text_renderer.draw_text(
                         scene,
-                        "Vim mode · h j k l",
+                        label,
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
-                        transform.pre_translate((body.x0, pointer_y + 50.0).into()),
-                        None,
+                        transform.pre_translate((x, y).into()),
+                        Some(f64_to_f32_lossy(cell_width - 12.0)),
                     );
+                    let chord_size = theme.tokens.typography.scale.xs;
+                    let (chord_width, chord_height) =
+                        text_renderer.measure(chord, chord_size, None);
+                    let pill = Rect::new(
+                        x,
+                        y + 15.0,
+                        (x + f64::from(chord_width) + 22.0).min(x + cell_width - 12.0),
+                        y + 15.0 + f64::from(chord_height) + 8.0,
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.neutral[2],
+                        None,
+                        &RoundedRect::from_rect(pill, 5.0),
+                    );
+                    text_renderer.draw_text_weighted(
+                        scene,
+                        chord,
+                        chord_size,
+                        colors.text_primary,
+                        transform.pre_translate((pill.x0 + 7.0, pill.y0 + 4.0).into()),
+                        Some(f64_to_f32_lossy((pill.width() - 14.0).max(0.0))),
+                        TextWeight::Semibold,
+                    );
+                }
+                let reference_rows = visible_references.len().div_ceil(reference_columns);
+                let pointer_y = essentials_y
+                    + reference_offset
+                    + usize_to_f64_lossy(reference_rows) * reference_step
+                    + 6.0;
+                if pointer_y + 34.0 < body.y1 {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        colors.neutral[3],
+                        None,
+                        &Rect::new(body.x0, pointer_y, body.x1, pointer_y + 1.0),
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        "Mouse · click a window · drag tabs or groups to reorder · drag an edge to resize · horizontal scroll moves the view",
+                        theme.tokens.typography.scale.xs,
+                        colors.text_dim,
+                        transform.pre_translate((body.x0, pointer_y + 20.0).into()),
+                        Some(f64_to_f32_lossy(body.width())),
+                    );
+                    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+                        && pointer_y + 58.0 < body.y1
+                    {
+                        text_renderer.draw_text(
+                            scene,
+                            "Vim mode · h j k l",
+                            theme.tokens.typography.scale.xs,
+                            colors.text_dim,
+                            transform.pre_translate((body.x0, pointer_y + 50.0).into()),
+                            None,
+                        );
+                    }
                 }
             }
         }
@@ -12458,6 +13708,18 @@ impl ShellOverlayHost {
             );
         } else if hover {
             scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
+        } else {
+            // A destination occupies the whole row, not only its label and
+            // avatar. The quiet surface makes that click target legible and
+            // gives the otherwise empty horizontal space a job.
+            scene.fill(Fill::NonZero, transform, colors.neutral[1], None, &rr);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                colors.border_standard.with_alpha_factor(0.55),
+                None,
+                &rr,
+            );
         }
 
         let pad = 14.0_f64;
@@ -13876,7 +15138,7 @@ impl ShellOverlayHost {
                         theme,
                         panel,
                         cursor,
-                        &qs.wifi_networks,
+                        qs,
                     );
                 }
                 true
@@ -13967,6 +15229,14 @@ impl ShellOverlayHost {
         Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
     }
 
+    /// Notifications is a dense, scrollable history, so it uses a textual
+    /// Back button instead of depending on a small icon surviving an enlarged
+    /// text scale. The hit target intentionally matches the painted control.
+    fn qs_notification_back_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x0 + 12.0, r.y0 + 8.0, r.x0 + 78.0, r.y0 + 40.0)
+    }
+
     /// Render the shell-owned, bounded session history. History deliberately
     /// lives in chrome rather than Settings: Settings owns delivery policy,
     /// while the shell is the only authority that actually received and
@@ -13978,15 +15248,56 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Notifications");
         let rect = self.quick_settings_rect();
         let colors = &theme.tokens.colors;
+        let back = self.qs_notification_back_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.lift(0.35),
+            None,
+            &RoundedRect::from_rect(back, 10.0),
+        );
+        let (back_w, back_h) =
+            text_renderer.measure("Back", theme.tokens.typography.scale.xs, None);
+        text_renderer.draw_text(
+            scene,
+            "Back",
+            theme.tokens.typography.scale.xs,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    back.center().x - f64::from(back_w) / 2.0,
+                    back.center().y - f64::from(back_h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+        let (title_w, title_h) =
+            text_renderer.measure("Notifications", theme.tokens.typography.scale.sm, None);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Notifications",
+            theme.tokens.typography.scale.sm,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(title_w) / 2.0,
+                    rect.y0 + 24.0 - f64::from(title_h) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
         let history = self
             .chrome
             .as_ref()
             .map(|chrome| chrome.borrow().notification_history().to_vec())
             .unwrap_or_default();
         if history.is_empty() {
+            self.qs_notification_history_start = 0;
             self.draw_qs_drill_in_empty(
                 scene,
                 transform,
@@ -13996,6 +15307,11 @@ impl ShellOverlayHost {
             );
             return;
         }
+
+        let visible_rows = self.qs_notification_visible_rows();
+        let _ = self.clamp_qs_notification_history_start(history.len());
+        let start = self.qs_notification_history_start;
+        let shown = visible_rows.min(history.len().saturating_sub(start));
 
         let clear = self.qs_notification_clear_rect();
         scene.fill(
@@ -14022,11 +15338,36 @@ impl ShellOverlayHost {
             None,
         );
 
-        let row_h = 70.0;
-        let max_rows = f64_floor_to_usize_saturating((rect.height() - 64.0) / row_h).max(1);
-        for (index, notification) in history.iter().rev().take(max_rows).enumerate() {
-            let y0 = rect.y0 + 54.0 + usize_to_f64_lossy(index) * row_h;
-            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + row_h - 6.0);
+        let position = if history.len() > visible_rows {
+            let first = start.saturating_add(1);
+            let last = start.saturating_add(shown);
+            format!("Newest {first}\u{2013}{last} of {}", history.len())
+        } else {
+            format!(
+                "{} notification{}",
+                history.len(),
+                if history.len() == 1 { "" } else { "s" }
+            )
+        };
+        text_renderer.draw_text(
+            scene,
+            &position,
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((rect.x0 + 12.0, rect.y0 + 52.0).into()),
+            Some(f64_to_f32_lossy(rect.width() - 24.0)),
+        );
+
+        const ROW_HEIGHT: f64 = 70.0;
+        for (index, notification) in history
+            .iter()
+            .rev()
+            .skip(start)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let y0 = rect.y0 + 76.0 + usize_to_f64_lossy(index) * ROW_HEIGHT;
+            let row = Rect::new(rect.x0 + 12.0, y0, rect.x1 - 12.0, y0 + ROW_HEIGHT - 6.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -14066,6 +15407,49 @@ impl ShellOverlayHost {
                     Some(f64_to_f32_lossy(row.width() - 24.0)),
                 );
             }
+        }
+
+        if history.len() > visible_rows {
+            let newer = if start > 0 {
+                "\u{2191} Newer"
+            } else {
+                "At newest"
+            };
+            let older = if start.saturating_add(shown) < history.len() {
+                "\u{2193} Older"
+            } else {
+                "At oldest"
+            };
+            let footer = Rect::new(
+                rect.x0 + 12.0,
+                rect.y1 - 44.0,
+                rect.x1 - 12.0,
+                rect.y1 - 10.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.lift(0.22),
+                None,
+                &RoundedRect::from_rect(footer, 9.0),
+            );
+            let hint = format!("{newer}   \u{00b7}   {older}");
+            let (hint_w, hint_h) =
+                text_renderer.measure(&hint, theme.tokens.typography.scale.xs, None);
+            text_renderer.draw_text(
+                scene,
+                &hint,
+                theme.tokens.typography.scale.xs,
+                colors.text_primary,
+                transform.pre_translate(
+                    (
+                        footer.center().x - f64::from(hint_w) / 2.0,
+                        footer.center().y - f64::from(hint_h) / 2.0,
+                    )
+                        .into(),
+                ),
+                Some(f64_to_f32_lossy(footer.width() - 16.0)),
+            );
         }
     }
 
@@ -14456,7 +15840,12 @@ impl ShellOverlayHost {
 
     /// Root power-profile geometry exposed for integration click routing tests.
     pub fn quick_settings_power_profile_geometry(&self) -> Rect {
-        QuickSettingsRoot::power_profile_geometry(self.quick_settings_rect())
+        let panel = self.quick_settings_rect();
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Rect::ZERO;
+        };
+        self.qs_root
+            .power_geometry(panel, &chrome.borrow().quick_settings)
     }
 }
 
@@ -15332,6 +16721,29 @@ mod palette_dispatch_tests {
         (host, chrome)
     }
 
+    fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest_path.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn configurable_shortcut_matcher_handles_named_keys_and_exact_modifiers() {
         let chord = settings_store::hardware::KeyChord::parse("Super+Shift+Left").unwrap();
@@ -15351,6 +16763,98 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn persistent_shortcut_hint_is_suppressed_by_modal_and_popover_surfaces() {
+        let (mut host, chrome) = host_with_chrome();
+        assert!(
+            !host.shortcut_help_button_is_suppressed(),
+            "the desktop affordance is visible with no transient shell surface"
+        );
+
+        chrome.borrow_mut().overlays.quick_settings = true;
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "the hint cannot paint across a popover"
+        );
+        chrome.borrow_mut().overlays.quick_settings = false;
+        host.qs_transition = ui::Transition::open();
+        host.qs_transition.set_open(
+            false,
+            Duration::from_millis(QS_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "a closing popover keeps the hint hidden until its last fading frame"
+        );
+        host.qs_transition = ui::Transition::closed();
+
+        host.palette_visible = true;
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "the hint cannot paint above a modal palette"
+        );
+        host.palette_visible = false;
+
+        host.power_menu.open();
+        assert!(
+            host.shortcut_help_button_is_suppressed(),
+            "the hint cannot paint above a session-action sheet"
+        );
+    }
+
+    #[test]
+    fn logout_and_switch_user_respect_their_portal_inhibitors() {
+        let (mut host, chrome) = host_with_chrome();
+        let registry = qos_power_mgmt::InhibitRegistry::new();
+        host.set_session_inhibitors(registry.clone());
+
+        let _logout_hold = registry.acquire_for(
+            "Editor has an unsaved document",
+            qos_power_mgmt::inhibit::INHIBIT_LOGOUT,
+        );
+        assert!(
+            host.apply_power_menu_outcome(PowerMenuClick::Execute(
+                os_actions::SessionAction::Logout
+            ))
+        );
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        assert!(
+            chrome.borrow().notifications()[0]
+                .body
+                .contains("Editor has an unsaved document")
+        );
+
+        let _switch_hold = registry.acquire_for(
+            "Call is sharing the screen",
+            qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
+        );
+        assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(
+            os_actions::SessionAction::SwitchUser
+        )));
+        assert_eq!(chrome.borrow().notifications().len(), 2);
+        assert!(
+            chrome.borrow().notifications()[1]
+                .body
+                .contains("Call is sharing the screen")
+        );
+    }
+
+    #[test]
+    fn logout_inhibitor_does_not_cross_block_switch_user() {
+        let (mut host, chrome) = host_with_chrome();
+        let registry = qos_power_mgmt::InhibitRegistry::new();
+        host.set_session_inhibitors(registry.clone());
+        let _logout_hold =
+            registry.acquire_for("Unsaved work", qos_power_mgmt::inhibit::INHIBIT_LOGOUT);
+
+        assert!(!registry.is_inhibited_for(qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH));
+        // Do not apply SwitchUser here: an uninhibited action deliberately
+        // reaches the real narrow OS wrapper. The registry assertion proves
+        // the scope separation without invoking a host session action.
+        assert!(chrome.borrow().notifications().is_empty());
+    }
+
+    #[test]
     fn shortcut_capture_builds_the_pressed_named_chord() {
         let modifiers = winit::event::Modifiers::from(
             winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::SHIFT,
@@ -15358,6 +16862,373 @@ mod palette_dispatch_tests {
         let chord = shortcut_chord_from_event(&Key::Named(NamedKey::ArrowDown), modifiers)
             .expect("a supported named key becomes a shortcut chord");
         assert_eq!(chord.display(), "Super+Shift+Down");
+    }
+
+    /// A launcher parent may exit after daemonising but before its GUI child
+    /// maps a toplevel. The opening acknowledgement retires immediately while
+    /// the placement promise remains available for the bounded handoff grace.
+    #[test]
+    #[serial_test::serial(launch_events)]
+    fn clean_launch_exit_retires_its_pending_open_notice() {
+        let (mut host, chrome) = host_with_chrome();
+        let package_id = "dev.qos.exit-before-window-fixture";
+        crate::shell::launcher::set_pending_placement(
+            package_id,
+            crate::compositor::tab_binding::Placement::NewGroup,
+        );
+        let notice = chrome.borrow_mut().push_notification_full(
+            crate::shell::notification::Notification::new("Opening Fixture", "Loading…")
+                .with_dismiss_after(std::time::Duration::from_secs(120)),
+        );
+        crate::shell::catalogue::note_pending_notice(package_id, notice);
+        crate::shell::launcher::push_event(crate::shell::launcher::LaunchEvent {
+            package_id: package_id.to_string(),
+            display_name: "Fixture".to_string(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind: crate::shell::launcher::LaunchEventKind::Exited,
+        });
+
+        assert!(host.drain_launch_events());
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .all(|n| n.id != notice),
+            "the terminal launch event must dismiss its opening notice"
+        );
+        assert!(
+            crate::shell::catalogue::pending_notice(package_id).is_none(),
+            "the pending id must be consumed along with the card"
+        );
+        assert_eq!(
+            crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
+            Some(crate::compositor::tab_binding::Placement::NewGroup),
+            "a daemonised GUI child must still inherit the requested placement"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    /// The application callback has already put the short recovery card on
+    /// screen when the launchpad adapter receives its refusal. The adapter's
+    /// detailed log path must not append a second card with raw ActionError
+    /// text (which can contain backend paths and embedded newlines).
+    #[test]
+    fn launchpad_refusal_reporting_does_not_duplicate_callback_notice() {
+        let (_host, chrome) = host_with_chrome();
+        let notice = chrome.borrow_mut().push_error_notification(
+            "Couldn't open Notes",
+            "The app launcher is unavailable. Open Applications and try again.",
+        );
+        let raw_error = crate::shell::search::action_api::ActionError::Refused(
+            "spawn failed: /run/user/1000/qos\nbackend detail".to_string(),
+        );
+
+        ShellOverlayHost::report_launchpad_action_failure("Notes", &raw_error);
+
+        let state = chrome.borrow();
+        assert_eq!(state.notifications().len(), 1);
+        assert_eq!(state.notifications()[0].id, notice);
+        assert_eq!(
+            state.notifications()[0].body,
+            "The app launcher is unavailable. Open Applications and try again."
+        );
+        assert!(
+            state
+                .notifications()
+                .iter()
+                .all(|notification| !notification.body.contains("/run/user")),
+            "raw adapter diagnostics must stay out of notification chrome"
+        );
+    }
+
+    #[test]
+    fn escape_dismisses_the_latest_launch_error_without_touching_layout() {
+        let (mut host, chrome) = host_with_chrome();
+        let notice = chrome.borrow_mut().push_error_notification(
+            "Couldn't open Notes",
+            "The app stopped before opening. Open Applications and try again.",
+        );
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(
+            chrome
+                .borrow()
+                .notifications()
+                .iter()
+                .all(|n| n.id != notice),
+            "Escape must dismiss the visible error"
+        );
+        assert_eq!(
+            chrome.borrow().tree().workspaces.len(),
+            WorkspaceTree::bootstrap_demo().workspaces.len(),
+            "dismissing a notification must not mutate the desktop layout"
+        );
+    }
+
+    #[test]
+    fn escape_returns_from_quick_settings_drill_in_before_closing_popover() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+        }
+
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        {
+            let state = chrome.borrow();
+            assert!(
+                state.overlays.quick_settings,
+                "Back must keep the popover open"
+            );
+            assert!(matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ));
+        }
+
+        handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(
+            !chrome.borrow().overlays.quick_settings,
+            "Escape on the root page closes Quick Settings"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_wifi_password_before_leaving_wifi_page() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+            state.quick_settings.wifi_password = Some(
+                crate::shell::quick_settings::WifiPasswordPrompt::new("Secure network"),
+            );
+        }
+
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        let state = chrome.borrow();
+        assert!(state.overlays.quick_settings);
+        assert!(state.quick_settings.wifi_password.is_none());
+        assert!(matches!(
+            state.quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Wifi
+        ));
+    }
+
+    #[test]
+    fn shortcut_reference_covers_every_production_essential() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let visible = rows
+            .iter()
+            .map(|(label, chord)| format!("{label}:{chord}"))
+            .collect::<Vec<_>>();
+        for expected in [
+            "Screenshot:Print Screen",
+            "Switch windows:Alt+Tab",
+            "Close tab:Alt+F4  /  Super+W",
+            "Change workspace:Super+Page Up / Down",
+            "New window:Super+N",
+            "Add tab here:Super+T",
+            "Duplicate tab:Super+D",
+            "Open terminal:Super+Enter",
+            "Global search:Super+K",
+            "Global search:Super+Space",
+            "Overview:Super+Tab",
+            "Lock:Super+L",
+            "Quick Settings:Super+Q",
+            "This guide:Super+/",
+            "Workspace wheel:Super+S",
+            "Wireless display:Super+P",
+            "Capture screenshot:Super+Shift+S",
+            "Picture in picture:Super+Shift+P",
+            "Save recent replay:Super+Shift+R",
+        ] {
+            assert!(
+                visible.iter().any(|row| row == expected),
+                "missing {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_reference_never_promises_a_rebound_default() {
+        let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
+        shortcuts
+            .set(
+                settings_store::hardware::ShortcutAction::Search,
+                settings_store::hardware::KeyChord::parse("Alt+G").unwrap(),
+            )
+            .unwrap();
+        let rows = shortcut_reference_rows(&shortcuts);
+        assert!(rows.contains(&("Global search", "Alt+G".into())));
+        assert!(!rows.contains(&("Global search", "Super+K".into())));
+    }
+
+    #[test]
+    fn compact_shortcut_reference_prioritises_recovery_actions() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let body_height = 360.0;
+        let essentials_y = 158.0;
+        let reference_offset = 24.0;
+        let reference_step = 32.0;
+        let visible = &rows[..rows.len().min(8)];
+        let final_row = visible.len().div_ceil(2).saturating_sub(1);
+        let final_pill_bottom =
+            essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 31.0;
+
+        assert_eq!(
+            rows.len(),
+            19,
+            "the complete reference remains available outside compact presentation"
+        );
+        assert!(
+            final_pill_bottom <= body_height,
+            "the final shortcut pill must remain inside a 960×540 guide body"
+        );
+        for essential in [
+            "Screenshot",
+            "Switch windows",
+            "Close tab",
+            "Change workspace",
+        ] {
+            assert!(visible.iter().any(|(label, _)| *label == essential));
+        }
+    }
+
+    #[test]
+    fn compact_shortcut_recovery_actions_fit_their_cells() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let mut renderer = TextRenderer::new();
+        let chord_size = Theme::dark().tokens.typography.scale.xs;
+        // A 960-wide viewport yields a 920-wide panel and 864-wide body. The
+        // compact guide uses two readable columns and shows its first eight recovery actions.
+        let available_text_width = 864.0 / 2.0 - 26.0;
+        for (_, chord) in rows.into_iter().take(8) {
+            let (width, _) = renderer.measure(&chord, chord_size, None);
+            assert!(
+                f64::from(width) <= available_text_width,
+                "{chord:?} must not clip inside the compact guide's key pill"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rebound_shortcut_is_claimed_before_a_focused_client() {
+        let mut shortcuts = settings_store::hardware::ShortcutConfig::default();
+        shortcuts
+            .set(
+                settings_store::hardware::ShortcutAction::Search,
+                settings_store::hardware::KeyChord::parse("Alt+G").unwrap(),
+            )
+            .unwrap();
+        let alt = winit::event::Modifiers::from(ModifiersState::ALT);
+        assert!(configured_shortcut_matches(
+            &shortcuts,
+            &Key::Character("g".into()),
+            alt,
+        ));
+        assert!(!configured_shortcut_matches(
+            &shortcuts,
+            &Key::Character("g".into()),
+            winit::event::Modifiers::default(),
+        ));
+    }
+
+    #[test]
+    fn effective_shortcut_handoff_rejects_reserved_or_ambiguous_tables() {
+        let (mut host, _) = host_with_chrome();
+        let mut reserved = settings_store::hardware::ShortcutConfig::default();
+        reserved.bindings.insert(
+            settings_store::hardware::ShortcutAction::Search,
+            settings_store::hardware::KeyChord {
+                modifiers: std::collections::BTreeSet::from(["Ctrl".into()]),
+                key: "f1".into(),
+            },
+        );
+        assert_eq!(
+            host.set_shortcut_config(reserved),
+            Err(settings_store::hardware::ShortcutConfigError::ReservedSystemKey)
+        );
+
+        let mut duplicate = settings_store::hardware::ShortcutConfig::default();
+        duplicate.bindings.insert(
+            settings_store::hardware::ShortcutAction::Search,
+            settings_store::hardware::KeyChord::parse("Ctrl+J").unwrap(),
+        );
+        duplicate.bindings.insert(
+            settings_store::hardware::ShortcutAction::NextTab,
+            settings_store::hardware::KeyChord::parse("Ctrl+J").unwrap(),
+        );
+        assert_eq!(
+            host.set_shortcut_config(duplicate),
+            Err(settings_store::hardware::ShortcutConfigError::Conflict(
+                settings_store::hardware::ShortcutAction::Search
+            ))
+        );
+    }
+
+    #[test]
+    fn shortcut_capture_explains_reserved_f1_and_print_screen() {
+        use settings_store::hardware::ShortcutAction;
+
+        let (mut host, _) = host_with_chrome();
+        for key in [Key::Named(NamedKey::F1), Key::Named(NamedKey::PrintScreen)] {
+            host.capture_shortcut_chord(ShortcutAction::Search, &key, Modifiers::default());
+            assert_eq!(
+                host.shortcut_rebind_message.as_deref(),
+                Some("F1 and Print Screen are reserved by the desktop."),
+                "{key:?} must not enter the editable shortcut table"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_triggered_shell_shortcuts_absorb_repeats_without_reopening() {
+        let (mut host, chrome) = host_with_chrome();
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            winit::event::Modifiers::default(),
+            true,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(
+            !chrome.borrow().overlays.shortcut_help,
+            "a repeated F1 must be consumed without toggling the guide"
+        );
+    }
+
+    #[test]
+    fn shortcut_accessibility_names_workspace_and_group_navigation() {
+        let (host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.shortcut_help = true;
+        let root = host.accessibility().expect("shell semantics");
+        let guide = root
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Desktop keyboard and mouse guide"))
+            .expect("guide dialog semantics");
+        let description = guide.description.as_deref().expect("guide description");
+        assert!(description.contains("workspaces with"));
+        assert!(description.contains("move groups with"));
+        assert!(description.contains("Screenshot: Print Screen"));
     }
 
     #[test]
@@ -15382,6 +17253,7 @@ mod palette_dispatch_tests {
         assert!(host.handle_shell_keyboard_event(
             &Key::Named(NamedKey::Escape),
             winit::event::Modifiers::default(),
+            false,
             &AutoCommit::new(),
             &automerge::ROOT,
             &mut key_handled,
@@ -15402,6 +17274,7 @@ mod palette_dispatch_tests {
         assert!(host.handle_shell_keyboard_event(
             &Key::Named(NamedKey::Tab),
             winit::event::Modifiers::default(),
+            false,
             &AutoCommit::new(),
             &automerge::ROOT,
             &mut handled,
@@ -15417,6 +17290,7 @@ mod palette_dispatch_tests {
         assert!(host.handle_shell_keyboard_event(
             &Key::Named(NamedKey::Enter),
             winit::event::Modifiers::default(),
+            false,
             &AutoCommit::new(),
             &automerge::ROOT,
             &mut handled,
@@ -15455,6 +17329,66 @@ mod palette_dispatch_tests {
         assert!(h.dispatch_palette_command("quick-settings.open"));
         assert!(chrome.borrow().overlays.quick_settings);
         assert!(!h.palette_visible);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn quick_settings_settings_opens_personal_settings_app_not_workspace_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_gui_fixture(tmp.path(), "dev.qos.settings", "Settings");
+        let launcher = tmp.path().join("record-launch.sh");
+        let launch_log = tmp.path().join("launch.log");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+                launch_log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&launcher).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&launcher, permissions).unwrap();
+
+        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
+        unsafe {
+            std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
+            std::env::set_var("QOS_LAUNCHER_BIN", &launcher);
+        }
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
+
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !launch_log.is_file() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let state = chrome.borrow();
+        assert!(!state.overlays.quick_settings, "the source popover closes");
+        assert!(
+            !state.overlays.ws_settings,
+            "device Settings must not be confused with workspace-sharing settings"
+        );
+        drop(state);
+        let log = std::fs::read_to_string(&launch_log).expect("Settings launch was recorded");
+        assert!(
+            log.contains("dev.qos.settings"),
+            "the ordinary app launcher must receive Personal Settings: {log:?}"
+        );
+
+        // SAFETY: restore process-wide overrides before releasing the serial test lock.
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+            std::env::remove_var("QOS_LAUNCHER_BIN");
+        }
+        crate::shell::launcher::set_wayland_socket_path(None);
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
     }
 
     #[test]
@@ -15887,6 +17821,7 @@ mod palette_dispatch_tests {
     /// retire the moment the window's own place says which app is coming —
     /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
     #[test]
+    #[serial_test::serial(launch_events)]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_chrome();
@@ -15968,6 +17903,7 @@ mod palette_dispatch_tests {
     /// The other way the hand-over can happen: an app fast enough to paint
     /// before the card was ever due still settles the open.
     #[test]
+    #[serial_test::serial(launch_events)]
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_chrome();
@@ -16382,7 +18318,8 @@ mod overlay_event_absorb_tests {
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{ElementState, MouseButton, WindowEvent};
+    use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
     /// Mock content widget recording every [`Widget::handle_event`] call by
     /// event-variant name, so tests can assert which events reached it —
@@ -16546,10 +18483,21 @@ mod overlay_event_absorb_tests {
     /// after a paint — what the shell does when a draw finds the palette
     /// needs more room than the last layout gave it.
     fn lay_out_host(host: &mut ShellOverlayHost, vw: f64, vh: f64) -> (TaffyTree<()>, NodeId) {
-        let theme = Theme::dark();
+        lay_out_host_with_theme(host, vw, vh, &Theme::dark())
+    }
+
+    /// Same compositor layout pass with the caller's production theme. This
+    /// keeps the visual-review fixtures honest for large-text and
+    /// high-contrast variants without changing their chrome state.
+    fn lay_out_host_with_theme(
+        host: &mut ShellOverlayHost,
+        vw: f64,
+        vh: f64,
+        theme: &Theme,
+    ) -> (TaffyTree<()>, NodeId) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = host.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy
             .new_with_children(
                 Style {
@@ -16725,6 +18673,16 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: PhysicalPosition::new(x, y),
+            force: None,
+            id,
+        })
+    }
+
     fn left_button_released() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -16753,6 +18711,113 @@ mod overlay_event_absorb_tests {
         handled
     }
 
+    #[test]
+    fn lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions() {
+        let mut h = build_harness();
+        h.chrome
+            .borrow_mut()
+            .tree_mut()
+            .append_empty_workspace("Second");
+        let active_before = h.chrome.borrow().tree().active;
+
+        // This is the exact lock-boundary call made by native.rs after it
+        // cancels the backend stream. Late End events must not turn a partial
+        // vertical three-finger swipe into a workspace switch.
+        for id in 0..3 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Started,
+                    400.0 + id as f64 * 8.0,
+                    500.0,
+                ),
+            );
+        }
+        for id in 0..3 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Moved,
+                    400.0 + id as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        h.host.cancel_direct_touch_gestures();
+        for id in 0..3 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Ended,
+                    400.0 + id as f64 * 8.0,
+                    350.0,
+                ),
+            );
+        }
+
+        // Physical removal runs through the raw Cancelled phase instead of
+        // the explicit lock helper. It must have the same no-terminal-action
+        // property even if stale End edges arrive after unplug.
+        for id in 10..13 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Started,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    500.0,
+                ),
+            );
+        }
+        for id in 10..13 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Moved,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        for id in 10..13 {
+            assert!(pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Cancelled,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0
+                )
+            ));
+        }
+        for id in 10..13 {
+            let _ = pump(
+                &mut h,
+                &touch_at(
+                    id,
+                    winit::event::TouchPhase::Ended,
+                    500.0 + (id - 10) as f64 * 8.0,
+                    350.0,
+                ),
+            );
+        }
+
+        let chrome = h.chrome.borrow();
+        assert_eq!(
+            chrome.tree().active,
+            active_before,
+            "a cancelled touch stream cannot switch workspaces"
+        );
+        assert!(
+            !chrome.overlays.overview,
+            "a cancelled touch stream cannot commit overview"
+        );
+    }
+
     fn left_button_pressed() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -16761,15 +18826,35 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    fn key_pressed(key: Key) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = key;
+        event.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
     /// One production paint, so the chip / scope rects a click router
     /// (or an assertion) reads are the ones that were actually drawn.
-    fn paint(h: &mut AbsorbHarness) {
-        let theme = Theme::dark();
+    fn paint_scene(h: &mut AbsorbHarness, theme: &Theme) -> vello::Scene {
         let mut tr = TextRenderer::new();
         let mut scene = vello::Scene::new();
         let presence = ui::presence::PresenceCtx::default();
         h.host
-            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        scene
+    }
+
+    fn paint(h: &mut AbsorbHarness) {
+        let _ = paint_scene(h, &Theme::dark());
     }
 
     /// Paints (see [`paint`]), then clicks a point.
@@ -16789,6 +18874,14 @@ mod overlay_event_absorb_tests {
         h.taffy = taffy;
         h.root_node = child;
         paint(h);
+    }
+
+    fn settle_with_theme(h: &mut AbsorbHarness, vw: f64, vh: f64, theme: &Theme) {
+        let _ = paint_scene(h, theme);
+        let (taffy, child) = lay_out_host_with_theme(&mut h.host, vw, vh, theme);
+        h.taffy = taffy;
+        h.root_node = child;
+        let _ = paint_scene(h, theme);
     }
 
     /// Every filter must be reachable at every width. An unpainted chip has
@@ -17099,6 +19192,207 @@ mod overlay_event_absorb_tests {
         );
     }
 
+    fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f64) {
+        {
+            let mut state = h.chrome.borrow_mut();
+            for index in 0..count {
+                state.push_notification_full(
+                    crate::shell::notification::Notification::new(
+                        format!("Sync error {index}"),
+                        format!("Detailed recovery guidance for retained notification {index}."),
+                    )
+                    .with_severity(crate::shell::notification::NotificationSeverity::Error),
+                );
+            }
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Notifications);
+            state.bump();
+        }
+        h.host.force_quick_settings_settled();
+        settle(h, vw, vh);
+        // The active toast cap moves the oldest records through the same
+        // history path that real errors take, instead of seeding internals.
+        assert!(
+            h.chrome.borrow().notification_history().len() > 7,
+            "fixture must exceed the old seven-row ceiling"
+        );
+    }
+
+    #[test]
+    fn notification_history_wheel_reaches_older_retained_errors_on_compact_layouts() {
+        for (vw, vh) in [(960.0, 540.0), (1280.0, 720.0)] {
+            let mut h = build_harness_sized(vw, vh);
+            open_notification_history(&mut h, 18, vw, vh);
+            let visible = h.host.qs_notification_visible_rows();
+            let total = h.chrome.borrow().notification_history().len();
+            assert!(visible < total, "the fixture must overflow at {vw}x{vh}");
+            let panel = h.host.quick_settings_rect();
+            assert!(
+                panel.y1 <= vh - 16.0,
+                "panel must stay within the bottom inset"
+            );
+
+            assert!(pump(&mut h, &cursor_moved_at(panel.center())));
+            let wheel = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
+            assert_eq!(
+                h.host.qs_notification_history_start, 2,
+                "wheel down reveals older retained errors at {vw}x{vh}"
+            );
+            assert!(
+                !h.log.borrow().iter().any(|entry| entry == "MouseWheel"),
+                "a notification-pane wheel must not scroll content underneath"
+            );
+        }
+    }
+
+    #[test]
+    fn notification_history_keyboard_reaches_both_ends_and_exposes_navigation() {
+        let mut h = build_harness_sized(1280.0, 720.0);
+        open_notification_history(&mut h, 22, 1280.0, 720.0);
+        let total = h.chrome.borrow().notification_history().len();
+        let max_start = h.host.qs_notification_max_start(total);
+
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+        assert_eq!(h.host.qs_notification_history_start, max_start);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
+        assert_eq!(h.host.qs_notification_history_start, 0);
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageDown))));
+        assert_eq!(
+            h.host.qs_notification_history_start,
+            h.host.qs_notification_visible_rows().min(max_start),
+            "Page Down advances by exactly the visible card count"
+        );
+
+        paint(&mut h);
+        let semantics = h.host.accessibility().expect("notification pane semantics");
+        let notifications = semantics
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Notifications"))
+            .expect("Quick Settings exposes the notification drill-in as a dialog");
+        assert!(
+            notifications
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("Page Up and Page Down")),
+            "screen-reader instructions must name retained-history navigation"
+        );
+        let retained = notifications
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Retained notifications"))
+            .expect("the visible notification cards must be exposed as a list");
+        assert_eq!(
+            retained.children.len(),
+            h.host.qs_notification_visible_rows().min(total),
+            "screen readers receive every currently visible title/body card"
+        );
+    }
+
+    #[test]
+    fn notification_history_back_control_stays_wide_and_clickable_with_large_text() {
+        let (width, height) = (960.0, 540.0);
+        let mut h = build_harness_sized(width, height);
+        open_notification_history(&mut h, 18, width, height);
+        let theme = Theme::dark().with_text_scale(1.3);
+        settle_with_theme(&mut h, width, height, &theme);
+        let back = h.host.qs_notification_back_rect();
+        let clear = h.host.qs_notification_clear_rect();
+        assert!(back.width() >= 64.0, "Back needs a textual tap target");
+        assert!(
+            back.intersect(clear).area() <= 0.0,
+            "Back and Clear must remain distinct at large text"
+        );
+        // The production click router uses this exact drill-in handler after
+        // it has classified the current Quick Settings level.
+        h.host.handle_shell_quick_settings_drill_in_click(
+            back.center(),
+            &crate::shell::quick_settings::QsLevel::Notifications,
+        );
+        assert!(matches!(
+            h.chrome.borrow().quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Root
+        ));
+    }
+
+    /// Keep visual review on the exact production draw path at 1:1 pixels.
+    /// This is intentionally opt-in because it needs a wgpu adapter and
+    /// creates review PNGs, but its fixture has more than the former
+    /// seven-card ceiling and exercises the same status/footer treatment as
+    /// the normal event tests above.
+    #[test]
+    #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
+    #[allow(
+        clippy::expect_used,
+        reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
+    )]
+    fn render_notification_history_accessibility_matrix_at_1x() {
+        use std::path::PathBuf;
+        use ui::offscreen::OffscreenRenderer;
+        use vello::peniko::Color;
+
+        let root = std::env::var_os("QOS_NOTIFICATION_HISTORY_SHOT_DIR").map_or_else(
+            || std::env::temp_dir().join("qos-notification-history-shots"),
+            PathBuf::from,
+        );
+        std::fs::create_dir_all(&root).expect("create notification-history screenshot directory");
+
+        for (layout, width, height, theme) in [
+            ("960x540-normal", 960_u32, 540_u32, Theme::dark()),
+            (
+                "960x540-large-text",
+                960_u32,
+                540_u32,
+                Theme::dark().with_text_scale(1.3),
+            ),
+            (
+                "1280x720-high-contrast",
+                1280_u32,
+                720_u32,
+                Theme::high_contrast().with_ui_scale(1.25),
+            ),
+        ] {
+            let mut h = build_harness_sized(f64::from(width), f64::from(height));
+            open_notification_history(&mut h, 18, f64::from(width), f64::from(height));
+            settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+            let panel = h.host.quick_settings_rect();
+            let visible = h.host.qs_notification_visible_rows();
+            let total = h.chrome.borrow().notification_history().len();
+            let max_start = h.host.qs_notification_max_start(total);
+            assert!(visible < total);
+            assert!(
+                panel.y1 <= f64::from(height) - 16.0,
+                "{layout}: panel must stay above the desktop bottom inset: {panel:?}"
+            );
+            assert!(
+                panel.y0 + 76.0 + usize_to_f64_lossy(visible) * 70.0 <= panel.y1 - 52.0,
+                "{layout}: cards must leave the visible navigation footer clear"
+            );
+            for (position, start) in [
+                ("newest", 0),
+                ("middle", max_start / 2),
+                ("oldest", max_start),
+            ] {
+                h.host.qs_notification_history_start = start;
+                let scene = paint_scene(&mut h, &theme);
+                let mut renderer = OffscreenRenderer::new(width, height);
+                renderer.render_png(
+                    &scene,
+                    Color::BLACK,
+                    root.join(format!("{layout}-{position}.png")),
+                );
+            }
+        }
+        println!("notification-history review PNGs: {}", root.display());
+    }
+
     #[test]
     fn overlay_absorbs_cursor_moved_inside_ws_settings() {
         let mut h = build_harness();
@@ -17215,7 +19509,7 @@ mod tests {
         );
     }
     use std::collections::HashMap as StdHashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::dpi::PhysicalPosition;
@@ -17475,8 +19769,14 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
-        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        build_harness_with_host(host, chrome)
+    }
 
+    fn build_harness_with_host(
+        mut host: ShellOverlayHost,
+        chrome: crate::shell::chrome_state::Chrome,
+    ) -> Harness {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
@@ -17499,8 +19799,8 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 Size {
-                    width: AvailableSpace::Definite(1600.0),
-                    height: AvailableSpace::Definite(900.0),
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(900.0),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -17753,6 +20053,365 @@ mod tests {
     }
 
     #[test]
+    fn print_screen_opens_screenshot_capture_without_modifiers() {
+        let mut h = build_harness();
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host.capture_studio.mode(),
+            ui::widget::CaptureMode::Screenshot
+        );
+        assert!(h.chrome.borrow().overlays.capture);
+    }
+
+    #[test]
+    fn print_screen_replaces_every_transient_desktop_surface_atomically() {
+        let mut h = build_harness();
+        h.host.palette_visible = true;
+        h.host.shortcut_guide_focus = Some(ShortcutGuideFocus::Done);
+        {
+            let mut state = h.chrome.borrow_mut();
+            state.set_wheel_summon(Some(Point::new(600.0, 400.0)));
+            state.overlays.shortcut_help = true;
+            state.overlays.overview = true;
+            state.overlays.quick_settings = true;
+            state.overlays.ws_settings = true;
+            state.overlays.collaborators = true;
+            state.overlays.room_activity = true;
+            state.push_notification("Update ready", "A transient toast");
+        }
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+
+        assert!(h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host.capture_studio.mode(),
+            ui::widget::CaptureMode::Screenshot
+        );
+        assert!(!h.host.palette_visible);
+        assert!(h.host.shortcut_guide_focus.is_none());
+        let state = h.chrome.borrow();
+        assert!(state.wheel_summon().is_none());
+        assert!(!state.overlays.shortcut_help);
+        assert!(!state.overlays.overview);
+        assert!(!state.overlays.quick_settings);
+        assert!(!state.overlays.ws_settings);
+        assert!(!state.overlays.collaborators);
+        assert!(!state.overlays.room_activity);
+        assert!(
+            state
+                .notifications()
+                .iter()
+                .any(|notification| notification.title == "Update ready"),
+            "taking a screenshot must not mutate a notification's lifecycle"
+        );
+    }
+
+    #[test]
+    fn print_screen_preserves_transactional_workflows_below_capture() {
+        let mut h = build_harness();
+        h.host.begin_wifi_password("qOS test network");
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("a".into())),
+            Modifiers::default()
+        ));
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(
+            h.chrome.borrow().quick_settings.wifi_password.is_some(),
+            "a typed Wi-Fi credential must not be discarded by Print Screen"
+        );
+        assert!(h.host.capture_studio.is_open());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.host.capture_studio.is_open());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("b".into())),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            h.chrome
+                .borrow()
+                .quick_settings
+                .wifi_password
+                .as_ref()
+                .map(|prompt| prompt.password.as_str()),
+            Some("ab"),
+            "after capture closes, the original credential field must regain its text focus and selection"
+        );
+
+        let mut permission = build_harness();
+        permission
+            .host
+            .workspace_settings_overlay
+            .open_remove_member_sheet("peer".to_string());
+        assert!(pump(
+            &mut permission,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(
+            permission
+                .host
+                .workspace_settings_overlay
+                .member_sheet_is_open(),
+            "a destructive member-removal confirmation must survive capture"
+        );
+        assert!(permission.host.capture_studio.is_open());
+
+        let mut rebind = build_harness();
+        rebind.host.shortcut_rebind =
+            Some(settings_store::hardware::ShortcutAction::FocusNextWindow);
+        assert!(pump(
+            &mut rebind,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            rebind.host.shortcut_rebind,
+            Some(settings_store::hardware::ShortcutAction::FocusNextWindow),
+            "a pending shortcut edit is a transaction, not transient guide chrome"
+        );
+        assert!(rebind.host.capture_studio.is_open());
+
+        let mut projection = build_harness();
+        projection.chrome.borrow_mut().overlays.projection = true;
+        assert!(pump(
+            &mut projection,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(projection.chrome.borrow().overlays.projection);
+        assert!(projection.host.capture_studio.is_open());
+
+        let mut nested = build_harness();
+        assert!(
+            nested
+                .host
+                .open_capture_studio(ui::widget::CaptureMode::Screenshot)
+        );
+        assert!(pump(
+            &mut nested,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(nested.host.capture_studio.is_open());
+    }
+
+    #[test]
+    fn print_screen_keeps_a_live_portal_file_chooser_open() {
+        use crate::portal::FilePickerSpawner as _;
+
+        let mut h = build_harness();
+        let pickers = crate::portal::FilePickerQueue::new();
+        h.host.set_portal_queues(
+            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+            pickers.clone(),
+        );
+        let workspace = h
+            .chrome
+            .borrow()
+            .tree()
+            .active_workspace()
+            .expect("demo desktop has an active workspace")
+            .id;
+        let (reply, _parked) = tokio::sync::oneshot::channel();
+        pickers.spawn(crate::portal::FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "org.qos.audit"),
+            title: "Save document".to_string(),
+            save: true,
+            multiple: false,
+            accept_label: None,
+            current_name: Some("before".to_string()),
+            filters: Vec::new(),
+            reply,
+        });
+        assert!(h.host.pump_file_picker());
+        assert!(h.host.file_picker().is_some());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("x".into())),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            h.host.file_picker().map(ui::widget::FilePicker::filename),
+            Some("beforex"),
+            "the Save name field owns text input before capture opens"
+        );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(
+            h.host.file_picker().is_some(),
+            "Print Screen must not silently cancel an app's parked portal request"
+        );
+        assert!(
+            h.host.capture_studio.is_open(),
+            "Capture Studio must become the temporary input owner above the live chooser"
+        );
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.host.capture_studio.is_open());
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("y".into())),
+            Modifiers::default()
+        ));
+        assert_eq!(
+            h.host.file_picker().map(ui::widget::FilePicker::filename),
+            Some("beforexy"),
+            "after capture closes, the exact prior Save field must regain keyboard input"
+        );
+    }
+
+    #[test]
+    fn print_screen_preserves_oobe_and_returns_to_the_same_step() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.desktop_tour = true;
+        h.host.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        let before = h
+            .host
+            .onboarding
+            .as_ref()
+            .expect("desktop tour activates onboarding")
+            .flow()
+            .screen();
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::PrintScreen)),
+            Modifiers::default()
+        ));
+        assert!(h.host.onboarding_active());
+        assert!(h.host.capture_studio.is_open());
+        assert!(
+            h.host.needs_animation_frame(),
+            "Capture Studio's entrance must keep repainting while it temporarily sits above OOBE"
+        );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.host.capture_studio.is_open());
+        assert_eq!(
+            h.host
+                .onboarding
+                .as_ref()
+                .expect("Capture Studio must not tear down OOBE")
+                .flow()
+                .screen(),
+            before,
+            "Escaping Capture Studio returns to the exact OOBE step being inspected"
+        );
+    }
+
+    #[test]
+    fn super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group() {
+        use crate::shell::chrome_state::{OpenTarget, SearchScope};
+        use crate::shell::search::ResourceKind;
+
+        let mut h = build_harness();
+        let group = crate::shell::window_actions::focused_group(&h.chrome.borrow())
+            .expect("demo workspace has a focused group");
+        let super_key = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Character("t".into())),
+            super_key
+        ));
+
+        let state = h.chrome.borrow();
+        assert_eq!(state.open_target, OpenTarget::Here(group));
+        assert_eq!(
+            state.search_scope,
+            SearchScope::Workspace,
+            "the keyboard twin of a group + must not reopen generic global search"
+        );
+        assert_eq!(
+            h.host.active_kind_filter,
+            vec![ResourceKind::Application, ResourceKind::HostApplication]
+        );
+        assert!(h.host.palette_visible());
+    }
+
+    #[test]
+    fn alt_tab_walks_the_window_strip_and_shift_reverses() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let (host, chrome) = crate::shell::build_nirios_overlay_host_with_chrome(&tree);
+        let mut h = build_harness_with_host(host, chrome);
+        let first = {
+            let state = h.chrome.borrow();
+            crate::compositor::client_input::cycle_active_window(&state.tree(), 1)
+                .expect("the demo strip contains another window")
+        };
+        let alt = Modifiers::from(ModifiersState::ALT);
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Tab)), alt));
+        {
+            let state = h.chrome.borrow();
+            let tree = state.tree();
+            assert_eq!(tree.active_group_for(first.0), Some(first.1));
+            let active_tab = tree
+                .active_workspace()
+                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == first.0))
+                .and_then(|strip| strip.window_groups.iter().find(|group| group.id == first.1))
+                .map(|group| group.active_tab);
+            assert_eq!(active_tab, Some(first.2));
+        }
+
+        let previous = {
+            let state = h.chrome.borrow();
+            crate::compositor::client_input::cycle_active_window(&state.tree(), -1)
+                .expect("the forward step can be reversed")
+        };
+        let alt_shift = Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Tab)),
+            alt_shift
+        ));
+        let state = h.chrome.borrow();
+        let tree = state.tree();
+        assert_eq!(tree.active_group_for(previous.0), Some(previous.1));
+        let active_tab = tree
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == previous.0))
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == previous.1)
+            })
+            .map(|group| group.active_tab);
+        assert_eq!(active_tab, Some(previous.2));
+    }
+
+    #[test]
     fn capture_entry_always_uses_the_requested_mode_instead_of_the_previous_one() {
         let mut h = build_harness();
         assert!(h.host.open_capture_studio(ui::widget::CaptureMode::Pip));
@@ -17984,8 +20643,8 @@ mod tests {
     /// ever in.
     fn adopt_rooms(h: &Harness) {
         let st = h.chrome.borrow();
-        let user = st.local_user_id.clone();
-        st.tree_mut().adopt_ownerless_workspaces(&user);
+        st.tree_mut()
+            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
     }
 
     /// The dropdown's subject is who is in this room, so it must offer both
@@ -18220,7 +20879,7 @@ mod tests {
     }
 
     /// Opening the palette with a stale query must both focus the input
-    /// and clear it. Drives the production Ctrl+K path through
+    /// and clear it. Drives the configured Super+K path through
     /// `handle_event`.
     #[test]
     fn toggle_palette_focuses_input() {
@@ -18231,17 +20890,20 @@ mod tests {
         assert!(!h.host.palette.is_focused(), "palette must start unfocused");
         assert!(!h.host.palette_visible(), "palette must start hidden");
 
-        let mods = Modifiers::from(ModifiersState::CONTROL);
+        h.host
+            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .unwrap();
+        let mods = Modifiers::from(ModifiersState::SUPER);
         let handled = pump(&mut h, &key_press(Key::Character("k".into())), mods);
 
-        assert!(handled, "Ctrl+K must be consumed by the overlay host");
+        assert!(handled, "Super+K must be consumed by the overlay host");
         assert!(
             h.host.palette_visible(),
-            "Ctrl+K must open the global-search palette"
+            "Super+K must open the global-search palette"
         );
         assert!(
             h.host.palette.is_focused(),
-            "opening the palette via Ctrl+K must focus its input \
+            "opening the palette via Super+K must focus its input \
              (so the very first keystroke after open lands in the search box)"
         );
         assert_eq!(
@@ -18279,13 +20941,11 @@ mod tests {
         .unwrap();
     }
 
-    /// `Ctrl+K` scopes to the focused app (Notes, from `bootstrap_demo`,
-    /// which `NotesProvider` claims via `owns_tab`) so an installed-but-
-    /// unopened app is not among its answers; `Super+K` is the global
-    /// surface and must offer it.
+    /// The configured Search action opens the global surface and reaches
+    /// installed apps, rather than relying on a legacy hard-coded chord.
     #[test]
     #[serial_test::serial(process_env)]
-    fn ctrl_k_scopes_to_the_focused_app_and_super_k_reaches_installed_apps() {
+    fn configured_search_reaches_installed_apps() {
         use crate::shell::chrome_state::SearchScope;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -18295,47 +20955,13 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
-        // Precondition: the focused tab must be provider-owned, or
-        // `ActiveApp` excludes nothing and the test passes vacuously.
-        let owner = {
-            let st = h.chrome.borrow();
-            active_tab_provider_id(&st, &h.host.search_registry)
-        };
-        assert_eq!(
-            owner.as_deref(),
-            Some("notes"),
-            "fixture precondition: the focused tab must be owned by a \
-             provider, otherwise ActiveApp scope excludes nothing"
-        );
-
+        h.host
+            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .unwrap();
         let doc = AutoCommit::new();
 
-        // Ctrl+K: scoped to the app in front of you.
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), ctrl));
-        assert_eq!(
-            h.chrome.borrow().search_scope,
-            SearchScope::ActiveApp,
-            "Ctrl+K searches within the focused app"
-        );
-        h.host.palette.set_query("zzyzx");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
-        assert!(
-            !h.host
-                .search_results
-                .iter()
-                .any(|r| r.provider_id == "applications"),
-            "scoped to Notes, an app that is not open is not an answer; got {:?}",
-            h.host
-                .search_results
-                .iter()
-                .map(|r| (&r.provider_id, &r.title))
-                .collect::<Vec<_>>()
-        );
-
-        // Super+K: the global surface. Closed first so the chord opens
-        // rather than toggles the already-open palette shut.
-        h.host.palette_visible = false;
+        // Super+K is the default Search action.  Any rebind goes through the
+        // same effective-action resolver used by this dispatcher.
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(
@@ -18370,16 +20996,19 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// Ctrl+K scoped-search must reach the focused app's own *content*,
-    /// not just its tab title. `nir` appears only in the note's body, so
+    /// Search must reach the focused app's own *content*, not just its tab
+    /// title. `nir` appears only in the note's body, so
     /// a provider looking it up by tab id rather than by document
     /// answers nothing.
     #[test]
-    fn ctrl_k_finds_a_word_that_only_appears_in_the_notes_body() {
+    fn configured_search_finds_a_word_that_only_appears_in_the_notes_body() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::notes_app::NotesApp;
 
         let mut h = build_harness();
+        h.host
+            .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+            .unwrap();
         let doc = AutoCommit::new();
         // The document as `TileHost::sync` hands it to the app every
         // frame: the tab's own record.
@@ -18396,9 +21025,9 @@ mod tests {
             notes.sync(d, &automerge::ROOT);
         });
 
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), ctrl));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
         h.host.palette.set_query("nir");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
@@ -18826,6 +21455,55 @@ mod tests {
              (got {MODAL_SURFACE_ALPHA})"
         );
     }
+
+    /// A History Open action can fail before a process exists (for example,
+    /// after its app was uninstalled). That refusal must consume any staged
+    /// placement and leave one finite, bounded recovery notice for retry.
+    #[test]
+    #[serial_test::serial(launch_events)]
+    fn room_activity_preflight_failure_clears_placement_and_emits_one_notice() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let app_id = "org.qos.missing-history-fixture-9f1e";
+        crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_pending_placement(
+            app_id,
+            crate::compositor::tab_binding::Placement::NewGroup,
+        );
+        let target = ui::HistoryResourceTarget {
+            app_id: Some(app_id.to_string()),
+            app_label: Some("Missing Notes".to_string()),
+            id: "notes.page:missing".to_string(),
+            kind: "page".to_string(),
+            label: "Missing Notes".to_string(),
+        };
+
+        ShellOverlayHost::open_room_activity_target(&chrome, &target);
+
+        assert!(
+            crate::shell::launcher::placement_for_toplevel(app_id, 91_001).is_none(),
+            "a preflight refusal must not place a later unrelated toplevel"
+        );
+        let state = chrome.borrow();
+        assert_eq!(state.notifications().len(), 1);
+        let notice = &state.notifications()[0];
+        assert_eq!(notice.title, "Couldn't open Missing Notes");
+        assert_eq!(
+            notice.body,
+            "This app is no longer installed. Refresh the app list and try again."
+        );
+        assert_eq!(
+            notice.severity,
+            crate::shell::notification::NotificationSeverity::Error
+        );
+        assert_eq!(
+            notice.dismiss_after,
+            crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME
+        );
+        assert!(notice.body.len() <= 120);
+        assert!(!notice.body.contains('\n'));
+        drop(state);
+        crate::shell::launcher::clear_pending_placements();
+    }
 }
 
 #[cfg(test)]
@@ -19014,6 +21692,66 @@ mod maximize_harvest_tests {
             "no-op harvest must not overwrite persisted true with widget default",
         );
     }
+
+    #[test]
+    fn set_group_widths_flushes_the_layout_to_disk() {
+        let (mut tree, strip_id, group_id) = one_group_tree(false);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert_eq!(host.set_group_widths(600), vec![group_id]);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("width writeback creates valid durable state");
+        let group = restarted.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+            })
+            .expect("persisted group");
+        assert_eq!(
+            group.width,
+            StateWidth::Fraction(600),
+            "a control-driven width change must survive restart"
+        );
+    }
+
+    #[test]
+    fn resize_focused_group_flushes_the_layout_to_disk() {
+        let (mut tree, strip_id, group_id) = one_group_tree(false);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert!(host.resize_focused_group(50));
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("keyboard width writeback creates valid durable state");
+        let group = restarted.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+            })
+            .expect("persisted group");
+        assert_eq!(
+            group.width,
+            StateWidth::Fraction(ui::widget::WIDTH_NORMAL_PERMILLE.saturating_add(50)),
+            "a keyboard resize must survive restart"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -19025,7 +21763,7 @@ mod resync_strips_tests {
     use super::*;
     use crate::shell::build_nirios_overlay_host_with_chrome;
     use crate::shell::state::{
-        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
+        AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
         WorkspaceTree,
     };
@@ -19182,6 +21920,556 @@ mod resync_strips_tests {
             host.group_at_for_tests(strip_id, 2).is_none(),
             "removed group dropped from row"
         );
+    }
+
+    #[test]
+    fn resync_reorders_existing_groups_and_tabs_after_a_document_revision() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let strip = tree
+            .workspaces
+            .first_mut()
+            .and_then(|workspace| {
+                workspace
+                    .strips
+                    .iter_mut()
+                    .find(|strip| strip.id == strip_id)
+            })
+            .expect("seed strip");
+        let first = strip
+            .window_groups
+            .iter_mut()
+            .find(|group| group.id == first_group)
+            .expect("seed group");
+        first.tabs.extend([
+            Tab {
+                id: 2,
+                title: "Second".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Browser,
+                    label: "second".into(),
+                },
+            },
+            Tab {
+                id: 3,
+                title: "Third".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Terminal,
+                    label: "third".into(),
+                },
+            },
+        ]);
+        strip.window_groups.push(make_stub_group(201, "Other-A"));
+        strip.window_groups.push(make_stub_group(202, "Other-B"));
+        tree.seed_doc_from_cache();
+
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert_eq!(
+            host.group_row_mut_for_tests(strip_id)
+                .expect("live row")
+                .group_ids(),
+            vec![first_group, 201, 202],
+            "precondition: boot row follows the seed order"
+        );
+
+        // This models a later peer/document revision: all ids are still
+        // present, so the old membership-only resync would have been a
+        // no-op and continued painting the previous topology.
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            assert!(tree.reorder_group_within_strip(strip_id, 202, 0));
+            assert!(tree.reorder_tab_within_group(first_group, 2, 0));
+            drop(tree);
+            st.bump();
+        }
+        assert!(
+            host.take_structure_dirty(),
+            "document order change must dirty the live structure"
+        );
+
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("live row after revision");
+        assert_eq!(
+            row.group_ids(),
+            vec![202, first_group, 201],
+            "existing groups follow the replicated strip order without a restart"
+        );
+        let first = row
+            .groups
+            .iter()
+            .find(|group| group.id == first_group)
+            .expect("reordered group still mounted");
+        assert_eq!(
+            first.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![3, 1, 2],
+            "tab pills and their hosts follow the replicated order together"
+        );
+        assert_eq!(
+            first.tile_kind_labels_for_tests(),
+            vec!["Terminal", "Settings", "Browser"],
+            "the content hosts moved with their matching tab pills"
+        );
+        assert_eq!(
+            first.active_tab_id(),
+            1,
+            "a reordering revision must preserve this device's selected tab"
+        );
+
+        // Exercise the reverse direction too. A local drag already moves
+        // the widget before committing the tree; this is the later
+        // replicated/restart path where the tree has to move it back.
+        {
+            let mut st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            assert!(tree.reorder_group_within_strip(strip_id, 202, 2));
+            assert!(tree.reorder_tab_within_group(first_group, 0, 2));
+            drop(tree);
+            st.bump();
+        }
+        assert!(
+            host.take_structure_dirty(),
+            "reverse document order change must also dirty the live structure"
+        );
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("live row after reverse revision");
+        assert_eq!(row.group_ids(), vec![first_group, 201, 202]);
+        let first = row
+            .groups
+            .iter()
+            .find(|group| group.id == first_group)
+            .expect("restored group still mounted");
+        assert_eq!(
+            first.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(first.active_tab_id(), 1);
+
+        // The result has to be durable, not just a live widget permutation.
+        chrome.borrow().tree().flush_to_disk();
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("reordered layout survives a process restart");
+        let strip = restarted.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .expect("persisted strip");
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![first_group, 201, 202]
+        );
+        let first = strip
+            .window_groups
+            .iter()
+            .find(|group| group.id == first_group)
+            .expect("persisted first group");
+        assert_eq!(
+            first.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn stale_focus_target_cannot_write_a_removed_tab_into_the_tree() {
+        let (tree, strip_id, group_id) = one_group_seed();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert!(
+            !host.focus_window_on_strip(strip_id, group_id, 99),
+            "a target absent from the live row is stale, not a focus change"
+        );
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let group = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == group_id)
+            .expect("seed group remains");
+        assert_eq!(
+            group.active_tab, 1,
+            "stale keyboard/rail focus cannot leave durable state pointing at a deleted tab"
+        );
+        assert_eq!(
+            tree.active_group_for(strip_id),
+            Some(group_id),
+            "stale focus must not dislodge the selected group either"
+        );
+        drop(tree);
+        drop(state);
+
+        // The inverse race is just as important: a close may be durable
+        // before the next widget resync, leaving the old tab momentarily
+        // mounted. Its stale click/chord must still be rejected by the tree.
+        {
+            let state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            tree.workspaces[0].strips[0].window_groups.clear();
+            tree.active_group.remove(&strip_id);
+        }
+        assert!(
+            !host.focus_window_on_strip(strip_id, group_id, 1),
+            "a tab left live during close cannot recreate durable selection"
+        );
+        let state = chrome.borrow();
+        assert_eq!(
+            state.tree().active_group_for(strip_id),
+            None,
+            "a missing group remains unselected until the resync drops its widget"
+        );
+    }
+
+    #[test]
+    fn rail_or_keyboard_focus_is_flushed_before_restart() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let second_group = 202;
+        let second_tab = 1_202;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(second_group, "Second"));
+        tree.persist_path = Some(state_path.clone());
+        tree.flush_to_disk();
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert!(host.focus_window_on_strip(strip_id, second_group, second_tab));
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("focused window is restartable");
+        assert_eq!(restarted.active_group_for(strip_id), Some(second_group));
+        let group = restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == second_group)
+            .expect("second group");
+        assert_eq!(group.active_tab, second_tab);
+        assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
+    }
+
+    #[test]
+    fn pointer_group_focus_is_flushed_before_restart() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let second_group = 202;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(second_group, "Second"));
+        tree.persist_path = Some(state_path.clone());
+        tree.flush_to_disk();
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = StdHashMap::new();
+        let child = host.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(900.0),
+                },
+            )
+            .unwrap();
+        host.apply_layout(&taffy, child, Point::ORIGIN);
+        let point = host
+            .group_at_for_tests(strip_id, 1)
+            .expect("second group")
+            .get_rect()
+            .center();
+
+        host.stamp_active_group_from_click(point);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("pointer focus is restartable");
+        assert_eq!(restarted.active_group_for(strip_id), Some(second_group));
+        assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
+    }
+
+    #[test]
+    fn active_tab_writeback_is_flushed_before_the_next_frame() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(Tab {
+                id: 2,
+                title: "Second".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Browser,
+                    label: "second".into(),
+                },
+            });
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.focus_window_widget(strip_id, group_id, 2));
+
+        host.flush_active_tab_writeback();
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("selection writeback creates valid durable state");
+        assert_eq!(
+            restarted.workspaces[0].strips[0].window_groups[0].active_tab, 2,
+            "a crash after the input boundary must restore the newly selected tab"
+        );
+        assert_eq!(restarted.active_group_for(strip_id), Some(group_id));
+    }
+
+    #[test]
+    fn accepted_room_reorder_resyncs_existing_remote_groups_and_tabs() {
+        const HOST_SALT: u16 = 0x2222;
+        const PEER_SALT: u16 = 0x3333;
+        let remote_id = |counter| (u64::from(PEER_SALT) << 48) | counter;
+
+        let mut local = WorkspaceTree::bootstrap_demo();
+        local.set_salt_override(HOST_SALT);
+        let local_workspace = local.active;
+        let room = local.room_of(local_workspace).expect("local room");
+        local.adopt_ownerless_workspaces(&"owner".to_string());
+
+        let mut peer = WorkspaceTree::bootstrap_demo();
+        peer.set_salt_override(PEER_SALT);
+        let peer_workspace = peer.active;
+        assert!(peer.set_room(peer_workspace, room));
+        // The fixed ids below model windows this peer owns in the shared
+        // room. They predate this process's global allocator, so make the
+        // fixture publish them instead of treating them as pre-join tabs.
+        peer.room_share_floor.remove(&room);
+        // Matching governance makes this a legitimate member layout
+        // update, not a rejected attempt to replace the room owner.
+        peer.adopt_ownerless_workspaces(&"owner".to_string());
+        let remote_strip = StripId::from(remote_id(1));
+        let remote_group = remote_id(2);
+        let tab = |id, title: &str, kind| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::Stub {
+                kind,
+                label: title.into(),
+            },
+        };
+        peer.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == peer_workspace)
+            .expect("peer workspace")
+            .strips = vec![Strip {
+            id: remote_strip,
+            name: "Remote".into(),
+            window_groups: vec![
+                StateGroup {
+                    id: remote_group,
+                    tabs: vec![
+                        tab(remote_id(10), "A", AppKind::Other("Remote".into())),
+                        tab(remote_id(11), "B", AppKind::Browser),
+                        tab(remote_id(12), "C", AppKind::Terminal),
+                    ],
+                    active_tab: remote_id(10),
+                    width: StateWidth::Normal,
+                    maximized: false,
+                },
+                make_stub_group(remote_id(3), "Remote-B"),
+                make_stub_group(remote_id(4), "Remote-C"),
+            ],
+        }];
+
+        let seed = peer
+            .export_room_changes_since(room, &[])
+            .expect("peer room changes");
+        assert!(
+            local
+                .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
+                .expect("legitimate remote layout merges"),
+            "initial remote layout is accepted"
+        );
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&local);
+        let peer_base = peer.room_heads(room);
+        assert!(peer.reorder_group_within_strip(remote_strip, remote_id(4), 0));
+        assert!(peer.reorder_tab_within_group(remote_group, 2, 0));
+        let delta = peer
+            .export_room_changes_since(room, &peer_base)
+            .expect("reorder room delta");
+        {
+            let mut state = chrome.borrow_mut();
+            assert!(
+                state
+                    .tree_mut()
+                    .apply_room_changes(room, &delta, &PeerOrigin::hub(1))
+                    .expect("accepted reorder delta"),
+                "room merger reports the remote reorder"
+            );
+            assert!(
+                !state
+                    .tree_mut()
+                    .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
+                    .expect("an already-superseded room snapshot parses"),
+                "a stale room snapshot cannot undo the newer accepted reorder"
+            );
+            state.bump();
+        }
+        assert!(host.take_structure_dirty());
+        let row = host
+            .group_row_mut_for_tests(remote_strip)
+            .expect("remote strip remains live");
+        assert_eq!(
+            row.group_ids(),
+            vec![remote_id(4), remote_group, remote_id(3)]
+        );
+        let group = row
+            .groups
+            .iter()
+            .find(|group| group.id == remote_group)
+            .expect("remote tab group remains live");
+        assert_eq!(
+            group.tabs().iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![remote_id(12), remote_id(10), remote_id(11)]
+        );
+        assert_eq!(group.active_tab_id(), remote_id(10));
+        assert_eq!(
+            group.tile_kind_labels_for_tests(),
+            vec!["Terminal", "Settings", "Browser"]
+        );
+    }
+
+    #[test]
+    fn close_then_revision_resync_does_not_restore_the_window_group() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        tree.seed_doc_from_cache();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.close_tab_in_group(group_id, Some(1)));
+
+        assert!(
+            chrome.borrow().tree().workspaces[0].strips[0]
+                .window_groups
+                .is_empty(),
+            "close is a tree mutation, not merely a widget fade"
+        );
+        // This is the exact edge that used to restore the stale group: `+`
+        // and many unrelated actions bump chrome, then strip resync reads the
+        // persisted tree.
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        assert!(
+            host.group_at_for_tests(strip_id, 0).is_none(),
+            "resync after another revision must keep the closed group absent"
+        );
+
+        // A fresh compositor must observe the same close. This catches the
+        // crash window between the visual animation and a later incidental
+        // state write; the close itself has to create the durable file.
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("the close flushes valid state");
+        assert!(
+            restarted.workspaces[0].strips[0].window_groups.is_empty(),
+            "a fresh load must not restore the group closed before restart"
+        );
+
+        // Then drive an unrelated revision through a fresh widget tree. The
+        // disk round trip and later resync are independent resurrection
+        // hazards, and both must preserve the absence.
+        let (mut restarted_host, restarted_chrome) =
+            build_nirios_overlay_host_with_chrome(&restarted);
+        restarted_chrome.borrow_mut().bump();
+        let _ = restarted_host.take_structure_dirty();
+        assert!(
+            restarted_host.group_at_for_tests(strip_id, 0).is_none(),
+            "an unrelated post-restart revision must not recreate the closed group"
+        );
+    }
+
+    #[test]
+    fn closing_one_of_two_same_app_windows_targets_only_its_surface() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs = vec![
+            Tab {
+                id: 1,
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "com.openai.chatgpt".into(),
+                    surface_id: 41,
+                },
+            },
+            Tab {
+                id: 2,
+                title: "Chat".into(),
+                tile: TileContent::Foreign {
+                    app_id: "com.openai.chatgpt".into(),
+                    surface_id: 42,
+                },
+            },
+        ];
+        group.active_tab = 1;
+        tree.seed_doc_from_cache();
+
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.close_tab_in_group(group_id, Some(1)));
+        assert_eq!(
+            chrome.borrow_mut().take_surface_close_requests(),
+            vec![41],
+            "close requests are keyed by surface, never by shared app id"
+        );
+        let remaining = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .filter_map(|tab| match tab.tile {
+                TileContent::Foreign { surface_id, .. } => Some(surface_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec![42]);
+
+        chrome.borrow_mut().bump();
+        let _ = host.take_structure_dirty();
+        let group = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("the sibling window group remains");
+        assert_eq!(group.active_tab_id(), 2);
+    }
+
+    #[test]
+    fn group_plus_is_a_workspace_scoped_app_picker_targeting_that_group() {
+        use crate::shell::chrome_state::{OpenTarget, SearchScope};
+        use crate::shell::search::ResourceKind;
+
+        let (tree, _strip_id, group_id) = one_group_seed();
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        host.open_new_tab_palette_for_group(group_id);
+
+        let st = chrome.borrow();
+        assert_eq!(st.open_target, OpenTarget::Here(group_id));
+        assert_eq!(
+            st.search_scope,
+            SearchScope::Workspace,
+            "a local group affordance must not open machine-wide search"
+        );
+        assert_eq!(
+            host.active_kind_filter,
+            vec![ResourceKind::Application, ResourceKind::HostApplication],
+            "the group + is an app picker, not generic search"
+        );
+        assert!(host.palette_visible(), "the picker opens immediately");
     }
 
     #[test]

@@ -172,11 +172,26 @@ pub fn run(args: &[String]) {
 fn seed_flow(flow: &mut IdentityFlow) -> Result<(), IdentityFlowError> {
     let mut rng = OsRng;
     let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
-    let record =
-        IdentityRecord::from_threshold_identity(&id, "alice", [248, 113, 113], SystemTime::now())?;
-    flow.recovery_share.seed_from_record(&record);
-    let mnemonic = flow.recovery_share.mnemonic().to_string();
-    flow.recovery_verify.seed_mnemonic(mnemonic);
+
+    // Recovery words exist only for a genuine threshold share. Complete a
+    // real 2-of-2 DKG for the showcase rather than deriving decorative words
+    // from the single-device public key (which could never recover anything).
+    let mut recovery_host = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+    let (mut host_session, host_round1) = recovery_host.begin_enrolment(1, 2, 2, &mut rng)?;
+    let mut recovery_peer = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
+    let (mut peer_session, peer_round1) = recovery_peer.begin_enrolment(2, 2, 2, &mut rng)?;
+    let _host_round2 = host_session.receive_round1(std::slice::from_ref(&peer_round1))?;
+    let peer_round2 = peer_session.receive_round1(std::slice::from_ref(&host_round1))?;
+    let peer_to_host = peer_round2
+        .into_iter()
+        .find(|(recipient, _)| *recipient == 1)
+        .map(|(_, package)| package)
+        .ok_or_else(|| IdentityFlowError::DecodeFailed("missing peer DKG reply".to_string()))?;
+    host_session.receive_round2(&[peer_to_host])?;
+    recovery_host.adopt_dkg_outcome(host_session)?;
+    let recovery = recovery_host.export_recovery_share()?;
+    flow.recovery_share.set_mnemonic(&recovery.mnemonic);
+    flow.recovery_verify.seed_mnemonic(recovery.mnemonic);
     {
         let (sess, r1) = {
             let mut id_local = ThresholdIdentity::bootstrap_single_device(&mut rng)?;

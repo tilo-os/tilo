@@ -13,7 +13,7 @@
 //! |--------------------------|----------------------------|
 //! | 3-finger swipe up / down | Super+ArrowUp / `ArrowDown` — switch workspace |
 //! | 3-finger swipe left/right| Super+ArrowLeft / `ArrowRight` — step along the strip |
-//! | 4-finger swipe up / down | Ctrl+Tab — open / close the overview |
+//! | 4-finger swipe up / down | Super+Tab — open / close the overview |
 //! | 3+-finger pinch in / out | open / close the overview |
 //!
 //! Workspaces are the vertical axis, windows along a strip the horizontal one; inventing a
@@ -41,7 +41,7 @@ pub enum GestureAction {
     SwitchWorkspace(i32),
     /// `ShellOverlayHost::step_focus_along_strip` — `-1` is the window to the left, the same step the Super+Left/Right chord and a horizontal scroll make; a swipe is a third way to ask for it, not a fourth definition of it.
     StepAlongStrip(i32),
-    /// Open the workspace overview (what `Ctrl+Tab` toggles on).
+    /// Open the workspace overview (what `Super+Tab` toggles on).
     ShowOverview,
     /// Close it.
     HideOverview,

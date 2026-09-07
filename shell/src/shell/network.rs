@@ -5031,9 +5031,9 @@ mod tests {
             // `bootstrap_demo` leaves the owner `None`; `may_administer`
             // reads it, so an unset owner would refuse every name below
             // for the wrong reason.
-            let me = crate::shell::state::local_user_id();
             for ws in &mut t.workspaces {
-                ws.set_owner(me.clone());
+                let me = crate::shell::state::local_user_id_for_room(&ws.room);
+                ws.set_owner(me);
             }
             t.workspaces.iter().map(|w| w.room).collect()
         };
@@ -5896,7 +5896,7 @@ mod tests {
         let mut state = WorkspaceTree::default();
         let workspace = state.append_empty_workspace("Identity workflow");
         let room = state.room_of(workspace).unwrap();
-        state.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
+        state.adopt_ownerless_workspaces(&crate::shell::state::local_user_id_for_room(&room));
         let tree = state.shared();
         let (network, _commands) = shell_network_for_test(tree.clone(), 0x1D);
 

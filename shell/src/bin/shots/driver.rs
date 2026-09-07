@@ -798,8 +798,17 @@ impl ShellDriver {
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
             "quick-settings" => self.scene_quick_settings(),
+            "qs-edit" => self.scene_qs_edit(false),
+            "qs-edit-drag" => self.scene_qs_edit(true),
+            "qs-hardware-wired" => self.scene_qs_hardware_wired(),
+            "qs-compact" => self.scene_qs_compact(),
             "qs-wifi-drillin" => self.scene_qs_wifi_drillin(),
+            "qs-wifi-long-labels" => self.scene_qs_wifi_long_labels(),
             "qs-bt-drillin" => self.scene_qs_bt_drillin(),
+            "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
+            "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
+            "power-menu" => self.scene_power_menu(false),
+            "power-menu-confirm" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
@@ -924,7 +933,42 @@ impl ShellDriver {
     }
 
     fn scene_quick_settings(&mut self) {
-        self.with_chrome(|st| st.overlays.quick_settings = true);
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = true;
+            st.quick_settings.bluetooth_available = true;
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_edit(&mut self, dragging: bool) {
+        self.scene_quick_settings();
+        self.fb
+            .host_mut()
+            .force_quick_settings_edit_for_visual_test(dragging);
+    }
+
+    fn scene_qs_hardware_wired(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = false;
+            st.quick_settings.bluetooth_available = false;
+            st.quick_settings.wired = Some(shell::shell::qs_actions::WiredInfo {
+                connected: true,
+                device: Some("enp0s31f6".into()),
+                ..Default::default()
+            });
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_qs_compact(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.radios.wifi_available = false;
+            st.quick_settings.bluetooth_available = false;
+            st.quick_settings.wired = None;
+        });
         self.fb.host_mut().force_quick_settings_settled();
     }
 
@@ -936,12 +980,91 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
+    /// Long SSIDs are normal in apartment blocks and enterprise networks;
+    /// keep this deterministic scene so their text cannot regress across the
+    /// trailing signal/connection indicators.
+    fn scene_qs_wifi_long_labels(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Wifi);
+            st.quick_settings.wifi_networks = vec![
+                shell::shell::quick_settings::WifiNetwork {
+                    ssid: "Conference-room-very-long-5GHz-network-name".into(),
+                    signal: 4,
+                    secure: true,
+                    connected: true,
+                },
+                shell::shell::quick_settings::WifiNetwork {
+                    ssid: "Café Gäste-WLAN mit einem außergewöhnlich langen Namen".into(),
+                    signal: 2,
+                    secure: false,
+                    connected: false,
+                },
+            ];
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
     fn scene_qs_bt_drillin(&mut self) {
         self.with_chrome(|st| {
             st.overlays.quick_settings = true;
             st.quick_settings.push_level(QsLevel::Bluetooth);
         });
         self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// Device names from BlueZ are user-controlled. Keep a deterministic
+    /// long-name scene so the battery and connected indicators remain a
+    /// reserved trailing region instead of becoming an accidental text
+    /// overlay at a compact panel width.
+    fn scene_qs_bt_long_labels(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Bluetooth);
+            st.quick_settings.bt_devices = vec![
+                shell::shell::quick_settings::BtDevice {
+                    name: "Studio-headphones-with-a-very-long-pairing-name".into(),
+                    battery: 73,
+                    connected: true,
+                },
+                shell::shell::quick_settings::BtDevice {
+                    name: "Wohnzimmer-Lautsprecher außerordentlich lang".into(),
+                    battery: 18,
+                    connected: false,
+                },
+            ];
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// VPN connection names are also supplied by NetworkManager. Exercise
+    /// two rows with distinct active state, an intentionally long label and
+    /// the trailing toggle region in the same render contract as Wi-Fi and
+    /// Bluetooth.
+    fn scene_qs_vpn_long_labels(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.quick_settings = true;
+            st.quick_settings.push_level(QsLevel::Vpn);
+            st.quick_settings.vpns = vec![
+                os_actions::VpnConnectionInfo {
+                    name: "Engineering production WireGuard tunnel Frankfurt".into(),
+                    active: true,
+                    kind: "wireguard".into(),
+                },
+                os_actions::VpnConnectionInfo {
+                    name: "Personal research network with a long name".into(),
+                    active: false,
+                    kind: "vpn".into(),
+                },
+            ];
+        });
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    fn scene_power_menu(&mut self, arm_shutdown: bool) {
+        self.fb
+            .host_mut()
+            .force_power_menu_for_visual_test(arm_shutdown);
     }
 
     fn scene_ws_settings_general(&mut self) {
@@ -1516,8 +1639,17 @@ impl ShellDriver {
         "palette_records",
         "palette_no_results",
         "quick-settings",
+        "qs-edit",
+        "qs-edit-drag",
+        "qs-hardware-wired",
+        "qs-compact",
         "qs-wifi-drillin",
+        "qs-wifi-long-labels",
         "qs-bt-drillin",
+        "qs-bt-long-labels",
+        "qs-vpn-long-labels",
+        "power-menu",
+        "power-menu-confirm",
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",
