@@ -568,6 +568,21 @@ pub struct Mailbox {
     search_revision: u64,
 }
 
+/// A bounded, newest-first page from the locally-loaded mailbox search.
+///
+/// Mail's list filter runs on every edit and paint-adjacent selection update,
+/// unlike the retained global-search catalogue.  Returning the work performed
+/// makes that hot path honest: callers can keep interaction latency bounded
+/// even when an account has a very large locally hydrated history.
+#[derive(Clone, Debug)]
+pub struct MailboxSearchPage<'a> {
+    pub messages: Vec<&'a Message>,
+    /// Number of in-scope messages whose searchable fields were inspected.
+    pub inspected: usize,
+    /// `true` when the caller's work or result limit stopped enumeration.
+    pub truncated: bool,
+}
+
 /// Process-local sequence for retained in-memory projections. A fresh mailbox
 /// must not accidentally share revision zero with a previous account whose
 /// catalogue is still retained by the app shell.
@@ -688,28 +703,68 @@ impl Mailbox {
 
     /// Case-insensitive full-text search across subject/sender/body, scoped
     /// to a folder or (when `None`) the whole mailbox excluding Trash.
+    ///
+    /// This compatibility helper is deliberately exhaustive. Interactive UI
+    /// callers should use [`Self::search_page`] with explicit bounds instead.
     pub fn search(&self, query: &str, scope: Option<Folder>) -> Vec<&Message> {
+        self.search_page(query, scope, usize::MAX, usize::MAX)
+            .messages
+    }
+
+    /// Search loaded mail with explicit work and result bounds.
+    ///
+    /// The newest loaded messages are considered first, then matches are kept
+    /// in timestamp-descending order. A result is still a canonical message id
+    /// and callers resolve the complete message lazily when it is opened; this
+    /// method only prevents typing a broad query from walking unbounded bodies
+    /// or scheduling an unbounded amount of row paint.
+    pub fn search_page(
+        &self,
+        query: &str,
+        scope: Option<Folder>,
+        max_inspected: usize,
+        max_results: usize,
+    ) -> MailboxSearchPage<'_> {
         let q = query.trim().to_ascii_lowercase();
-        if q.is_empty() {
-            return Vec::new();
+        if q.is_empty() || max_inspected == 0 || max_results == 0 {
+            return MailboxSearchPage {
+                messages: Vec::new(),
+                inspected: 0,
+                truncated: false,
+            };
         }
-        let mut v: Vec<&Message> = self
-            .order
-            .iter()
-            .filter_map(|id| self.messages.get(id))
-            .filter(|m| match scope {
+        let mut inspected = 0;
+        let mut truncated = false;
+        let mut v = Vec::with_capacity(max_results.min(64));
+        for id in self.order.iter().rev() {
+            let Some(m) = self.messages.get(id) else {
+                continue;
+            };
+            if !match scope {
                 Some(f) => m.folder == f,
                 None => m.folder != Folder::Trash,
-            })
-            .filter(|m| {
-                m.subject.to_ascii_lowercase().contains(&q)
-                    || m.from.display().to_ascii_lowercase().contains(&q)
-                    || m.from.email.to_ascii_lowercase().contains(&q)
-                    || m.body.to_ascii_lowercase().contains(&q)
-            })
-            .collect();
+            } {
+                continue;
+            }
+            if inspected >= max_inspected || v.len() >= max_results {
+                truncated = true;
+                break;
+            }
+            inspected += 1;
+            if m.subject.to_ascii_lowercase().contains(&q)
+                || m.from.display().to_ascii_lowercase().contains(&q)
+                || m.from.email.to_ascii_lowercase().contains(&q)
+                || m.body.to_ascii_lowercase().contains(&q)
+            {
+                v.push(m);
+            }
+        }
         v.sort_by_key(|m| Reverse(m.timestamp_min));
-        v
+        MailboxSearchPage {
+            messages: v,
+            inspected,
+            truncated,
+        }
     }
 
     // ---- mutating actions (the reader/list issue these) ----
@@ -826,6 +881,31 @@ mod tests {
         assert_eq!(mb.unread_count(Folder::Inbox), 1);
         mb.mark_read(id, true);
         assert_eq!(mb.unread_count(Folder::Inbox), 0);
+    }
+
+    #[test]
+    fn search_page_enforces_work_and_result_bounds_without_losing_newest_order() {
+        let mut mb = Mailbox::default();
+        for ts in 0..6 {
+            mb.insert(msg("Release notes", ts, Folder::Inbox));
+        }
+
+        let page = mb.search_page("release", None, 4, 2);
+        assert_eq!(page.inspected, 2, "result bound ends work early");
+        assert_eq!(page.messages.len(), 2);
+        assert!(
+            page.truncated,
+            "remaining loaded matches are not enumerated"
+        );
+        assert!(
+            page.messages[0].timestamp_min > page.messages[1].timestamp_min,
+            "visible search rows remain newest-first"
+        );
+
+        let body_page = mb.search_page("second line", None, 3, 20);
+        assert_eq!(body_page.inspected, 3, "body inspection obeys its cap");
+        assert_eq!(body_page.messages.len(), 3);
+        assert!(body_page.truncated);
     }
 
     #[test]

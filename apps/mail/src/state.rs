@@ -27,6 +27,13 @@ use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
 
+/// The list filter is a type-ahead control, so it must not linearly inspect a
+/// whole long-lived offline cache or lay out every broad match on each key.
+/// Global palette search has its own retained index; this bound protects the
+/// direct in-app filter's immediate feedback path.
+const LIST_SEARCH_MAX_INSPECTED: usize = 4_096;
+const LIST_SEARCH_MAX_RESULTS: usize = 200;
+
 /// A single message action, shared as the source of truth by the row context
 /// menu, the swipe gestures, and the reader's action bar.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -274,7 +281,13 @@ impl MailState {
                 .collect()
         } else {
             self.mailbox
-                .search(&self.search, None)
+                .search_page(
+                    &self.search,
+                    None,
+                    LIST_SEARCH_MAX_INSPECTED,
+                    LIST_SEARCH_MAX_RESULTS,
+                )
+                .messages
                 .into_iter()
                 .map(|m| (m.id, 1))
                 .collect()
