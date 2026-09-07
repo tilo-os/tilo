@@ -64,6 +64,20 @@ pub enum SourceKind {
     Custom,
 }
 
+impl SourceKind {
+    /// A path-free label suitable for shared search and automation surfaces.
+    /// Local paths can expose account names or mount details, so they remain in
+    /// the device-local visual UI and are never published as a resource label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home folder",
+            Self::System => "System files",
+            Self::Workspace => "Workspace",
+            Self::Custom => "Custom folder",
+        }
+    }
+}
+
 /// How often a source is captured automatically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
