@@ -61,7 +61,7 @@ pub struct SearchState {
     pub rows: Vec<HitRow>,
     /// True while the worker is still walking the tree.
     pub running: bool,
-    /// True when the walk stopped at the hit cap.
+    /// True when the bounded walk stopped before it covered the whole project.
     pub truncated: bool,
     pub files_scanned: usize,
 }
@@ -173,7 +173,7 @@ impl BottomPanel {
     }
 
     /// The one-line summary above the results: how many hits, across how many
-    /// files, and whether the walk is still going or stopped at the cap.
+    /// files, and whether the walk is still going or reached a safety bound.
     fn search_summary(&self) -> String {
         if self.search.query.is_empty() {
             return String::new();
@@ -195,7 +195,15 @@ impl BottomPanel {
         if n > 0 && self.search.running {
             format!("{head} \u{2014} still searching…")
         } else if self.search.truncated {
-            format!("{head} \u{2014} stopped at the first {n}; narrow the search")
+            format!(
+                "{head} \u{2014} search limit reached after {} files; narrow the search",
+                self.search.files_scanned
+            )
+        } else if !self.search.running && self.search.files_scanned > 0 {
+            format!(
+                "{head} \u{2014} {} files scanned",
+                self.search.files_scanned
+            )
         } else {
             head
         }
@@ -971,7 +979,10 @@ mod tests {
             truncated: false,
             files_scanned: 12,
         });
-        assert!(p.search_summary().starts_with("No results"));
+        assert_eq!(
+            p.search_summary(),
+            "No results for \u{201C}needle\u{201D} \u{2014} 12 files scanned"
+        );
 
         let rows = vec![row("a.rs", 1), row("a.rs", 9), row("b.rs", 3)];
         p.set_search(SearchState {
@@ -981,7 +992,10 @@ mod tests {
             truncated: false,
             files_scanned: 12,
         });
-        assert_eq!(p.search_summary(), "3 results in 2 files");
+        assert_eq!(
+            p.search_summary(),
+            "3 results in 2 files \u{2014} 12 files scanned"
+        );
 
         p.set_search(SearchState {
             query: "needle".into(),
