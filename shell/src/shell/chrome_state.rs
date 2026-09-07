@@ -674,6 +674,10 @@ impl ChromeState {
             {
                 g.active_tab = tab;
             }
+            // Focus is part of the serialized local session view. Commit
+            // the complete address together so a compositor restart cannot
+            // reopen the right layout with an older window selected.
+            tree.flush_to_disk();
         }
         self.bump();
     }
@@ -891,6 +895,7 @@ impl ChromeState {
                 return false;
             }
             tree.active_strip.insert(ws_id, sid);
+            tree.flush_to_disk();
             drop(tree);
             (true, name)
         };
@@ -1416,6 +1421,53 @@ mod active_tab_tests {
         let chrome = ChromeState::new_with_handle(handle);
         let st = chrome.borrow();
         assert_eq!(st.active_tab_id(), Some(100));
+    }
+
+    #[test]
+    fn focus_tab_and_strip_focus_survive_restart() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("workspace.json");
+        let mut tree = tree_with(100);
+        let workspace = tree.active;
+        let first_strip = tree.workspaces[0].strips[0].id;
+        let first_group = tree.workspaces[0].strips[0].window_groups[0].id;
+        let second_strip = StripId::new();
+        let second_group = 81;
+        tree.workspaces[0].strips.push(Strip {
+            id: second_strip,
+            name: "Other".into(),
+            window_groups: vec![StateGroup {
+                id: second_group,
+                tabs: vec![Tab {
+                    id: 300,
+                    title: "Third".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "third".into(),
+                    },
+                }],
+                active_tab: 300,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        });
+        tree.persist_path = Some(path.clone());
+        tree.flush_to_disk();
+        let chrome = ChromeState::new(tree);
+
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, first_strip, first_group, 200);
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("focus state");
+        assert_eq!(restarted.active_group_for(first_strip), Some(first_group));
+        assert_eq!(
+            restarted.workspaces[0].strips[0].window_groups[0].active_tab,
+            200
+        );
+
+        assert!(chrome.borrow_mut().focus_strip_index(1));
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
+        assert_eq!(restarted.active_strip.get(&workspace), Some(&second_strip));
     }
 
     #[test]
