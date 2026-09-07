@@ -468,6 +468,11 @@ impl FrameHarness {
             pending_control_invocations: HashSet::new(),
             profiler: None,
         };
+        // Match `App::rebuild_theme`: reduced motion is both a paint-time
+        // theme property and a lifecycle policy retained widgets use to settle
+        // their own transitions and stop requesting frames.  Headless shots
+        // must exercise both halves of that contract.
+        d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
         d.settle_initial_structure();
         d
