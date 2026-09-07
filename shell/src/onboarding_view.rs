@@ -201,6 +201,21 @@ pub enum OnboardingContext {
     HostDesktop,
 }
 
+/// Deterministic states used only by the offscreen production renderer.
+/// They exercise the real composition without performing identity I/O.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnboardingVisualState {
+    Intro,
+    Connect,
+    Protect,
+    Backup,
+    BackupVerified,
+    Ready,
+    CreateError,
+    RestoreError,
+}
+
 pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your qOS identity";
 pub const HOST_DESKTOP_INTRO_BODY: &str = "You are already signed in to this computer. Before the qOS desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.";
 
@@ -367,10 +382,6 @@ impl Invalidation {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each field records an independently recoverable setup or picker state; combining them would obscure cancellation and accessibility transitions"
-)]
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
@@ -719,10 +730,51 @@ impl OnboardingView {
         self.transition_started = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered composition keeps a single onboarding focus tree and its matching visual hierarchy together"
-    )]
+    #[doc(hidden)]
+    pub fn set_visual_state_for_snapshot(&mut self, state: OnboardingVisualState) {
+        self.flow = Onboarding::new();
+        self.error = None;
+        self.backup_error = None;
+        self.backup_saved = None;
+        self.backup_was_verified = false;
+        self.identity_ready_page = false;
+        self.tour_page = None;
+        let minted = MintedIdentity {
+            fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            path: PathBuf::from("/var/lib/qos/identities/primary.json"),
+        };
+        match state {
+            OnboardingVisualState::Intro => {}
+            OnboardingVisualState::Connect | OnboardingVisualState::RestoreError => {
+                self.flow.begin_connect();
+                if state == OnboardingVisualState::RestoreError {
+                    self.error = Some("That backup could not be opened. Check the file and passphrase, then try again.".into());
+                }
+            }
+            OnboardingVisualState::Protect | OnboardingVisualState::CreateError => {
+                self.flow.begin();
+                if state == OnboardingVisualState::CreateError {
+                    self.error = Some("The identity could not be saved. Nothing was created; check available storage and try again.".into());
+                }
+            }
+            OnboardingVisualState::Backup
+            | OnboardingVisualState::BackupVerified
+            | OnboardingVisualState::Ready => {
+                self.flow.begin();
+                self.flow.set_acknowledged(true);
+                let _ = self.flow.complete(minted);
+                self.backup_was_verified = state == OnboardingVisualState::BackupVerified;
+                self.backup_saved = self.backup_was_verified.then(|| {
+                    PathBuf::from("/home/quinten/Documents/qos-identity-backup.qos-identity")
+                });
+                self.identity_ready_page = state == OnboardingVisualState::Ready;
+            }
+        }
+        self.composed = None;
+        self.invalidation.both();
+        self.settle_motion_for_snapshot();
+    }
+
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
         if let Some(page) = self.tour_page {
             return self.build_tour_composition(theme, panel_height, page);
@@ -1250,10 +1302,6 @@ impl OnboardingView {
         Box::new(body.push(Box::new(Card::new(Box::new(list)))))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "identity-backup controls and their explanatory recovery copy form one accessibility group"
-    )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
@@ -1740,9 +1788,7 @@ fn terminate_nearby_pairing(child: &mut Option<Child>) {
     // validated PID the process-group ID. A negative target is confined to
     // that group and cannot signal the compositor's own group.
     let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(750))
-        .unwrap_or_else(Instant::now);
+    let deadline = Instant::now() + Duration::from_millis(750);
     loop {
         let leader_finished = child.try_wait().ok().flatten().is_some();
         // Signal 0 only checks whether any descendant still occupies the
@@ -1884,7 +1930,8 @@ impl Widget for OnboardingView {
                         let label =
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
-                            .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from);
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
                         let requester = qos_relay::ProcessLease::capture(std::process::id());
                         let spawn =
                             requester
@@ -1925,7 +1972,7 @@ impl Widget for OnboardingView {
                                 self.error = None;
                             }
                             Err(error) => {
-                                self.error = Some(format!("Could not start nearby setup: {error}"));
+                                self.error = Some(format!("Could not start nearby setup: {error}"))
                             }
                         }
                     }
@@ -1964,17 +2011,7 @@ impl Widget for OnboardingView {
             .as_mut()
             .and_then(|child| child.try_wait().ok().flatten());
         if let Some(status) = nearby_finished {
-            #[allow(
-                clippy::zombie_processes,
-                reason = "The preceding `try_wait` returned this status and therefore already reaped the child; this binding only drains its buffered output."
-            )]
-            let Some(mut child) = self.nearby_child.take() else {
-                self.error = Some(
-                    "Nearby setup changed state unexpectedly. Choose Connect nearby to retry."
-                        .into(),
-                );
-                return;
-            };
+            let mut child = self.nearby_child.take().expect("nearby child exists");
             let mut stdout = String::new();
             let mut stderr = String::new();
             if let Some(mut stream) = child.stdout.take() {
@@ -1988,8 +2025,8 @@ impl Widget for OnboardingView {
                     Ok(result) => {
                         let fingerprint = result.get("identity").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
                         let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
-                        if let Some(path) = path.filter(|_| fingerprint.len() == 64) {
-                            self.flow.complete_connected(MintedIdentity { fingerprint, path });
+                        if fingerprint.len() == 64 && path.is_some() {
+                            self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
                             self.identity_ready_page = false;
                             let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
@@ -3726,10 +3763,6 @@ mod tests {
         let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the responsive-layout test must retain all supported viewport scenarios and alignment assertions"
-    )]
     #[test]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[
