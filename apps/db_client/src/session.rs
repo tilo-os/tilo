@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::model::{
     ConnectionProfile, DatabaseSchema, Engine, QueryResult, RelationKind, TableInfo,
 };
-use crate::worker::{DbReply, DbRequest, DbWorker};
+use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 
 /// Which workspace tab the main panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +87,11 @@ pub struct Session {
     /// Session-only passwords keyed by profile id. Never persisted and never
     /// written to the shared document — each peer supplies its own.
     passwords: HashMap<Uuid, String>,
+    /// Monotonic identity for a worker query. A cancellation and a reply must
+    /// both match this value as well as the connection UUID.
+    next_query_generation: u64,
+    active_query: Option<(Uuid, u64)>,
+    cancelled_query: Option<(Uuid, u64)>,
     /// The background engine thread.
     worker: DbWorker,
 }
@@ -118,6 +123,9 @@ impl Session {
             query_gen: 0,
             data_gen: 0,
             passwords: HashMap::new(),
+            next_query_generation: 0,
+            active_query: None,
+            cancelled_query: None,
             worker: DbWorker::spawn(),
         }
     }
@@ -183,7 +191,17 @@ impl Session {
 
     fn apply_reply(&mut self, reply: DbReply) {
         match reply {
-            DbReply::Connected { name, schema } => {
+            DbReply::Connected {
+                connection_id,
+                name,
+                schema,
+            } => {
+                // A connection can finish after the user has selected another
+                // profile. Never adopt an engine/schema that no longer matches
+                // the currently selected document identity.
+                if self.active_connection_id() != Some(connection_id) {
+                    return;
+                }
                 self.connected = true;
                 self.set_schema(schema);
                 self.mark_connected(true);
@@ -194,30 +212,78 @@ impl Session {
                     RunStatus::Ok(format!("Connected to {name}"))
                 };
             }
-            DbReply::ConnectFailed { error, .. } => {
+            DbReply::ConnectFailed {
+                connection_id,
+                error,
+                ..
+            } => {
+                if self.active_connection_id() != Some(connection_id) {
+                    return;
+                }
                 self.connected = false;
                 self.set_schema(DatabaseSchema::default());
                 self.mark_connected(false);
                 self.status = RunStatus::Error(error);
             }
-            DbReply::Queried { result, schema } => match result {
-                Ok(r) => {
-                    self.status = RunStatus::Ok(r.message());
-                    self.query_result = Some(r);
-                    self.query_gen += 1;
-                    if let Some(schema) = schema {
-                        self.schema = schema;
+            DbReply::Queried {
+                connection_id,
+                generation,
+                result,
+                schema,
+            } => {
+                let identity = (connection_id, generation);
+                if self.cancelled_query == Some(identity) {
+                    self.cancelled_query = None;
+                    let was_active = self.active_query == Some(identity);
+                    if was_active {
+                        self.active_query = None;
                     }
+                    if was_active && self.active_connection_id() == Some(connection_id) {
+                        self.status = RunStatus::Idle;
+                    }
+                    return;
                 }
-                Err(e) => self.status = RunStatus::Error(e),
-            },
-            DbReply::Browsed { result } => match result {
-                Ok(r) => {
-                    self.data_result = Some(r);
-                    self.data_gen += 1;
+                if self.active_query == Some(identity) {
+                    self.active_query = None;
                 }
-                Err(e) => self.status = RunStatus::Error(e),
-            },
+                if self.active_connection_id() != Some(connection_id) {
+                    return;
+                }
+                match result {
+                    Ok(r) => {
+                        self.status = RunStatus::Ok(r.message());
+                        self.query_result = Some(r);
+                        self.query_gen += 1;
+                        if let Some(schema) = schema {
+                            self.schema = schema;
+                        }
+                    }
+                    Err(e) => self.status = RunStatus::Error(e),
+                }
+            }
+            DbReply::Browsed {
+                connection_id,
+                table,
+                offset,
+                result,
+            } => {
+                // A table browse is scoped to both a connection and the
+                // selected table/page. Ignore any stale reply after a schema
+                // selection or page change instead of flashing old rows.
+                if self.active_connection_id() != Some(connection_id)
+                    || self.selected_table.as_deref() != Some(table.as_str())
+                    || self.data_offset != offset
+                {
+                    return;
+                }
+                match result {
+                    Ok(r) => {
+                        self.data_result = Some(r);
+                        self.data_gen += 1;
+                    }
+                    Err(e) => self.status = RunStatus::Error(e),
+                }
+            }
             DbReply::Disconnected => {
                 self.connected = false;
                 self.mark_connected(false);
@@ -276,6 +342,8 @@ impl Session {
         };
         // Clear the previous connection's view state up front.
         self.connected = false;
+        self.active_query = None;
+        self.cancelled_query = None;
         self.query_result = None;
         self.data_result = None;
         self.set_schema(DatabaseSchema::default());
@@ -305,6 +373,12 @@ impl Session {
             }
         }
         let active_id = self.connections.get(self.active).map(|c| c.id);
+        // A removed profile must also evict its session-only secret. This is
+        // not persistence (passwords never leave this process), but avoids
+        // retaining credentials for a connection the shared document no
+        // longer authorizes us to target.
+        self.passwords
+            .retain(|id, _| incoming.iter().any(|profile| profile.id == *id));
         self.connections = incoming;
         // Keep the same connection active if it still exists.
         if let Some(pos) = active_id.and_then(|id| self.connections.iter().position(|c| c.id == id))
@@ -342,6 +416,12 @@ impl Session {
         self.connections.get(self.active)
     }
 
+    /// Stable identity of the active profile, used to reject replies produced
+    /// for a connection that has since been removed or deselected.
+    pub fn active_connection_id(&self) -> Option<Uuid> {
+        self.active_connection().map(|profile| profile.id)
+    }
+
     pub fn selected_table_info(&self) -> Option<&TableInfo> {
         let name = self.selected_table.as_deref()?;
         self.schema.find_table(name)
@@ -357,7 +437,38 @@ impl Session {
             return;
         }
         self.status = RunStatus::Busy("Running…".into());
-        self.worker.request(DbRequest::Query(sql.to_string()));
+        let Some(connection_id) = self.active_connection_id() else {
+            self.status = RunStatus::Error("No live connection".into());
+            return;
+        };
+        if self.active_query.is_some() {
+            self.status = RunStatus::Error("A query is already running".into());
+            return;
+        }
+        self.next_query_generation = self.next_query_generation.wrapping_add(1);
+        let generation = self.next_query_generation;
+        self.active_query = Some((connection_id, generation));
+        self.worker.request(DbRequest::Query {
+            connection_id,
+            generation,
+            sql: sql.to_string(),
+        });
+    }
+
+    /// Request an engine-native interrupt for the exact active query. The
+    /// worker validates connection + generation before it selects a private
+    /// cancellation capability, so this can never target a newer query.
+    pub fn cancel_in_flight_query(&mut self) -> bool {
+        let Some((connection_id, generation)) = self.active_query else {
+            return false;
+        };
+        if self.worker.cancel_query(connection_id, generation) == CancelQueryResult::Requested {
+            self.cancelled_query = Some((connection_id, generation));
+            self.status = RunStatus::Busy("Cancelling query…".into());
+            true
+        } else {
+            false
+        }
     }
 
     /// Select a table by name and load its first page of data.
@@ -372,10 +483,11 @@ impl Session {
         let Some(table) = self.selected_table.clone() else {
             return;
         };
-        if self.active_connection().is_none() {
+        let Some(connection_id) = self.active_connection_id() else {
             return;
-        }
+        };
         self.worker.request(DbRequest::Browse {
+            connection_id,
             table,
             limit: self.data_page_size,
             offset: self.data_offset,
@@ -517,5 +629,84 @@ mod tests {
         let q = ConnectionProfile::new("B", Engine::MySql);
         s.set_connections(vec![q]);
         assert!(s.connections[0].password.is_empty());
+    }
+
+    #[test]
+    fn stale_query_reply_is_ignored_after_switching_connections() {
+        let mut s = Session::new();
+        let a = ConnectionProfile::new("A", Engine::Sqlite);
+        let b = ConnectionProfile::new("B", Engine::Sqlite);
+        s.set_connections(vec![a.clone(), b]);
+        s.active = 1;
+
+        s.apply_reply(DbReply::Queried {
+            connection_id: a.id,
+            generation: 1,
+            result: Ok(QueryResult {
+                columns: vec!["stale".into()],
+                ..Default::default()
+            }),
+            schema: None,
+        });
+
+        assert!(s.query_result.is_none(), "a reply for A cannot overwrite B");
+        assert_eq!(s.query_gen, 0);
+    }
+
+    #[test]
+    fn cancelled_reply_cannot_clear_a_newer_query_generation() {
+        let mut s = Session::new();
+        let profile = ConnectionProfile::new("A", Engine::Sqlite);
+        let id = profile.id;
+        s.set_connections(vec![profile]);
+        s.active_query = Some((id, 2));
+        s.cancelled_query = Some((id, 1));
+        s.status = RunStatus::Busy("Running…".into());
+        s.apply_reply(DbReply::Queried {
+            connection_id: id,
+            generation: 1,
+            result: Err("interrupted".into()),
+            schema: None,
+        });
+        assert_eq!(s.active_query, Some((id, 2)));
+        assert!(matches!(s.status, RunStatus::Busy(_)));
+    }
+
+    #[test]
+    fn sqlite_cancellation_interrupts_the_worker_and_releases_busy_state() {
+        let mut s = Session::with_sample();
+        s.run_query(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
+             SELECT sum(x) FROM n",
+        );
+        let mut requested = false;
+        for _ in 0..100 {
+            if s.cancel_in_flight_query() {
+                requested = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(requested, "the worker must publish the active SQLite query");
+        s.block_until_idle();
+        assert!(!s.busy());
+        assert!(matches!(s.status, RunStatus::Idle));
+    }
+
+    #[test]
+    fn stale_table_page_is_ignored_after_selection_changes() {
+        let mut s = Session::with_sample();
+        let id = s.active_connection_id().unwrap();
+        s.selected_table = Some("artists".into());
+        s.data_offset = 100;
+
+        s.apply_reply(DbReply::Browsed {
+            connection_id: id,
+            table: "tracks".into(),
+            offset: 0,
+            result: Ok(QueryResult::default()),
+        });
+
+        assert!(s.data_result.is_none(), "a stale table page must not flash");
     }
 }

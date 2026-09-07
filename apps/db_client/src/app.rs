@@ -21,9 +21,11 @@
 //! [`FlapState`] kernel rather than hand-rolled here.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
+use serde::{Deserialize, Serialize};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -57,6 +59,38 @@ const BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle box drawn at the left of the tab bar when the sidebar is
 /// not fully docked-open, so a collapsed sidebar can be summoned.
 const TOGGLE_SIZE: f64 = 26.0;
+/// The single externally-invokable effect protocol for live database work.
+/// Unlike document actions, these payloads contain only stable object ids and
+/// SQL/table names — never passwords or live driver handles.
+const DB_OPERATION_TYPE: &str = "db_client.operation";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+enum DbClientOperation {
+    RunQuery {
+        connection_id: String,
+        sql: String,
+    },
+    Connect {
+        connection_id: String,
+    },
+    BrowseTable {
+        connection_id: String,
+        table: String,
+    },
+    ExportCsv {
+        connection_id: String,
+        result_generation: usize,
+    },
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "DbClientOperation contains only serializable strings, so this cannot fail without a broken serializer"
+)]
+fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
+    EncodedAction::encode_operation(DB_OPERATION_TYPE, operation)
+        .expect("database operation payload is serializable")
+}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -80,7 +114,11 @@ pub struct DbClientApp {
     /// it lands back through the document reconcile (peer-added connections do
     /// not set this, so they are listed but not auto-connected).
     pending_connect_id: Option<Uuid>,
-    resource_operation: Option<qos_actions::InvocationId>,
+    /// Active resource invocation plus whether its effect can be retried
+    /// safely without duplicating a database write.
+    resource_operation: Option<(qos_actions::InvocationId, bool)>,
+    export_rx: Option<ui::portal::PortalChannel>,
+    export_snapshot: Option<crate::model::QueryResult>,
 
     rect: Rect,
     node: Option<NodeId>,
@@ -111,6 +149,11 @@ pub struct DbClientApp {
     run_hover: bool,
     /// Toolbar snippet-dropdown open?
     snippets_open: bool,
+    /// Potentially destructive SQL awaiting an explicit second confirmation
+    /// from the editor chrome.
+    pending_query_confirmation: Option<String>,
+    confirm_run_btn: Rect,
+    confirm_cancel_btn: Rect,
     /// Hovered connection row index in the sidebar.
     conn_hover: Option<usize>,
     /// Rects of the editor toolbar run button + snippet button (for hits).
@@ -182,6 +225,16 @@ impl DbClientApp {
         if std::env::var("DB_CLIENT_MODAL").is_ok() {
             app.modal.open_new();
         }
+        // Deterministic state hooks for visual regression captures. They are
+        // intentionally environment-only: the live UI never exposes fake
+        // errors or a pre-approved destructive statement.
+        if std::env::var("DB_CLIENT_ERROR").is_ok() {
+            app.session.status =
+                RunStatus::Error("Connection refused — retry when the server is reachable".into());
+        }
+        if std::env::var("DB_CLIENT_CONFIRM").is_ok() {
+            app.pending_query_confirmation = Some("DELETE FROM tracks".into());
+        }
         app
     }
 
@@ -213,6 +266,8 @@ impl DbClientApp {
             actions: ui::ActionHost::new(),
             pending_connect_id: None,
             resource_operation: None,
+            export_rx: None,
+            export_snapshot: None,
             rect: Rect::ZERO,
             node: None,
             seeded: false,
@@ -225,6 +280,9 @@ impl DbClientApp {
             toggle_btn: Rect::ZERO,
             run_hover: false,
             snippets_open: false,
+            pending_query_confirmation: None,
+            confirm_run_btn: Rect::ZERO,
+            confirm_cancel_btn: Rect::ZERO,
             conn_hover: None,
             run_btn: Rect::ZERO,
             snippet_btn: Rect::ZERO,
@@ -247,7 +305,166 @@ impl DbClientApp {
 
     fn run_current_query(&mut self) {
         let sql = self.editor.value().to_string();
-        self.session.run_query(&sql);
+        if sql_is_potentially_destructive(&sql) {
+            self.pending_query_confirmation = Some(sql);
+            self.dirty = true;
+            return;
+        }
+        self.run_sql_effect(sql);
+    }
+
+    fn run_sql_effect(&mut self, sql: String) {
+        let Some(connection_id) = self.session.active_connection_id() else {
+            self.session.status =
+                RunStatus::Error("Connect to a database before running SQL".into());
+            self.dirty = true;
+            return;
+        };
+        // Keep the toolbar shortcut on the very same effect path exposed to
+        // the command palette/agents. It carries a stable connection identity
+        // and never smuggles a password into the action envelope.
+        if let Err(error) = self.execute_operation(DbClientOperation::RunQuery {
+            connection_id: connection_id.to_string(),
+            sql,
+        }) {
+            self.session.status = RunStatus::Error(error);
+        }
+        self.dirty = true;
+    }
+
+    /// Execute a transient database effect after re-resolving every target
+    /// against the current session. Resource descriptors are only a helpful
+    /// snapshot: a collaborator can remove/rename a connection before an
+    /// invocation arrives, so their payload is never authority by itself.
+    fn execute_operation(&mut self, operation: DbClientOperation) -> Result<(), String> {
+        match operation {
+            DbClientOperation::RunQuery { connection_id, sql } => {
+                let id = Uuid::parse_str(&connection_id)
+                    .map_err(|_| "invalid database connection id".to_string())?;
+                if self.session.active_connection_id() != Some(id) {
+                    return Err("the requested connection is no longer active".to_string());
+                }
+                if !self.session.connected {
+                    return Err("connect to this database before running SQL".to_string());
+                }
+                self.session.run_query(&sql);
+            }
+            DbClientOperation::Connect { connection_id } => {
+                let id = Uuid::parse_str(&connection_id)
+                    .map_err(|_| "invalid database connection id".to_string())?;
+                let idx = self
+                    .session
+                    .connections
+                    .iter()
+                    .position(|connection| connection.id == id)
+                    .ok_or_else(|| "connection is no longer available".to_string())?;
+                // Reconnect even when the requested resource is already the
+                // selected row; the old `select_connection` no-op would make
+                // an active-but-disconnected profile impossible to retry.
+                self.session.active = idx;
+                self.session.connect_active();
+            }
+            DbClientOperation::BrowseTable {
+                connection_id,
+                table,
+            } => {
+                let id = Uuid::parse_str(&connection_id)
+                    .map_err(|_| "invalid database connection id".to_string())?;
+                if self.session.active_connection_id() != Some(id) || !self.session.connected {
+                    return Err("the table's connection is no longer open".to_string());
+                }
+                if self.session.schema.find_table(&table).is_none() {
+                    return Err("table is no longer available in the active schema".to_string());
+                }
+                self.session.select_table(&table);
+            }
+            DbClientOperation::ExportCsv {
+                connection_id,
+                result_generation,
+            } => {
+                let id = Uuid::parse_str(&connection_id)
+                    .map_err(|_| "invalid database connection id".to_string())?;
+                if self.session.active_connection_id() != Some(id)
+                    || self.session.query_gen != result_generation
+                {
+                    return Err("the query result is no longer current".to_string());
+                }
+                let result = self
+                    .session
+                    .query_result
+                    .clone()
+                    .ok_or_else(|| "there is no query result to export".to_string())?;
+                if !result.is_select {
+                    return Err(
+                        "only row-returning query results can be exported as CSV".to_string()
+                    );
+                }
+                if self.export_rx.is_some() {
+                    return Err("an export destination is already being selected".to_string());
+                }
+                self.export_snapshot = Some(result);
+                self.export_rx = Some(
+                    ui::portal::PickRequest::save(
+                        "Export query results",
+                        "Export CSV",
+                        "query-results.csv",
+                    )
+                    .filter(
+                        ui::portal::FileFilter::new("CSV (comma-separated values)").glob("*.csv"),
+                    )
+                    .thread_name("db-client-export-csv")
+                    .send(),
+                );
+                self.session.status = RunStatus::Busy("Choose where to save the CSV…".into());
+            }
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn drain_export_portal(&mut self) {
+        let Some(rx) = self.export_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(ui::portal::PortalOutcome::Opened(path)) => {
+                self.export_rx = None;
+                let Some(result) = self.export_snapshot.take() else {
+                    return;
+                };
+                match write_csv(&path, &result) {
+                    Ok(()) => {
+                        self.session.status = RunStatus::Ok(format!(
+                            "Exported {} rows to {}",
+                            result.rows.len(),
+                            path.display()
+                        ));
+                    }
+                    Err(error) => {
+                        self.session.status =
+                            RunStatus::Error(format!("CSV export failed: {error}"));
+                    }
+                }
+            }
+            Ok(ui::portal::PortalOutcome::Cancelled) => {
+                self.export_rx = None;
+                self.export_snapshot = None;
+                self.session.status = RunStatus::Idle;
+            }
+            Ok(ui::portal::PortalOutcome::Failed(error)) => {
+                self.export_rx = None;
+                self.export_snapshot = None;
+                self.session.status =
+                    RunStatus::Error(format!("Couldn't open the save dialog: {error}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.export_rx = None;
+                self.export_snapshot = None;
+                self.session.status =
+                    RunStatus::Error("CSV save dialog closed unexpectedly".into());
+            }
+        }
         self.dirty = true;
     }
 
@@ -445,25 +662,164 @@ impl DbClientApp {
     }
 }
 
+/// Conservative editor-side safety check. It deliberately asks for review on
+/// the common data-changing verbs, while harmless `SELECT`/`EXPLAIN` keeps the
+/// one-keystroke run flow. The worker remains the source of truth for actual
+/// SQL validity and permissions.
+#[allow(
+    clippy::while_let_on_iterator,
+    reason = "the lexer must peek and consume paired delimiters"
+)]
+fn sql_is_potentially_destructive(sql: &str) -> bool {
+    let mut code = String::new();
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '-' && chars.peek() == Some(&'-') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                if c == '\n' {
+                    code.push(' ');
+                    break;
+                }
+            }
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    code.push(' ');
+                    break;
+                }
+            }
+        } else if ch == '\'' || ch == '"' || ch == '`' {
+            let quote = ch;
+            while let Some(c) = chars.next() {
+                if c == quote {
+                    if chars.peek() == Some(&quote) {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            code.push(' ');
+        } else {
+            code.push(ch);
+        }
+    }
+    let statements = code
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .count();
+    if statements != 1 {
+        return true;
+    }
+    let words = code
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>();
+    let Some(first) = words.first() else {
+        return true;
+    };
+    if first == "WITH" {
+        return true;
+    }
+    words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "ALTER"
+                | "CREATE"
+                | "DELETE"
+                | "DROP"
+                | "INSERT"
+                | "REPLACE"
+                | "TRUNCATE"
+                | "UPDATE"
+                | "MERGE"
+                | "GRANT"
+                | "REVOKE"
+        )
+    })
+}
+
+fn write_csv(path: &std::path::Path, result: &crate::model::QueryResult) -> Result<(), String> {
+    // The portal owns naming/overwrite UX, but never rely on that as write
+    // authority: refuse a raced or pre-existing destination rather than
+    // silently replacing somebody else's export.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    let mut write_row = |cells: &[String]| -> Result<(), String> {
+        let row = cells
+            .iter()
+            .map(|cell| csv_field(cell))
+            .collect::<Vec<_>>()
+            .join(",");
+        writeln!(file, "{row}").map_err(|error| error.to_string())
+    };
+    write_row(&result.columns)?;
+    for row in &result.rows {
+        let cells = row
+            .iter()
+            .map(crate::model::Cell::display)
+            .collect::<Vec<_>>();
+        write_row(&cells)?;
+    }
+    file.flush().map_err(|error| error.to_string())
+}
+
+/// Make a CSV field safe to open in spreadsheet software. A leading formula
+/// sigil remains data (prefixed with an apostrophe), including when hidden
+/// behind whitespace/control characters; the CSV itself still quotes every
+/// field so commas/newlines/quotes remain lossless.
+fn csv_field(value: &str) -> String {
+    let formula = value
+        .trim_start_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control())
+        .starts_with(['=', '+', '-', '@']);
+    let safe = if formula {
+        format!("'{value}")
+    } else {
+        value.to_string()
+    };
+    format!("\"{}\"", safe.replace('"', "\"\""))
+}
+
 impl Widget for DbClientApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["db_client.query", "db_client.connect"]
+        &[DB_OPERATION_TYPE]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
+    )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("database", "database.workspace", "Database");
+        let active_id = self.session.active_connection_id();
+        let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
         let mut query = ActionSpec::prompted_operation(
             "query",
             "Run SQL",
             "SQL query",
             "SELECT …",
             OperationKind::Effect,
-            "db_client.query",
-            |sql| EncodedAction::encode_operation("db_client.query", &sql).expect("string payload"),
+            DB_OPERATION_TYPE,
+            move |sql| {
+                encode_operation(&DbClientOperation::RunQuery {
+                    connection_id: query_connection_id.clone(),
+                    sql: sql.to_string(),
+                })
+            },
         );
-        query = query.execution(ExecutionMode::Background { cancellable: false });
-        if self.session.active_connection().is_none() {
-            query = query.unavailable("not_connected", "Connect to a database before running SQL");
+        query = query.execution(ExecutionMode::Background { cancellable: true });
+        if !self.session.connected {
+            query = query.unavailable(
+                "not_connected",
+                "Open a saved connection before running SQL",
+            );
         }
         root.actions.push(query);
         for connection in &self.session.connections {
@@ -477,8 +833,10 @@ impl Widget for DbClientApp {
                 "connect",
                 "Connect",
                 OperationKind::Effect,
-                "db_client.connect",
-                &id.to_string(),
+                DB_OPERATION_TYPE,
+                &DbClientOperation::Connect {
+                    connection_id: id.to_string(),
+                },
             ) {
                 resource.actions.push(
                     spec.retry_policy(RetryPolicy::Idempotent)
@@ -512,6 +870,110 @@ impl Widget for DbClientApp {
                     .retry_policy(RetryPolicy::Idempotent),
                 );
             }
+
+            // Catalog resources are meaningful only for the live selected
+            // connection. We do not fabricate schemas for disconnected
+            // profiles merely to make search look fuller than the backend is.
+            if active_id == Some(id) && self.session.connected {
+                let mut schema = Resource::new(
+                    format!("schema:{id}:live"),
+                    "database.schema",
+                    "Live schema",
+                );
+                for schema_info in &self.session.schema.schemas {
+                    for table in &schema_info.tables {
+                        let table_name = table.name.clone();
+                        let mut table_resource = Resource::new(
+                            format!("table:{id}:{table_name}"),
+                            "database.table",
+                            table_name.clone(),
+                        );
+                        if let Ok(spec) = ActionSpec::operation(
+                            "browse",
+                            "Browse rows",
+                            OperationKind::Effect,
+                            DB_OPERATION_TYPE,
+                            &DbClientOperation::BrowseTable {
+                                connection_id: id.to_string(),
+                                table: table_name.clone(),
+                            },
+                        ) {
+                            table_resource.actions.push(
+                                spec.retry_policy(RetryPolicy::Idempotent)
+                                    .execution(ExecutionMode::Background { cancellable: false }),
+                            );
+                        }
+                        for column in &table.columns {
+                            table_resource.children.push(Resource::new(
+                                format!("column:{id}:{table_name}:{}", column.name),
+                                "database.column",
+                                column.name.clone(),
+                            ));
+                        }
+                        schema.children.push(table_resource);
+                    }
+                }
+                resource.children.push(schema);
+
+                // Export snapshots the current bounded result, then uses the
+                // host save portal; neither a path nor any result data is
+                // replicated into the workspace document.
+                if let Some(result) = &self.session.query_result {
+                    let mut results = Resource::new(
+                        format!("query-result:{id}:{}", self.session.query_gen),
+                        "database.query-result",
+                        result.message(),
+                    );
+                    if let Ok(export) = ActionSpec::operation(
+                        "export_csv",
+                        "Export CSV",
+                        OperationKind::Effect,
+                        DB_OPERATION_TYPE,
+                        &DbClientOperation::ExportCsv {
+                            connection_id: id.to_string(),
+                            result_generation: self.session.query_gen,
+                        },
+                    ) {
+                        results.actions.push(
+                            export.execution(ExecutionMode::Background { cancellable: false }),
+                        );
+                    }
+                    resource.children.push(results);
+                }
+
+                // Transactions use the same live connection and effect path
+                // as normal SQL. Commit/rollback stay explicit resource
+                // actions, so assistants never need to synthesize an opaque
+                // side channel for transactional work.
+                let mut transaction = Resource::new(
+                    format!("transaction:{id}"),
+                    "database.transaction",
+                    "Transaction",
+                );
+                for (action_id, label, sql, destructive) in [
+                    ("begin", "Begin transaction", "BEGIN", false),
+                    ("commit", "Commit transaction", "COMMIT", true),
+                    ("rollback", "Roll back transaction", "ROLLBACK", false),
+                ] {
+                    if let Ok(spec) = ActionSpec::operation(
+                        action_id,
+                        label,
+                        OperationKind::Effect,
+                        DB_OPERATION_TYPE,
+                        &DbClientOperation::RunQuery {
+                            connection_id: id.to_string(),
+                            sql: sql.to_string(),
+                        },
+                    ) {
+                        transaction.actions.push(if destructive {
+                            spec.destructive()
+                        } else {
+                            spec
+                        });
+                    }
+                }
+                resource.children.push(transaction);
+            }
             root.children.push(resource);
         }
         vec![root]
@@ -525,26 +987,12 @@ impl Widget for DbClientApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
+        if kind != OperationKind::Effect || type_id != DB_OPERATION_TYPE {
             return Ok(false);
         }
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match type_id {
-            "db_client.query" => self.session.run_query(&value),
-            "db_client.connect" => {
-                let id = Uuid::parse_str(&value).map_err(|e| e.to_string())?;
-                let idx = self
-                    .session
-                    .connections
-                    .iter()
-                    .position(|c| c.id == id)
-                    .ok_or_else(|| "connection is no longer available".to_string())?;
-                self.session.select_connection(idx);
-                self.session.connect_active();
-            }
-            _ => return Ok(false),
-        }
-        self.dirty = true;
+        let operation: DbClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        self.execute_operation(operation)?;
         Ok(true)
     }
 
@@ -557,34 +1005,63 @@ impl Widget for DbClientApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect
-            || !matches!(type_id, "db_client.query" | "db_client.connect")
-        {
+        if kind != OperationKind::Effect || type_id != DB_OPERATION_TYPE {
             return Ok(None);
         }
         if self.resource_operation.is_some() || self.session.busy() {
             return Err("another database operation is already running".into());
         }
+        let operation: DbClientOperation =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        // Reconnecting and browsing are idempotent reads/handle opens. An
+        // arbitrary SQL statement is deliberately *not* retryable: repeating
+        // an INSERT/UPDATE after an uncertain network outcome could duplicate
+        // a real side effect.
+        let retryable = matches!(
+            operation,
+            DbClientOperation::Connect { .. } | DbClientOperation::BrowseTable { .. }
+        );
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
-        self.resource_operation = Some(invocation);
+        self.resource_operation = Some((invocation, retryable));
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
     fn poll_resource_operation(
         &mut self,
         invocation: qos_actions::InvocationId,
-        _cancellation_requested: bool,
+        cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<qos_actions::InvocationUpdate> {
-        let pending = self.resource_operation?;
+        let (pending, retryable) = self.resource_operation?;
         if pending != invocation {
             return None;
         }
+        if cancellation_requested {
+            if !self.session.cancel_in_flight_query() {
+                return Some(qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "db_client.cancel_not_active".into(),
+                        message:
+                            "The requested query already completed; no newer query was cancelled"
+                                .into(),
+                        details: None,
+                        retryable: false,
+                    },
+                });
+            }
+            self.resource_operation = None;
+            return Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("Cancellation requested for this query".into()),
+            });
+        }
         self.session.drain();
-        if self.session.busy() {
+        self.drain_export_portal();
+        if self.session.busy() || self.export_rx.is_some() {
             return None;
         }
         self.resource_operation = None;
@@ -595,7 +1072,7 @@ impl Widget for DbClientApp {
                     code: "db_client.operation_failed".into(),
                     message: message.clone(),
                     details: None,
-                    retryable: false,
+                    retryable,
                 },
             },
             _ => qos_actions::InvocationUpdate::Succeeded {
@@ -653,10 +1130,10 @@ impl Widget for DbClientApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let empty_state_node = self.empty_state.build_layout(taffy, _theme, node_map);
+        let empty_state_node = self.empty_state.build_layout(taffy, theme, node_map);
         let node = match taffy.new_with_children(
             Style {
                 size: Size {
@@ -779,6 +1256,10 @@ impl Widget for DbClientApp {
         self.draw_sidebar_toggle(scene, transform, tr, theme);
 
         self.draw_status_bubble(scene, transform, tr, theme);
+
+        if self.pending_query_confirmation.is_some() {
+            self.draw_query_confirmation_modal(scene, transform, tr, theme);
+        }
 
         // Modal overlay drawn last (top layer).
         if self.modal.is_open() {
@@ -1050,6 +1531,150 @@ impl Widget for DbClientApp {
 }
 
 impl DbClientApp {
+    #[allow(
+        clippy::too_many_lines,
+        clippy::manual_midpoint,
+        reason = "the confirmation is one atomic modal paint stack"
+    )]
+    fn draw_query_confirmation_modal(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            t,
+            Color::from_rgba8(0, 0, 0, 155),
+            None,
+            &self.rect,
+        );
+        let width = self.rect.width().min(520.0);
+        let panel = Rect::new(
+            self.rect.x0 + (self.rect.width() - width) / 2.0,
+            self.rect.y0 + (self.rect.height() - 238.0) / 2.0,
+            self.rect.x0 + (self.rect.width() + width) * 0.5,
+            self.rect.y0 + (self.rect.height() + 238.0) * 0.5,
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_primary,
+            None,
+            &panel.to_rounded_rect(10.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            theme.border_standard,
+            None,
+            &panel.to_rounded_rect(10.0),
+        );
+        tr.draw_text(
+            scene,
+            "Run destructive statement?",
+            18.0,
+            theme.text_primary,
+            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 22.0)),
+            None,
+        );
+        let target = self.session.active_connection().map_or_else(
+            || "No active connection".to_string(),
+            |c| format!("Connection: {} · {}", c.name, c.subtitle()),
+        );
+        tr.draw_text(
+            scene,
+            &target,
+            12.0,
+            theme.text_dim,
+            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 52.0)),
+            Some((panel.width() - 48.0) as f32),
+        );
+        let preview = self
+            .pending_query_confirmation
+            .as_deref()
+            .unwrap_or_default();
+        let preview = preview.chars().take(220).collect::<String>();
+        let code = Rect::new(
+            panel.x0 + 24.0,
+            panel.y0 + 74.0,
+            panel.x1 - 24.0,
+            panel.y0 + 144.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_app,
+            None,
+            &code.to_rounded_rect(6.0),
+        );
+        tr.draw_text(
+            scene,
+            &preview,
+            12.0,
+            theme.text_primary,
+            t * Affine::translate((code.x0 + 10.0, code.y0 + 10.0)),
+            Some((code.width() - 20.0) as f32),
+        );
+        tr.draw_text(
+            scene,
+            "This cannot be undone by the database client.",
+            11.5,
+            theme.tokens.colors.semantic.danger,
+            t * Affine::translate((panel.x0 + 24.0, panel.y0 + 162.0)),
+            None,
+        );
+        self.confirm_cancel_btn = Rect::new(
+            panel.x1 - 194.0,
+            panel.y1 - 48.0,
+            panel.x1 - 106.0,
+            panel.y1 - 16.0,
+        );
+        self.confirm_run_btn = Rect::new(
+            panel.x1 - 96.0,
+            panel.y1 - 48.0,
+            panel.x1 - 20.0,
+            panel.y1 - 16.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.bg_app,
+            None,
+            &self.confirm_cancel_btn.to_rounded_rect(6.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            t,
+            theme.tokens.colors.semantic.danger,
+            None,
+            &self.confirm_run_btn.to_rounded_rect(6.0),
+        );
+        tr.draw_text(
+            scene,
+            "Cancel",
+            12.0,
+            theme.text_primary,
+            t * Affine::translate((
+                self.confirm_cancel_btn.x0 + 20.0,
+                self.confirm_cancel_btn.y0 + 8.0,
+            )),
+            None,
+        );
+        tr.draw_text(
+            scene,
+            "Run",
+            12.0,
+            Color::WHITE,
+            t * Affine::translate((
+                self.confirm_run_btn.x0 + 21.0,
+                self.confirm_run_btn.y0 + 8.0,
+            )),
+            None,
+        );
+    }
+
     fn on_cursor_moved(&mut self, x: f64, y: f64, scale_factor: f64) {
         self.cursor = Point::new(x / scale_factor, y / scale_factor);
         self.run_hover = self.run_btn.contains(self.cursor);
@@ -1122,6 +1747,11 @@ impl DbClientApp {
         // Global shortcut: Ctrl+Enter runs regardless of focus.
         if ctrl {
             if let Key::Named(NamedKey::Enter) = logical_key {
+                if let Some(sql) = self.pending_query_confirmation.take() {
+                    self.run_sql_effect(sql);
+                    *handled = true;
+                    return;
+                }
                 self.run_current_query();
                 *handled = true;
                 return;
@@ -1137,6 +1767,11 @@ impl DbClientApp {
         // Esc closes the snippet menu, then dismisses an open overlay flap
         // (in docked mode Esc leaves the sidebar untouched).
         if let Key::Named(NamedKey::Escape) = logical_key {
+            if self.pending_query_confirmation.take().is_some() {
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
             if self.snippets_open {
                 self.snippets_open = false;
                 *handled = true;
@@ -1237,7 +1872,13 @@ impl DbClientApp {
         // Connection rows.
         for (idx, r) in self.conn_rects.clone() {
             if r.contains(c) {
-                self.session.select_connection(idx);
+                if let Some(connection) = self.session.connections.get(idx) {
+                    // Use the shared effect implementation for both selecting
+                    // and retrying an already-active disconnected profile.
+                    let _ = self.execute_operation(DbClientOperation::Connect {
+                        connection_id: connection.id.to_string(),
+                    });
+                }
                 self.dirty = true;
                 *handled = true;
                 return true;
@@ -1273,6 +1914,22 @@ impl DbClientApp {
     ) -> bool {
         if self.session.tab != MainTab::Query {
             return false;
+        }
+
+        if self.pending_query_confirmation.is_some() {
+            if self.confirm_cancel_btn.contains(c) {
+                self.pending_query_confirmation = None;
+                self.dirty = true;
+                *handled = true;
+                return true;
+            }
+            if self.confirm_run_btn.contains(c) {
+                if let Some(sql) = self.pending_query_confirmation.take() {
+                    self.run_sql_effect(sql);
+                }
+                *handled = true;
+                return true;
+            }
         }
 
         if self.run_btn.contains(c) {
@@ -1782,6 +2439,10 @@ impl DbClientApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the editor, result status, confirmation and grid need one ordered paint stack"
+    )]
     fn draw_query_tab(
         &mut self,
         scene: &mut Scene,
@@ -1871,20 +2532,28 @@ impl DbClientApp {
 
         // Result message strip between editor and grid.
         let strip_y = self.editor.rect().y1 + 4.0;
-        let (msg, color) = match &self.session.status {
-            RunStatus::Ok(m) => (m.clone(), theme.tokens.colors.semantic.success),
-            RunStatus::Error(m) => (format!("✕ {m}"), theme.tokens.colors.semantic.danger),
-            RunStatus::Busy(m) => (m.clone(), theme.accent_primary),
-            RunStatus::Idle => ("Ready".to_string(), theme.text_dim),
-        };
-        tr.draw_text(
-            scene,
-            &msg,
-            12.0,
-            color,
-            t * Affine::translate((self.main_rect.x0 + 12.0, strip_y + 4.0)),
-            None,
-        );
+        self.confirm_cancel_btn = Rect::ZERO;
+        self.confirm_run_btn = Rect::ZERO;
+        if self.pending_query_confirmation.is_none() {
+            let (msg, color) = match &self.session.status {
+                RunStatus::Ok(m) => (m.clone(), theme.tokens.colors.semantic.success),
+                RunStatus::Error(m) if self.session.query_result.is_some() => (
+                    format!("✕ Query failed — previous result remains visible: {m}"),
+                    theme.tokens.colors.semantic.danger,
+                ),
+                RunStatus::Error(m) => (format!("✕ {m}"), theme.tokens.colors.semantic.danger),
+                RunStatus::Busy(m) => (m.clone(), theme.accent_primary),
+                RunStatus::Idle => ("Ready".to_string(), theme.text_dim),
+            };
+            tr.draw_text(
+                scene,
+                &msg,
+                12.0,
+                color,
+                t * Affine::translate((self.main_rect.x0 + 12.0, strip_y + 4.0)),
+                None,
+            );
+        }
 
         // Grid.
         if let Some(res) = &self.session.query_result {
@@ -2542,12 +3211,16 @@ mod behavior_tests {
     fn resource_query_is_pending_until_the_database_worker_finishes() {
         let (mut app, doc) = synced();
         let invocation = qos_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&"SELECT 1").unwrap();
+        let payload = serde_json::to_vec(&DbClientOperation::RunQuery {
+            connection_id: app.session.active_connection_id().unwrap().to_string(),
+            sql: "SELECT 1".into(),
+        })
+        .unwrap();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
                 OperationKind::Effect,
-                "db_client.query",
+                DB_OPERATION_TYPE,
                 &payload,
                 &doc,
                 &ROOT,
@@ -2560,5 +3233,86 @@ mod behavior_tests {
             app.poll_resource_operation(invocation, false, &doc, &ROOT),
             Some(qos_actions::InvocationUpdate::Succeeded { .. })
         ));
+    }
+
+    #[test]
+    fn live_resource_tree_covers_schema_results_and_transactions_without_secrets() {
+        let (mut app, doc) = synced();
+        app.session.connections[0].password = "never-publish-this".into();
+        let resources = app.resources(&doc);
+        let connection = &resources[0].children[0];
+        assert!(
+            connection
+                .children
+                .iter()
+                .any(|resource| resource.kind == "database.schema")
+        );
+        assert!(
+            connection
+                .children
+                .iter()
+                .any(|resource| resource.kind == "database.query-result")
+        );
+        let transaction = connection
+            .children
+            .iter()
+            .find(|resource| resource.kind == "database.transaction")
+            .expect("live connection publishes transaction effects");
+        assert_eq!(transaction.actions.len(), 3);
+        let labels = resources[0]
+            .children
+            .iter()
+            .map(|resource| resource.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !labels.contains("never-publish-this"),
+            "resource labels must not reveal secret fields"
+        );
+    }
+
+    #[test]
+    fn destructive_sql_requires_an_explicit_editor_confirmation() {
+        let (mut app, _doc) = synced();
+        app.editor.set_text("DELETE FROM tracks");
+        app.run_current_query();
+        assert_eq!(
+            app.pending_query_confirmation.as_deref(),
+            Some("DELETE FROM tracks"),
+            "the first run asks for confirmation instead of issuing the effect"
+        );
+        assert!(!app.session.busy());
+    }
+
+    #[test]
+    fn sql_safety_check_leaves_read_queries_fast() {
+        assert!(!sql_is_potentially_destructive("SELECT * FROM tracks"));
+        assert!(!sql_is_potentially_destructive("EXPLAIN SELECT 1"));
+        assert!(sql_is_potentially_destructive(
+            "  UPDATE tracks SET name = 'x'"
+        ));
+        assert!(sql_is_potentially_destructive("DROP TABLE tracks"));
+        assert!(sql_is_potentially_destructive(
+            "-- note\nDELETE FROM tracks"
+        ));
+        assert!(sql_is_potentially_destructive(
+            "/* note */ WITH gone AS (DELETE FROM tracks RETURNING id) SELECT * FROM gone"
+        ));
+        assert!(sql_is_potentially_destructive(
+            "SELECT 1; DROP TABLE tracks"
+        ));
+        assert!(!sql_is_potentially_destructive(
+            "SELECT 'DELETE FROM tracks'"
+        ));
+        assert!(!sql_is_potentially_destructive("-- DELETE\nSELECT 1"));
+    }
+
+    #[test]
+    fn csv_fields_neutralize_spreadsheet_formulas_without_losing_values() {
+        assert_eq!(csv_field("=SUM(A1:A2)"), "\"'=SUM(A1:A2)\"");
+        assert_eq!(csv_field(" \t@cmd"), "\"' \t@cmd\"");
+        assert_eq!(csv_field("plain, \"text\""), "\"plain, \"\"text\"\"\"");
+        assert_eq!(csv_field("NULL"), "\"NULL\"");
+        assert_eq!(csv_field("«4 bytes»"), "\"«4 bytes»\"");
     }
 }

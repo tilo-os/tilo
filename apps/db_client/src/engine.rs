@@ -9,6 +9,8 @@
 //! refused socket or a bad password surfaces as the driver's own error string,
 //! never a fabricated success.
 
+use std::sync::Arc;
+use std::thread;
 use std::time::Instant;
 
 use rusqlite::Connection;
@@ -18,12 +20,75 @@ use crate::model::{
     Cell, ColumnInfo, ConnectionProfile, DatabaseSchema, Engine, ForeignKey, IndexInfo,
     QueryResult, RelationKind, SchemaInfo, TableInfo, TypeClass,
 };
+
+/// Hard cap for arbitrary query results. The grid virtualizes rendering, and
+/// this cap also bounds driver-side collection so `SELECT *` cannot exhaust
+/// the UI process. Table browsing remains separately paged at 100 rows.
+pub const MAX_QUERY_ROWS: usize = 1_000;
+/// Aggregate payload cap for one result. It prevents many columns of valid
+/// (but individually capped) text from multiplying into an excessive UI heap.
+pub const MAX_QUERY_RESULT_BYTES: usize = 8 * 1024 * 1024;
+/// Caps vector metadata as well as payload: NULL-heavy, extremely-wide output
+/// should not allocate an arbitrary number of [`Cell`] entries either.
+pub const MAX_QUERY_RESULT_CELLS: usize = 100_000;
 use crate::sample;
+
+/// A private, in-memory capability for interrupting exactly the query that is
+/// currently executing on the worker. It never enters a resource payload or
+/// collaborative document; [`crate::worker`] pairs it with a connection id and
+/// monotonically increasing request generation before invoking it.
+#[derive(Clone)]
+pub enum QueryCancellation {
+    Sqlite(Arc<rusqlite::InterruptHandle>),
+    Postgres(postgres::CancelToken),
+    MySql {
+        opts: mysql::Opts,
+        connection_id: u32,
+    },
+}
+
+impl QueryCancellation {
+    /// Start an engine-native cancellation off the UI thread. Server-side
+    /// cancel requests are inherently asynchronous/racy, but the worker's
+    /// generation check ensures this capability is never selected for a newer
+    /// query.
+    pub fn request(&self) {
+        match self.clone() {
+            Self::Sqlite(handle) => handle.interrupt(),
+            Self::Postgres(token) => {
+                let _ = thread::Builder::new()
+                    .name("db-pg-cancel".into())
+                    .spawn(move || {
+                        let _ = token.cancel_query(postgres::NoTls);
+                    });
+            }
+            Self::MySql {
+                opts,
+                connection_id,
+            } => {
+                let _ = thread::Builder::new()
+                    .name("db-mysql-cancel".into())
+                    .spawn(move || {
+                        let Ok(mut killer) = mysql::Conn::new(opts) else {
+                            return;
+                        };
+                        // `connection_id` comes from the active driver's
+                        // server-assigned u32, never from SQL/user input.
+                        let _ = mysql::prelude::Queryable::query_drop(
+                            &mut killer,
+                            format!("KILL QUERY {connection_id}"),
+                        );
+                    });
+            }
+        }
+    }
+}
 
 /// A live `SQLite` handle. Owns the connection for the lifetime of the
 /// session; all introspection + query execution goes through it.
 pub struct SqliteEngine {
     conn: Connection,
+    interrupt: Arc<rusqlite::InterruptHandle>,
 }
 
 impl SqliteEngine {
@@ -37,7 +102,8 @@ impl SqliteEngine {
     pub fn open_sample() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         sample::seed(&conn).map_err(|e| e.to_string())?;
-        Ok(Self { conn })
+        let interrupt = Arc::new(conn.get_interrupt_handle());
+        Ok(Self { conn, interrupt })
     }
 
     /// Open an on-disk `SQLite` file (read-write).
@@ -48,7 +114,8 @@ impl SqliteEngine {
     /// file exists but isn't a valid `SQLite` database).
     pub fn open_file(path: &str) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
-        Ok(Self { conn })
+        let interrupt = Arc::new(conn.get_interrupt_handle());
+        Ok(Self { conn, interrupt })
     }
 
     /// Introspect the full schema. `SQLite` has a single implicit namespace,
@@ -223,6 +290,7 @@ impl SqliteEngine {
                 elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
                 rows_affected: Some(affected as i64),
                 is_select: false,
+                truncated: false,
             });
         }
 
@@ -231,13 +299,26 @@ impl SqliteEngine {
             .collect();
 
         let mut rows_out: Vec<Vec<Cell>> = Vec::new();
+        let mut retained_bytes = 0usize;
+        let mut retained_cells = 0usize;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut truncated = false;
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            if rows_out.len() == MAX_QUERY_ROWS {
+                truncated = true;
+                break;
+            }
             let mut cells = Vec::with_capacity(col_count);
             for i in 0..col_count {
                 let v = row.get_ref(i).map_err(|e| e.to_string())?;
                 cells.push(value_ref_to_cell(v));
             }
+            if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
+                truncated = true;
+                break;
+            }
+            retained_bytes += row_retained_bytes(&cells);
+            retained_cells += cells.len();
             rows_out.push(cells);
         }
 
@@ -247,7 +328,12 @@ impl SqliteEngine {
             rows_affected: None,
             is_select: true,
             rows: rows_out,
+            truncated,
         })
+    }
+
+    pub(crate) fn cancellation_handle(&self) -> QueryCancellation {
+        QueryCancellation::Sqlite(Arc::clone(&self.interrupt))
     }
 }
 
@@ -256,9 +342,25 @@ fn value_ref_to_cell(v: ValueRef<'_>) -> Cell {
         ValueRef::Null => Cell::Null,
         ValueRef::Integer(i) => Cell::Integer(i),
         ValueRef::Real(r) => Cell::Real(r),
-        ValueRef::Text(t) => Cell::Text(String::from_utf8_lossy(t).into_owned()),
+        ValueRef::Text(t) => Cell::bounded_text(String::from_utf8_lossy(t).into_owned()),
         ValueRef::Blob(b) => Cell::Blob(b.len()),
     }
+}
+
+/// Whether adding `row` stays inside both aggregate result limits. Every
+/// engine calls this before retaining a decoded row, keeping result memory
+/// bounded regardless of backend or result shape.
+pub(crate) fn can_retain_result_row(
+    retained_bytes: usize,
+    retained_cells: usize,
+    row: &[Cell],
+) -> bool {
+    retained_bytes.saturating_add(row_retained_bytes(row)) <= MAX_QUERY_RESULT_BYTES
+        && retained_cells.saturating_add(row.len()) <= MAX_QUERY_RESULT_CELLS
+}
+
+pub(crate) fn row_retained_bytes(row: &[Cell]) -> usize {
+    row.iter().map(Cell::retained_bytes).sum()
 }
 
 /// A live connection to any supported engine. The session holds one of these
@@ -292,6 +394,16 @@ impl LiveEngine {
             LiveEngine::Sqlite(e) => e.run(sql),
             LiveEngine::Postgres(e) => e.run(sql),
             LiveEngine::MySql(e) => e.run(sql),
+        }
+    }
+
+    /// Capture the backend-specific interruption capability before beginning
+    /// a query. The worker retains it only for that query generation.
+    pub(crate) fn cancellation_handle(&self) -> QueryCancellation {
+        match self {
+            LiveEngine::Sqlite(e) => e.cancellation_handle(),
+            LiveEngine::Postgres(e) => e.cancellation_handle(),
+            LiveEngine::MySql(e) => e.cancellation_handle(),
         }
     }
 
@@ -396,5 +508,45 @@ mod tests {
             albums.foreign_keys.iter().any(|f| f.ref_table == "artists"),
             "albums should reference artists"
         );
+    }
+
+    #[test]
+    fn sqlite_hostile_text_is_retained_at_a_bounded_size() {
+        let eng = SqliteEngine::open_sample().unwrap();
+        let sql = format!(
+            "SELECT '{}' AS hostile",
+            "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES + 99)
+        );
+        let result = eng.run(&sql).unwrap();
+        let Cell::Text(value) = &result.rows[0][0] else {
+            panic!("text result expected")
+        };
+        assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
+        assert!(value.ends_with("… [truncated]"));
+    }
+
+    #[test]
+    fn aggregate_budget_truncates_many_large_cells_across_rows_and_columns() {
+        let eng = SqliteEngine::open_sample().unwrap();
+        let text = "x".repeat(Cell::MAX_RETAINED_TEXT_BYTES);
+        let columns = (0..8)
+            .map(|index| format!("'{text}' AS c{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let result = eng
+            .run(&format!(
+                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 100) \
+                 SELECT {columns} FROM n"
+            ))
+            .unwrap();
+        assert!(result.truncated);
+        assert!(result.rows.len() < 100);
+        let retained: usize = result
+            .rows
+            .iter()
+            .flat_map(|row| row.iter())
+            .map(Cell::retained_bytes)
+            .sum();
+        assert!(retained <= MAX_QUERY_RESULT_BYTES);
     }
 }
