@@ -12,7 +12,7 @@ use crate::theme_ext::ThemeColors;
 /// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to
 /// least-severe (`Debug`, level 7). Level numbers match RFC 5424 and the
 /// integer in the journal's `PRIORITY` field.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, serde::Serialize)]
 pub enum Priority {
     Emerg,
     Alert,
@@ -113,7 +113,7 @@ impl Priority {
 }
 
 /// One flattened journal record.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct LogEntry {
     /// `__REALTIME_TIMESTAMP` — microseconds since the Unix epoch (UTC).
     pub realtime_us: u64,
