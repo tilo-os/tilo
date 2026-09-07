@@ -35,14 +35,14 @@ use ui::widget::Widget;
     clippy::unnecessary_wraps,
     reason = "must match the ShotFactory fn-pointer type, which returns Result"
 )]
-fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(
-        if std::env::var("QOS_FIREWALL_SAMPLE").as_deref() == Ok("1") {
-            firewall::app_root_demo()
-        } else {
-            firewall::app_root()
-        },
-    )
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    // Captures are always hermetic and use only the bundled example ruleset.
+    // Live startup remains the only path that interrogates the host firewall.
+    let mut app = firewall::FirewallApp::new_demo();
+    if let Some(scenario) = args.scenario.as_deref() {
+        app.pose_fixture(scenario);
+    }
+    Ok(Box::new(app))
 }
 
 #[cfg(feature = "thin")]
@@ -52,6 +52,13 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.firewall", firewall::app_root)
             .shot_root(shot_root)
+            .scenarios(&[
+                "empty",
+                "error",
+                "confirmation",
+                "active-change",
+                "service-error",
+            ])
             .configure_app(|app| firewall::actions::register(app.action_registry_mut())),
     );
 }
