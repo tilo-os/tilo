@@ -1,20 +1,75 @@
 //! Background image decode + cache for image elements.
 //!
-//! Image elements store only a filesystem path in the CRDT (see
-//! [`crate::model::Element::src`]); the decoded pixels are a per-peer runtime
-//! cache keyed by that path. Decoding runs on a worker thread so a large JPEG
-//! never blocks the UI thread — the slide paints a light "loading" state until
-//! the pixels land, then the real picture appears on the next frame.
+//! Image elements store only a content-addressed shared-blob ID in the CRDT
+//! (see [`crate::model::Element::src`]); decoded pixels are a per-peer runtime
+//! cache keyed by that identity. Decoding runs on a worker thread so a large
+//! JPEG never blocks the UI thread — the slide paints a light "loading" state
+//! until the pixels land, then the real picture appears on the next frame.
 //!
 //! The decoded bytes are wrapped in a [`vello::peniko::ImageData`] (CPU-side
 //! RGBA, no GPU handle) so the renderer can paint them directly with an
 //! `ImageBrush`, exactly like [`ui::widget::Image`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, Sender};
+use std::io::Read;
+use std::path::Path;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+
+/// A slide may refer to a very large source photo, but the editor must never
+/// turn that reference into an unbounded read or allocation.  These ceilings
+/// are deliberately above ordinary camera pictures while remaining small
+/// enough to keep one malformed image from taking the desktop down.
+pub const MAX_IMAGE_FILE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_IMAGE_DIMENSION: u32 = 8_192;
+pub const MAX_IMAGE_PIXELS: u64 = 24 * 1024 * 1024;
+const MAX_IMAGE_DECODE_BYTES: u64 = MAX_IMAGE_PIXELS * 4;
+const DECODE_QUEUE_CAPACITY: usize = 8;
+const DECODE_RESULT_CAPACITY: usize = 1;
+const MAX_READY_IMAGE_BYTES: usize = 96 * 1024 * 1024;
+pub const ASSET_PREFIX: &str = "asset:blake3:";
+
+/// A deck carries this content identity, never a machine-local file path.
+pub fn is_asset_id(id: &str) -> bool {
+    id.strip_prefix(ASSET_PREFIX)
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Store supplied bytes by their BLAKE3 content hash and return the portable
+/// identifier that is safe to place in the collaborative deck. `qdoc`'s
+/// process-wide blobstore is paired with the room transport, so a later peer
+/// can request the bytes by this hash; it is not a private XDG cache.
+pub fn store_asset(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES {
+        return None;
+    }
+    let hash = qdoc::blobstore::put(bytes);
+    // `put` is intentionally fallible at its storage boundary. Do not create
+    // a CRDT reference until the exact bytes are retrievable and re-verified.
+    let stored = qdoc::blobstore::get(&hash)?;
+    (stored == bytes && qdoc::blobstore::verify(&hash, &stored))
+        .then(|| format!("{ASSET_PREFIX}{hash}"))
+}
+
+/// Resolve a deck asset only after checking both its bounded bytes and its
+/// declared hash.  A missing or corrupt blob is an ordinary unavailable asset,
+/// never an instruction to read an arbitrary peer-provided filesystem path.
+pub fn read_asset(id: &str) -> Option<Vec<u8>> {
+    let hash = id.strip_prefix(ASSET_PREFIX)?;
+    let bytes = qdoc::blobstore::get(hash)?;
+    (bytes.len() <= MAX_IMAGE_FILE_BYTES && qdoc::blobstore::verify(hash, &bytes)).then_some(bytes)
+}
+
+pub fn import_asset_file(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    file.take((MAX_IMAGE_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    store_asset(&bytes)
+}
 
 /// Current decode state of one image path.
 #[derive(Clone)]
@@ -30,8 +85,11 @@ pub enum ImageState {
 /// A path-keyed image cache with off-thread decoding.
 pub struct ImageStore {
     inner: RefCell<HashMap<String, ImageState>>,
-    tx: Sender<(String, ImageState)>,
+    request_tx: Option<SyncSender<String>>,
     rx: Receiver<(String, ImageState)>,
+    ready_bytes: Cell<usize>,
+    access: RefCell<HashMap<String, u64>>,
+    access_clock: Cell<u64>,
 }
 
 impl Default for ImageStore {
@@ -42,11 +100,33 @@ impl Default for ImageStore {
 
 impl ImageStore {
     pub fn new() -> Self {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (result_tx, rx) =
+            std::sync::mpsc::sync_channel::<(String, ImageState)>(DECODE_RESULT_CAPACITY);
+        let (request_tx, request_rx) =
+            std::sync::mpsc::sync_channel::<String>(DECODE_QUEUE_CAPACITY);
+        // One long-lived worker is both cheaper than a thread per image and
+        // gives the cache an explicit, bounded back-pressure point.  A failed
+        // spawn is represented by `None`; callers then receive `Failed`
+        // rather than an eternal loading placeholder.
+        let request_tx = std::thread::Builder::new()
+            .name("slides-image-decode".into())
+            .spawn(move || {
+                while let Ok(path) = request_rx.recv() {
+                    let state = decode(&path);
+                    if result_tx.send((path, state)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()
+            .map(|_| request_tx);
         ImageStore {
             inner: RefCell::new(HashMap::new()),
-            tx,
+            request_tx,
             rx,
+            ready_bytes: Cell::new(0),
+            access: RefCell::new(HashMap::new()),
+            access_clock: Cell::new(0),
         }
     }
 
@@ -54,27 +134,25 @@ impl ImageStore {
     /// first time a path is seen. Cheap on every subsequent call (a map read +
     /// an `Arc` bump when ready).
     pub fn get(&self, path: &str) -> ImageState {
-        if path.is_empty() {
+        if !is_asset_id(path) {
             return ImageState::Failed;
         }
         let mut map = self.inner.borrow_mut();
         if let Some(state) = map.get(path) {
+            self.touch(path);
             return state.clone();
         }
         map.insert(path.to_string(), ImageState::Loading);
-        let tx = self.tx.clone();
         let p = path.to_string();
-        // One worker per newly-seen image. Inserts are rare (a user picking a
-        // file), so a thread-per-decode is simpler than a pool and never
-        // starves the UI thread.
-        std::thread::Builder::new()
-            .name("slides-image-decode".into())
-            .spawn(move || {
-                let state = decode(&p);
-                let _ = tx.send((p, state));
-            })
-            .ok();
-        ImageState::Loading
+        match self.request_tx.as_ref().map(|tx| tx.try_send(p)) {
+            Some(Ok(())) => ImageState::Loading,
+            // Queue saturation is not an accepted request: record a settled
+            // failure, rather than displaying a spinner that no worker owns.
+            Some(Err(TrySendError::Full(_) | TrySendError::Disconnected(_))) | None => {
+                map.insert(path.to_string(), ImageState::Failed);
+                ImageState::Failed
+            }
+        }
     }
 
     /// Decode `path` synchronously and cache the result. Used by the headless
@@ -82,7 +160,12 @@ impl ImageStore {
     /// ready before it renders. Never called on the live UI thread.
     pub fn load_blocking(&self, path: &str) {
         let state = decode(path);
+        self.remove_ready_bytes(path);
+        self.ready_bytes
+            .set(self.ready_bytes.get().saturating_add(state_bytes(&state)));
         self.inner.borrow_mut().insert(path.to_string(), state);
+        self.touch(path);
+        self.evict_ready();
     }
 
     /// Drain finished decodes into the cache. Returns `true` if any image
@@ -91,7 +174,12 @@ impl ImageStore {
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
         while let Ok((path, state)) = self.rx.try_recv() {
-            self.inner.get_mut().insert(path, state);
+            self.remove_ready_bytes(&path);
+            self.ready_bytes
+                .set(self.ready_bytes.get().saturating_add(state_bytes(&state)));
+            self.inner.get_mut().insert(path.clone(), state);
+            self.touch(&path);
+            self.evict_ready();
             changed = true;
         }
         changed
@@ -107,18 +195,94 @@ impl ImageStore {
     }
 }
 
+impl ImageStore {
+    fn touch(&self, path: &str) {
+        let next = self.access_clock.get().checked_add(1).unwrap_or(1);
+        self.access_clock.set(next);
+        self.access.borrow_mut().insert(path.to_string(), next);
+    }
+
+    fn remove_ready_bytes(&self, path: &str) {
+        if let Some(old) = self.inner.borrow().get(path) {
+            self.ready_bytes
+                .set(self.ready_bytes.get().saturating_sub(state_bytes(old)));
+        }
+    }
+
+    fn evict_ready(&self) {
+        while self.ready_bytes.get() > MAX_READY_IMAGE_BYTES {
+            let candidate = {
+                let map = self.inner.borrow();
+                let access = self.access.borrow();
+                map.iter()
+                    .filter(|(_, state)| matches!(state, ImageState::Ready(_)))
+                    .min_by_key(|(path, _)| access.get(*path).copied().unwrap_or(0))
+                    .map(|(path, state)| (path.clone(), state_bytes(state)))
+            };
+            let Some((path, bytes)) = candidate else {
+                break;
+            };
+            self.inner.borrow_mut().remove(&path);
+            self.access.borrow_mut().remove(&path);
+            self.ready_bytes
+                .set(self.ready_bytes.get().saturating_sub(bytes));
+        }
+    }
+}
+
+fn state_bytes(state: &ImageState) -> usize {
+    match state {
+        ImageState::Ready(image) => {
+            usize::try_from(u64::from(image.width) * u64::from(image.height) * 4)
+                .unwrap_or(usize::MAX)
+        }
+        ImageState::Loading | ImageState::Failed => 0,
+    }
+}
+
 /// Decode an image file into straight-alpha RGBA8 wrapped for Vello. Returns
 /// [`ImageState::Failed`] on any read/decode error.
 fn decode(path: &str) -> ImageState {
-    let Ok(bytes) = std::fs::read(path) else {
+    // This is deliberately categorical. The string arrived through a shared
+    // CRDT and must never become a peer-controlled local-path probe. Screenshot
+    // fixtures use `store_asset` first, exactly as the real portal does.
+    if !is_asset_id(path) {
+        return ImageState::Failed;
+    }
+    let Some(bytes) = read_asset(path) else {
         return ImageState::Failed;
     };
-    let Ok(img) = image::load_from_memory(&bytes) else {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_IMAGE_DECODE_BYTES);
+    let Ok(mut reader) =
+        image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()
+    else {
+        return ImageState::Failed;
+    };
+    reader.limits(limits.clone());
+    let Ok((w, h)) = reader.into_dimensions() else {
+        return ImageState::Failed;
+    };
+    if w == 0 || h == 0 || u64::from(w).saturating_mul(u64::from(h)) > MAX_IMAGE_PIXELS {
+        return ImageState::Failed;
+    }
+    let Ok(mut reader) =
+        image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()
+    else {
+        return ImageState::Failed;
+    };
+    reader.limits(limits);
+    let Ok(img) = reader.decode() else {
         return ImageState::Failed;
     };
     let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    if w == 0 || h == 0 {
+    let (decoded_w, decoded_h) = rgba.dimensions();
+    if decoded_w != w
+        || decoded_h != h
+        || rgba.len() > usize::try_from(MAX_IMAGE_DECODE_BYTES).unwrap_or(usize::MAX)
+    {
         return ImageState::Failed;
     }
     let blob = Blob::new(std::sync::Arc::new(rgba.into_raw()));
@@ -126,7 +290,44 @@ fn decode(path: &str) -> ImageState {
         data: blob,
         format: ImageFormat::Rgba8,
         alpha_type: ImageAlphaType::Alpha,
-        width: w,
-        height: h,
+        width: decoded_w,
+        height: decoded_h,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_refuses_an_oversized_source_before_image_parsing() {
+        let path =
+            std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
+        std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1]).expect("write oversize source");
+        assert!(matches!(
+            decode(path.to_str().expect("utf-8 path")),
+            ImageState::Failed
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn image_store_never_leaves_a_failed_worker_request_loading() {
+        let store = ImageStore {
+            inner: RefCell::new(HashMap::new()),
+            request_tx: None,
+            rx: std::sync::mpsc::channel().1,
+            ready_bytes: Cell::new(0),
+            access: RefCell::new(HashMap::new()),
+            access_clock: Cell::new(0),
+        };
+        assert!(matches!(
+            store.get("/does/not/exist.png"),
+            ImageState::Failed
+        ));
+        assert!(matches!(
+            store.get("/does/not/exist.png"),
+            ImageState::Failed
+        ));
+    }
 }

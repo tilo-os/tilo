@@ -16,9 +16,15 @@
 //! is identity — see the test at the bottom). A foreign `.odp` that lacks the
 //! `qslides:` attributes still imports structurally via the native geometry.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::too_many_lines,
+    reason = "ODF geometry is conventionally x/y/w/h and the streaming parser keeps all XML state in one auditable bounded state machine"
+)]
+
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::model::{
     Background, Deck, Element, ElementKind, Layout, PaletteKind, SLIDE_H, SLIDE_W, Slide, TextAlign,
@@ -32,6 +38,15 @@ const PAGE_W_CM: f64 = 25.4;
 const PAGE_H_CM: f64 = PAGE_W_CM * SLIDE_H / SLIDE_W;
 
 const MIME: &str = "application/vnd.oasis.opendocument.presentation";
+/// Every imported office package is checked before XML parsing or media
+/// extraction.  These limits bound both deliberately hostile archives and a
+/// mistaken attempt to open an unrelated disk image as a presentation.
+pub(crate) const MAX_ARCHIVE_ENTRIES: usize = 4_096;
+pub(crate) const MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE_MEMBER_BYTES: u64 = 32 * 1024 * 1024;
+pub(crate) const MAX_XML_MEMBER_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_IMPORTED_PICTURE_BYTES: usize = 24 * 1024 * 1024;
+const MAX_IMPORTED_TEXT_CHARS: usize = 100_000;
 
 // ===========================================================================
 // Write
@@ -264,9 +279,9 @@ struct BundledPicture {
     bytes: Vec<u8>,
 }
 
-/// Collect readable local pictures exactly once. Missing files remain external
-/// references instead of making the whole deck unsavable; readable pictures
-/// become real ODF package members, making the saved presentation portable.
+/// Collect verified content-addressed pictures exactly once. Missing blobs are
+/// intentionally omitted from interchange rather than dereferencing a path
+/// supplied by another collaborator.
 fn collect_pictures(deck: &Deck) -> Vec<BundledPicture> {
     let mut pictures = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -274,7 +289,7 @@ fn collect_pictures(deck: &Deck) -> Vec<BundledPicture> {
         if element.kind != ElementKind::Image || !seen.insert(element.src.clone()) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&element.src) else {
+        let Some(bytes) = crate::assets::read_asset(&element.src) else {
             continue;
         };
         let Some((ext, mime)) = picture_format(&bytes) else {
@@ -352,15 +367,12 @@ fn resolve_entity(r: &quick_xml::events::BytesRef) -> Option<char> {
 pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let mut content = String::new();
-    {
-        zip.by_name("content.xml")
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
-            .read_to_string(&mut content)?;
-    }
+    validate_archive(&mut zip)?;
+    let content = read_zip_text(&mut zip, "content.xml")?;
     let mut deck = parse_content(&content).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "no slides in content.xml")
     })?;
+    validate_imported_deck(&deck)?;
     let mut extracted = HashMap::new();
     for element in deck
         .slides
@@ -380,6 +392,92 @@ pub fn read_odp(bytes: &[u8]) -> std::io::Result<Deck> {
     Ok(deck)
 }
 
+pub(crate) fn validate_archive<R: Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+) -> std::io::Result<()> {
+    if zip.len() > MAX_ARCHIVE_ENTRIES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "presentation archive has too many entries",
+        ));
+    }
+    let mut total = 0_u64;
+    for index in 0..zip.len() {
+        let file = zip
+            .by_index(index)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let size = file.size();
+        if size > MAX_ARCHIVE_MEMBER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "presentation archive member is too large",
+            ));
+        }
+        total = total.checked_add(size).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "presentation archive is too large",
+            )
+        })?;
+        if total > MAX_ARCHIVE_TOTAL_UNCOMPRESSED_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "presentation archive expands beyond the allowed limit",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn read_zip_text<R: Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> std::io::Result<String> {
+    let file = zip
+        .by_name(name)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if file.size() > MAX_XML_MEMBER_BYTES as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "presentation XML member is too large",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(file.size().min(64 * 1024) as usize);
+    file.take((MAX_XML_MEMBER_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_XML_MEMBER_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "presentation XML member expands beyond the allowed limit",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+pub(crate) fn validate_imported_deck(deck: &Deck) -> std::io::Result<()> {
+    if !crate::actions::deck_within_aggregate_limits(deck)
+        || deck.title.chars().count() > MAX_IMPORTED_TEXT_CHARS
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "presentation is too large",
+        ));
+    }
+    if deck.slides.iter().any(|slide| {
+        slide.notes.chars().count() > MAX_IMPORTED_TEXT_CHARS
+            || slide.elements.iter().any(|element| {
+                element.text.chars().count() > MAX_IMPORTED_TEXT_CHARS || element.src.len() > 4_096
+            })
+    }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "presentation has too much content",
+        ));
+    }
+    Ok(())
+}
+
 fn extract_picture<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     href: &str,
@@ -389,30 +487,18 @@ fn extract_picture<R: Read + std::io::Seek>(
     {
         return None;
     }
-    let mut bytes = Vec::new();
-    zip.by_name(href).ok()?.read_to_end(&mut bytes).ok()?;
-    let (ext, _) = picture_format(&bytes)?;
-    let hash = fnv1a(&bytes);
-    let dir = picture_cache_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join(format!("{hash:016x}.{ext}"));
-    if !path.exists() {
-        std::fs::write(&path, bytes).ok()?;
+    let file = zip.by_name(href).ok()?;
+    if file.size() > MAX_IMPORTED_PICTURE_BYTES as u64 {
+        return None;
     }
-    Some(path.to_string_lossy().into_owned())
-}
-
-fn picture_cache_dir() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|home| !home.is_empty())
-                .map(|home| PathBuf::from(home).join(".cache"))
-        })
-        .unwrap_or_else(std::env::temp_dir)
-        .join("qos/slides/imported-pictures")
+    let mut bytes = Vec::with_capacity(file.size().min(64 * 1024) as usize);
+    file.take((MAX_IMPORTED_PICTURE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_IMPORTED_PICTURE_BYTES {
+        return None;
+    }
+    crate::assets::store_asset(&bytes)
 }
 
 /// Persist picture bytes from an imported office package in the same
@@ -420,20 +506,11 @@ fn picture_cache_dir() -> PathBuf {
 /// format gives the renderer a real local file without leaking the author's
 /// original path.
 pub(crate) fn cache_imported_picture(bytes: &[u8]) -> Option<String> {
-    let (ext, _) = picture_format(bytes)?;
-    let dir = picture_cache_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join(format!("{:016x}.{ext}", fnv1a(bytes)));
-    if !path.exists() {
-        std::fs::write(&path, bytes).ok()?;
+    if bytes.len() > MAX_IMPORTED_PICTURE_BYTES {
+        return None;
     }
-    Some(path.to_string_lossy().into_owned())
-}
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-    })
+    picture_format(bytes)?;
+    crate::assets::store_asset(bytes)
 }
 
 use quick_xml::Reader;
@@ -759,14 +836,11 @@ mod tests {
         // separately covered by ImageStore tests.
         let picture = b"\x89PNG\r\n\x1a\nportable-picture";
         std::fs::write(&source, picture).unwrap();
+        let asset = crate::assets::import_asset_file(&source).unwrap();
         let mut deck = seed_deck();
-        deck.slides[0].elements.push(Element::image(
-            &source.to_string_lossy(),
-            40.0,
-            60.0,
-            320.0,
-            180.0,
-        ));
+        deck.slides[0]
+            .elements
+            .push(Element::image(&asset, 40.0, 60.0, 320.0, 180.0));
 
         let bytes = write_odp(&deck).unwrap();
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
@@ -790,14 +864,12 @@ mod tests {
             .iter()
             .find(|element| element.kind == ElementKind::Image)
             .unwrap();
-        assert_ne!(
-            image.src,
-            source.to_string_lossy(),
-            "reopened decks use the bundled copy, not the author's local path"
+        assert!(crate::assets::is_asset_id(&image.src));
+        assert_eq!(
+            crate::assets::read_asset(&image.src).as_deref(),
+            Some(&picture[..])
         );
-        assert_eq!(std::fs::read(&image.src).unwrap(), picture);
 
         let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(&image.src);
     }
 }
