@@ -89,6 +89,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "opened",
     "library",
     "album-manage",
+    "metadata-edit",
     "cropping",
     "edited",
 ];
@@ -159,6 +160,10 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
 /// The generated pattern is written to `dir` and opened through the ordinary
 /// path, so the screenshot exercises the same decode the live app runs rather
 /// than a special case that could hide a bug in it.
+#[allow(
+    clippy::too_many_lines,
+    reason = "offscreen scenarios intentionally keep all deterministic fixtures and their visible state in one place"
+)]
 pub fn seed_scenario(
     app: &mut PhotosApp,
     doc: &mut automerge::AutoCommit,
@@ -207,7 +212,7 @@ pub fn seed_scenario(
         // active image.  These rows intentionally share the generated image
         // bytes: the gallery exercises the card layout and bounded
         // materialisation without smuggling sample assets into the live app.
-        "library" | "album-manage" => {
+        "library" | "album-manage" | "metadata-edit" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
             for name in [
@@ -223,6 +228,26 @@ pub fn seed_scenario(
                 let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
                 photo.favorite = name == "Summer trail";
+                photo.folder = Some(if name.contains("Museum") {
+                    "City walks".into()
+                } else {
+                    "Travel 2026".into()
+                });
+                photo.people = if name.contains("Summer") {
+                    vec!["Élodie".into(), "Sam".into()]
+                } else {
+                    vec!["Élodie".into()]
+                };
+                photo.tags = vec![if name.contains("Rainy") {
+                    "rain".into()
+                } else {
+                    "golden hour".into()
+                }];
+                photo.captured_at = Some(if name.contains("Harbour") {
+                    "2026-06-14 20:24".into()
+                } else {
+                    "2026-06-15".into()
+                });
                 travel.push(photo.id.clone());
                 library.add_photo(photo);
             }
@@ -234,6 +259,8 @@ pub fn seed_scenario(
             PhotosDoc::set_library(doc, &library);
             if scenario == "album-manage" {
                 app.show_album_editor_for_shot(doc);
+            } else if scenario == "metadata-edit" {
+                app.show_metadata_editor_for_shot(doc);
             } else {
                 app.show_library();
             }

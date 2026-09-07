@@ -56,6 +56,9 @@ pub const PHOTOS_OPERATION_TYPE: &str = "photos.operation";
 /// id outside this window through `ResourceProvider::resource`.
 const LIBRARY_CONTEXT_LIMIT: usize = 48;
 const ALBUM_CONTEXT_LIMIT: usize = 24;
+const FOLDER_CONTEXT_LIMIT: usize = 24;
+const PERSON_CONTEXT_LIMIT: usize = 24;
+type LabelCounts = Vec<(String, usize)>;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PhotosOperation {
@@ -70,6 +73,14 @@ pub enum PhotosOperation {
     /// shared library.
     ViewAlbum {
         album_id: String,
+    },
+    /// Show the bounded library slice carrying this durable folder label.
+    ViewFolder {
+        folder: String,
+    },
+    /// Show the bounded library slice carrying this durable person label.
+    ViewPerson {
+        person: String,
     },
     Open {
         path: Option<String>,
@@ -101,6 +112,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewAlbum { .. }
+        | PhotosOperation::ViewFolder { .. }
+        | PhotosOperation::ViewPerson { .. }
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
@@ -128,6 +141,16 @@ pub enum PhotosAction {
     RemovePhoto { photo_id: String },
     /// Toggle a durable favourite marker.
     SetFavorite { photo_id: String, favorite: bool },
+    /// Replace the complete small metadata record for one photograph.  One
+    /// absolute payload avoids a concurrent series of add/remove operations
+    /// exposing a half-edited tag list to collaborators.
+    SetMetadata {
+        photo_id: String,
+        folder: Option<String>,
+        people: Vec<String>,
+        tags: Vec<String>,
+        captured_at: Option<String>,
+    },
     /// Create a named collection with a caller-supplied stable id.
     CreateAlbum { id: String, name: String },
     /// Rename a collection without changing its stable address or membership.
@@ -241,6 +264,33 @@ impl Action for PhotosAction {
                         ActionError::Refused("that photograph is no longer in the library".into())
                     })?;
                 photo.favorite = *favorite;
+                PhotosDoc::set_library(doc, &library);
+                Ok(())
+            }
+            Self::SetMetadata {
+                photo_id,
+                folder,
+                people,
+                tags,
+                captured_at,
+            } => {
+                if !valid_metadata(folder.as_deref(), people, tags, captured_at.as_deref()) {
+                    return Err(ActionError::Refused(
+                        "photo metadata must be short, non-empty labels without duplicates".into(),
+                    ));
+                }
+                let mut library = PhotosDoc::library(doc);
+                let photo = library
+                    .photos
+                    .iter_mut()
+                    .find(|photo| photo.id == *photo_id)
+                    .ok_or_else(|| {
+                        ActionError::Refused("that photograph is no longer in the library".into())
+                    })?;
+                photo.folder.clone_from(folder);
+                photo.people.clone_from(people);
+                photo.tags.clone_from(tags);
+                photo.captured_at.clone_from(captured_at);
                 PhotosDoc::set_library(doc, &library);
                 Ok(())
             }
@@ -563,6 +613,20 @@ impl ResourceProvider for PhotosResources {
             .iter()
             .find(|album| album.id == id)
             .map(album_resource)
+            .or_else(|| {
+                folder_and_people(&library)
+                    .0
+                    .into_iter()
+                    .find(|(folder, _)| folder_resource_id(folder) == id)
+                    .map(|(folder, count)| folder_resource(&folder, count))
+            })
+            .or_else(|| {
+                folder_and_people(&library)
+                    .1
+                    .into_iter()
+                    .find(|(person, _)| person_resource_id(person) == id)
+                    .map(|(person, count)| person_resource(&person, count))
+            })
     }
 }
 
@@ -581,7 +645,85 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
         root = root.with_child(album_resource(album));
     }
+    let (folders, people) = folder_and_people(&library);
+    for (folder, count) in folders.into_iter().take(FOLDER_CONTEXT_LIMIT) {
+        root = root.with_child(folder_resource(&folder, count));
+    }
+    for (person, count) in people.into_iter().take(PERSON_CONTEXT_LIMIT) {
+        root = root.with_child(person_resource(&person, count));
+    }
     vec![root]
+}
+
+/// Deterministically collect the small virtual browse namespace.  It is
+/// derived only from durable metadata and does no filesystem work, so it is
+/// safe to publish to search, agents, history, and collaborators.
+fn folder_and_people(library: &crate::model::PhotoLibrary) -> (LabelCounts, LabelCounts) {
+    let mut folders = std::collections::BTreeMap::<String, usize>::new();
+    let mut people = std::collections::BTreeMap::<String, usize>::new();
+    for photo in &library.photos {
+        if let Some(folder) = &photo.folder {
+            *folders.entry(folder.clone()).or_default() += 1;
+        }
+        for person in &photo.people {
+            *people.entry(person.clone()).or_default() += 1;
+        }
+    }
+    (folders.into_iter().collect(), people.into_iter().collect())
+}
+
+pub(crate) fn folder_resource_id(folder: &str) -> String {
+    format!(
+        "photos.folder:{}",
+        qdoc::blobstore::hash_bytes(folder.as_bytes())
+    )
+}
+
+pub(crate) fn person_resource_id(person: &str) -> String {
+    format!(
+        "photos.person:{}",
+        qdoc::blobstore::hash_bytes(person.as_bytes())
+    )
+}
+
+fn folder_resource(folder: &str, count: usize) -> Resource {
+    let mut item = Resource::new(folder_resource_id(folder), "photos.folder", folder).with_child(
+        Resource::new(
+            format!("{}#count", folder_resource_id(folder)),
+            "photos.count",
+            format!("{count} photographs"),
+        ),
+    );
+    if let Some(spec) = operation(
+        "open",
+        "Open folder",
+        &PhotosOperation::ViewFolder {
+            folder: folder.to_owned(),
+        },
+    ) {
+        item = item.with_action(spec.with_description("Show photographs in this shared folder"));
+    }
+    item
+}
+
+fn person_resource(person: &str, count: usize) -> Resource {
+    let mut item = Resource::new(person_resource_id(person), "photos.person", person).with_child(
+        Resource::new(
+            format!("{}#count", person_resource_id(person)),
+            "photos.count",
+            format!("{count} photographs"),
+        ),
+    );
+    if let Some(spec) = operation(
+        "open",
+        "View person",
+        &PhotosOperation::ViewPerson {
+            person: person.to_owned(),
+        },
+    ) {
+        item = item.with_action(spec.with_description("Show photographs tagged with this person"));
+    }
+    item
 }
 
 fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
@@ -591,6 +733,13 @@ fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
             "photos.size",
             format!("{} x {} pixels", photo.image.width, photo.image.height),
         ));
+    if !photo.metadata_summary().is_empty() {
+        item = item.with_child(Resource::new(
+            format!("{}#metadata", photo.id),
+            "photos.metadata",
+            photo.metadata_summary(),
+        ));
+    }
     if let Some(spec) = direct_spec(
         "open",
         "Open photograph",
@@ -614,6 +763,7 @@ fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
     ) {
         item = item.with_action(spec.reversible());
     }
+    item = item.with_action(photo_metadata_spec(photo));
     if let Some(spec) = direct_spec(
         "remove",
         "Remove from library",
@@ -624,6 +774,77 @@ fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
         item = item.with_action(spec.destructive().reversible());
     }
     item
+}
+
+/// Keep user-authored metadata compact enough that a library remains a small
+/// CRDT record, and reject (rather than normalize) malformed remote commands
+/// so every replica either applies exactly the same labels or refuses them.
+fn valid_metadata(
+    folder: Option<&str>,
+    people: &[String],
+    tags: &[String],
+    captured_at: Option<&str>,
+) -> bool {
+    fn text(value: &str) -> bool {
+        !value.trim().is_empty() && value.chars().count() <= 128
+    }
+    fn labels(values: &[String]) -> bool {
+        values.len() <= 32
+            && values.iter().all(|value| text(value))
+            && values
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == values.len()
+    }
+    folder.is_none_or(text) && captured_at.is_none_or(text) && labels(people) && labels(tags)
+}
+
+fn metadata_labels(args: &ActionArgs, name: &str) -> Vec<String> {
+    args.text(name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn optional_metadata_text(args: &ActionArgs, name: &str) -> Option<String> {
+    args.text(name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn photo_metadata_spec(photo: &LibraryPhoto) -> ActionSpec {
+    let photo_id = photo.id.clone();
+    ActionSpec::typed(
+        "set-metadata",
+        "Set photo metadata",
+        "Folder, people, tags, and capture date",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::optional("folder", ParamType::Text, "shared folder label"),
+            ActionParam::optional("people", ParamType::Text, "comma-separated people"),
+            ActionParam::optional("tags", ParamType::Text, "comma-separated tags"),
+            ActionParam::optional("captured_at", ParamType::Text, "capture date or time"),
+        ],
+        move |args| {
+            encode(&PhotosAction::SetMetadata {
+                photo_id: photo_id.clone(),
+                folder: optional_metadata_text(args, "folder"),
+                people: metadata_labels(args, "people"),
+                tags: metadata_labels(args, "tags"),
+                captured_at: optional_metadata_text(args, "captured_at"),
+            })
+        },
+    )
+    .reversible()
+    .with_description("Replace this photograph's shared folder, people, tags, and capture date")
 }
 
 fn album_resource(album: &Album) -> Resource {
@@ -1039,6 +1260,63 @@ mod tests {
         registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
         assert!(PhotosDoc::image(&doc).is_none());
         assert!(PhotosDoc::library(&doc).photos.is_empty());
+    }
+
+    #[test]
+    fn shared_metadata_is_bounded_replayable_and_publishes_folder_and_person_resources() {
+        let mut doc = doc_with_image();
+        let photo_id = PhotosDoc::library(&doc).photos[0].id.clone();
+        let action = PhotosAction::SetMetadata {
+            photo_id: photo_id.clone(),
+            folder: Some("2026 travels".into()),
+            people: vec!["München-夏".into()],
+            tags: vec!["harbour".into(), "sunset".into()],
+            captured_at: Some("2026-09-07".into()),
+        };
+        action.apply(&mut doc).expect("valid metadata applies");
+
+        let photo = PhotosResources
+            .resource(&doc, &photo_id)
+            .expect("photo resolves");
+        assert!(
+            photo
+                .actions
+                .iter()
+                .any(|action| action.id == "set-metadata")
+        );
+        assert!(
+            photo
+                .children
+                .iter()
+                .any(|child| child.kind == "photos.metadata" && child.label.contains("harbour"))
+        );
+
+        let folder_id = folder_resource_id("2026 travels");
+        let person_id = person_resource_id("München-夏");
+        for id in [folder_id, person_id] {
+            let resource = PhotosResources
+                .resource(&doc, &id)
+                .expect("virtual resource resolves");
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+            assert!(
+                resource
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "photos.count")
+            );
+        }
+
+        let before = PhotosDoc::library(&doc);
+        PhotosAction::SetMetadata {
+            photo_id,
+            folder: Some(" ".into()),
+            people: vec!["same".into(), "same".into()],
+            tags: Vec::new(),
+            captured_at: None,
+        }
+        .apply(&mut doc)
+        .expect_err("malformed metadata must be refused, not normalized");
+        assert_eq!(PhotosDoc::library(&doc), before);
     }
 
     /// Enumerating must be a pure read. If listing what is on offer could
