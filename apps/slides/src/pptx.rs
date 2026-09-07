@@ -7,6 +7,22 @@
 //! the qOS model (masters, charts, SmartArt, transitions and animation) are
 //! intentionally not invented; the file UI tells users about that boundary.
 
+#![allow(
+    clippy::doc_markdown,
+    clippy::collapsible_if,
+    clippy::drop_non_drop,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::many_single_char_names,
+    clippy::missing_errors_doc,
+    clippy::obfuscated_if_else,
+    clippy::redundant_closure_for_method_calls,
+    clippy::semicolon_if_nothing_returned,
+    clippy::too_many_lines,
+    clippy::unnested_or_patterns,
+    reason = "the compact DrawingML writer deliberately mirrors its XML grammar; expanding each relationship fragment obscures format fidelity without changing bounded behavior"
+)]
+
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 
@@ -24,7 +40,7 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
             if el.kind != ElementKind::Image || pictures.iter().any(|p| p.src == el.src) {
                 continue;
             }
-            if let Ok(bytes) = std::fs::read(&el.src) {
+            if let Some(bytes) = crate::assets::read_asset(&el.src) {
                 if let Some(ext) = image_ext(&bytes) {
                     pictures.push(Picture {
                         src: el.src.clone(),
@@ -103,6 +119,7 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
 
 pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
+    crate::odp::validate_archive(&mut zip)?;
     let title = read_zip_text(&mut zip, "docProps/core.xml")
         .and_then(|x| first_text(&x, b"dc:title"))
         .filter(|s| !s.is_empty())
@@ -110,7 +127,11 @@ pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
     let mut names: Vec<String> = (0..zip.len())
         .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
         .filter(|n| {
-            n.starts_with("ppt/slides/slide") && n.ends_with(".xml") && !n.contains("/_rels/")
+            n.starts_with("ppt/slides/slide")
+                && std::path::Path::new(n)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+                && !n.contains("/_rels/")
         })
         .collect();
     names.sort_by_key(|n| slide_number(n));
@@ -135,11 +156,13 @@ pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
     if slides.is_empty() {
         slides.push(Slide::new(Layout::Blank));
     }
-    Ok(Deck {
+    let deck = Deck {
         title,
         palette: PaletteKind::Indigo,
         slides,
-    })
+    };
+    crate::odp::validate_imported_deck(&deck)?;
+    Ok(deck)
 }
 
 struct Picture {
@@ -153,9 +176,11 @@ struct Picture {
 fn drawing_color(role: &str) -> String {
     if let Some(hex) = role.strip_prefix('#') {
         if (hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            let rgb = &hex[..6];
+            let rgb = std::str::from_utf8(hex.as_bytes().get(..6).unwrap_or_default())
+                .unwrap_or_default();
             let alpha = if hex.len() == 8 {
-                u8::from_str_radix(&hex[6..], 16).ok()
+                hex.get(6..)
+                    .and_then(|alpha| u8::from_str_radix(alpha, 16).ok())
             } else {
                 None
             };
@@ -549,13 +574,20 @@ fn push_pending(
             return;
         };
         let path = format!("ppt/{}", target.trim_start_matches("../"));
-        let Ok(mut f) = zip.by_name(&path) else {
+        let Ok(f) = zip.by_name(&path) else {
             return;
         };
-        let mut bytes = Vec::new();
-        if f.read_to_end(&mut bytes).is_err() {
+        if f.size() > crate::odp::MAX_IMPORTED_PICTURE_BYTES as u64 {
             return;
-        };
+        }
+        let mut bytes = Vec::with_capacity(f.size().min(64 * 1024) as usize);
+        if f.take((crate::odp::MAX_IMPORTED_PICTURE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() > crate::odp::MAX_IMPORTED_PICTURE_BYTES
+        {
+            return;
+        }
         let Some(src) = crate::odp::cache_imported_picture(&bytes) else {
             return;
         };
@@ -676,10 +708,17 @@ fn read_zip_text<R: Read + std::io::Seek>(
     z: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Option<String> {
-    let mut f = z.by_name(name).ok()?;
-    let mut s = String::new();
-    f.read_to_string(&mut s).ok()?;
-    Some(s)
+    let f = z.by_name(name).ok()?;
+    if f.size() > crate::odp::MAX_XML_MEMBER_BYTES as u64 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(f.size().min(64 * 1024) as usize);
+    f.take((crate::odp::MAX_XML_MEMBER_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= crate::odp::MAX_XML_MEMBER_BYTES)
+        .then(|| String::from_utf8(bytes).ok())
+        .flatten()
 }
 fn parse_rels(xml: &str) -> HashMap<String, String> {
     let mut r = Reader::from_str(xml);
@@ -971,8 +1010,9 @@ mod tests {
     fn bundles_local_picture() {
         let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
         std::fs::write(&p, b"\x89PNG\r\n\x1a\nbytes").unwrap();
+        let asset = crate::assets::import_asset_file(&p).unwrap();
         let mut s = Slide::new(Layout::Blank);
-        s.add(Element::image(&p.to_string_lossy(), 1.0, 2.0, 30.0, 40.0));
+        s.add(Element::image(&asset, 1.0, 2.0, 30.0, 40.0));
         let d = Deck {
             title: "Pictures".into(),
             palette: PaletteKind::Indigo,
@@ -982,7 +1022,7 @@ mod tests {
         let got = read_pptx(&b).unwrap();
         assert_eq!(got.slides[0].elements[0].kind, ElementKind::Image);
         assert!(
-            std::fs::read(&got.slides[0].elements[0].src)
+            crate::assets::read_asset(&got.slides[0].elements[0].src)
                 .unwrap()
                 .starts_with(b"\x89PNG")
         );
