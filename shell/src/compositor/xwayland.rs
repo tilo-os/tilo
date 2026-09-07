@@ -11,7 +11,6 @@ use std::io::Write as _;
 use std::os::unix::fs::{
     FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
 };
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -434,18 +433,12 @@ impl SessionXwayland {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
-        // SAFETY: `pre_exec` runs after fork and before exec. `prctl` is one
-        // async-signal-safe syscall and captures no heap-backed state. The
-        // death signal prevents a compositor crash from leaving an X server
-        // accepting connections after its Wayland parent is gone.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+        // Do not use PR_SET_PDEATHSIG here: this child is spawned by the
+        // intentionally short-lived startup worker, not the compositor
+        // thread, so the kernel would terminate every healthy bridge as soon
+        // as startup returned it to the supervisor. SessionXwayland::drop is
+        // the authoritative owner cleanup for normal exit, failed startup,
+        // receiver abandonment, and compositor teardown.
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -786,6 +779,28 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(50),
             "poll must only try_recv while the startup worker waits for readiness"
+        );
+    }
+
+    #[test]
+    fn startup_child_outlives_the_worker_that_spawned_it() {
+        let child =
+            std::thread::spawn(|| Command::new("/usr/bin/sleep").arg("30").spawn().unwrap())
+                .join()
+                .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let mut bridge = SessionXwayland {
+            child,
+            runtime: temp.path().to_path_buf(),
+            display: ":999999".into(),
+            authority: temp.path().join("authority"),
+            reservation: temp.path().join("reservation"),
+            published: false,
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            bridge.child.try_wait().unwrap().is_none(),
+            "the async startup worker ending must not SIGTERM its successful bridge"
         );
     }
 

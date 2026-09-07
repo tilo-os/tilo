@@ -404,8 +404,8 @@ impl Action {
     const ALL: &'static [Action] = &[
         chrome(
             "shortcut-help.toggle",
-            "Show keyboard & mouse guide",
-            "Learn how to navigate, move, resize and group windows",
+            "Show desktop help",
+            "F1 opens it anywhere; Super+? is the configurable shortcut for the same guide",
             |st, _| {
                 st.overlays.shortcut_help = !st.overlays.shortcut_help;
                 Ok(())
@@ -1442,6 +1442,18 @@ mod tests {
             doc_root: &automerge::ROOT,
         });
         assert!(out.iter().any(|r| r.id == "settings.open"));
+    }
+
+    #[test]
+    fn shortcut_help_search_result_teaches_both_help_routes() {
+        let action = Action::ALL
+            .iter()
+            .find(|action| action.id == "shortcut-help.toggle")
+            .expect("shortcut help action");
+        assert_eq!(action.label, "Show desktop help");
+        assert!(action.subtitle.contains("Super+?"));
+        assert!(action.subtitle.contains("F1"));
+        assert!(action.subtitle.contains("same guide"));
     }
 
     /// Needs a room (the grant is recorded *in* one) and a working broker

@@ -39,6 +39,10 @@ SH
 cat >"$work/shell" <<'SH'
 #!/bin/sh
 printf 'shell %s\n' "$*" >>"$QOS_SESSION_TEST_LOG"
+if [ "${QOS_SESSION_TEST_REQUEST_LOGOUT:-0}" = 1 ]; then
+    printf 'logout\n' >"$QOS_SESSION_LOGOUT_REQUEST"
+    exit 19
+fi
 if [ "${QOS_SESSION_TEST_HOLD:-0}" = 1 ]; then
     trap 'printf "shell-term\n" >>"$QOS_SESSION_TEST_LOG"; exit 0' HUP INT TERM
     while :; do sleep 1; done
@@ -64,6 +68,9 @@ sed \
     -e "s|DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|DBUS_UPDATE=$work/dbus-update-activation-environment|" \
     "$repo_root/dist/session/qos-session" >"$work/qos-session"
 chmod 0755 "$work/qos-session"
+
+export XDG_RUNTIME_DIR=$work/runtime
+mkdir -m 0700 "$XDG_RUNTIME_DIR"
 
 set +e
 QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_STATUS=7 \
@@ -118,6 +125,21 @@ kill -TERM "$wrapper_pid"
 wait "$wrapper_pid" || [[ $? == 143 ]]
 grep -Fqx 'shell-term' "$log"
 [[ $(grep -Fc 'systemctl --user stop qos-graphical-session.target' "$log") == 1 ]]
+
+# Shell-requested logout must return success through the wrapper-owned cleanup
+# path, even if the shell uses a non-zero sentinel while exiting. Most
+# importantly, target/environment teardown happens exactly once rather than
+# being killed alongside `loginctl terminate-session self`.
+: >"$log"
+QOS_SESSION_TEST_LOG=$log QOS_SESSION_TEST_REQUEST_LOGOUT=1 "$work/qos-session"
+grep -Fqx 'systemctl --user stop qos-graphical-session.target' "$log"
+grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
+grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
+[[ $(grep -Fc 'systemctl --user stop qos-graphical-session.target' "$log") == 1 ]]
+if find "$XDG_RUNTIME_DIR/qos-session" -name 'logout-request-*' -print -quit | grep -q .; then
+    echo 'logout request leaked after wrapper cleanup' >&2
+    exit 1
+fi
 
 : >"$log"
 set +e

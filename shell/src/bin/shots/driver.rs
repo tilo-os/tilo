@@ -808,7 +808,7 @@ impl ShellDriver {
             "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
             "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
             "power-menu" => self.scene_power_menu(false),
-            "power-menu-confirm" => self.scene_power_menu(true),
+            "power-menu-keyboard" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
@@ -1063,10 +1063,10 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
-    fn scene_power_menu(&mut self, arm_shutdown: bool) {
+    fn scene_power_menu(&mut self, select_shutdown: bool) {
         self.fb
             .host_mut()
-            .force_power_menu_for_visual_test(arm_shutdown);
+            .force_power_menu_for_visual_test(select_shutdown);
     }
 
     fn scene_ws_settings_general(&mut self) {
@@ -1091,6 +1091,13 @@ impl ShellDriver {
             st.local_user_id.clone_from(&owner);
             if let Some(workspace) = st.tree_mut().active_workspace_mut() {
                 workspace.set_owner(owner);
+                workspace.collaborators.push(
+                    shell::shell::state::Collaborator::new(
+                        hex::encode(recipient_public.as_bytes()),
+                        "Morgan",
+                    )
+                    .as_invited(),
+                );
                 workspace.grant_capability(shell::shell::state::CapOverride::membership(
                     shell::shell::state::Subject::person(hex::encode(recipient_public.as_bytes())),
                     workspace.room.to_string(),
@@ -1651,7 +1658,7 @@ impl ShellDriver {
         "qs-bt-long-labels",
         "qs-vpn-long-labels",
         "power-menu",
-        "power-menu-confirm",
+        "power-menu-keyboard",
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",
