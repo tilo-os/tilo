@@ -14,6 +14,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use sha2::{Digest as _, Sha256};
+
 use ui::qos_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
@@ -31,22 +33,32 @@ pub const OPEN_ACTION: &str = "open";
 pub const REVEAL_ACTION: &str = "reveal";
 pub const REMOTE_ACCOUNT_OPEN_ACTION: &str = "open-remote-account";
 
-/// Stable resource identity for a local place. Hex keeps the resource/action
-/// wire separator out of ids even when a Unix path contains control bytes.
+/// Stable resource identity for a local place. The digest keeps both wire
+/// separators *and the local path itself* out of resource ids: action ids can
+/// be retained by search, history and agents, while a host path is only valid
+/// in this process's live presentation snapshot.
 pub fn place_resource_id(path: &std::path::Path) -> String {
     format!("files.place:{}", path_identity_suffix(path))
 }
 
-/// A path is an opaque filesystem name, not display text.  Resource ids cross
-/// the action door, where delimiters and control characters in a Unix filename
-/// must never alter the address.  Keep the encoding shared by folders and
-/// entries as well as Places so every Files resource remains round-trippable.
+/// A path is an opaque filesystem name, not display text. Resource ids cross
+/// the action door, so use a domain-separated digest rather than a reversible
+/// escaping scheme. Keep this shared by folders and entries so every local
+/// Files resource has the same privacy boundary.
 fn path_identity_suffix(path: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
-    path.as_os_str()
-        .as_bytes()
+    let bytes = path.as_os_str().as_bytes();
+    let mut digest = Sha256::new();
+    digest.update(b"qos.files.local-resource.v1\\0");
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+    // 128 bits makes collisions infeasible for a local, bounded directory
+    // while retaining a compact action address.
+    let digest = digest.finalize();
+    digest
         .iter()
-        .fold(String::new(), |mut output, byte| {
+        .take(16)
+        .fold(String::with_capacity(32), |mut output, byte| {
             use std::fmt::Write as _;
             let _ = write!(output, "{byte:02x}");
             output
@@ -177,15 +189,9 @@ impl PlacesSearchProvider {
         let favorite = self.snapshot.read().ok()?.favorites.get(id)?.clone();
         Some(
             Resource::new(id, "files.place", favorite.label).with_action(
-                ActionSpec::operation(
-                    OPEN_ACTION,
-                    "Open",
-                    OperationKind::View,
-                    "files.open",
-                    &favorite.path.to_string_lossy().into_owned(),
-                )
-                .ok()?
-                .with_contract(ActionContract::view()),
+                ActionSpec::operation(OPEN_ACTION, "Open", OperationKind::View, "files.open", &id)
+                    .ok()?
+                    .with_contract(ActionContract::view()),
             ),
         )
     }
@@ -708,6 +714,21 @@ mod tests {
         assert_eq!(ActionAddress::parse(&folder.encode()), Some(folder));
         assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
         assert_ne!(folder_resource_id(&path), entry_resource_id(&path));
+        for id in [
+            place_resource_id(&path),
+            folder_resource_id(&path),
+            entry_resource_id(&path),
+        ] {
+            assert!(
+                !id.contains("/tmp") && !id.contains("2f746d70"),
+                "resource ids must not retain either the path or its old reversible hex: {id}"
+            );
+            assert_eq!(
+                id.rsplit(':').next().map(str::len),
+                Some(32),
+                "resource ids use a compact 128-bit opaque digest"
+            );
+        }
     }
 
     #[test]

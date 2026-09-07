@@ -306,12 +306,20 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        for expected in ["refresh", "navigate", "new-folder", "paste"] {
+        // Typing an arbitrary local path remains a private, in-window path-bar
+        // interaction. It is deliberately not published as a resource action:
+        // an action address can outlive this process, whereas a host path must
+        // never be replicated or retained by search/history agents.
+        for expected in ["refresh", "new-folder", "paste"] {
             assert!(
                 actions.contains(&expected),
                 "folder publishes {expected}: {actions:?}",
             );
         }
+        assert!(
+            !actions.contains(&"navigate"),
+            "private path-bar navigation is not a durable resource action: {actions:?}"
+        );
         assert!(
             w.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",
