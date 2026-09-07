@@ -12,7 +12,7 @@
 //! [`pkg::BlobStore`]-shaped `FsBlobStore` so the same store can go to
 //! `pkg::unpack` without copying bytes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use pkg::blobs::{BlobHash, BlobStore, BlobStoreError};
+use pkg::blobs::{BlobHash, BlobStore, BlobStoreError, Collection};
 use pkg::id::PackageId;
+use pkg::signed::SignedRoot;
 
 use crate::registry::{Pinning, Registry, RegistryEntry, RegistryError};
 
@@ -122,6 +123,8 @@ pub enum StoreError {
     Unknown(PackageId),
     #[error("refusing to remove pinned package {0}")]
     PinnedRemove(PackageId),
+    #[error("installed package {0} has an unreadable content graph: {1}")]
+    CorruptLivePackage(PackageId, String),
 }
 
 impl Store {
@@ -224,7 +227,8 @@ impl Store {
     }
 
     /// Remove a Tried package: drop the registry entry, the payload tree,
-    /// and any blobs unique to it. Refuses to remove Pinned packages.
+    /// and every content-addressed blob no remaining package references.
+    /// Refuses to remove Pinned packages.
     ///
     /// # Errors
     ///
@@ -329,18 +333,64 @@ impl Inner {
         self.registry.save(&self.root.join("registry.toml"))
     }
 
-    /// Remove the payload tree, then (for v0) leave blob-layer sweeping
-    /// to a later full sweep rather than re-deriving the live blob set
-    /// from remaining entries. Returns the bytes freed from the payload tree.
+    /// Remove the payload tree, then derive the complete live content graph
+    /// from the remaining registry and sweep unreferenced blobs. The store
+    /// mutex is held throughout, so an install cannot race the mark phase.
     fn gc_after_remove(&self, id: &PackageId, _entry: &RegistryEntry) -> Result<u64, StoreError> {
         let payload_dir = self.root.join("payloads").join(id.to_hex());
-        let freed = dir_size(&payload_dir).unwrap_or(0);
+        let mut freed = dir_size(&payload_dir).unwrap_or(0);
         if payload_dir.exists() {
             fs::remove_dir_all(&payload_dir)?;
         }
-        // NOTE: blobs deliberately stay in the content-addressed store —
-        // another package may reference the same content; a garbage-collect sweep is a follow-up.
+        let live = self.live_blob_names()?;
+        for entry in fs::read_dir(&self.blobs.root)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if !metadata.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if name.len() != 64
+                || !name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || live.contains(&name)
+            {
+                continue;
+            }
+            let bytes = metadata.len();
+            fs::remove_file(entry.path())?;
+            freed = freed.saturating_add(bytes);
+        }
         Ok(freed)
+    }
+
+    /// Return the exact signed-root → manifest/collection → payload closure
+    /// for every installed package. Any corrupt live root fails closed before
+    /// the sweep removes a single blob.
+    fn live_blob_names(&self) -> Result<BTreeSet<String>, StoreError> {
+        let mut live = BTreeSet::new();
+        for entry in self.registry.entries() {
+            let root_hash = BlobHash(*entry.id.as_bytes());
+            let root_bytes = self.blobs.get(&root_hash)?.ok_or_else(|| {
+                StoreError::CorruptLivePackage(entry.id, "signed root is missing".into())
+            })?;
+            let root = SignedRoot::decode(&root_bytes)
+                .map_err(|error| StoreError::CorruptLivePackage(entry.id, error.to_string()))?;
+            let collection_bytes = self.blobs.get(&root.payload_root_hash)?.ok_or_else(|| {
+                StoreError::CorruptLivePackage(entry.id, "payload collection is missing".into())
+            })?;
+            let collection = Collection::decode(&collection_bytes)
+                .map_err(|error| StoreError::CorruptLivePackage(entry.id, error.to_string()))?;
+
+            live.insert(root_hash.to_hex());
+            live.insert(root.manifest_hash.to_hex());
+            live.insert(root.payload_root_hash.to_hex());
+            live.extend(collection.entries.values().map(BlobHash::to_hex));
+        }
+        Ok(live)
     }
 }
 

@@ -38,6 +38,7 @@ fn sweep_evicts_tried_and_preserves_pinned() {
     }
 
     let before = store.total_bytes_for_gc().unwrap();
+    let before_blobs = store.disk_usage().unwrap().store_bytes;
     assert!(before > 0);
 
     // Cap the store at ~10 KiB — well under the total of 4 packages.
@@ -65,6 +66,27 @@ fn sweep_evicts_tried_and_preserves_pinned() {
     // Non-decreasing tally: freed_bytes > 0 since we actually removed
     // payload trees.
     assert!(report.freed_bytes > 0);
+    assert!(
+        store.disk_usage().unwrap().store_bytes < before_blobs,
+        "unreferenced content-addressed blobs must be reclaimed too"
+    );
+}
+
+#[test]
+fn removing_one_package_preserves_shared_and_pinned_content_graphs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let (pinned_bytes, pinned_id) = common::build_qpkg(8);
+    let (tried_bytes, tried_id) = common::build_qpkg(16);
+    install_qpkg(&store, &pinned_bytes, Pinning::Pinned).unwrap();
+    install_qpkg(&store, &tried_bytes, Pinning::Tried).unwrap();
+
+    let before_blobs = store.disk_usage().unwrap().store_bytes;
+    store.remove(tried_id).unwrap();
+
+    assert!(store.resolve(pinned_id).is_ok());
+    assert!(store.resolve(tried_id).is_err());
+    assert!(store.disk_usage().unwrap().store_bytes < before_blobs);
 }
 
 #[test]
