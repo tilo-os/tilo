@@ -1819,6 +1819,16 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
+    #[doc(hidden)]
+    pub fn set_onboarding_visual_state_for_snapshot(
+        &mut self,
+        state: crate::onboarding_view::OnboardingVisualState,
+    ) {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.set_visual_state_for_snapshot(state);
+        }
+    }
+
     /// Whether first-login chrome is still withholding the desktop.
     pub fn onboarding_active(&self) -> bool {
         self.onboarding.is_some()
