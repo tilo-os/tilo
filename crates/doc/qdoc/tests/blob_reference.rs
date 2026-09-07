@@ -48,7 +48,7 @@ fn a_saved_document_carries_the_reference_and_not_the_bytes() {
     let _guard = serialised();
     let bytes = png();
     let mut doc = Document::new();
-    let hash = doc.put_blob(&bytes);
+    let hash = doc.put_blob(&bytes).expect("test image fits blob quota");
     assert!(!hash.is_empty(), "put_blob returned no hash");
 
     let saved = doc.save();
@@ -94,7 +94,7 @@ fn the_mime_survives_in_a_document_that_also_has_text() {
         let b = doc.insert_block(Some(&p), "list_item");
         doc.splice_text(&b, 0, 0, line);
     }
-    let hash = doc.put_blob(&png());
+    let hash = doc.put_blob(&png()).expect("test image fits blob quota");
     let _img = doc.insert_block(Some(&p), "image");
 
     let saved = doc.save();
@@ -130,7 +130,7 @@ fn the_descriptor_travels_with_the_reference() {
     // not arrived guesses a size, and every paragraph below the image moves when
     // they land — on a shared document, while somebody is typing into it.
     let mut doc = Document::new();
-    let hash = doc.put_blob(&png());
+    let hash = doc.put_blob(&png()).expect("test image fits blob quota");
     let saved = doc.save();
 
     // The descriptor is written as scalars beside the hash, so the sniffed mime

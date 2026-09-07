@@ -22,7 +22,9 @@
 use std::sync::{Arc, Mutex};
 
 use qdoc::Document;
-use qdoc::blobstore::{self, BlobState, BlobStore, BlobTransport, MemoryBlobStore};
+use qdoc::blobstore::{
+    self, BlobState, BlobStore, BlobStoreLimits, BlobTransport, MemoryBlobStore,
+};
 
 use crate::blobstore_fixture::serialised;
 
@@ -132,7 +134,7 @@ fn content_this_machine_stored_itself_is_resolved_and_offered_onward() {
 
     let mut doc = Document::new();
     let bytes = png();
-    let hash = doc.put_blob(&bytes);
+    let hash = doc.put_blob(&bytes).expect("test image fits blob quota");
 
     assert_eq!(
         doc.blob_state(&hash),
@@ -145,5 +147,28 @@ fn content_this_machine_stored_itself_is_resolved_and_offered_onward() {
     assert!(
         transport.offered.lock().unwrap().iter().any(|h| h == &hash),
         "storing content did not offer it onward",
+    );
+}
+
+#[test]
+fn a_quota_refusal_does_not_commit_a_descriptor_that_would_dangle() {
+    let _guard = serialised();
+    blobstore::set_store(Arc::new(MemoryBlobStore::new(BlobStoreLimits {
+        max_blob_bytes: 2,
+        max_total_bytes: 2,
+        max_entries: 1,
+        max_scan_entries: 1,
+    })));
+    blobstore::clear_transport();
+
+    let mut doc = Document::new();
+    let bytes = b"too large";
+    assert_eq!(doc.put_blob(bytes), None);
+
+    let raw = automerge::AutoCommit::load(&doc.save()).expect("document saved");
+    let containers = qdoc::model::open(&raw, &automerge::ROOT).expect("qdoc schema");
+    assert!(
+        qdoc::model::blob_hashes(&raw, &containers).is_empty(),
+        "a rejected local blob must not leave a CRDT descriptor behind"
     );
 }

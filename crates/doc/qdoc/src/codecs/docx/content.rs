@@ -346,7 +346,6 @@ impl BodyState {
                 if let Some(dr) = self.drawing.take()
                     && let Some(bytes) = dr.rel.as_deref().and_then(|r| image_map.get(r))
                 {
-                    let hash = doc.put_blob(bytes);
                     // Reuse the enclosing (image-only) paragraph if empty, else open a fresh block, as `image`.
                     let id = if let (Some(c), 0) = (self.cur.clone(), self.cur_len) {
                         doc.set_kind(&c, "image");
@@ -354,7 +353,9 @@ impl BodyState {
                     } else {
                         self.start_block(doc, "image")
                     };
-                    doc.set_attr(&id, "blob", hash.as_str());
+                    if let Some(hash) = doc.put_blob(bytes) {
+                        doc.set_attr(&id, "blob", hash.as_str());
+                    }
                     let anchor = if !dr.floating {
                         "inline"
                     } else if dr.page_relative {

@@ -1658,7 +1658,7 @@ mod tests {
         blobstore::set_store(producer.clone());
         blobstore::set_transport(&(bridge.clone() as Arc<dyn BlobTransport>));
         let bytes = b"content that is deliberately not in Automerge";
-        let hash = blobstore::put(bytes);
+        let hash = blobstore::put(bytes).expect("test fixture fits blob quota");
         assert!(producer.has(&hash));
         assert!(!consumer.has(&hash));
 
