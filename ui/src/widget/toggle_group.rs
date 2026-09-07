@@ -103,6 +103,18 @@ impl ToggleGroup {
         self
     }
 
+    /// Route every pointer, keyboard, and accessibility selection through a
+    /// caller-owned canonical action. The selected index is still painted
+    /// optimistically only after the document/model reflects that action, so
+    /// collaborative filters do not acquire a second callback-only path.
+    #[must_use]
+    pub fn on_action(mut self, binding: crate::qos_actions::ActionBinding<usize>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.native_resource = None;
+        self.on_change = None;
+        self
+    }
+
     /// Give this compound control a stable identity for headless driving,
     /// accessibility actions, and resource/action publication.
     #[must_use]
