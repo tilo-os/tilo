@@ -169,11 +169,14 @@ impl Compositor {
         // that policy and exercises the hosted Files tab, so seed the demo
         // tree explicitly instead of depending on the production default.
         let state_path = runtime_dir.join("state.json");
-        shell::shell::persist::save_tree_to(
-            &shell::shell::state::WorkspaceTree::bootstrap_demo(),
-            &state_path,
-        )
-        .expect("seed the clipboard e2e desktop");
+        let mut fixture_tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
+        // An untouched bootstrap demo is deliberately recognised as legacy
+        // sample data and migrated to a clean first-boot tree on load. This
+        // suite genuinely needs the hosted Files tab, so mark the persisted
+        // tree as test-owned instead of accidentally exercising that cleanup.
+        fixture_tree.workspaces[0].name = "Clipboard test desktop".into();
+        shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
+            .expect("seed the clipboard e2e desktop");
         let identity_root = Self::seed_identity(&runtime_dir);
 
         let mut child = Self::spawn_compositor(
@@ -2496,12 +2499,13 @@ fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
 
     // Open Quick Settings through its configured default (Super+Q), then
     // Keyboard-navigate its visible action row to Power and open it. Focus
-    // starts on Edit, followed by Settings, Privacy, Notifications and Power;
+    // starts with no hidden selection, followed by Edit, Settings, Privacy,
+    // Notifications and Power;
     // the next Enter activates the default Lock row in the real modal.
     compositor.modifiers(false, false, false, true);
     compositor.key("q");
     compositor.modifiers(false, false, false, false);
-    for _ in 0..4 {
+    for _ in 0..5 {
         compositor.key("Tab");
     }
     compositor.key("Enter");

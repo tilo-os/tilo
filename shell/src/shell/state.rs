@@ -7104,6 +7104,11 @@ impl WorkspaceTree {
             // skipping the write is safe — a restart rebuilds it anyway.
             return false;
         }
+        // Cache and Automerge document form one transaction. Keep snapshots
+        // so a stale/malformed document cannot leave the live cache moved
+        // while replication still describes the old layout.
+        let before_workspaces = self.workspaces.clone();
+        let before_doc = self.doc.clone();
         // Validate the destination before detaching anything. A stale drop
         // target must not make the source tab disappear.
         if !self
@@ -7187,15 +7192,19 @@ impl WorkspaceTree {
                             dest_strip_id = dest_strip_id.raw(),
                             "cross-strip move could not be mirrored into the room document"
                         );
+                        self.workspaces = before_workspaces;
+                        self.doc = before_doc;
+                        return false;
                     }
                     self.flush_to_disk();
                     return true;
                 }
             }
         }
-        // Destination not found after the source was already mutated —
-        // the tab is lost. Rare (strip vanished between drag start and
-        // harvest tick).
+        // Defensive rollback if later refactors make strip membership
+        // mutable between validation and insertion.
+        self.workspaces = before_workspaces;
+        self.doc = before_doc;
         false
     }
 
@@ -9561,6 +9570,32 @@ mod automerge_foundation_tests {
                 .collect::<Vec<_>>(),
             vec![target_tab],
             "the moved tab remains a separate group after resync"
+        );
+    }
+
+    #[test]
+    fn cross_strip_move_rolls_back_when_document_cannot_commit() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let dst_strip_id = StripId::new();
+        tree.workspaces[0].strips.push(Strip {
+            id: dst_strip_id,
+            name: "Dest".into(),
+            window_groups: Vec::new(),
+        });
+        let src_strip_id = tree.workspaces[0].strips[0].id;
+        let target_tab = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let before = tree.workspaces.clone();
+        // Model a stale/unavailable replication document after the cache was
+        // loaded. The move must not become a cache-only layout.
+        tree.doc = automerge::AutoCommit::new();
+
+        assert!(
+            !tree.move_tab_across_strips(src_strip_id, dst_strip_id, target_tab, next_id(), 0,)
+        );
+        assert_eq!(
+            serde_json::to_value(&tree.workspaces).unwrap(),
+            serde_json::to_value(&before).unwrap(),
+            "failed document commit must restore the exact source layout"
         );
     }
 }

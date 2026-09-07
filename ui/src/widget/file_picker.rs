@@ -658,7 +658,7 @@ impl FilePicker {
                 self.click_cancel();
                 true
             }
-            Some(PickerFocus::Confirm) if self.can_commit_open() => {
+            Some(PickerFocus::Confirm | PickerFocus::Filename) if self.can_commit_open() => {
                 self.click_open();
                 true
             }
@@ -672,10 +672,6 @@ impl FilePicker {
             }
             Some(PickerFocus::List) => {
                 self.activate_selected_entry();
-                true
-            }
-            Some(PickerFocus::Filename) if self.can_commit_open() => {
-                self.click_open();
                 true
             }
             _ => false,
@@ -960,6 +956,10 @@ impl Widget for FilePicker {
 
     /// Reports the modal and every currently visible interactive target. The
     /// same `focus` field drives the painted ring and these semantics.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive accessibility projection keeps focus, bounds, and actions aligned"
+    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let controls = self
@@ -1689,7 +1689,7 @@ impl FilePicker {
                         if matches!(ke.logical_key, Key::Named(NamedKey::Enter))
                             && self.can_commit_open() =>
                     {
-                        self.click_open()
+                        self.click_open();
                     }
                     Some(PickerFocus::Filename)
                         if matches!(ke.logical_key, Key::Named(NamedKey::Space)) =>
@@ -1744,7 +1744,11 @@ impl FilePicker {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    reason = "immediate-mode paint helper mirrors the canonical ButtonFace state"
+)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,
@@ -2399,8 +2403,10 @@ mod tests {
         ] {
             let mut picker =
                 FilePicker::new("Choose a file", &root, vec![root.clone()]).with_mode(mode);
-            let width = f64::from(width);
-            let height = f64::from(height);
+            let pixel_width = width;
+            let pixel_height = height;
+            let width = f64::from(pixel_width);
+            let height = f64::from(pixel_height);
             picker.set_rect(Rect::new(
                 width * 0.19,
                 height * 0.14,
@@ -2417,8 +2423,7 @@ mod tests {
                 &theme,
                 &PresenceCtx::default(),
             );
-            let mut renderer =
-                crate::offscreen::OffscreenRenderer::new(width as u32, height as u32);
+            let mut renderer = crate::offscreen::OffscreenRenderer::new(pixel_width, pixel_height);
             renderer.render_png(
                 &scene,
                 Color::from_rgba8(20, 24, 32, 255),

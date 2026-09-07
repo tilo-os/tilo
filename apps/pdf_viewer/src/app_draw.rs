@@ -1012,13 +1012,13 @@ impl PdfApp {
             scene,
             base,
             Rect::new(gx, gcy - gsz / 2.0, gx + gsz, gcy + gsz / 2.0),
-            Color::WHITE,
+            theme.tokens.colors.on_accent(4.5),
         );
         tr.draw_text_weighted(
             scene,
             label,
             13.0,
-            Color::WHITE,
+            theme.tokens.colors.on_accent(4.5),
             base * Affine::translate((gx + gsz + gap, vcenter(btn, 13.0))),
             None,
             TextWeight::Semibold,
@@ -1545,7 +1545,11 @@ impl PdfApp {
             let active = *t == self.tool;
             let hovered = r.contains(self.last_mouse);
             Self::icon_button_bg(scene, base, theme, *r, active, hovered);
-            let col = if active { Color::WHITE } else { theme.text_dim };
+            let col = if active {
+                theme.tokens.colors.on_accent(4.5)
+            } else {
+                theme.text_dim
+            };
             draw_tool_icon(scene, base, *t, *r, col);
         }
 
@@ -1632,7 +1636,7 @@ impl PdfApp {
             fit_txt,
             11.0,
             if fit_active {
-                Color::WHITE
+                theme.tokens.colors.on_accent(4.5)
             } else {
                 theme.text_dim
             },
@@ -1665,7 +1669,7 @@ impl PdfApp {
             base,
             lay.search,
             if self.search_active {
-                Color::WHITE
+                theme.tokens.colors.on_accent(4.5)
             } else {
                 theme.text_dim
             },
@@ -1683,7 +1687,7 @@ impl PdfApp {
             base,
             lay.toggle_rail,
             if self.show_rail {
-                Color::WHITE
+                theme.tokens.colors.on_accent(4.5)
             } else {
                 theme.text_dim
             },
@@ -1701,7 +1705,7 @@ impl PdfApp {
             base,
             lay.toggle_sidebar,
             if self.show_sidebar {
-                Color::WHITE
+                theme.tokens.colors.on_accent(4.5)
             } else {
                 theme.text_dim
             },
@@ -1849,7 +1853,11 @@ impl PdfApp {
             } else {
                 c.lift(0.72)
             };
-            let txt = if active { Color::WHITE } else { theme.text_dim };
+            let txt = if active {
+                theme.tokens.colors.on_accent(4.5)
+            } else {
+                theme.text_dim
+            };
             scene.fill(
                 Fill::NonZero,
                 base,
@@ -2285,7 +2293,11 @@ impl PdfApp {
 
         let chip = hdr.chip;
         let (chip_label, chip_fill, chip_text) = if cm.resolved {
-            ("Resolved", c.semantic.success, Color::WHITE)
+            (
+                "Resolved",
+                c.semantic.success,
+                theme.on_surface(c.semantic.success).ink,
+            )
         } else {
             ("Resolve", c.lift(0.72), theme.text_dim)
         };
@@ -2960,7 +2972,7 @@ impl PdfApp {
         };
         let (lw, _) = tr.measure(label, 12.0, None);
         let label_col = if arming {
-            Color::WHITE
+            theme.tokens.colors.on_accent(4.5)
         } else if ready {
             theme.text_primary
         } else {

@@ -81,7 +81,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     // Revoking is an administrator's act, and `Workspace::new` leaves a room
     // ownerless — install the identity the chrome acts as, so the click
     // exercises the real authority check.
-    ws.set_owner(shell::shell::state::local_user_id());
+    ws.set_owner(shell::shell::state::local_user_id_for_room(&ws.room));
     for (app_id, caps) in entries {
         // Seed through the production granting path — `grants()` is a *derived*
         // view rebuilt from `capabilities` and returned by value, so inserting
@@ -189,7 +189,7 @@ fn tree_with_members() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
-    let owner = shell::shell::state::local_user_id();
+    let owner = shell::shell::state::local_user_id_for_room(&ws.room);
     ws.set_owner(owner.clone());
     let room = ws.id.raw().to_string();
     for (person, verb) in [("ada", Verb::Read), ("bo", Verb::Read)] {
@@ -596,7 +596,9 @@ fn role_chip_opens_an_explicit_choice_before_changing_what_the_member_may_do() {
 )]
 fn removing_a_member_takes_their_capabilities_with_them() {
     let mut tree = tree_with_members();
-    let owner = shell::shell::state::local_user_id();
+    let owner = shell::shell::state::local_user_id_for_room(
+        &tree.active_workspace().expect("fixture workspace").room,
+    );
     if let Some(ws) = tree.active_workspace_mut() {
         ws.grant_as(
             &owner,
@@ -674,7 +676,9 @@ fn the_owner_row_offers_no_role_change_and_no_removal() {
     // short-circuits to Owner for them, so a control that appeared to
     // change it would be a control that lies.
     let tree = tree_with_members();
-    let owner = shell::shell::state::local_user_id();
+    let owner = shell::shell::state::local_user_id_for_room(
+        &tree.active_workspace().expect("fixture workspace").room,
+    );
     let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
     let row = host
         .member_control_rects()

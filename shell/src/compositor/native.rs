@@ -5665,6 +5665,7 @@ pub fn run() -> ! {
                         &mut frame_paint.scene,
                         surface.surface_id,
                         surface.rect,
+                        frame_builder.theme(),
                     );
                 }
                 if presentation_frame_changed || !state.output_presentation_surfaces.is_empty() {

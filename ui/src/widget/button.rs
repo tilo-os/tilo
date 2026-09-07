@@ -1519,7 +1519,7 @@ mod tests {
                 (ButtonStyle::Primary, "", Some(crate::icons::Icon::Check)),
             ];
             for (index, (style, label, icon)) in faces.into_iter().enumerate() {
-                let y = 88.0 + index as f64 * 86.0;
+                let y = 88.0 + f64::from(u32::try_from(index).expect("four audit rows")) * 86.0;
                 let mut face = ButtonFace::new(Rect::new(80.0, y, 360.0, y + 52.0), label)
                     .style(style)
                     .disabled(true)
