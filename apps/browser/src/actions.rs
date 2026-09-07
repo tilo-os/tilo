@@ -25,6 +25,19 @@ const REMOVE_PREFIX: &str = "browser.bookmarks.v2.remove:";
 const URL: &str = "url";
 const TITLE: &str = "title";
 const MAX_BOOKMARKS: usize = 10_000;
+const MAX_WEB_URL_BYTES: usize = 8 * 1024;
+const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
+
+/// Stable identity for a private history entry.  History is deliberately not
+/// copied into the shared document (visited URLs are sensitive activity), but
+/// it still needs the same canonical identity everywhere it is exposed: the
+/// library tree, global search, and an agent's resource address.
+pub fn history_resource_id(url: &str) -> String {
+    format!(
+        "browser.history.{}",
+        blake3::hash(url.trim().as_bytes()).to_hex()
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowserAction {
@@ -55,7 +68,11 @@ pub enum BrowserAction {
 }
 
 pub fn normalized_bookmark_url(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url.trim()).ok()?;
+    let url = url.trim();
+    if url.is_empty() || url.len() > MAX_WEB_URL_BYTES {
+        return None;
+    }
+    let parsed = url::Url::parse(url).ok()?;
     matches!(parsed.scheme(), "http" | "https").then(|| parsed.into())
 }
 
@@ -282,6 +299,11 @@ impl Action for BrowserAction {
                 })?;
                 if tag.trim().is_empty() {
                     return Err(ActionError::Refused("bookmark tag is required".into()));
+                }
+                if tag.len() > 256 || title.len() > MAX_BOOKMARK_TITLE_BYTES {
+                    return Err(ActionError::Refused(
+                        "bookmark metadata exceeds the safety limit".into(),
+                    ));
                 }
                 ensure_v2_migrated(doc)?;
                 let title = if title.trim().is_empty() {
