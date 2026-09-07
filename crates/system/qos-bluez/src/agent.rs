@@ -8,10 +8,12 @@
 //! back into a return value or D-Bus error. The compositor draws the prompt; this is the wire.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 use zbus::zvariant::ObjectPath;
 use zbus::{Connection, DBusError, interface};
@@ -35,6 +37,39 @@ const AGENT_MANAGER_IFACE: &str = "org.bluez.AgentManager1";
 /// itself; answering just inside that window lets the daemon learn *why* pairing stopped.
 pub const DEFAULT_ANSWER_TIMEOUT: Duration = Duration::from_secs(55);
 
+/// Maximum number of unanswered/display-only prompts allowed to wait for the UI.
+///
+/// A `BlueZ` agent normally has one active request, but display-passkey updates and a broken or
+/// hostile daemon can arrive faster than the compositor drains them.  Eight events bounds the
+/// queue while leaving room for the complete six-digit display-progress sequence and a small
+/// amount of scheduling jitter.
+///
+/// Together with [`MAX_DEVICE_PATH_BYTES`], [`MAX_DEVICE_NAME_BYTES`], and the prompt limits,
+/// this caps queued string storage at 8 × (1024 + 248 + 64) = 10,688 bytes (plus fixed Rust
+/// bookkeeping).  Pending answer handles use the same count limit, so a consumer that drains
+/// events but never answers cannot move the bound from the queue into agent state.
+pub const AGENT_EVENT_CAPACITY: usize = 8;
+
+/// Bluetooth's legacy PIN value is at most 16 octets.  Enforcing that at the D-Bus boundary
+/// keeps a daemon-controlled string out of the event queue when it is not a valid PIN anyway.
+pub const MAX_PIN_CODE_BYTES: usize = 16;
+
+/// A `BlueZ` service UUID is normally 4, 8, or 36 bytes.  This permits future textual forms but
+/// still prevents an arbitrary D-Bus string from becoming queued UI state.
+pub const MAX_SERVICE_UUID_BYTES: usize = 64;
+
+/// `BlueZ` aliases are user-visible names, not an unbounded metadata transport.  248 bytes is the
+/// Bluetooth local-name limit and bounds the copy carried in each queued request.
+pub const MAX_DEVICE_NAME_BYTES: usize = 248;
+
+/// Number of aliases retained for prompts.  This is a display cache, so refusing a new entry
+/// under discovery floods is safe: the prompt falls back to the device address instead.
+pub const MAX_DEVICE_NAME_ENTRIES: usize = 256;
+
+/// Object paths originate on D-Bus.  They are identifiers, so one KiB is already far beyond a
+/// practical `BlueZ` device path; refusing longer paths bounds each queued request.
+pub const MAX_DEVICE_PATH_BYTES: usize = 1024;
+
 /// Errors this agent returns to `BlueZ`. The names matter: `bluetoothd` branches on
 /// `org.bluez.Error.Rejected` (user said no) vs `org.bluez.Error.Canceled` (nobody
 /// answered), reporting them differently to the device.
@@ -57,7 +92,7 @@ pub enum AgentEvent {
     /// is read as [`PairingReply::Reject`].
     Ask {
         request: PairingRequest,
-        reply: oneshot::Sender<PairingReply>,
+        reply: PairingReplySender,
     },
     /// `BlueZ` withdrew the pending request (the remote gave up, or pairing failed elsewhere).
     /// Any prompt on screen should be dismissed.
@@ -67,26 +102,186 @@ pub enum AgentEvent {
 }
 
 /// The receiving end, held by whoever draws the prompt.
-pub type AgentEvents = mpsc::UnboundedReceiver<AgentEvent>;
+pub struct AgentEvents {
+    events: mpsc::Receiver<AgentEvent>,
+    lifecycle: watch::Receiver<Lifecycle>,
+    closed: bool,
+}
+
+impl AgentEvents {
+    /// Receive the next prompt or lifecycle notification.  Lifecycle changes take priority over
+    /// queued prompts, so `Cancel`/`Release` can never be trapped behind a saturated queue.
+    pub async fn recv(&mut self) -> Option<AgentEvent> {
+        if self.closed {
+            return self.events.recv().await;
+        }
+        if self.lifecycle.has_changed().unwrap_or(false) {
+            return Some(lifecycle_event(*self.lifecycle.borrow_and_update()));
+        }
+
+        tokio::select! {
+            biased;
+            changed = self.lifecycle.changed() => {
+                match changed {
+                    Ok(()) => Some(lifecycle_event(*self.lifecycle.borrow_and_update())),
+                    // The agent has gone away.  There can still be an event queued before it
+                    // dropped, so let the bounded queue drain normally.
+                    Err(_) => self.events.recv().await,
+                }
+            }
+            event = self.events.recv() => event,
+        }
+    }
+
+    /// Stop accepting new queued events and drain the events already admitted.
+    pub fn close(&mut self) {
+        self.events.close();
+        self.closed = true;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Lifecycle {
+    #[default]
+    Active,
+    Cancelled,
+    Released,
+}
+
+fn lifecycle_event(lifecycle: Lifecycle) -> AgentEvent {
+    match lifecycle {
+        // An unexpected reset is handled as cancellation: keeping a stale consent prompt visible
+        // is less safe than asking the user to start pairing again.
+        Lifecycle::Active | Lifecycle::Cancelled => AgentEvent::Cancelled,
+        Lifecycle::Released => AgentEvent::Released,
+    }
+}
+
+/// A single-use answer channel for an [`AgentEvent::Ask`].
+///
+/// Unlike exposing a raw `oneshot::Sender`, this handle has an internal copy retained by the
+/// agent.  A `BlueZ` `Cancel` or `Release` can therefore reject an already-displayed prompt even
+/// when the event queue is full or the UI is slow to process its cancellation notification.
+pub struct PairingReplySender {
+    inner: Arc<Mutex<Option<oneshot::Sender<PairingReply>>>>,
+    /// The UI-owned sender rejects on drop.  Agent-owned clones only retain the ability to
+    /// cancel; they must not make a prompt look dismissed while they remain alive.
+    reject_on_drop: bool,
+}
+
+impl Clone for PairingReplySender {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            reject_on_drop: false,
+        }
+    }
+}
+
+impl fmt::Debug for PairingReplySender {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("PairingReplySender").finish()
+    }
+}
+
+impl PairingReplySender {
+    /// Create a responder/receiver pair for embedding an agent event in another UI boundary.
+    /// Production callers receive responders from [`AgentEvent::Ask`]; this is primarily useful
+    /// for adapters and tests that need the same single-use cancellation semantics.
+    pub fn channel() -> (Self, oneshot::Receiver<PairingReply>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Self {
+                inner: Arc::new(Mutex::new(Some(tx))),
+                reject_on_drop: true,
+            },
+            rx,
+        )
+    }
+
+    /// Answer once.  Returns the unsent reply if `BlueZ` already cancelled the request or the
+    /// agent stopped listening.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original reply if this prompt was already answered, cancelled, or its receiver
+    /// was dropped.
+    pub fn send(&self, reply: PairingReply) -> Result<(), PairingReply> {
+        let Ok(mut sender) = self.inner.lock() else {
+            return Err(reply);
+        };
+        let Some(sender) = sender.take() else {
+            return Err(reply);
+        };
+        sender.send(reply)
+    }
+
+    fn reject(&self) {
+        let _ = self.send(PairingReply::Reject);
+    }
+}
+
+impl Drop for PairingReplySender {
+    fn drop(&mut self) {
+        if self.reject_on_drop {
+            self.reject();
+        }
+    }
+}
 
 /// Display names for device paths, kept up to date by the client so the agent never has to
 /// call back into `bluetoothd` while `bluetoothd` is waiting on it.
-#[derive(Clone, Default)]
-pub struct DeviceNames(Arc<Mutex<HashMap<String, String>>>);
+#[derive(Clone)]
+pub struct DeviceNames {
+    entries: Arc<Mutex<HashMap<String, String>>>,
+    capacity: usize,
+}
+
+impl Default for DeviceNames {
+    fn default() -> Self {
+        Self::with_capacity(MAX_DEVICE_NAME_ENTRIES)
+    }
+}
 
 impl DeviceNames {
     pub fn new() -> Self {
         Self::default()
     }
 
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "device name cache must have capacity");
+        Self {
+            entries: Arc::new(Mutex::new(HashMap::new())),
+            capacity,
+        }
+    }
+
     pub fn set(&self, path: &str, name: &str) {
-        if let Ok(mut m) = self.0.lock() {
+        if path.len() > MAX_DEVICE_PATH_BYTES || name.len() > MAX_DEVICE_NAME_BYTES {
+            warn!(
+                target: "qos::bluez",
+                path_bytes = path.len(),
+                name_bytes = name.len(),
+                "refusing oversized Bluetooth device name cache entry"
+            );
+            self.remove(path);
+            return;
+        }
+        if let Ok(mut m) = self.entries.lock() {
+            if !m.contains_key(path) && m.len() >= self.capacity {
+                warn!(
+                    target: "qos::bluez",
+                    capacity = self.capacity,
+                    "Bluetooth device name cache is full; using address fallback"
+                );
+                return;
+            }
             m.insert(path.to_string(), name.to_string());
         }
     }
 
     pub fn remove(&self, path: &str) {
-        if let Ok(mut m) = self.0.lock() {
+        if let Ok(mut m) = self.entries.lock() {
             m.remove(path);
         }
     }
@@ -94,20 +289,25 @@ impl DeviceNames {
     /// Best-effort display name: the cached alias, else the address decoded from the object
     /// path, else the path itself — never empty, so a prompt always has something to name.
     pub fn get(&self, path: &str) -> String {
-        if let Ok(m) = self.0.lock()
+        if let Ok(m) = self.entries.lock()
             && let Some(n) = m.get(path).filter(|n| !n.is_empty())
         {
             return n.clone();
         }
-        address_from_path(path).unwrap_or_else(|| path.to_string())
+        address_from_path(path).unwrap_or_else(|| "Unknown Bluetooth device".to_string())
     }
 }
 
 /// The D-Bus object `BlueZ` calls into.
 pub struct PairingAgent {
-    tx: mpsc::UnboundedSender<AgentEvent>,
+    tx: mpsc::Sender<AgentEvent>,
     names: DeviceNames,
     timeout: Duration,
+    active_replies: Mutex<HashMap<u64, PairingReplySender>>,
+    next_request_id: AtomicU64,
+    event_capacity: usize,
+    lifecycle: watch::Sender<Lifecycle>,
+    released: AtomicBool,
 }
 
 impl PairingAgent {
@@ -117,8 +317,37 @@ impl PairingAgent {
     }
 
     pub fn with_timeout(names: DeviceNames, timeout: Duration) -> (Self, AgentEvents) {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (Self { tx, names, timeout }, rx)
+        Self::with_event_capacity(names, timeout, AGENT_EVENT_CAPACITY)
+    }
+
+    fn with_event_capacity(
+        names: DeviceNames,
+        timeout: Duration,
+        event_capacity: usize,
+    ) -> (Self, AgentEvents) {
+        assert!(
+            event_capacity > 0,
+            "an agent event queue must have capacity"
+        );
+        let (tx, events) = mpsc::channel(event_capacity);
+        let (lifecycle, lifecycle_rx) = watch::channel(Lifecycle::Active);
+        (
+            Self {
+                tx,
+                names,
+                timeout,
+                active_replies: Mutex::new(HashMap::new()),
+                next_request_id: AtomicU64::new(0),
+                event_capacity,
+                lifecycle,
+                released: AtomicBool::new(false),
+            },
+            AgentEvents {
+                events,
+                lifecycle: lifecycle_rx,
+                closed: false,
+            },
+        )
     }
 
     /// Push a question to the UI and wait for the answer. Every failure mode collapses to a
@@ -129,28 +358,50 @@ impl PairingAgent {
         device: &ObjectPath<'_>,
         prompt: PairingPrompt,
     ) -> Result<PairingReply, AgentError> {
-        let path = device.as_str().to_string();
-        let request = PairingRequest {
-            device_path: path.clone(),
-            device_name: self.names.get(&path),
-            prompt: prompt.clone(),
-        };
+        let path = device.as_str();
+        let request = self.request(path, prompt.clone())?;
         debug!(target: "qos::bluez", device = %path, prompt = ?prompt, "pairing prompt raised");
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .tx
-            .send(AgentEvent::Ask {
-                request,
-                reply: reply_tx,
-            })
-            .is_err()
-        {
-            // Nothing is listening. Refusing is the safe answer — silently accepting would pair a
-            // device the user never saw.
-            warn!(target: "qos::bluez", device = %path, "no pairing UI attached; refusing");
-            return Err(AgentError::Rejected("no pairing UI attached".into()));
+        if self.released.load(Ordering::Acquire) {
+            return Err(AgentError::Rejected("pairing agent released".into()));
         }
-        let reply = match tokio::time::timeout(self.timeout, reply_rx).await {
+        let (reply_tx, reply_rx) = PairingReplySender::channel();
+        let Ok(request_id) =
+            self.next_request_id
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        else {
+            warn!(target: "qos::bluez", device = %path, "pairing request ID space exhausted; refusing request");
+            return Err(AgentError::Rejected(
+                "pairing request ID space exhausted".into(),
+            ));
+        };
+        if let Err(error) = self.insert_reply(request_id, reply_tx.clone()) {
+            warn!(target: "qos::bluez", device = %path, capacity = self.event_capacity, "too many unanswered pairing requests; refusing request");
+            return Err(error);
+        }
+        match self.tx.try_send(AgentEvent::Ask {
+            request,
+            reply: reply_tx,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(AgentEvent::Ask { reply, .. })) => {
+                self.remove_reply(request_id);
+                reply.reject();
+                warn!(target: "qos::bluez", device = %path, capacity = self.event_capacity, "pairing UI queue saturated; refusing request");
+                return Err(AgentError::Rejected("pairing UI is busy".into()));
+            }
+            Err(mpsc::error::TrySendError::Closed(AgentEvent::Ask { reply, .. })) => {
+                self.remove_reply(request_id);
+                reply.reject();
+                warn!(target: "qos::bluez", device = %path, "no pairing UI attached; refusing");
+                return Err(AgentError::Rejected("no pairing UI attached".into()));
+            }
+            // `Ask` is the only event sent on this channel; keeping this arm makes a future
+            // variant addition fail closed instead of accidentally discarding a request.
+            Err(_) => return Err(AgentError::Rejected("pairing UI unavailable".into())),
+        }
+        let reply = tokio::time::timeout(self.timeout, reply_rx).await;
+        self.remove_reply(request_id);
+        let reply = match reply {
             Ok(Ok(reply)) => reply,
             Ok(Err(_)) => {
                 warn!(target: "qos::bluez", device = %path, "pairing prompt dismissed without an answer");
@@ -175,16 +426,93 @@ impl PairingAgent {
 
     /// One-way notification — nothing to wait for.
     fn notify(&self, device: &ObjectPath<'_>, prompt: PairingPrompt) {
-        let path = device.as_str().to_string();
-        let (reply_tx, _reply_rx) = oneshot::channel();
-        let _ = self.tx.send(AgentEvent::Ask {
-            request: PairingRequest {
-                device_path: path.clone(),
-                device_name: self.names.get(&path),
-                prompt,
-            },
-            reply: reply_tx,
-        });
+        let path = device.as_str();
+        let Ok(request) = self.request(path, prompt) else {
+            warn!(target: "qos::bluez", device = %path, "refusing oversized display-only pairing prompt");
+            return;
+        };
+        let (reply, _reply_rx) = PairingReplySender::channel();
+        match self.tx.try_send(AgentEvent::Ask { request, reply }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(target: "qos::bluez", device = %path, capacity = self.event_capacity, "pairing UI queue saturated; discarding display-only update");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                warn!(target: "qos::bluez", device = %path, "no pairing UI attached for display-only update");
+            }
+        }
+    }
+
+    fn request(&self, path: &str, prompt: PairingPrompt) -> Result<PairingRequest, AgentError> {
+        if path.len() > MAX_DEVICE_PATH_BYTES {
+            warn!(target: "qos::bluez", path_bytes = path.len(), "refusing oversized Bluetooth device path");
+            return Err(AgentError::Canceled(
+                "Bluetooth device path is too large".into(),
+            ));
+        }
+        if !prompt_is_bounded(&prompt) {
+            warn!(target: "qos::bluez", prompt = ?prompt, "refusing oversized Bluetooth pairing payload");
+            return Err(AgentError::Canceled(
+                "Bluetooth pairing payload is too large".into(),
+            ));
+        }
+        Ok(PairingRequest {
+            device_path: path.to_string(),
+            device_name: self.names.get(path),
+            prompt,
+        })
+    }
+
+    fn insert_reply(&self, id: u64, reply: PairingReplySender) -> Result<(), AgentError> {
+        let Ok(mut replies) = self.active_replies.lock() else {
+            return Err(AgentError::Rejected(
+                "pairing agent state unavailable".into(),
+            ));
+        };
+        if replies.len() >= self.event_capacity {
+            return Err(AgentError::Rejected("pairing UI is busy".into()));
+        }
+        replies.insert(id, reply);
+        Ok(())
+    }
+
+    fn remove_reply(&self, id: u64) {
+        if let Ok(mut replies) = self.active_replies.lock() {
+            replies.remove(&id);
+        }
+    }
+
+    fn reject_active_replies(&self) {
+        let replies = self
+            .active_replies
+            .lock()
+            .map(|mut replies| std::mem::take(&mut *replies))
+            .unwrap_or_default();
+        for reply in replies.into_values() {
+            reply.reject();
+        }
+    }
+
+    fn set_lifecycle(&self, lifecycle: Lifecycle) {
+        self.reject_active_replies();
+        self.lifecycle.send_replace(lifecycle);
+    }
+}
+
+impl Drop for PairingAgent {
+    fn drop(&mut self) {
+        // Object-server removal during compositor shutdown does not invoke the D-Bus `Release`
+        // callback.  Complete local requests as refusals before their retained handles disappear.
+        self.reject_active_replies();
+        self.lifecycle.send_replace(Lifecycle::Released);
+    }
+}
+
+fn prompt_is_bounded(prompt: &PairingPrompt) -> bool {
+    match prompt {
+        PairingPrompt::DisplayPinCode { pin } => pin.len() <= MAX_PIN_CODE_BYTES,
+        PairingPrompt::AuthorizeService { uuid } => uuid.len() <= MAX_SERVICE_UUID_BYTES,
+        _ => true,
     }
 }
 
@@ -193,7 +521,8 @@ impl PairingAgent {
     /// `BlueZ` is done with us.
     fn release(&self) {
         debug!(target: "qos::bluez", "agent released by bluez");
-        let _ = self.tx.send(AgentEvent::Released);
+        self.released.store(true, Ordering::Release);
+        self.set_lifecycle(Lifecycle::Released);
     }
 
     /// Legacy pairing: the user types a PIN (often `0000`).
@@ -272,7 +601,9 @@ impl PairingAgent {
     /// The request went away. Dismiss whatever is on screen.
     fn cancel(&self) {
         debug!(target: "qos::bluez", "bluez cancelled the pending pairing request");
-        let _ = self.tx.send(AgentEvent::Cancelled);
+        if !self.released.load(Ordering::Acquire) {
+            self.set_lifecycle(Lifecycle::Cancelled);
+        }
     }
 }
 
@@ -370,6 +701,7 @@ impl AgentRegistration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn agent() -> (PairingAgent, AgentEvents) {
         let names = DeviceNames::new();
@@ -528,5 +860,185 @@ mod tests {
             panic!()
         };
         assert_eq!(request.device_name, "AA:BB:CC:DD:EE:FF");
+    }
+
+    #[tokio::test]
+    async fn a_full_event_queue_rejects_authorization_instead_of_accumulating_work() {
+        let (a, _rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        // Display-only events do not grant consent, so they may occupy the sole queue slot.  A
+        // request that would authorise a device is rejected rather than being buffered without
+        // bound or silently dropped.
+        a.display_passkey(dev(), 1, 0);
+        let err = a.request_confirmation(dev(), 1).await.unwrap_err();
+        assert!(matches!(err, AgentError::Rejected(message) if message == "pairing UI is busy"));
+    }
+
+    #[tokio::test]
+    async fn request_id_exhaustion_never_wraps_or_replaces_an_active_reply() {
+        let (a, mut rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 2);
+        a.next_request_id.store(u64::MAX - 1, Ordering::Relaxed);
+        let a = Arc::new(a);
+
+        let first_request = {
+            let a = Arc::clone(&a);
+            tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
+        };
+        let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+            panic!("the final usable request ID should be admitted once");
+        };
+        assert!(
+            a.active_replies
+                .lock()
+                .is_ok_and(|replies| replies.contains_key(&(u64::MAX - 1)))
+        );
+
+        let err = a.request_confirmation(dev(), 2).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::Rejected(message) if message == "pairing request ID space exhausted")
+        );
+        assert!(
+            a.active_replies
+                .lock()
+                .is_ok_and(|replies| replies.len() == 1 && replies.contains_key(&(u64::MAX - 1)))
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), rx.recv())
+                .await
+                .is_err(),
+            "an exhausted ID must not admit a second event"
+        );
+
+        reply.send(PairingReply::Reject).unwrap();
+        assert!(matches!(
+            first_request.await.unwrap(),
+            Err(AgentError::Rejected(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn draining_a_bounded_queue_admits_the_next_pairing_request() {
+        let (a, mut rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        let a = Arc::new(a);
+        a.display_passkey(dev(), 1, 0);
+        assert!(matches!(rx.recv().await, Some(AgentEvent::Ask { .. })));
+
+        let asking = {
+            let a = Arc::clone(&a);
+            tokio::spawn(async move { a.request_confirmation(dev(), 2).await })
+        };
+        let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+            panic!("expected the drained queue to admit an Ask");
+        };
+        reply.send(PairingReply::Accept).unwrap();
+        assert!(asking.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancel_is_delivered_and_rejects_an_ask_even_when_the_queue_is_full() {
+        let (a, mut rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        let a = Arc::new(a);
+        let asking = {
+            let a = Arc::clone(&a);
+            tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
+        };
+        tokio::task::yield_now().await;
+        a.cancel();
+
+        // Lifecycle is carried by a latest-state signal, rather than joining the already-full
+        // prompt queue, so the compositor can always dismiss its current dialog.
+        assert!(matches!(rx.recv().await, Some(AgentEvent::Cancelled)));
+        let AgentEvent::Ask { reply, .. } = rx.recv().await.unwrap() else {
+            panic!("the queued Ask should still be drainable after cancellation");
+        };
+        assert_eq!(reply.send(PairingReply::Accept), Err(PairingReply::Accept));
+        assert!(matches!(
+            asking.await.unwrap(),
+            Err(AgentError::Rejected(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn release_rejects_pending_work_and_prevents_new_requests() {
+        let (a, mut rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        let a = Arc::new(a);
+        let asking = {
+            let a = Arc::clone(&a);
+            tokio::spawn(async move { a.request_confirmation(dev(), 1).await })
+        };
+        tokio::task::yield_now().await;
+        a.release();
+
+        assert!(matches!(rx.recv().await, Some(AgentEvent::Released)));
+        assert!(matches!(
+            asking.await.unwrap(),
+            Err(AgentError::Rejected(_))
+        ));
+        let err = a.request_confirmation(dev(), 2).await.unwrap_err();
+        assert!(
+            matches!(err, AgentError::Rejected(message) if message == "pairing agent released")
+        );
+    }
+
+    #[tokio::test]
+    async fn receiver_shutdown_drains_admitted_events_then_closes() {
+        let (a, mut rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        a.display_passkey(dev(), 1, 0);
+        rx.close();
+        // Closing the receiver is a clean UI shutdown: already-admitted work is observable,
+        // but no later D-Bus call can add more state.
+        assert!(matches!(rx.recv().await, Some(AgentEvent::Ask { .. })));
+        drop(a);
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn oversized_daemon_strings_do_not_enter_the_event_queue() {
+        let (a, mut rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        a.display_pin_code(dev(), "x".repeat(MAX_PIN_CODE_BYTES + 1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), rx.recv())
+                .await
+                .is_err()
+        );
+
+        let err = a
+            .authorize_service(dev(), "x".repeat(MAX_SERVICE_UUID_BYTES + 1))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentError::Canceled(_)));
+    }
+
+    #[test]
+    fn oversized_names_are_not_retained_in_the_cache() {
+        let names = DeviceNames::new();
+        let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        names.set(path, &"x".repeat(MAX_DEVICE_NAME_BYTES + 1));
+        assert_eq!(names.get(path), "AA:BB:CC:DD:EE:FF");
+    }
+
+    #[test]
+    fn a_full_name_cache_uses_the_address_for_new_devices() {
+        let names = DeviceNames::with_capacity(1);
+        names.set("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "first");
+        let second = "/org/bluez/hci0/dev_11_22_33_44_55_66";
+        names.set(second, "second");
+        assert_eq!(names.get(second), "11:22:33:44:55:66");
+    }
+
+    #[tokio::test]
+    async fn dropping_the_agent_rejects_retained_pairing_replies() {
+        let (a, _rx) =
+            PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
+        let (ui_reply, reply_rx) = PairingReplySender::channel();
+        a.insert_reply(0, ui_reply.clone()).unwrap();
+        drop(a);
+        assert_eq!(reply_rx.await.unwrap(), PairingReply::Reject);
     }
 }

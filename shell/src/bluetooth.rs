@@ -15,7 +15,7 @@
 use std::sync::{Arc, Mutex};
 
 use qos_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
-use qos_bluez::{BluezClient, PairingReply, PairingRequest};
+use qos_bluez::{BluezClient, PairingReply, PairingReplySender, PairingRequest};
 use tracing::{info, warn};
 
 /// The prompt currently on screen, if any, and the channel that answers it.
@@ -29,7 +29,7 @@ pub struct PairingState {
 
 struct Pending {
     request: PairingRequest,
-    reply: tokio::sync::oneshot::Sender<PairingReply>,
+    reply: PairingReplySender,
 }
 
 /// Cheap-clone handle the chrome holds.
@@ -57,7 +57,7 @@ impl PairingPromptHandle {
 
     /// Post a question. Any prompt already up is refused rather than
     /// silently replaced — dropping its reply channel is read as a decline by the agent, so an abandoned pairing fails closed.
-    fn post(&self, request: PairingRequest, reply: tokio::sync::oneshot::Sender<PairingReply>) {
+    fn post(&self, request: PairingRequest, reply: PairingReplySender) {
         if let Ok(mut s) = self.inner.lock() {
             if let Some(prev) = s.current.take() {
                 warn!(
@@ -89,13 +89,18 @@ impl PairingPromptHandle {
         true
     }
 
-    /// Dismiss without answering — the user closed it, or `BlueZ` withdrew the
-    /// request. Dropping the channel makes the agent refuse, the only safe reading of "no answer".
+    /// Dismiss without answering — the user closed it, or `BlueZ` withdrew the request.  Send an
+    /// explicit rejection because the agent retains a cancellation handle for every active
+    /// request; merely dropping the UI's handle would otherwise wait for the timeout.
     pub fn dismiss(&self) -> bool {
         let Ok(mut s) = self.inner.lock() else {
             return false;
         };
-        s.current.take().is_some()
+        let Some(pending) = s.current.take() else {
+            return false;
+        };
+        let _ = pending.reply.send(PairingReply::Reject);
+        true
     }
 }
 
@@ -104,6 +109,7 @@ pub struct PairingService {
     registration: AgentRegistration,
     pump: tokio::task::JoinHandle<()>,
     client: BluezClient,
+    handle: PairingPromptHandle,
 }
 
 impl PairingService {
@@ -153,6 +159,7 @@ impl PairingService {
             registration,
             pump,
             client,
+            handle,
         })
     }
 
@@ -162,6 +169,7 @@ impl PairingService {
 
     /// Unregister cleanly, so the daemon isn't left holding a dead object path across a compositor restart.
     pub async fn shutdown(self) {
+        self.handle.dismiss();
         self.pump.abort();
         if let Err(e) = self.registration.unregister().await {
             warn!(target: "qos::bluetooth", error = %e, "could not unregister the pairing agent");
@@ -202,7 +210,7 @@ mod tests {
     async fn a_posted_prompt_is_readable_and_answerable() {
         let h = PairingPromptHandle::new();
         assert!(!h.is_prompting());
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = PairingReplySender::channel();
         h.post(request("A"), tx);
         assert!(h.is_prompting());
         assert_eq!(h.current().unwrap().device_name, "A");
@@ -223,8 +231,8 @@ mod tests {
     #[tokio::test]
     async fn a_second_question_declines_the_first() {
         let h = PairingPromptHandle::new();
-        let (tx1, rx1) = tokio::sync::oneshot::channel();
-        let (tx2, _rx2) = tokio::sync::oneshot::channel();
+        let (tx1, rx1) = PairingReplySender::channel();
+        let (tx2, _rx2) = PairingReplySender::channel();
         h.post(request("first"), tx1);
         h.post(request("second"), tx2);
         assert_eq!(rx1.await.unwrap(), PairingReply::Reject);
@@ -235,17 +243,16 @@ mod tests {
     #[tokio::test]
     async fn dismissing_refuses_rather_than_accepting() {
         let h = PairingPromptHandle::new();
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = PairingReplySender::channel();
         h.post(request("A"), tx);
         assert!(h.dismiss());
-        // The sender was dropped, so the agent sees a closed channel — which it reads as a refusal.
-        assert!(rx.await.is_err(), "no answer was sent");
+        assert_eq!(rx.await.unwrap(), PairingReply::Reject);
     }
 
     #[tokio::test]
     async fn declining_is_carried_through_verbatim() {
         let h = PairingPromptHandle::new();
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = PairingReplySender::channel();
         h.post(request("A"), tx);
         assert!(h.answer(PairingReply::Reject));
         assert_eq!(rx.await.unwrap(), PairingReply::Reject);
@@ -254,7 +261,7 @@ mod tests {
     #[tokio::test]
     async fn a_typed_passkey_is_carried_through_verbatim() {
         let h = PairingPromptHandle::new();
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = PairingReplySender::channel();
         h.post(
             PairingRequest {
                 device_path: "/org/bluez/hci0/dev_X".into(),
