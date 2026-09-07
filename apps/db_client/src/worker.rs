@@ -17,9 +17,12 @@
 //! instead of pumping frames.
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::engine::{LiveEngine, open_engine};
+use uuid::Uuid;
+
+use crate::engine::{LiveEngine, QueryCancellation, open_engine};
 use crate::model::{ConnectionProfile, DatabaseSchema, QueryResult};
 
 /// Work handed to the background thread.
@@ -29,9 +32,14 @@ pub enum DbRequest {
     /// and introspect its catalog.
     Connect(Box<ConnectionProfile>),
     /// Run an arbitrary SQL statement against the open engine.
-    Query(String),
+    Query {
+        connection_id: Uuid,
+        generation: u64,
+        sql: String,
+    },
     /// Read one page of a table's rows (Data tab browsing).
     Browse {
+        connection_id: Uuid,
         table: String,
         limit: usize,
         offset: usize,
@@ -47,19 +55,31 @@ pub enum DbRequest {
 pub enum DbReply {
     /// A connection opened and its catalog was introspected.
     Connected {
+        connection_id: Uuid,
         name: String,
         schema: DatabaseSchema,
     },
     /// A connection attempt failed (refused socket, bad auth, …).
-    ConnectFailed { name: String, error: String },
+    ConnectFailed {
+        connection_id: Uuid,
+        name: String,
+        error: String,
+    },
     /// A `Run`/`Query` finished. `schema` is `Some` when the statement was
     /// DML/DDL, so the caller can re-adopt the possibly-changed catalog.
     Queried {
+        connection_id: Uuid,
+        generation: u64,
         result: Result<QueryResult, String>,
         schema: Option<DatabaseSchema>,
     },
     /// A table page finished loading (Data tab).
-    Browsed { result: Result<QueryResult, String> },
+    Browsed {
+        connection_id: Uuid,
+        table: String,
+        offset: usize,
+        result: Result<QueryResult, String>,
+    },
     /// The engine was dropped.
     Disconnected,
 }
@@ -72,6 +92,21 @@ pub struct DbWorker {
     rx: Receiver<DbReply>,
     handle: Option<JoinHandle<()>>,
     outstanding: usize,
+    active_query: Arc<Mutex<Option<ActiveQuery>>>,
+}
+
+#[derive(Clone)]
+struct ActiveQuery {
+    connection_id: Uuid,
+    generation: u64,
+    cancellation: QueryCancellation,
+}
+
+/// Result of a generation-checked cancellation request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelQueryResult {
+    Requested,
+    NotActive,
 }
 
 impl DbWorker {
@@ -89,15 +124,18 @@ impl DbWorker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::channel::<DbRequest>();
         let (res_tx, res_rx) = std::sync::mpsc::channel::<DbReply>();
+        let active_query = Arc::new(Mutex::new(None));
+        let worker_active_query = Arc::clone(&active_query);
         let handle = std::thread::Builder::new()
             .name("db-worker".to_string())
-            .spawn(move || worker_loop(&req_rx, &res_tx))
+            .spawn(move || worker_loop(&req_rx, &res_tx, &worker_active_query))
             .expect("spawn db worker thread");
         Self {
             tx: req_tx,
             rx: res_rx,
             handle: Some(handle),
             outstanding: 0,
+            active_query,
         }
     }
 
@@ -144,6 +182,25 @@ impl DbWorker {
     pub fn busy(&self) -> bool {
         self.outstanding > 0
     }
+
+    /// Request an interrupt only if the same connection/request generation is
+    /// still executing. The selected capability is cloned under the lock and
+    /// invoked after releasing it, so a completion/new query cannot be
+    /// interrupted by a stale cancellation click.
+    pub fn cancel_query(&self, connection_id: Uuid, generation: u64) -> CancelQueryResult {
+        let cancellation = self.active_query.lock().ok().and_then(|active| {
+            active.as_ref().and_then(|active| {
+                (active.connection_id == connection_id && active.generation == generation)
+                    .then(|| active.cancellation.clone())
+            })
+        });
+        if let Some(cancellation) = cancellation {
+            cancellation.request();
+            CancelQueryResult::Requested
+        } else {
+            CancelQueryResult::NotActive
+        }
+    }
 }
 
 impl Drop for DbWorker {
@@ -157,42 +214,69 @@ impl Drop for DbWorker {
 
 /// The background loop: owns the single live engine handle and services one
 /// request at a time.
-fn worker_loop(rx: &Receiver<DbRequest>, tx: &Sender<DbReply>) {
+fn worker_loop(
+    rx: &Receiver<DbRequest>,
+    tx: &Sender<DbReply>,
+    active_query: &Arc<Mutex<Option<ActiveQuery>>>,
+) {
     let mut engine: Option<LiveEngine> = None;
     while let Ok(req) = rx.recv() {
         let reply = match req {
             DbRequest::Shutdown => break,
             DbRequest::Connect(profile) => {
+                let connection_id = profile.id;
                 let name = profile.name.clone();
                 match open_engine(&profile) {
                     Ok(mut eng) => {
                         let schema = eng.introspect().unwrap_or_default();
                         engine = Some(eng);
-                        DbReply::Connected { name, schema }
+                        DbReply::Connected {
+                            connection_id,
+                            name,
+                            schema,
+                        }
                     }
                     Err(error) => {
                         engine = None;
-                        DbReply::ConnectFailed { name, error }
+                        DbReply::ConnectFailed {
+                            connection_id,
+                            name,
+                            error,
+                        }
                     }
                 }
             }
-            DbRequest::Query(sql) => match engine.as_mut() {
+            DbRequest::Query {
+                connection_id,
+                generation,
+                sql,
+            } => match engine.as_mut() {
                 Some(eng) => {
+                    publish_active_query(active_query, connection_id, generation, eng);
                     let result = eng.run(&sql);
+                    clear_active_query(active_query, connection_id, generation);
                     // A DML/DDL statement may have changed the catalog; a
                     // failed or row-returning statement leaves it untouched.
                     let schema = match &result {
                         Ok(r) if !r.is_select => eng.introspect().ok(),
                         _ => None,
                     };
-                    DbReply::Queried { result, schema }
+                    DbReply::Queried {
+                        connection_id,
+                        generation,
+                        result,
+                        schema,
+                    }
                 }
                 None => DbReply::Queried {
+                    connection_id,
+                    generation,
                     result: Err("No live connection".to_string()),
                     schema: None,
                 },
             },
             DbRequest::Browse {
+                connection_id,
                 table,
                 limit,
                 offset,
@@ -201,7 +285,12 @@ fn worker_loop(rx: &Receiver<DbRequest>, tx: &Sender<DbReply>) {
                     Some(eng) => eng.browse_table(&table, limit, offset),
                     None => Err("No live connection".to_string()),
                 };
-                DbReply::Browsed { result }
+                DbReply::Browsed {
+                    connection_id,
+                    table,
+                    offset,
+                    result,
+                }
             }
             DbRequest::Disconnect => {
                 engine = None;
@@ -212,5 +301,34 @@ fn worker_loop(rx: &Receiver<DbRequest>, tx: &Sender<DbReply>) {
             // UI side is gone.
             break;
         }
+    }
+}
+
+fn publish_active_query(
+    active_query: &Mutex<Option<ActiveQuery>>,
+    connection_id: Uuid,
+    generation: u64,
+    engine: &LiveEngine,
+) {
+    if let Ok(mut active) = active_query.lock() {
+        *active = Some(ActiveQuery {
+            connection_id,
+            generation,
+            cancellation: engine.cancellation_handle(),
+        });
+    }
+}
+
+fn clear_active_query(
+    active_query: &Mutex<Option<ActiveQuery>>,
+    connection_id: Uuid,
+    generation: u64,
+) {
+    if let Ok(mut active) = active_query.lock()
+        && active.as_ref().is_some_and(|active| {
+            active.connection_id == connection_id && active.generation == generation
+        })
+    {
+        *active = None;
     }
 }
