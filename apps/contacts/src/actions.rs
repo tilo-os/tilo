@@ -77,6 +77,8 @@ pub enum ContactsOperation {
     Open { id: String },
     ImportVcard { path: Option<String> },
     ExportAllVcard { path: Option<String> },
+    KeepImportConflict { token: String },
+    ImportConflictAsNew { token: String },
 }
 
 #[cfg(test)]
@@ -120,7 +122,11 @@ fn contact_operation(
         // return. The app has no durable job handle or cancellation channel,
         // so advertising a cancellable background lifecycle would be false.
         ContactsOperation::ImportVcard { .. } => Some(spec),
-        ContactsOperation::ExportAllVcard { .. } => Some(spec.destructive()),
+        ContactsOperation::ExportAllVcard { .. }
+        | ContactsOperation::ImportConflictAsNew { .. } => Some(spec.destructive()),
+        ContactsOperation::KeepImportConflict { .. } => {
+            Some(spec.retry_policy(RetryPolicy::Idempotent))
+        }
     }
 }
 
@@ -166,7 +172,10 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
         } else {
             qos_actions::ConfirmationPolicy::None
         },
-        execution: ExecutionMode::Background { cancellable: true },
+        // The host picker has no cancellation API. The app can stop waiting
+        // for an outcome, but cannot close the native dialog or interrupt an
+        // already-started read/write; advertising cancellation would be false.
+        execution: ExecutionMode::Background { cancellable: false },
         result: ResultSpec::Job,
         ..ActionContract::default()
     })
@@ -848,6 +857,17 @@ pub struct ContactsResourceCtx {
     pub contacts: Vec<Contact>,
     pub import_busy: bool,
     pub export_busy: bool,
+    pub import_conflicts: Vec<ImportConflictResource>,
+}
+
+/// A bounded, pending external collision. Kept separately from contact data:
+/// an untrusted file must never enter the collaborative document before an
+/// explicit resolution.
+#[derive(Debug, Clone)]
+pub struct ImportConflictResource {
+    pub token: String,
+    pub incoming_name: String,
+    pub existing_name: String,
 }
 
 fn ordered_contacts(contacts: &[Contact]) -> Vec<&Contact> {
@@ -962,6 +982,37 @@ fn book_resource(ctx: &ContactsResourceCtx) -> Resource {
         },
     ));
 
+    for conflict in &ctx.import_conflicts {
+        let mut child = Resource::new(
+            format!("contacts.import-conflict:{}", conflict.token),
+            "contacts.import-conflict",
+            format!("Import review: {}", conflict.incoming_name),
+        );
+        let keep = ContactsOperation::KeepImportConflict {
+            token: conflict.token.clone(),
+        };
+        let import_as_new = ContactsOperation::ImportConflictAsNew {
+            token: conflict.token.clone(),
+        };
+        if let Some(spec) = contact_operation(
+            "keep-existing",
+            "Keep existing contact",
+            OperationKind::Effect,
+            &keep,
+        ) {
+            child = child.with_action(spec);
+        }
+        if let Some(spec) = contact_operation(
+            "import-as-new",
+            "Import as new contact",
+            OperationKind::Effect,
+            &import_as_new,
+        ) {
+            child = child.with_action(spec);
+        }
+        root = root.with_child(child);
+    }
+
     root
 }
 
@@ -1065,6 +1116,41 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
 pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
     if id == "contacts.book" {
         return Some(book_resource(ctx));
+    }
+    if let Some(token) = id.strip_prefix("contacts.import-conflict:")
+        && let Some(conflict) = ctx
+            .import_conflicts
+            .iter()
+            .find(|conflict| conflict.token == token)
+    {
+        let mut root = Resource::new(
+            id,
+            "contacts.import-conflict",
+            format!("Import review: {}", conflict.incoming_name),
+        );
+        let keep = ContactsOperation::KeepImportConflict {
+            token: conflict.token.clone(),
+        };
+        let import_as_new = ContactsOperation::ImportConflictAsNew {
+            token: conflict.token.clone(),
+        };
+        if let Some(spec) = contact_operation(
+            "keep-existing",
+            "Keep existing contact",
+            OperationKind::Effect,
+            &keep,
+        ) {
+            root = root.with_action(spec);
+        }
+        if let Some(spec) = contact_operation(
+            "import-as-new",
+            "Import as new contact",
+            OperationKind::Effect,
+            &import_as_new,
+        ) {
+            root = root.with_action(spec);
+        }
+        return Some(root);
     }
     let raw_id = id.strip_prefix("contacts.contact:")?;
     let contact_id = raw_id.parse::<ContactId>().ok()?;
@@ -1187,6 +1273,7 @@ mod tests {
             contacts: contacts.clone(),
             import_busy: false,
             export_busy: false,
+            import_conflicts: Vec::new(),
         };
 
         let page = provide_resources(&ctx, &AutoCommit::new());
@@ -1203,6 +1290,43 @@ mod tests {
         assert!(
             resolve_resource(&ctx, &contact_resource_id(Uuid::new_v4())).is_none(),
             "a stale contact id is refused rather than resurrected"
+        );
+    }
+
+    #[test]
+    fn imported_uid_review_actions_are_addressable_and_guard_new_contact_creation() {
+        let token = Uuid::new_v4().to_string();
+        let ctx = ContactsResourceCtx {
+            contacts: Vec::new(),
+            import_busy: false,
+            export_busy: false,
+            import_conflicts: vec![ImportConflictResource {
+                token: token.clone(),
+                incoming_name: "Incoming Ada".into(),
+                existing_name: "Existing Ada".into(),
+            }],
+        };
+        let resource_id = format!("contacts.import-conflict:{token}");
+        let review = resolve_resource(&ctx, &resource_id).expect("pending review resolves");
+        assert!(
+            review
+                .actions
+                .iter()
+                .any(|action| action.id == "keep-existing")
+        );
+        let import_as_new = review
+            .actions
+            .iter()
+            .find(|action| action.id == "import-as-new")
+            .expect("review exposes import-as-new");
+        assert_eq!(
+            import_as_new.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm,
+            "adding an untrusted collision as a new contact needs confirmation"
+        );
+        assert_eq!(
+            import_as_new.contract.risk,
+            qos_actions::RiskLevel::Destructive
         );
     }
 
