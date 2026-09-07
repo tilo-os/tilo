@@ -56,6 +56,7 @@ qos-actions = { path = "../../crates/collab/actions" }
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 qos-reference = { path = "../../crates/collab/reference" }
+qdoc = { path = "../../crates/doc/qdoc" }
 # The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.

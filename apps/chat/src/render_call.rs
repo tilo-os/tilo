@@ -280,6 +280,18 @@ impl ChatApp {
             );
         }
         Self::name_plate(scene, tf, tr, theme, v, "You", self.call.muted);
+        if let Some(error) = &self.media_error {
+            label(
+                scene,
+                tr,
+                tf,
+                error,
+                10.0,
+                c.semantic.danger,
+                v.x0 + 10.0,
+                v.y0 + 12.0,
+            );
+        }
 
         let parts = self.call_participants();
         let others = parts.len().saturating_sub(1);
