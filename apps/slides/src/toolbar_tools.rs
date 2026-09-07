@@ -43,7 +43,6 @@ impl ToolbarTools {
         self.open = open;
     }
 
-    #[cfg(test)]
     pub(super) fn is_open(&self) -> bool {
         self.open
     }
