@@ -47,7 +47,7 @@ use crate::shell::collaborators_overlay::{
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
 pub use crate::shell::file_picker_overlay::file_picker_rect;
-use crate::shell::notification::NotificationStack;
+use crate::shell::notification::{Notification, NotificationSeverity, NotificationStack};
 use crate::shell::peer_sync_overlay::{
     EventOutcome as PeerSyncEventOutcome, InviteContext, PeerSyncOverlay,
 };
@@ -76,6 +76,21 @@ enum HistoryTargetAddress {
     File(PathBuf),
     Uri(String),
     App,
+}
+
+fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
+    let seconds = now
+        .saturating_duration_since(notification.created_at)
+        .as_secs();
+    ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX))
+}
+
+fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
+    match severity {
+        NotificationSeverity::Info => "Information",
+        NotificationSeverity::Warning => "Warning",
+        NotificationSeverity::Error => "Error",
+    }
 }
 
 /// Resolve only addresses the action explicitly declared. Semantic resource
@@ -11444,10 +11459,19 @@ impl Widget for ShellOverlayHost {
                                         .as_deref()
                                         .or(notification.app_id.as_deref())
                                         .unwrap_or("System");
+                                    let severity =
+                                        notification_severity_label(notification.severity);
+                                    let relative_time = notification_history_relative_time(
+                                        notification,
+                                        Instant::now(),
+                                    );
                                     let item_description = if notification.body.is_empty() {
-                                        format!("From {source}")
+                                        format!("{severity}. From {source}. {relative_time}")
                                     } else {
-                                        format!("From {source}. {}", notification.body)
+                                        format!(
+                                            "{severity}. From {source}. {relative_time}. {}",
+                                            notification.body
+                                        )
                                     };
                                     AccessNode::new(Role::ListItem)
                                         .with_name(notification.title.clone())
@@ -15403,6 +15427,7 @@ impl ShellOverlayHost {
         );
 
         const ROW_HEIGHT: f64 = 70.0;
+        let now = Instant::now();
         for (index, notification) in history
             .iter()
             .rev()
@@ -15419,18 +15444,41 @@ impl ShellOverlayHost {
                 None,
                 &RoundedRect::from_rect(row, 12.0),
             );
+            // Keep severity scannable without taking another line in the
+            // fixed-height responsive card. The accessibility description
+            // also names it, so colour is not the only signal.
+            let severity_rail = Rect::new(row.x0, row.y0 + 8.0, row.x0 + 3.0, row.y1 - 8.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                notification.severity.color(theme),
+                None,
+                &RoundedRect::from_rect(severity_rail, 1.5),
+            );
             let source = notification
                 .app_name
                 .as_deref()
                 .or(notification.app_id.as_deref())
                 .unwrap_or("System");
+            let relative_time = notification_history_relative_time(notification, now);
+            let (time_width, _) =
+                text_renderer.measure(&relative_time, theme.tokens.typography.scale.xs, None);
             text_renderer.draw_text(
                 scene,
                 source,
                 theme.tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((row.x0 + 12.0, row.y0 + 7.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 24.0)),
+                Some(f64_to_f32_lossy(row.width() - f64::from(time_width) - 32.0)),
+            );
+            text_renderer.draw_text(
+                scene,
+                &relative_time,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform
+                    .pre_translate((row.x1 - 12.0 - f64::from(time_width), row.y0 + 7.0).into()),
+                None,
             );
             text_renderer.draw_text_weighted(
                 scene,
@@ -19265,6 +19313,23 @@ mod overlay_event_absorb_tests {
     }
 
     #[test]
+    fn notification_history_labels_age_and_severity_concisely() {
+        let now = Instant::now();
+        let notification = crate::shell::notification::Notification::new("Backup", "Failed")
+            .with_severity(crate::shell::notification::NotificationSeverity::Warning)
+            .with_created_at(now - Duration::from_secs(3 * 60));
+
+        assert_eq!(
+            notification_history_relative_time(&notification, now),
+            "3 min ago"
+        );
+        assert_eq!(
+            notification_severity_label(notification.severity),
+            "Warning"
+        );
+    }
+
+    #[test]
     fn notification_history_wheel_reaches_older_retained_errors_on_compact_layouts() {
         for (vw, vh) in [(960.0, 540.0), (1280.0, 720.0)] {
             let mut h = build_harness_sized(vw, vh);
@@ -19337,6 +19402,15 @@ mod overlay_event_absorb_tests {
             retained.children.len(),
             h.host.qs_notification_visible_rows().min(total),
             "screen readers receive every currently visible title/body card"
+        );
+        assert!(
+            retained.children.iter().all(|item| {
+                item.description.as_deref().is_some_and(|description| {
+                    description.starts_with("Error. From System. just now.")
+                        && description.contains("Detailed recovery guidance")
+                })
+            }),
+            "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows"
         );
     }
 
