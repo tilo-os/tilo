@@ -283,7 +283,26 @@ impl<T> LatestRequest<T> {
     }
 
     /// Start a request, invalidating any older completion capability.
-    pub fn begin(&mut self) -> Option<RequestCompletion<T>> {
+    ///
+    /// After the generation namespace is exhausted this returns a permanently
+    /// stale capability which cannot publish. This preserves the original
+    /// infallible API without aliasing a live generation; long-lived hosts that
+    /// need to observe exhaustion can use [`Self::try_begin`].
+    pub fn begin(&mut self) -> RequestCompletion<T> {
+        match self.try_begin() {
+            Some(completion) => completion,
+            None => RequestCompletion {
+                sender: self.sender.clone(),
+                generation: Arc::clone(&self.generation),
+                request_generation: 0,
+                wake: WakeHandle::new(),
+            },
+        }
+    }
+
+    /// Fallible form of [`Self::begin`]. Returns `None` without changing state
+    /// once no unique completion generation remains.
+    pub fn try_begin(&mut self) -> Option<RequestCompletion<T>> {
         // Reserve `u64::MAX` as a terminal invalidation marker. It is never
         // handed to a completion capability, so an exhausted counter cannot
         // make an old completion current again.
@@ -305,9 +324,16 @@ impl<T> LatestRequest<T> {
 
     /// Invalidate outstanding work without publishing a replacement.
     ///
-    /// Returns `false` only after the terminal invalidation marker has already
-    /// been reached. A failed cancellation leaves the pending state untouched.
-    pub fn cancel(&mut self) -> bool {
+    /// At the terminal invalidation marker this is a safe no-op because no
+    /// completion capability is ever issued for that reserved generation. Use
+    /// [`Self::try_cancel`] when the caller needs to observe exhaustion.
+    pub fn cancel(&mut self) {
+        let _ = self.try_cancel();
+    }
+
+    /// Fallible form of [`Self::cancel`]. Returns `false` only after the
+    /// terminal invalidation marker has already been reached.
+    pub fn try_cancel(&mut self) -> bool {
         if self
             .generation
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
@@ -402,7 +428,28 @@ impl<T> LatestTask<T> {
 
     /// Begin a new run and return its background-safe completion capability.
     /// Any earlier capability becomes stale before `running` is published.
-    pub fn begin(&self, running: T) -> Option<TaskCompletion<T>>
+    ///
+    /// After the generation namespace is exhausted this returns a permanently
+    /// stale capability which cannot publish. This preserves the original
+    /// infallible API without reissuing an aliased generation; use
+    /// [`Self::try_begin`] when exhaustion must be handled explicitly.
+    pub fn begin(&self, running: T) -> TaskCompletion<T>
+    where
+        T: Send + Sync + 'static,
+    {
+        match self.try_begin(running) {
+            Some(completion) => completion,
+            None => TaskCompletion {
+                writer: self.state.writer(),
+                generation: Arc::clone(&self.generation),
+                run: 0,
+            },
+        }
+    }
+
+    /// Fallible form of [`Self::begin`]. Returns `None` without publishing the
+    /// running state once no unique generation remains.
+    pub fn try_begin(&self, running: T) -> Option<TaskCompletion<T>>
     where
         T: Send + Sync + 'static,
     {
@@ -427,7 +474,12 @@ impl<T> LatestTask<T> {
 
     /// Invalidate the current run and publish its replacement state. A worker
     /// that finishes afterward cannot overwrite this value.
-    pub fn cancel(&self, cancelled: T) -> bool {
+    pub fn cancel(&self, cancelled: T) {
+        let _ = self.try_cancel(cancelled);
+    }
+
+    /// Fallible form of [`Self::cancel`].
+    pub fn try_cancel(&self, cancelled: T) -> bool {
         let mut generation = self
             .generation
             .lock()
@@ -630,8 +682,8 @@ mod tests {
     fn latest_task_rejects_an_older_completion() {
         let task = LatestTask::new(0);
         let state = task.state();
-        let first = task.begin(1).unwrap();
-        let second = task.begin(2).unwrap();
+        let first = task.begin(1);
+        let second = task.begin(2);
 
         assert!(!first.is_current());
         assert!(second.is_current());
@@ -645,9 +697,9 @@ mod tests {
     fn latest_task_cancel_prevents_a_late_worker_overwrite() {
         let task = LatestTask::new("idle");
         let state = task.state();
-        let completion = task.begin("loading").unwrap();
+        let completion = task.begin("loading");
 
-        assert!(task.cancel("cancelled"));
+        assert!(task.try_cancel("cancelled"));
 
         assert!(!completion.is_current());
         assert!(!completion.complete("late result"));
@@ -657,8 +709,8 @@ mod tests {
     #[test]
     fn latest_request_drains_only_the_current_completion() {
         let mut request = LatestRequest::new();
-        let first = request.begin().unwrap();
-        let second = request.begin().unwrap();
+        let first = request.begin();
+        let second = request.begin();
 
         assert!(!first.is_current());
         assert!(second.is_current());
@@ -673,9 +725,9 @@ mod tests {
     #[test]
     fn latest_request_cancel_rejects_late_work() {
         let mut request = LatestRequest::new();
-        let completion = request.begin().unwrap();
+        let completion = request.begin();
 
-        assert!(request.cancel());
+        assert!(request.try_cancel());
 
         assert!(!completion.is_current());
         assert!(!completion.complete(42));
@@ -704,15 +756,18 @@ mod tests {
         let mut request = LatestRequest::<()>::new();
         request.generation.store(u64::MAX - 1, Ordering::Release);
 
-        assert!(request.begin().is_none());
+        assert!(request.try_begin().is_none());
         assert!(!request.is_pending());
         assert!(
-            request.cancel(),
+            request.try_cancel(),
             "the terminal invalidation is still available"
         );
         assert_eq!(request.generation.load(Ordering::Acquire), u64::MAX);
-        assert!(!request.cancel());
-        assert!(request.begin().is_none());
+        assert!(!request.try_cancel());
+        assert!(request.try_begin().is_none());
+        let stale = request.begin();
+        assert!(!stale.is_current());
+        assert!(!stale.complete(()));
     }
 
     #[test]
@@ -721,11 +776,15 @@ mod tests {
         let state = task.state();
         *task.generation.lock().unwrap() = u64::MAX - 1;
 
-        assert!(task.begin("running").is_none());
+        assert!(task.try_begin("running").is_none());
         assert_eq!(state.get(), "idle");
-        assert!(task.cancel("cancelled"));
+        assert!(task.try_cancel("cancelled"));
         assert_eq!(state.get(), "cancelled");
-        assert!(!task.cancel("later"));
+        assert!(!task.try_cancel("later"));
+        assert_eq!(state.get(), "cancelled");
+        let inert_completion = task.begin("never published");
+        assert!(!inert_completion.is_current());
+        assert!(!inert_completion.complete("late"));
         assert_eq!(state.get(), "cancelled");
     }
 }
