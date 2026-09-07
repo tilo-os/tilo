@@ -43,10 +43,12 @@ pub mod app;
 pub mod doc;
 pub mod frame;
 pub mod library;
+pub mod media;
 pub mod model;
 pub mod paint;
 pub mod scan;
 pub mod video;
+pub mod worker;
 
 #[cfg(feature = "live-capture")]
 pub mod capture;
