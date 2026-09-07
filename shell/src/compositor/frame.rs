@@ -235,6 +235,10 @@ pub struct FrameBuilder {
     /// are real client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
     floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
+    /// XDG and input-method transient surfaces.  These are intentionally
+    /// outside the workspace tree: they follow parent geometry and paint
+    /// above the app that owns them without becoming a window/tab.
+    transient_overlays: Vec<(u64, ForeignSurfaceWidget)>,
     /// Pixel-exact final app frames shown only while a newly authorised
     /// secondary surface is preparing its first buffer.
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
@@ -365,6 +369,7 @@ impl FrameBuilder {
             peer_presence: None,
             osk_overlay: None,
             floating_overlays: Vec::new(),
+            transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
             osk_active: false,
@@ -792,6 +797,17 @@ impl FrameBuilder {
                 );
             }
         }
+        for (_, surface) in &mut self.transient_overlays {
+            if surface.is_mapped() {
+                surface.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut self.text_renderer,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
+        }
         if self.osk_active
             && let Some(keyboard) = self.osk_overlay.as_mut()
             && keyboard.is_mapped()
@@ -1067,6 +1083,10 @@ impl FrameBuilder {
         self.host.needs_animation_frame()
             || self
                 .floating_overlays
+                .iter()
+                .any(|(_, surface)| surface.needs_animation_frame())
+            || self
+                .transient_overlays
                 .iter()
                 .any(|(_, surface)| surface.needs_animation_frame())
             || self
@@ -1353,6 +1373,30 @@ impl FrameBuilder {
         }
     }
 
+    /// Reconcile popup/candidate surfaces in compositor z-order.  Widgets are
+    /// retained by id, preserving their mapped frame between reactive
+    /// position changes while a parent moves across outputs.
+    pub fn set_transient_surfaces(&mut self, surfaces: &[(u64, Rect)]) {
+        self.transient_overlays
+            .retain(|(surface_id, _)| surfaces.iter().any(|(id, _)| id == surface_id));
+        for (surface_id, rect) in surfaces {
+            let index = self
+                .transient_overlays
+                .iter()
+                .position(|(id, _)| id == surface_id)
+                .unwrap_or_else(|| {
+                    self.transient_overlays.push((
+                        *surface_id,
+                        ForeignSurfaceWidget::new_floating(*surface_id, "dev.qos.transient".into()),
+                    ));
+                    self.transient_overlays.len().saturating_sub(1)
+                });
+            if let Some((_, surface)) = self.transient_overlays.get_mut(index) {
+                surface.place_floating(*rect);
+            }
+        }
+    }
+
     /// Reconcile frozen transfer frames from both capability-authorised
     /// (window not created yet) and mapped-but-bufferless native surfaces.
     /// Existing widgets retain their image allocation while only geometry
@@ -1426,6 +1470,25 @@ impl FrameBuilder {
                 let rect = surface.get_rect();
                 (surface.is_mapped() && rect.contains(point)).then_some((*surface_id, rect))
             })
+    }
+
+    /// Top-most mapped transient at `point`, above normal floating windows.
+    pub fn transient_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
+        let point = Point::new(point.0, point.1);
+        self.transient_overlays
+            .iter()
+            .rev()
+            .find_map(|(surface_id, surface)| {
+                let rect = surface.get_rect();
+                (surface.is_mapped() && rect.contains(point)).then_some((*surface_id, rect))
+            })
+    }
+
+    pub fn transient_surface_rect(&self, surface_id: u64) -> Option<Rect> {
+        self.transient_overlays
+            .iter()
+            .find(|(id, surface)| *id == surface_id && surface.is_mapped())
+            .map(|(_, surface)| surface.get_rect())
     }
 
     pub fn floating_surface_rect(&self, surface_id: u64) -> Option<Rect> {

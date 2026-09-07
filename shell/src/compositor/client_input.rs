@@ -161,6 +161,13 @@ impl ClientInput {
             .push(PendingAdoption { surface_id, app_id });
     }
 
+    /// Register a popup/candidate surface for seat routing without placing it
+    /// in the workspace.  Transients are painted above an existing app, never
+    /// become tabs in their own right.
+    pub fn register_transient(&mut self, surface_id: u64, surface: WlSurface) {
+        self.surfaces.insert(surface_id, surface);
+    }
+
     /// Drop any queued adoption/removal/rename bookkeeping — the rendered
     /// tab tree is mirrored by an idempotent diff of the protocol tree
     /// (`foreign::reconcile_foreign_tabs`) that doesn't consume these queues, so the run loop drains them each tick to keep them bounded.
@@ -176,6 +183,16 @@ impl ClientInput {
         self.pending_adoptions
             .retain(|p| p.surface_id != surface_id);
         self.pending_removals.push(surface_id);
+        self.clear_surface_input_state(surface_id);
+    }
+
+    /// Remove a transient without queuing a workspace-tab removal.
+    pub fn unregister_transient(&mut self, surface_id: u64) {
+        self.surfaces.remove(&surface_id);
+        self.clear_surface_input_state(surface_id);
+    }
+
+    fn clear_surface_input_state(&mut self, surface_id: u64) {
         if self.keyboard_focus == Some(surface_id) {
             self.keyboard_focus = None;
         }
@@ -1160,6 +1177,11 @@ pub fn touch_target(
     {
         return Some((surface_id, (rect.x0, rect.y0)));
     }
+    if let Some((surface_id, rect)) = fb.transient_surface_hit((*x, *y))
+        && state.client_input.surfaces.contains_key(&surface_id)
+    {
+        return Some((surface_id, (rect.x0, rect.y0)));
+    }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
@@ -1510,6 +1532,18 @@ fn route_mouse_input(
         if state.client_input.buttons_down == 0 {
             // Latch the implicit grab from a fresh hit test, so a drag that leaves the tile stays with its owner.
             let hit = current_pointer_target(state, fb, captured);
+            // An xdg popup grab is a protocol modal boundary: the first
+            // click outside its transient chain dismisses it before that
+            // click is offered to the underlying tile/chrome.
+            if state.dismiss_popup_grab_outside(hit.map(|hit| hit.surface_id)) {
+                // `popup_done` is asynchronous from the client's destroy.
+                // Clear the old popup pointer focus and consume this press so
+                // it cannot activate the surface behind the modal popup.
+                let global = state.client_input.cursor();
+                state.forward_client_pointer_motion(global, None);
+                state.client_input.grab = None;
+                return true;
+            }
             deliver_pointer(state, hit);
             state.client_input.grab = Some(match hit {
                 Some(h) => PointerOwner::Client(h.surface_id),
@@ -1532,6 +1566,7 @@ fn route_mouse_input(
                 if !state.is_output_presentation_surface(h.surface_id)
                     && state.osk_surface != Some(h.surface_id)
                     && !state.is_floating_toplevel(h.surface_id)
+                    && !state.is_transient_surface(h.surface_id)
                 {
                     raise_group(fb, h.strip, h.group);
                     sync_keyboard_focus(state, fb);
@@ -1792,6 +1827,15 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                     rect,
                 });
             }
+            if state.is_transient_surface(surface_id) {
+                let rect = fb.transient_surface_rect(surface_id)?;
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
             let (strip, group) = *state.client_input.placements.get(&surface_id)?;
             let rect = fb.host().active_tile_rect(group)?;
             Some(TileHit {
@@ -1810,6 +1854,16 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
             }
             if let Some((surface_id, rect)) = fb.osk_surface_hit(state.client_input.cursor())
                 && state.osk_surface == Some(surface_id)
+                && state.client_input.surfaces.contains_key(&surface_id)
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
+            if let Some((surface_id, rect)) = fb.transient_surface_hit(state.client_input.cursor())
                 && state.client_input.surfaces.contains_key(&surface_id)
             {
                 return Some(TileHit {
