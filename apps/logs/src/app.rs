@@ -47,9 +47,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
-use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Role};
+use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{OperationKind, Resource};
+use ui::qos_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
@@ -89,6 +90,7 @@ fn force_immediate_poll_at() -> Instant {
 enum Popup {
     Unit,
     Boot,
+    Actions,
 }
 
 /// Computed screen rectangles for one frame. Built from `self.rect` plus
@@ -101,6 +103,8 @@ struct Regions {
     unit_trigger: Rect,
     boot_trigger: Rect,
     live_pill: Rect,
+    refresh_btn: Rect,
+    overflow_trigger: Rect,
     clear_btn: Rect,
     chips: Vec<Rect>,
     list_header: Rect,
@@ -153,6 +157,21 @@ pub struct LogsApp {
     /// peer resolve the same journal record from its own cache.
     selected_entry: Option<String>,
     live_tail: bool,
+    /// A safe classification of the most recent local journal read failure.
+    /// Never holds `journalctl` stderr or raw journal content.
+    source_error: Option<crate::journal::JournalLoadError>,
+    /// A short local status while a resource-routed refresh is being admitted
+    /// or completed. Existing rows stay visible; an empty source gets an
+    /// honest loading state rather than masquerading as empty.
+    source_loading: bool,
+    /// Host Save portal receiver plus the immutable filtered snapshot that
+    /// was current when export was requested. Neither the chosen path nor log
+    /// content is published through resources or collaboration state.
+    export_rx: Option<PortalChannel>,
+    pending_export: Option<Vec<LogEntry>>,
+    /// Concise local outcome for the portal write, announced through an a11y
+    /// live region. It never includes a chosen path or log contents.
+    export_status: Option<String>,
 
     // ---- ephemeral UI state ----
     rect: Rect,
@@ -165,6 +184,13 @@ pub struct LogsApp {
     /// Shared CRDT-bound field for the collaborative search query. The filter
     /// bar keeps its app-specific layout; text editing is toolkit-owned.
     search_input: TextInput,
+    /// Pointer/keyboard controls publish inert resource addresses; the host
+    /// re-resolves current availability and permissions before effects run.
+    pending_control_invocation: Option<ControlInvocation>,
+    /// One-shot deterministic view seeding used only by the offscreen shot
+    /// factory. Applying it through `LogsDoc` keeps the captured UI on the
+    /// same collaborative state path as a real filter.
+    shot_filter: Option<Filter>,
     dirty: bool,
 
     // ---- responsiveness (master-detail push on narrow windows) ----
@@ -192,6 +218,11 @@ impl LogsApp {
             sel_raw: -1,
             selected_entry: None,
             live_tail: false,
+            source_error: None,
+            source_loading: false,
+            export_rx: None,
+            pending_export: None,
+            export_status: None,
             rect: Rect::ZERO,
             node: None,
             scroll: 0.0,
@@ -205,6 +236,8 @@ impl LogsApp {
                 .on_action(actions::search_binding())
                 .with_placeholder("Search messages, units…")
                 .with_plain_chrome(),
+            pending_control_invocation: None,
+            shot_filter: None,
             dirty: true,
             push: PushNav::default(),
             allow_live,
@@ -214,12 +247,47 @@ impl LogsApp {
         app
     }
 
+    /// Construct a live-capable viewer whose initial read failed. Keeping the
+    /// capability enabled means Refresh remains available as a recovery path;
+    /// the error itself is safe, local-only presentation state.
+    pub fn new_with_source_error(
+        entries: Vec<LogEntry>,
+        allow_live: bool,
+        error: crate::journal::JournalLoadError,
+    ) -> Self {
+        let mut app = Self::new(entries, allow_live);
+        app.source_error = Some(error);
+        app
+    }
+
     /// Deterministically snap the narrow single-pane push flow to the
     /// detail pane (with its Back affordance) for `--shots`, skipping the
     /// eased slide so a headless frame captures a settled pane. A no-op
     /// effect on wide windows, where both panes are docked anyway.
     pub fn shots_show_detail(&mut self) {
         self.push.snap(Pane::Detail);
+        self.dirty = true;
+    }
+
+    /// Seed an errors-and-worse state for deterministic visual regression
+    /// captures. The value is written into the document on the first sync.
+    pub fn shots_filter_errors(&mut self) {
+        self.shot_filter = Some(Filter {
+            min_priority: Priority::Err.level(),
+            ..Filter::default()
+        });
+        self.dirty = true;
+    }
+
+    /// Deterministically capture the empty-source loading state.
+    pub fn shots_show_loading(&mut self) {
+        self.source_loading = true;
+        self.dirty = true;
+    }
+
+    /// Deterministically open the compact actions menu for phone captures.
+    pub fn shots_show_actions(&mut self) {
+        self.popup = Some(Popup::Actions);
         self.dirty = true;
     }
 
@@ -364,19 +432,105 @@ impl LogsApp {
         clippy::needless_pass_by_value,
         reason = "Decoded operations are consumed exactly once at the app boundary."
     )]
-    fn perform_effect(&mut self, operation: actions::LogsOperation) {
+    fn perform_effect(&mut self, operation: actions::LogsOperation) -> Result<(), String> {
         match operation {
             actions::LogsOperation::Refresh => {
+                self.source_loading = false;
                 if self.allow_live {
-                    self.entries = crate::journal::load_live(2000);
-                    self.rebuild_facets();
+                    match crate::journal::load_live(2000) {
+                        Ok(entries) => {
+                            self.entries = entries;
+                            self.source_error = None;
+                            self.rebuild_facets();
+                        }
+                        Err(error) => self.source_error = Some(error),
+                    }
                 }
             }
             actions::LogsOperation::SetLiveTail { enabled } => {
                 self.live_tail = enabled;
                 self.last_poll = force_immediate_poll_at();
             }
+            actions::LogsOperation::ExportFiltered => self.request_export()?,
         }
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Open the host's Save dialog with an immutable filtered snapshot. The
+    /// portal is the only source of the destination path, so neither UI nor
+    /// agents can point the strict sandbox at an arbitrary filesystem path.
+    fn request_export(&mut self) -> Result<(), String> {
+        if self.export_rx.is_some() {
+            return Err("an export dialog is already open".into());
+        }
+        let entries = self
+            .entries
+            .iter()
+            .filter(|entry| self.filter.passes(entry))
+            .cloned()
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Err("there are no filtered entries to export".into());
+        }
+        self.pending_export = Some(entries);
+        self.export_rx = Some(
+            PickRequest::save("Export filtered logs", "Export", "journal-filtered.jsonl")
+                .thread_name("logs-portal-export")
+                .filter(
+                    FileFilter::new("JSON Lines")
+                        .mimetype("application/x-ndjson")
+                        .glob("*.jsonl"),
+                )
+                .send(),
+        );
+        Ok(())
+    }
+
+    /// Complete a non-blocking host Save portal request. No selected path is
+    /// retained after the write, and all user-facing errors stay concise.
+    fn drain_export_portal(&mut self) {
+        let Some(rx) = &self.export_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(PortalOutcome::Opened(path)) => {
+                self.export_rx = None;
+                if let Some(entries) = self.pending_export.take() {
+                    let count = entries.len();
+                    let refs = entries.iter().collect::<Vec<_>>();
+                    self.export_status = match crate::journal::export_json_lines(&refs, &path) {
+                        Ok(()) => Some(format!("Exported {count} log entries.")),
+                        Err(_) => Some("Export failed.".to_string()),
+                    };
+                }
+                self.dirty = true;
+            }
+            Ok(PortalOutcome::Cancelled) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.export_rx = None;
+                self.pending_export = None;
+                self.dirty = true;
+            }
+            Ok(PortalOutcome::Failed(_)) => {
+                self.export_rx = None;
+                self.pending_export = None;
+                self.export_status = Some("Export unavailable.".to_string());
+                self.dirty = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Queue a root effect through the published resource tree. All visible
+    /// local controls use this instead of calling effects directly.
+    fn request_journal_operation(&mut self, action: &str) {
+        if action == "refresh" {
+            self.source_loading = true;
+        }
+        self.pending_control_invocation = Some(ControlInvocation {
+            address: ActionAddress::new(actions::JOURNAL_RESOURCE_ID, action),
+            arguments: serde_json::Map::new(),
+        });
         self.dirty = true;
     }
 
@@ -424,14 +578,10 @@ impl LogsApp {
         let r = self.rect;
         let (x0, y0, w, h) = (r.x0, r.y0, r.width(), r.height());
 
-        // Headless/offline Logs has no live operation to expose; don't waste a
-        // blank mobile header above the filters. A live journal keeps its
-        // compact status and live-tail control there.
-        let header_h = if PushNav::is_narrow(w) && !self.allow_live {
-            0.0
-        } else {
-            HEADER_H
-        };
+        // The compact header remains present on phone widths even in offline
+        // shots: it owns the discoverable Actions menu (Refresh, Follow /
+        // Pause, Export), which must not disappear with desktop chrome.
+        let header_h = HEADER_H;
         let header = Rect::new(x0, y0, x0 + w, y0 + header_h);
         let filter_h = if Self::filters_wrap(w) {
             128.0
@@ -445,7 +595,8 @@ impl LogsApp {
         let content_bottom = y0 + h;
 
         let (search, unit_trigger, boot_trigger, chips) = Self::filter_bar_regions(x0, w, filter);
-        let (live_pill, clear_btn) = self.header_controls(x0, w, header);
+        let (live_pill, refresh_btn, overflow_trigger, clear_btn) =
+            self.header_controls(x0, w, header);
 
         // Content area between the filter bar and the window bottom.
         let cx0 = x0 + PAD;
@@ -456,7 +607,7 @@ impl LogsApp {
 
         let (list_header, list_body, detail, back_btn, narrow) =
             self.content_split(w, cx0, cy0, cx1, cy1, gap);
-        let dropdown = self.dropdown_regions(unit_trigger, boot_trigger);
+        let dropdown = self.dropdown_regions(unit_trigger, boot_trigger, overflow_trigger);
 
         Regions {
             header,
@@ -465,6 +616,8 @@ impl LogsApp {
             unit_trigger,
             boot_trigger,
             live_pill,
+            refresh_btn,
+            overflow_trigger,
             clear_btn,
             chips,
             list_header,
@@ -536,17 +689,25 @@ impl LogsApp {
     /// live pill is the rightmost control; the "Clear filters" button sits
     /// just left of it and is only laid out (non-zero) while a filter is
     /// active.
-    fn header_controls(&self, x0: f64, w: f64, header: Rect) -> (Rect, Rect) {
+    fn header_controls(&self, x0: f64, w: f64, header: Rect) -> (Rect, Rect, Rect, Rect) {
+        if PushNav::is_narrow(w) {
+            let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
+            // Keep the menu at least as wide as its three action labels, so
+            // the overlay remains inside a 390px phone viewport.
+            let overflow = Rect::new(x0 + w - PAD - 178.0, hy, x0 + w - PAD, hy + 30.0);
+            return (Rect::ZERO, Rect::ZERO, overflow, Rect::ZERO);
+        }
         let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
         let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
+        let refresh_btn = Rect::new(live_pill.x0 - 40.0, hy, live_pill.x0 - 6.0, hy + 30.0);
         let clear_btn = if self.filter.is_clear() {
             Rect::ZERO
         } else {
             let cy = header.y0 + (HEADER_H - 26.0) / 2.0;
-            let x1 = live_pill.x0 - 12.0;
+            let x1 = refresh_btn.x0 - 12.0;
             Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
         };
-        (live_pill, clear_btn)
+        (live_pill, refresh_btn, Rect::ZERO, clear_btn)
     }
 
     /// `regions()`'s responsive split: side-by-side when wide, single-pane
@@ -603,6 +764,7 @@ impl LogsApp {
         &self,
         unit_trigger: Rect,
         boot_trigger: Rect,
+        overflow_trigger: Rect,
     ) -> Vec<(Rect, String, String)> {
         let mut dropdown = Vec::new();
         if let Some(p) = self.popup {
@@ -621,6 +783,24 @@ impl LogsApp {
                     }
                     (boot_trigger, v)
                 }
+                Popup::Actions => (
+                    overflow_trigger,
+                    vec![
+                        ("refresh".to_string(), "Refresh journal".to_string()),
+                        (
+                            "set-live-tail".to_string(),
+                            if self.live_tail {
+                                "Pause live tail".to_string()
+                            } else {
+                                "Follow live tail".to_string()
+                            },
+                        ),
+                        (
+                            "export-filtered-jsonl".to_string(),
+                            "Export filtered logs…".to_string(),
+                        ),
+                    ],
+                ),
             };
             // Cap the dropdown height; scroll isn't needed for our facet
             // counts but clamp defensively.
@@ -767,7 +947,9 @@ impl LogsApp {
         // button, and the live-tail pill).
         self.draw_header_clear_button(scene, t, tr, theme, reg);
         self.draw_header_counts(scene, t, tr, theme, reg);
+        self.draw_header_refresh_button(scene, t, tr, theme, reg);
         self.draw_header_live_pill(scene, t, tr, theme, reg);
+        self.draw_header_overflow_button(scene, t, tr, theme, reg);
     }
 
     /// `draw_header`'s Clear-filters button — right-aligned, just left of the
@@ -831,10 +1013,25 @@ impl LogsApp {
             self.entries.len()
         );
         let (cw, _) = tr.measure(&counts, theme.tokens.typography.scale.sm, None);
+        if reg.overflow_trigger.width() > 0.0 {
+            text_at(
+                tr,
+                scene,
+                t,
+                &counts,
+                theme.tokens.typography.scale.sm,
+                theme.text_dim,
+                reg.header.x0 + PAD,
+                vcenter(reg.header, theme.tokens.typography.scale.sm),
+                TextWeight::Medium,
+                false,
+            );
+            return;
+        }
         let counts_anchor = if reg.clear_btn.width() > 0.0 {
             reg.clear_btn.x0
         } else {
-            reg.live_pill.x0
+            reg.refresh_btn.x0
         };
         text_at(
             tr,
@@ -850,6 +1047,54 @@ impl LogsApp {
         );
     }
 
+    /// Compact Refresh control. It queues the exact root resource address,
+    /// rather than calling `journalctl` directly, so accessibility, agents,
+    /// history and policy all see the same recoverable effect.
+    fn draw_header_refresh_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        if reg.refresh_btn.width() <= 0.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let hovered = reg.refresh_btn.contains(self.cursor);
+        fill_round(
+            scene,
+            t,
+            reg.refresh_btn,
+            theme.tokens.radii.full,
+            if hovered { c.lift(0.72) } else { c.lift(0.35) },
+        );
+        stroke_round(
+            scene,
+            t,
+            reg.refresh_btn,
+            theme.tokens.radii.full,
+            c.border_standard,
+            1.0,
+        );
+        let label = "↻";
+        let sz = theme.tokens.typography.scale.base;
+        let (w, _) = tr.measure_weighted(label, sz, None, TextWeight::Semibold);
+        text_at(
+            tr,
+            scene,
+            t,
+            label,
+            sz,
+            theme.text_primary,
+            reg.refresh_btn.center().x - f64::from(w) / 2.0,
+            vcenter(reg.refresh_btn, sz) - 1.0,
+            TextWeight::Semibold,
+            false,
+        );
+    }
+
     /// `draw_header`'s live-tail pill.
     fn draw_header_live_pill(
         &self,
@@ -859,6 +1104,9 @@ impl LogsApp {
         theme: &Theme,
         reg: &Regions,
     ) {
+        if reg.live_pill.width() <= 0.0 {
+            return;
+        }
         let c = &theme.tokens.colors;
         let on = self.live_tail;
         let pill_bg = if on {
@@ -898,6 +1146,83 @@ impl LogsApp {
             vcenter(reg.live_pill, theme.tokens.typography.scale.sm),
             TextWeight::Semibold,
             false,
+        );
+    }
+
+    /// Phone header's compact, explicit entry point to the shared journal
+    /// operations. The menu items themselves are the canonical resource
+    /// addresses; this button merely reveals them.
+    fn draw_header_overflow_button(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        reg: &Regions,
+    ) {
+        if reg.overflow_trigger.width() <= 0.0 {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let open = self.popup == Some(Popup::Actions);
+        fill_round(
+            scene,
+            t,
+            reg.overflow_trigger,
+            theme.tokens.radii.full,
+            if open || reg.overflow_trigger.contains(self.cursor) {
+                c.lift(0.72)
+            } else {
+                c.lift(0.35)
+            },
+        );
+        stroke_round(
+            scene,
+            t,
+            reg.overflow_trigger,
+            theme.tokens.radii.full,
+            if open {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            if open { 1.5 } else { 1.0 },
+        );
+        let label = "Actions";
+        let sz = theme.tokens.typography.scale.sm;
+        text_at(
+            tr,
+            scene,
+            t,
+            label,
+            sz,
+            theme.text_primary,
+            reg.overflow_trigger.x0 + 12.0,
+            vcenter(reg.overflow_trigger, sz),
+            TextWeight::Semibold,
+            false,
+        );
+        let cx = reg.overflow_trigger.x1 - 16.0;
+        let cy = reg.overflow_trigger.center().y + 1.0;
+        line(
+            scene,
+            t,
+            cx - 4.0,
+            cy - 2.0,
+            cx,
+            cy + 2.0,
+            theme.text_dim,
+            1.4,
+        );
+        line(
+            scene,
+            t,
+            cx + 4.0,
+            cy - 2.0,
+            cx,
+            cy + 2.0,
+            theme.text_dim,
+            1.4,
         );
     }
 
@@ -1256,18 +1581,20 @@ impl LogsApp {
             TextWeight::Semibold,
             false,
         );
-        text_at(
-            tr,
-            scene,
-            t,
-            "UNIT",
-            hsz,
-            theme.text_dim,
-            cols.unit_x,
-            hy,
-            TextWeight::Semibold,
-            false,
-        );
+        if !cols.compact {
+            text_at(
+                tr,
+                scene,
+                t,
+                "UNIT",
+                hsz,
+                theme.text_dim,
+                cols.unit_x,
+                hy,
+                TextWeight::Semibold,
+                false,
+            );
+        }
         text_at(
             tr,
             scene,
@@ -1310,12 +1637,26 @@ impl LogsApp {
         let cx = reg.list_body.center().x;
         let cy = reg.list_body.center().y;
         if self.entries.is_empty() {
-            // Honest zero-state: no readable journal (never the sample).
-            let title = "No journal entries";
-            let subtitle = if self.allow_live {
-                "The systemd journal is empty or not readable from this session."
+            // Honest zero-state: no readable journal (never the sample). A
+            // classified read failure gets an explicit recovery instruction;
+            // raw command errors never reach this view.
+            let (title, subtitle) = if self.source_loading {
+                (
+                    "Refreshing journal",
+                    "Waiting for the local system journal…",
+                )
+            } else if let Some(error) = self.source_error {
+                ("Journal unavailable", error.message())
+            } else if self.allow_live {
+                (
+                    "No journal entries",
+                    "The systemd journal is empty for this session.",
+                )
             } else {
-                "Run where journald is available to view live system logs."
+                (
+                    "No journal entries",
+                    "Run where journald is available to view live system logs.",
+                )
             };
             let tsz = theme.tokens.typography.scale.lg;
             let (tw, _) = tr.measure(title, tsz, None);
@@ -1345,6 +1686,22 @@ impl LogsApp {
                 TextWeight::Regular,
                 false,
             );
+            if self.source_error.is_some() && self.allow_live {
+                let retry = "Use Refresh to try again.";
+                let (rw, _) = tr.measure(retry, ssz, None);
+                text_at(
+                    tr,
+                    scene,
+                    t,
+                    retry,
+                    ssz,
+                    theme.accent_primary,
+                    cx - f64::from(rw) / 2.0,
+                    cy + 26.0,
+                    TextWeight::Medium,
+                    false,
+                );
+            }
         } else {
             let msg = "No entries match the current filters.";
             let sz = theme.tokens.typography.scale.base;
@@ -1366,6 +1723,10 @@ impl LogsApp {
     }
 
     /// Clips to the list body and draws the scrolled window of visible rows.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the virtualized row paint keeps its per-column geometry together"
+    )]
     fn draw_list_rows(
         &self,
         scene: &mut Scene,
@@ -1416,11 +1777,16 @@ impl LogsApp {
             fill_circle(scene, t, Point::new(cols.dot_cx, row.center().y), 4.5, col);
             // time (mono, dim)
             let tsz = theme.tokens.typography.scale.sm;
+            let timestamp = if cols.compact {
+                e.time_hms()
+            } else {
+                e.timestamp()
+            };
             text_at(
                 tr,
                 scene,
                 t,
-                &e.timestamp(),
+                &timestamp,
                 tsz,
                 theme.text_dim,
                 cols.time_x,
@@ -1441,20 +1807,23 @@ impl LogsApp {
                 TextWeight::Bold,
                 true,
             );
-            // unit (accent-tinted)
-            let unit_shown = elide(tr, e.unit_short(), tsz, cols.unit_w - 6.0, false);
-            text_at(
-                tr,
-                scene,
-                t,
-                &unit_shown,
-                tsz,
-                theme.text_primary,
-                cols.unit_x,
-                vcenter(row, tsz),
-                TextWeight::Medium,
-                false,
-            );
+            if !cols.compact {
+                // Unit is promoted on desktop; compact rows reserve that
+                // width for the message and expose the unit in detail/a11y.
+                let unit_shown = elide(tr, e.unit_short(), tsz, cols.unit_w - 6.0, false);
+                text_at(
+                    tr,
+                    scene,
+                    t,
+                    &unit_shown,
+                    tsz,
+                    theme.text_primary,
+                    cols.unit_x,
+                    vcenter(row, tsz),
+                    TextWeight::Medium,
+                    false,
+                );
+            }
             // message
             let msg_shown = elide(tr, &e.message, tsz, cols.msg_w, false);
             let msg_c = if is_sel {
@@ -1861,6 +2230,7 @@ impl LogsApp {
                 let target = match popup {
                     Popup::Unit => format!("logs.unit-choice:{value}"),
                     Popup::Boot => format!("logs.boot-choice:{value}"),
+                    Popup::Actions => format!("logs.action-choice:{value}"),
                 };
                 filter_children.push(
                     AccessNode::new(Role::MenuItem)
@@ -1870,23 +2240,52 @@ impl LogsApp {
                 );
             }
         }
-        let mut children = vec![
-            AccessNode::new(Role::Switch)
-                .with_name("Live tail")
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.allow_live)
-                        .checked(self.live_tail)
-                        .disabled(!self.allow_live),
-                )
-                .with_bounds(reg.live_pill)
-                .with_action_target("logs.live-tail"),
+        let mut children = Vec::new();
+        if reg.header.height() > 0.0 {
+            if reg.overflow_trigger.width() > 0.0 {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Journal actions")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .expanded(self.popup == Some(Popup::Actions)),
+                        )
+                        .with_bounds(reg.overflow_trigger)
+                        .with_action_target("logs.actions"),
+                );
+            }
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Refresh journal")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(self.allow_live)
+                            .disabled(!self.allow_live),
+                    )
+                    .with_bounds(reg.refresh_btn)
+                    .with_action_target("logs.refresh"),
+            );
+            children.push(
+                AccessNode::new(Role::Switch)
+                    .with_name("Live tail")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(self.allow_live)
+                            .checked(self.live_tail)
+                            .disabled(!self.allow_live),
+                    )
+                    .with_bounds(reg.live_pill)
+                    .with_action_target("logs.live-tail"),
+            );
+        }
+        children.push(
             AccessNode::new(Role::Group)
                 .with_name("Journal filters")
                 .with_bounds(reg.filter)
                 .with_hashed_key("logs.filters")
                 .with_children(filter_children),
-        ];
+        );
         if !self.filter.is_clear() {
             children.push(
                 AccessNode::new(Role::Button)
@@ -1943,6 +2342,14 @@ impl LogsApp {
                     .with_action_target("logs.back"),
             );
         }
+        if let Some(status) = &self.export_status {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(status)
+                    .with_live(Politeness::Polite)
+                    .with_hashed_key("logs.export-status"),
+            );
+        }
         AccessNode::new(Role::Window)
             .with_name("System logs")
             .with_state(AccessState::new().focusable(true).focused(self.focused))
@@ -1953,6 +2360,7 @@ impl LogsApp {
 
 // Column geometry inside a list row / header.
 struct Cols {
+    compact: bool,
     dot_cx: f64,
     time_x: f64,
     tag_x: f64,
@@ -1966,6 +2374,27 @@ fn column_x(row: Rect) -> Cols {
     let mut cur = row.x0 + rpad;
     let dot_cx = cur + 4.0;
     cur += 16.0;
+    // Phone-width master panes cannot faithfully carry four desktop columns.
+    // Preserve chronology + severity and give the message the remaining
+    // space; the selected entry's unit remains immediately available in the
+    // pushed detail pane and in each row's accessible name.
+    if row.width() < 480.0 {
+        let time_x = cur;
+        cur += 62.0;
+        let tag_x = cur;
+        cur += 42.0;
+        let msg_x = cur;
+        return Cols {
+            compact: true,
+            dot_cx,
+            time_x,
+            tag_x,
+            unit_x: msg_x,
+            unit_w: 0.0,
+            msg_x,
+            msg_w: (row.x1 - rpad - msg_x).max(24.0),
+        };
+    }
     let time_x = cur;
     cur += 138.0 + 8.0;
     let tag_x = cur;
@@ -1976,6 +2405,7 @@ fn column_x(row: Rect) -> Cols {
     let msg_x = cur;
     let msg_w = (row.x1 - rpad - msg_x).max(40.0);
     Cols {
+        compact: false,
         dot_cx,
         time_x,
         tag_x,
@@ -2022,7 +2452,9 @@ impl Widget for LogsApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
-        self.search_input.take_control_invocation()
+        self.pending_control_invocation
+            .take()
+            .or_else(|| self.search_input.take_control_invocation())
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
@@ -2046,22 +2478,35 @@ impl Widget for LogsApp {
         if !self.allow_live {
             return Err("live journal access is disabled".into());
         }
-        self.perform_effect(operation);
+        self.perform_effect(operation)?;
         Ok(true)
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
         LogsDoc::ensure_defaults(doc, root);
+        self.drain_export_portal();
+        if let Some(filter) = self.shot_filter.take() {
+            LogsDoc::set_min_priority(doc, root, filter.min_priority);
+            LogsDoc::set_unit(doc, root, &filter.unit);
+            LogsDoc::set_boot(doc, root, &filter.boot);
+            LogsDoc::search_set(doc, root, &filter.search);
+        }
         self.search_input.sync(doc, root);
 
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.last_poll = Instant::now();
-            let fresh = crate::journal::load_live(2000);
-            if !fresh.is_empty() {
-                self.entries = fresh;
-                self.rebuild_facets();
-                self.dirty = true;
+            match crate::journal::load_live(2000) {
+                Ok(fresh) => {
+                    self.entries = fresh;
+                    self.source_error = None;
+                    self.rebuild_facets();
+                    self.dirty = true;
+                }
+                Err(error) => {
+                    self.source_error = Some(error);
+                    self.dirty = true;
+                }
             }
         }
 
@@ -2193,29 +2638,22 @@ impl Widget for LogsApp {
             self.draw_list(scene, transform, tr, theme, &reg);
             self.draw_detail(scene, transform, tr, theme, &reg);
         }
+        // Keep the canvas-owned popup in the primary draw pass as well as the
+        // normal native overlay pass. The deterministic FrameHarness renders
+        // only this pass, while the actual app still gets the same z-order.
+        self.draw_popup(scene, transform, tr, theme);
     }
 
     fn draw_overlay(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _tr: &mut TextRenderer,
+        _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.popup.is_none() {
-            return;
-        }
-        let reg = self.regions();
-        let Some(first) = reg.dropdown.first().map(|d| d.0) else {
-            return;
-        };
-        let Some(last) = reg.dropdown.last().map(|d| d.0) else {
-            return;
-        };
-        let panel = Rect::new(first.x0, first.y0 - 4.0, first.x1, last.y1 + 4.0);
-        Self::draw_overlay_panel_bg(scene, transform, theme, panel);
-        self.draw_overlay_rows(scene, transform, tr, theme, &reg);
+        // `draw` paints the custom popup so headless captures and native
+        // windows share one result; do not paint a second copy here.
     }
 
     fn handle_event(
@@ -2332,10 +2770,17 @@ impl Widget for LogsApp {
             return self.search_input.perform_action(action, state, path);
         }
         let activate = matches!(action, AccessAction::Activate | AccessAction::ToggleCheck);
+        if target == "logs.actions" && activate {
+            self.popup = Some(Popup::Actions);
+            self.dirty = true;
+            return true;
+        }
+        if target == "logs.refresh" && activate && self.allow_live {
+            self.request_journal_operation("refresh");
+            return true;
+        }
         if target == "logs.live-tail" && activate && self.allow_live {
-            self.perform_effect(actions::LogsOperation::SetLiveTail {
-                enabled: !self.live_tail,
-            });
+            self.request_journal_operation("set-live-tail");
             return true;
         }
         if target == "logs.clear-filters" && activate {
@@ -2396,6 +2841,17 @@ impl Widget for LogsApp {
             self.dirty = true;
             return true;
         }
+        if let Some(action_id) = target.strip_prefix("logs.action-choice:")
+            && activate
+            && matches!(
+                action_id,
+                "refresh" | "set-live-tail" | "export-filtered-jsonl"
+            )
+        {
+            self.popup = None;
+            self.request_journal_operation(action_id);
+            return true;
+        }
         if let Some(id) = target.strip_prefix("logs.entry:")
             && activate
             && let Some(abs) = self
@@ -2427,16 +2883,38 @@ impl Widget for LogsApp {
         self.dirty
     }
     fn needs_idle_sync(&self) -> bool {
-        self.allow_live && self.live_tail
+        (self.allow_live && self.live_tail) || self.export_rx.is_some()
     }
     fn needs_animation_frame(&self) -> bool {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
-        self.push.is_animating() || (self.allow_live && self.live_tail)
+        self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
     }
 }
 
 impl LogsApp {
+    fn draw_popup(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.popup.is_none() {
+            return;
+        }
+        let reg = self.regions();
+        let Some(first) = reg.dropdown.first().map(|d| d.0) else {
+            return;
+        };
+        let Some(last) = reg.dropdown.last().map(|d| d.0) else {
+            return;
+        };
+        let panel = Rect::new(first.x0, first.y0 - 4.0, first.x1, last.y1 + 4.0);
+        Self::draw_overlay_panel_bg(scene, transform, theme, panel);
+        self.draw_overlay_rows(scene, transform, tr, theme, &reg);
+    }
+
     /// Search-field layout, focus transfer, Escape-to-clear, and routing
     /// into the shared field (part of [`Widget::handle_event`]). Returns
     /// whether the caller should return immediately — either because
@@ -2595,7 +3073,7 @@ impl LogsApp {
         let active_val = match self.popup {
             Some(Popup::Unit) => self.filter.unit.clone(),
             Some(Popup::Boot) => self.filter.boot.clone(),
-            None => String::new(),
+            Some(Popup::Actions) | None => String::new(),
         };
         let sz = theme.tokens.typography.scale.sm;
         for (irect, val, label) in &reg.dropdown {
@@ -2672,6 +3150,10 @@ impl LogsApp {
         self.filtered.get(pos).copied()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered hit-test preserves the popup-to-row interaction priority"
+    )]
     fn on_click(&mut self, pt: Point, doc: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
         // 1. An open dropdown captures the click first.
         if self.popup.is_some() {
@@ -2685,6 +3167,7 @@ impl LogsApp {
                         Some(Popup::Boot) => {
                             self.dispatch_view(doc, LogsAction::SetBoot { value: val.clone() });
                         }
+                        Some(Popup::Actions) => self.request_journal_operation(val),
                         None => {}
                     }
                     self.popup = None;
@@ -2695,7 +3178,9 @@ impl LogsApp {
                 }
             }
             // Click outside the open list closes it.
-            let on_trigger = reg.unit_trigger.contains(pt) || reg.boot_trigger.contains(pt);
+            let on_trigger = reg.unit_trigger.contains(pt)
+                || reg.boot_trigger.contains(pt)
+                || reg.overflow_trigger.contains(pt);
             self.popup = None;
             self.dirty = true;
             *handled = true;
@@ -2716,10 +3201,26 @@ impl LogsApp {
             return;
         }
 
-        // 2. Header: live-tail pill.
+        // 2. Header: refresh and live-tail controls.
+        if reg.refresh_btn.contains(pt) && self.allow_live {
+            self.request_journal_operation("refresh");
+            *handled = true;
+            return;
+        }
         if reg.live_pill.contains(pt) {
-            let v = !self.live_tail;
-            self.perform_effect(actions::LogsOperation::SetLiveTail { enabled: v });
+            if self.allow_live {
+                self.request_journal_operation("set-live-tail");
+            }
+            *handled = true;
+            return;
+        }
+        if reg.overflow_trigger.contains(pt) {
+            self.popup = if self.popup == Some(Popup::Actions) {
+                None
+            } else {
+                Some(Popup::Actions)
+            };
+            self.dirty = true;
             *handled = true;
             return;
         }
@@ -2851,8 +3352,7 @@ impl LogsApp {
                 if ctrl {
                     match s.as_str() {
                         "l" | "L" => {
-                            let v = !self.live_tail;
-                            self.perform_effect(actions::LogsOperation::SetLiveTail { enabled: v });
+                            self.request_journal_operation("set-live-tail");
                             *handled = true;
                         }
                         "r" | "R" => {
@@ -3011,6 +3511,93 @@ mod tests {
             reg.chips.iter().all(|chip| chip.y0 > reg.unit_trigger.y1),
             "severity choices belong on their own compact row"
         );
+    }
+
+    #[test]
+    fn phone_rows_prioritize_time_level_and_message() {
+        let row = Rect::new(0.0, 0.0, 358.0, ROW_H);
+        let cols = column_x(row);
+        assert!(cols.compact, "phone rows use compact column geometry");
+        assert!(
+            cols.unit_w.abs() < f64::EPSILON,
+            "unit yields space to the message"
+        );
+        assert!(cols.msg_w >= 200.0, "message remains meaningfully readable");
+        assert!(cols.msg_x < row.x1);
+    }
+
+    #[test]
+    fn refresh_control_queues_the_exported_root_operation() {
+        let mut app = LogsApp::new(sample_entries(), true);
+        app.request_journal_operation("refresh");
+        let invocation = app
+            .take_control_invocation()
+            .expect("refresh queues an inert control invocation");
+        assert_eq!(invocation.address.resource, actions::JOURNAL_RESOURCE_ID);
+        assert_eq!(invocation.address.action, "refresh");
+        assert!(app.source_loading);
+    }
+
+    #[test]
+    fn phone_actions_menu_exposes_refresh_follow_and_export() {
+        let (mut app, _doc) = synced_app();
+        app.allow_live = true;
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.shots_show_actions();
+        let reg = app.regions();
+        assert!(reg.overflow_trigger.width() > 0.0);
+        assert_eq!(reg.dropdown.len(), 3);
+        let tree = app.accessibility_tree();
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Journal actions"))
+        );
+        let filters = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Journal filters"))
+            .unwrap();
+        assert!(filters.children.iter().any(|node| {
+            node.action_target.as_deref() == Some("logs.action-choice:export-filtered-jsonl")
+        }));
+    }
+
+    #[test]
+    fn portal_export_writes_the_snapshot_selected_before_the_picker() {
+        let mut app = LogsApp::new(sample_entries(), true);
+        let path = std::env::temp_dir().join(format!(
+            "qos-logs-portal-export-{}-{}.jsonl",
+            std::process::id(),
+            app.entries[0].realtime_us
+        ));
+        let _ = std::fs::remove_file(&path);
+        app.pending_export = Some(app.entries.iter().take(2).cloned().collect());
+        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
+        app.drain_export_portal();
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+        assert_eq!(
+            app.export_status.as_deref(),
+            Some("Exported 2 log entries.")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn portal_export_write_failure_is_announced_without_path_details() {
+        let mut app = LogsApp::new(sample_entries(), true);
+        app.pending_export = Some(app.entries.iter().take(1).cloned().collect());
+        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            std::env::temp_dir(),
+        )));
+        app.drain_export_portal();
+        assert_eq!(app.export_status.as_deref(), Some("Export failed."));
+        let tree = app.accessibility_tree();
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Export failed.") && node.live == Some(Politeness::Polite)
+        }));
     }
 
     #[test]

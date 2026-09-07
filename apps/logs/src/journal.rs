@@ -2,6 +2,9 @@
 //! app, plus a bundled, realistic sample journal so `--shots` renders a
 //! populated screen with no systemd access.
 
+use std::fs::OpenOptions;
+use std::io::{BufWriter, Write};
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
@@ -371,21 +374,99 @@ const ROWS_SESSION: &[Row] = &[
     ),
 ];
 
+/// A deliberately non-verbatim explanation of why the local journal could
+/// not be read. `journalctl`'s stderr can contain host names, paths, and
+/// policy details, so it must never be surfaced in the shared resource tree
+/// or UI as an error string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalLoadError {
+    /// `journalctl` was not executable in this sandbox or on this host.
+    Unavailable,
+    /// The journal command ran but the session was not authorised to read it.
+    AccessDenied,
+    /// The command failed for another local, recoverable reason.
+    Failed,
+}
+
+impl JournalLoadError {
+    /// Safe, localised-at-the-boundary text suitable for the UI.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Unavailable => "The system journal is not available on this device.",
+            Self::AccessDenied => "This session is not allowed to read the system journal.",
+            Self::Failed => "The system journal could not be read. Try again.",
+        }
+    }
+}
+
 /// Run `journalctl -o json` and parse the most recent `limit` records.
-/// Returns an empty vec (never an error) when journald is unavailable —
-/// the caller falls back to the bundled sample so the UI is never blank.
-pub fn load_live(limit: usize) -> Vec<LogEntry> {
+///
+/// The error is intentionally classified rather than returning process
+/// output: logs often contain sensitive machine context. An empty successful
+/// result remains distinct from a failed read so the UI can offer recovery.
+///
+/// # Errors
+///
+/// Returns a safe classification when `journalctl` is unavailable, denied, or
+/// otherwise fails. It never returns the command's stderr.
+pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
     let output = Command::new("journalctl")
         .args(["-o", "json", "--no-pager", "-n", &limit.to_string()])
         .output();
 
     let Ok(output) = output else {
-        return Vec::new();
+        return Err(JournalLoadError::Unavailable);
     };
     if !output.status.success() {
-        return Vec::new();
+        // Do not relay stderr. Its wording is neither stable nor safe to
+        // publish, but the common permission failure deserves a useful
+        // recovery state.
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        return Err(
+            if stderr.contains("permission") || stderr.contains("access denied") {
+                JournalLoadError::AccessDenied
+            } else {
+                JournalLoadError::Failed
+            },
+        );
     }
-    parse_json_stream(&String::from_utf8_lossy(&output.stdout))
+    Ok(parse_json_stream(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Export a pre-filtered local cache as JSON Lines.
+///
+/// The caller must obtain `path` from the host Save portal. It never follows
+/// an app-owned default location, and returns only concise errors: exporting
+/// logs is sensitive and should stay fully scoped to that portal choice.
+///
+/// # Errors
+///
+/// Returns an error for a non-absolute target or JSON/IO failure while writing
+/// the selected entries.
+pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("export path must be absolute".into());
+    }
+    if path.as_os_str().is_empty() {
+        return Err("export path is empty".into());
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|_| "could not write the selected export file".to_string())?;
+    let mut writer = BufWriter::new(file);
+    for entry in entries {
+        serde_json::to_writer(&mut writer, entry)
+            .map_err(|_| "could not encode journal entry for export".to_string())?;
+        writer
+            .write_all(b"\n")
+            .map_err(|_| "could not write the requested export file".to_string())?;
+    }
+    writer
+        .flush()
+        .map_err(|_| "could not finish the requested export file".to_string())
 }
 
 /// Parse a newline-delimited `journalctl -o json` stream into entries,
@@ -628,5 +709,47 @@ mod tests {
         let parsed = parse_json_stream(stream);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].message, "ok");
+    }
+
+    #[test]
+    fn export_requires_an_absolute_portal_target() {
+        let entries = sample_entries();
+        assert_eq!(
+            export_json_lines(&[&entries[0]], Path::new("logs.jsonl")).unwrap_err(),
+            "export path must be absolute"
+        );
+    }
+
+    #[test]
+    fn export_writes_json_lines_to_the_selected_target() {
+        let entries = sample_entries();
+        let path = std::env::temp_dir().join(format!(
+            "qos-logs-export-{}-{}.jsonl",
+            std::process::id(),
+            entries[0].realtime_us
+        ));
+        let _ = std::fs::remove_file(&path);
+        export_json_lines(&[&entries[0], &entries[1]], &path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 2);
+        assert!(text.contains("Journal stopped"));
+        export_json_lines(&[&entries[0]], &path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_preserves_a_non_utf8_portal_path() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let entries = sample_entries();
+        let path = std::env::temp_dir().join(std::ffi::OsString::from_vec(vec![
+            b'q', b'o', b's', b'-', 0xff, b'.', b'j', b's', b'o', b'n', b'l',
+        ]));
+        let _ = std::fs::remove_file(&path);
+        export_json_lines(&[&entries[0]], &path).unwrap();
+        assert!(path.is_file());
+        std::fs::remove_file(path).unwrap();
     }
 }
