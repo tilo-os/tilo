@@ -7,9 +7,66 @@
 //! holds `{hash, mime, len, w, h}` and the bytes live here; dedup is free (the
 //! key *is* the content hash), and history stops carrying megabytes.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+/// Hard limits for a blob store.  They deliberately cover both payload and
+/// metadata: a document that names millions of tiny blobs must not be able to
+/// turn a bounded byte budget into an unbounded index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobStoreLimits {
+    /// Largest accepted individual blob.
+    pub max_blob_bytes: usize,
+    /// Largest aggregate payload size retained by this store.
+    pub max_total_bytes: usize,
+    /// Largest number of retained blobs (and index entries).
+    pub max_entries: usize,
+    /// Largest number of filesystem directory entries inspected while building
+    /// the on-disk index.  If this is exceeded, new writes are rejected rather
+    /// than performing an unbounded startup scan.
+    pub max_scan_entries: usize,
+}
+
+impl Default for BlobStoreLimits {
+    fn default() -> Self {
+        Self {
+            max_blob_bytes: 32 * 1024 * 1024,
+            max_total_bytes: 256 * 1024 * 1024,
+            max_entries: 8192,
+            max_scan_entries: 16_384,
+        }
+    }
+}
+
+/// Why a store refused a write or could not inspect its durable index.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BlobStoreError {
+    #[error("blob hash does not name these bytes")]
+    HashMismatch,
+    #[error("blob is {actual} bytes; per-item limit is {limit} bytes")]
+    ItemTooLarge { actual: usize, limit: usize },
+    #[error("blob store total would be {attempted} bytes; limit is {limit} bytes")]
+    TotalQuotaExceeded { attempted: usize, limit: usize },
+    #[error("blob store would contain more than {limit} entries")]
+    EntryLimitExceeded { limit: usize },
+    #[error("blob-store disk index exceeded its {limit}-entry scan bound")]
+    ScanLimitExceeded { limit: usize },
+    #[error("blob-store I/O: {0}")]
+    Io(String),
+}
+
+/// Exact, deterministic result of an explicit reclamation pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EvictionReport {
+    /// Removed hashes in lexical order.
+    pub hashes: Vec<String>,
+    pub bytes: usize,
+}
 
 /// Metadata a document carries *instead of* a blob's bytes — enough for a renderer to lay out a
 /// placeholder occupying exactly the space the image will, so nothing reflows when the bytes arrive.
@@ -30,6 +87,34 @@ pub struct BlobMeta {
 pub trait BlobStore: Send + Sync {
     fn get(&self, hash: &str) -> Option<Vec<u8>>;
     fn put(&self, hash: &str, bytes: &[u8]) -> bool;
+    /// Like [`Self::put`], but tells callers whether quota, integrity, or I/O
+    /// caused a refusal.  The boolean method remains for existing lightweight
+    /// implementations; quota-aware stores override this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobStoreError`] when the content fails verification, exceeds
+    /// a quota, or the durable backend cannot complete the operation.
+    fn put_checked(&self, hash: &str, bytes: &[u8]) -> Result<(), BlobStoreError> {
+        self.put(hash, bytes)
+            .then_some(())
+            .ok_or(BlobStoreError::HashMismatch)
+    }
+    /// Reclaim only hashes absent from a caller-provided *complete* live set.
+    ///
+    /// The qdoc store deliberately never invokes this automatically: it does
+    /// not know every open or persisted document that can reference a hash.
+    /// Hosts which do have that reachability information may reclaim safely.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobStoreError`] if the store cannot enumerate or remove a
+    /// candidate; prior removals, if any, are reflected in neither a report nor
+    /// the error, so callers should retry with the same complete live set.
+    fn evict_unreferenced(
+        &self,
+        live_hashes: &BTreeSet<String>,
+    ) -> Result<EvictionReport, BlobStoreError>;
     fn has(&self, hash: &str) -> bool {
         self.get(hash).is_some()
     }
@@ -47,26 +132,85 @@ pub fn verify(hash: &str, bytes: &[u8]) -> bool {
 
 /// In-process store: the default, so a unit test or a headless codec run works
 /// with no filesystem at all.
-#[derive(Default)]
 pub struct MemoryBlobStore {
-    inner: RwLock<BTreeMap<String, Vec<u8>>>,
+    limits: BlobStoreLimits,
+    inner: RwLock<MemoryState>,
+}
+
+#[derive(Default)]
+struct MemoryState {
+    bytes: usize,
+    entries: BTreeMap<String, Vec<u8>>,
+}
+
+impl Default for MemoryBlobStore {
+    fn default() -> Self {
+        Self::new(BlobStoreLimits::default())
+    }
+}
+
+impl MemoryBlobStore {
+    pub fn new(limits: BlobStoreLimits) -> Self {
+        Self {
+            limits,
+            inner: RwLock::new(MemoryState::default()),
+        }
+    }
+
+    pub fn limits(&self) -> BlobStoreLimits {
+        self.limits
+    }
 }
 
 impl BlobStore for MemoryBlobStore {
     fn get(&self, hash: &str) -> Option<Vec<u8>> {
-        self.inner.read().ok()?.get(hash).cloned()
+        self.inner.read().ok()?.entries.get(hash).cloned()
     }
     fn put(&self, hash: &str, bytes: &[u8]) -> bool {
+        self.put_checked(hash, bytes).is_ok()
+    }
+    fn put_checked(&self, hash: &str, bytes: &[u8]) -> Result<(), BlobStoreError> {
         if !verify(hash, bytes) {
-            return false;
+            return Err(BlobStoreError::HashMismatch);
         }
-        match self.inner.write() {
-            Ok(mut m) => {
-                m.insert(hash.to_string(), bytes.to_vec());
-                true
+        let mut state = self
+            .inner
+            .write()
+            .map_err(|_| BlobStoreError::Io("memory store lock poisoned".into()))?;
+        // Re-inserting content already retained consumes no more quota.
+        if state.entries.contains_key(hash) {
+            return Ok(());
+        }
+        check_new_blob(&self.limits, state.bytes, state.entries.len(), bytes.len())?;
+        state.bytes = state.bytes.saturating_add(bytes.len());
+        state.entries.insert(hash.to_string(), bytes.to_vec());
+        drop(state);
+        Ok(())
+    }
+    fn evict_unreferenced(
+        &self,
+        live_hashes: &BTreeSet<String>,
+    ) -> Result<EvictionReport, BlobStoreError> {
+        let mut state = self
+            .inner
+            .write()
+            .map_err(|_| BlobStoreError::Io("memory store lock poisoned".into()))?;
+        let stale_hashes: Vec<String> = state
+            .entries
+            .keys()
+            .filter(|hash| !live_hashes.contains(*hash))
+            .cloned()
+            .collect();
+        let mut report = EvictionReport::default();
+        for hash in stale_hashes {
+            if let Some(bytes) = state.entries.remove(&hash) {
+                state.bytes = state.bytes.saturating_sub(bytes.len());
+                report.bytes = report.bytes.saturating_add(bytes.len());
+                report.hashes.push(hash);
             }
-            Err(_) => false,
         }
+        drop(state);
+        Ok(report)
     }
 }
 
@@ -74,11 +218,78 @@ impl BlobStore for MemoryBlobStore {
 /// directory does not accumulate every blob the machine has ever seen.
 pub struct FsBlobStore {
     root: PathBuf,
+    limits: BlobStoreLimits,
+    state: Mutex<FsState>,
+}
+
+#[derive(Default)]
+struct FsState {
+    bytes: usize,
+    entries: BTreeMap<String, usize>,
+}
+
+/// Held around every filesystem mutation and its preceding quota scan.  The
+/// lock is separate from `FsState`: two `FsBlobStore`s (or two processes) can
+/// point at one configured root and must not each admit a write from a stale
+/// local total.
+struct RootWriteLock(std::fs::File);
+
+impl Drop for RootWriteLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            // The OS also releases this lock when a process dies.  Explicitly
+            // unlock so a waiting writer can proceed before the File drops.
+            let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
 }
 
 impl FsBlobStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self::with_limits(root, BlobStoreLimits::default())
+    }
+
+    pub fn with_limits(root: impl Into<PathBuf>, limits: BlobStoreLimits) -> Self {
+        Self {
+            root: root.into(),
+            limits,
+            state: Mutex::new(FsState::default()),
+        }
+    }
+
+    pub fn limits(&self) -> BlobStoreLimits {
+        self.limits
+    }
+
+    fn lock_root_for_write(&self) -> Result<RootWriteLock, BlobStoreError> {
+        std::fs::create_dir_all(&self.root)
+            .map_err(|error| BlobStoreError::Io(error.to_string()))?;
+        let path = self.root.join(".qdoc-blob-store.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|error| BlobStoreError::Io(error.to_string()))?;
+        #[cfg(unix)]
+        {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(BlobStoreError::Io(
+                    std::io::Error::last_os_error().to_string(),
+                ));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // Failing closed is preferable to claiming a process-wide quota
+            // on a platform where this build has no interprocess lock.
+            return Err(BlobStoreError::Io(
+                "filesystem blob quotas require an interprocess lock on this platform".into(),
+            ));
+        }
+        Ok(RootWriteLock(file))
     }
 
     /// The store this machine uses unless told otherwise. `QOS_BLOB_STORE` overrides it, letting two
@@ -106,19 +317,94 @@ impl FsBlobStore {
         // The hash reaches this function from the wire, so anything that is not
         // plain hex is refused: a key with a separator in it would otherwise
         // address a file outside the store.
-        if hash.len() < 4 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if !valid_hash(hash) {
             return None;
         }
         // Every byte was just checked ASCII-hex above, so byte offset 2 is a char boundary.
         let prefix = hash.get(..2)?;
         Some(self.root.join(prefix).join(hash))
     }
+
+    fn load_index(&self, state: &mut FsState) -> Result<(), BlobStoreError> {
+        let root = match std::fs::read_dir(&self.root) {
+            Ok(root) => root,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(error) => return Err(BlobStoreError::Io(error.to_string())),
+        };
+        let mut scanned = 0usize;
+        let mut entries = BTreeMap::new();
+        let mut total = 0usize;
+        for shard in root {
+            let shard = shard.map_err(|error| BlobStoreError::Io(error.to_string()))?;
+            scanned = scanned.saturating_add(1);
+            if scanned > self.limits.max_scan_entries {
+                return Err(BlobStoreError::ScanLimitExceeded {
+                    limit: self.limits.max_scan_entries,
+                });
+            }
+            let name = shard.file_name();
+            let Some(prefix) = name.to_str() else {
+                continue;
+            };
+            if prefix.len() != 2 || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                continue;
+            }
+            let Ok(kind) = shard.file_type() else {
+                continue;
+            };
+            if !kind.is_dir() {
+                continue;
+            }
+            let dir = std::fs::read_dir(shard.path())
+                .map_err(|error| BlobStoreError::Io(error.to_string()))?;
+            for blob in dir {
+                let blob = blob.map_err(|error| BlobStoreError::Io(error.to_string()))?;
+                scanned = scanned.saturating_add(1);
+                if scanned > self.limits.max_scan_entries {
+                    return Err(BlobStoreError::ScanLimitExceeded {
+                        limit: self.limits.max_scan_entries,
+                    });
+                }
+                let name = blob.file_name();
+                let Some(hash) = name.to_str().filter(|hash| valid_hash(hash)) else {
+                    continue;
+                };
+                // Canonical lower-case names prevent aliases and make the
+                // BTree index/reclamation order deterministic.
+                if hash.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                    continue;
+                }
+                let Ok(kind) = blob.file_type() else { continue };
+                if !kind.is_file() {
+                    continue;
+                }
+                let len = blob
+                    .metadata()
+                    .map_err(|error| BlobStoreError::Io(error.to_string()))?
+                    .len();
+                let len = usize::try_from(len).map_err(|_| BlobStoreError::TotalQuotaExceeded {
+                    attempted: usize::MAX,
+                    limit: self.limits.max_total_bytes,
+                })?;
+                total = total.saturating_add(len);
+                entries.insert(hash.to_string(), len);
+            }
+        }
+        state.bytes = total;
+        state.entries = entries;
+        Ok(())
+    }
 }
 
 impl BlobStore for FsBlobStore {
     fn get(&self, hash: &str) -> Option<Vec<u8>> {
         let p = self.path_for(hash)?;
-        let bytes = std::fs::read(p).ok()?;
+        // Avoid allocating an arbitrary file merely because a hostile peer
+        // named its hash. Existing oversized files remain on disk but are not
+        // admitted into this bounded store.
+        let bytes = read_bounded_file(&p, self.limits.max_blob_bytes)?;
         // A blob that does not match its own name is corruption, not content.
         if verify(hash, &bytes) {
             Some(bytes)
@@ -128,35 +414,178 @@ impl BlobStore for FsBlobStore {
     }
 
     fn put(&self, hash: &str, bytes: &[u8]) -> bool {
+        self.put_checked(hash, bytes).is_ok()
+    }
+
+    fn put_checked(&self, hash: &str, bytes: &[u8]) -> Result<(), BlobStoreError> {
         if !verify(hash, bytes) {
-            return false;
+            return Err(BlobStoreError::HashMismatch);
         }
         let Some(p) = self.path_for(hash) else {
-            return false;
+            return Err(BlobStoreError::HashMismatch);
         };
-        if p.exists() {
-            return true; // content-addressed: identical bytes, nothing to do
+        // A valid pre-existing file is an idempotent write even if a later
+        // configuration tightened the limits.
+        if self.get(hash).is_some() {
+            return Ok(());
         }
-        let Some(dir) = p.parent() else { return false };
-        if std::fs::create_dir_all(dir).is_err() {
-            return false;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| BlobStoreError::Io("filesystem store lock poisoned".into()))?;
+        let root_lock = self.lock_root_for_write()?;
+        // Always rescan while holding the per-root lock.  `FsState` is a
+        // cache for reads, not authority for admission: another process may
+        // have written to this root since this instance's previous put.
+        self.load_index(&mut state)?;
+        // Another writer might have completed after the optimistic check.
+        if let Some(old_len) = state.entries.get(hash).copied() {
+            if self.get(hash).is_some() {
+                return Ok(());
+            }
+            // A file whose bytes fail verification is not valid retained
+            // content.  Do not let it permanently consume the same hash's
+            // quota; the atomic rename below replaces it only after a complete
+            // verified payload has been written.
+            state.entries.remove(hash);
+            state.bytes = state.bytes.saturating_sub(old_len);
+        }
+        check_new_blob(&self.limits, state.bytes, state.entries.len(), bytes.len())?;
+        let Some(dir) = p.parent() else {
+            return Err(BlobStoreError::Io(
+                "blob path has no parent directory".into(),
+            ));
+        };
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            return Err(BlobStoreError::Io(error.to_string()));
         }
         // Write beside the target and rename, so a reader never observes a
         // partially written blob under a name that promises whole content.
-        let tmp = dir.join(format!(".{hash}.partial"));
-        if std::fs::write(&tmp, bytes).is_err() {
-            return false;
-        }
-        if std::fs::rename(&tmp, &p).is_err() {
+        // The unique temporary name also prevents two writers from truncating
+        // one another's partial file.
+        let tmp = unique_partial_path(dir, hash);
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
             let _ = std::fs::remove_file(&tmp);
-            return false;
+            return Err(BlobStoreError::Io(error.to_string()));
         }
-        true
+        if let Err(error) = std::fs::rename(&tmp, &p) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(BlobStoreError::Io(error.to_string()));
+        }
+        state.bytes = state.bytes.saturating_add(bytes.len());
+        state.entries.insert(hash.to_string(), bytes.len());
+        drop(root_lock);
+        drop(state);
+        Ok(())
+    }
+
+    fn evict_unreferenced(
+        &self,
+        live_hashes: &BTreeSet<String>,
+    ) -> Result<EvictionReport, BlobStoreError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| BlobStoreError::Io("filesystem store lock poisoned".into()))?;
+        let root_lock = self.lock_root_for_write()?;
+        self.load_index(&mut state)?;
+        let stale_hashes: Vec<(String, usize)> = state
+            .entries
+            .iter()
+            .filter(|(hash, _)| !live_hashes.contains(*hash))
+            .map(|(hash, len)| (hash.clone(), *len))
+            .collect();
+        let mut report = EvictionReport::default();
+        for (hash, len) in stale_hashes {
+            let Some(path) = self.path_for(&hash) else {
+                continue;
+            };
+            match std::fs::remove_file(path) {
+                Ok(()) => {
+                    state.entries.remove(&hash);
+                    state.bytes = state.bytes.saturating_sub(len);
+                    report.bytes = report.bytes.saturating_add(len);
+                    report.hashes.push(hash);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    state.entries.remove(&hash);
+                    state.bytes = state.bytes.saturating_sub(len);
+                    report.bytes = report.bytes.saturating_add(len);
+                    report.hashes.push(hash);
+                }
+                Err(error) => return Err(BlobStoreError::Io(error.to_string())),
+            }
+        }
+        drop(root_lock);
+        drop(state);
+        Ok(report)
     }
 
     fn has(&self, hash: &str) -> bool {
-        self.path_for(hash).is_some_and(|p| p.exists())
+        self.get(hash).is_some()
     }
+}
+
+fn check_new_blob(
+    limits: &BlobStoreLimits,
+    current_bytes: usize,
+    current_entries: usize,
+    incoming_bytes: usize,
+) -> Result<(), BlobStoreError> {
+    if incoming_bytes > limits.max_blob_bytes {
+        return Err(BlobStoreError::ItemTooLarge {
+            actual: incoming_bytes,
+            limit: limits.max_blob_bytes,
+        });
+    }
+    if current_entries >= limits.max_entries {
+        return Err(BlobStoreError::EntryLimitExceeded {
+            limit: limits.max_entries,
+        });
+    }
+    let attempted = current_bytes.saturating_add(incoming_bytes);
+    if attempted > limits.max_total_bytes {
+        return Err(BlobStoreError::TotalQuotaExceeded {
+            attempted,
+            limit: limits.max_total_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn valid_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_partial_path(dir: &Path, hash: &str) -> PathBuf {
+    let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(".{hash}.partial-{}-{serial}", std::process::id()))
+}
+
+/// Read at most `limit` bytes plus one sentinel byte.  The `take` cap closes
+/// the metadata/read race: a file which grows after its initial stat still
+/// cannot make `get` allocate beyond the configured per-item limit.
+fn read_bounded_file(path: &Path, limit: usize) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(path).ok()?;
+    let declared = usize::try_from(file.metadata().ok()?.len()).ok()?;
+    if declared > limit {
+        return None;
+    }
+    let sentinel = u64::try_from(limit).ok()?.saturating_add(1);
+    let mut bytes = Vec::with_capacity(declared);
+    file.take(sentinel).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= limit).then_some(bytes)
 }
 
 static STORE: OnceLock<RwLock<Arc<dyn BlobStore>>> = OnceLock::new();
@@ -203,12 +632,11 @@ fn transport_cell() -> &'static RwLock<Option<Arc<dyn BlobTransport>>> {
     TRANSPORT.get_or_init(|| RwLock::new(None))
 }
 
-/// Content stored before a transport existed, waiting to be offered: a document is opened (and its
-/// images stored) before anything can install a transport, so dropping these offers would silently
-/// lose the image that was there from the start. Bounded (holds real content in memory); the rest
-/// go out when a peer asks, which is the path a late joiner uses anyway.
-/// Hash and bytes of a blob stored before any transport existed.
-type PendingOffer = (String, Vec<u8>);
+/// Content stored before a transport existed, waiting to be offered.  Keep
+/// only hashes here: retaining another copy of every image would bypass the
+/// memory-store quota.  The bytes are read from the store when a transport is
+/// installed; a late peer can still request any entry that was not queued.
+type PendingOffer = String;
 
 static PENDING_OFFERS: OnceLock<RwLock<Vec<PendingOffer>>> = OnceLock::new();
 
@@ -228,8 +656,10 @@ pub fn set_transport(t: &Arc<dyn BlobTransport>) {
         Ok(mut q) => std::mem::take(&mut *q),
         Err(_) => Vec::new(),
     };
-    for (hash, bytes) in queued {
-        t.offer(&hash, &bytes);
+    for hash in queued {
+        if let Some(bytes) = store().get(&hash) {
+            t.offer(&hash, &bytes);
+        }
     }
 }
 
@@ -359,19 +789,19 @@ pub fn get(hash: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// Write bytes to the process-wide store, returning their hash. Also *offers* them to the
-/// transport, which is what carries an image out of the process that produced it — the document only ever gains the reference.
-pub fn put(bytes: &[u8]) -> String {
+/// Write bytes to the process-wide store, returning their hash on success.
+/// Also *offers* them to the transport, which is what carries an image out of
+/// the process that produced it — the document only ever gains the reference.
+/// A quota refusal is deliberately observable so callers do not create a
+/// local reference to content this machine failed to retain.
+pub fn put(bytes: &[u8]) -> Option<String> {
     let hash = hash_bytes(bytes);
-    if !store().put(&hash, bytes) {
-        // The document is about to reference content this machine then does not
-        // hold, and nothing downstream can detect that from the reference.
+    if let Err(error) = store().put_checked(&hash, bytes) {
         tracing::error!(
-            hash = %hash, bytes = bytes.len(),
-            "blobstore: could not store this content; a document referencing it will \
-             show a placeholder that never resolves",
+            hash = %hash, bytes = bytes.len(), %error,
+            "blobstore: refused content; no local document reference was created",
         );
-        return hash;
+        return None;
     }
     match transport() {
         Some(t) => t.offer(&hash, bytes),
@@ -380,13 +810,13 @@ pub fn put(bytes: &[u8]) -> String {
         None => {
             if let Ok(mut q) = pending_offers().write()
                 && q.len() < MAX_PENDING_OFFERS
-                && !q.iter().any(|(h, _)| h == &hash)
+                && !q.iter().any(|h| h == &hash)
             {
-                q.push((hash.clone(), bytes.to_vec()));
+                q.push(hash.clone());
             }
         }
     }
-    hash
+    Some(hash)
 }
 
 /// Derive a descriptor from content: media type plus intrinsic dimensions, read from the container
@@ -567,5 +997,169 @@ mod tests {
         // not be able to name a path outside the store.
         assert!(s.get("../../etc/passwd").is_none());
         assert!(!s.put("../escape", b"x"));
+    }
+
+    fn limits(item: usize, total: usize, entries: usize) -> BlobStoreLimits {
+        BlobStoreLimits {
+            max_blob_bytes: item,
+            max_total_bytes: total,
+            max_entries: entries,
+            max_scan_entries: 64,
+        }
+    }
+
+    #[test]
+    fn memory_quota_rejects_without_evicting_referenced_content() {
+        let s = MemoryBlobStore::new(limits(4, 6, 2));
+        let a = hash_bytes(b"abc");
+        let b = hash_bytes(b"defg");
+        let c = hash_bytes(b"de");
+        assert_eq!(s.put_checked(&a, b"abc"), Ok(()));
+        assert_eq!(
+            s.put_checked(&b, b"defg"),
+            Err(BlobStoreError::TotalQuotaExceeded {
+                attempted: 7,
+                limit: 6,
+            })
+        );
+        assert_eq!(s.put_checked(&c, b"de"), Ok(()));
+        assert_eq!(s.get(&a).as_deref(), Some(b"abc".as_slice()));
+        assert_eq!(s.get(&c).as_deref(), Some(b"de".as_slice()));
+        assert_eq!(
+            s.put_checked(&hash_bytes(b"x"), b"x"),
+            Err(BlobStoreError::EntryLimitExceeded { limit: 2 })
+        );
+        assert_eq!(
+            s.put_checked(&hash_bytes(b"12345"), b"12345"),
+            Err(BlobStoreError::ItemTooLarge {
+                actual: 5,
+                limit: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn explicit_memory_reclamation_is_complete_and_lexical() {
+        let s = MemoryBlobStore::new(limits(8, 24, 8));
+        let hashes: Vec<String> = [b"c".as_slice(), b"a", b"b"]
+            .iter()
+            .map(|bytes| {
+                let hash = hash_bytes(bytes);
+                s.put_checked(&hash, bytes).unwrap();
+                hash
+            })
+            .collect();
+        let live = BTreeSet::from([hashes[0].clone()]);
+        let report = s.evict_unreferenced(&live).unwrap();
+        let mut expected = vec![hashes[1].clone(), hashes[2].clone()];
+        expected.sort();
+        assert_eq!(report.hashes, expected);
+        assert_eq!(report.bytes, 2);
+        assert_eq!(s.get(&hashes[0]).as_deref(), Some(b"c".as_slice()));
+        assert!(s.get(&hashes[1]).is_none());
+        assert!(s.get(&hashes[2]).is_none());
+    }
+
+    #[test]
+    fn filesystem_quota_survives_restart_and_explicit_reclaim_reopens_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = limits(4, 6, 4);
+        let a = hash_bytes(b"abc");
+        let b = hash_bytes(b"de");
+        let c = hash_bytes(b"fgh");
+        {
+            let s = FsBlobStore::with_limits(dir.path(), limits);
+            assert_eq!(s.put_checked(&a, b"abc"), Ok(()));
+            assert_eq!(s.put_checked(&b, b"de"), Ok(()));
+        }
+        let s = FsBlobStore::with_limits(dir.path(), limits);
+        assert_eq!(s.get(&a).as_deref(), Some(b"abc".as_slice()));
+        assert_eq!(
+            s.put_checked(&c, b"fgh"),
+            Err(BlobStoreError::TotalQuotaExceeded {
+                attempted: 8,
+                limit: 6,
+            })
+        );
+        assert_eq!(
+            s.evict_unreferenced(&BTreeSet::from([a.clone()]))
+                .unwrap()
+                .hashes,
+            vec![b]
+        );
+        assert_eq!(s.put_checked(&c, b"fgh"), Ok(()));
+        assert_eq!(s.get(&a).as_deref(), Some(b"abc".as_slice()));
+        assert_eq!(s.get(&c).as_deref(), Some(b"fgh".as_slice()));
+    }
+
+    #[test]
+    fn same_root_instances_cannot_race_past_the_disk_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = limits(4, 6, 4);
+        let first = std::sync::Arc::new(FsBlobStore::with_limits(dir.path(), limits));
+        let second = std::sync::Arc::new(FsBlobStore::with_limits(dir.path(), limits));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let a = hash_bytes(b"abcd");
+        let b = hash_bytes(b"efgh");
+        let (one, two) = std::thread::scope(|scope| {
+            let first_barrier = std::sync::Arc::clone(&barrier);
+            let first_store = std::sync::Arc::clone(&first);
+            let first_thread = scope.spawn(move || {
+                first_barrier.wait();
+                first_store.put_checked(&a, b"abcd")
+            });
+            let second_barrier = std::sync::Arc::clone(&barrier);
+            let second_store = std::sync::Arc::clone(&second);
+            let second_thread = scope.spawn(move || {
+                second_barrier.wait();
+                second_store.put_checked(&b, b"efgh")
+            });
+            (first_thread.join().unwrap(), second_thread.join().unwrap())
+        });
+        assert_eq!(usize::from(one.is_ok()) + usize::from(two.is_ok()), 1);
+        assert!(matches!(
+            (one, two),
+            (Ok(()), Err(BlobStoreError::TotalQuotaExceeded { .. }))
+                | (Err(BlobStoreError::TotalQuotaExceeded { .. }), Ok(()))
+        ));
+    }
+
+    #[test]
+    fn filesystem_partial_and_corrupt_files_are_never_observable_as_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = limits(8, 16, 4);
+        let hash = hash_bytes(b"good");
+        let shard = dir.path().join(&hash[..2]);
+        std::fs::create_dir_all(&shard).unwrap();
+        // A crash can leave a unique temporary file.  It is neither indexed nor
+        // addressable under the content hash after restart.
+        std::fs::write(shard.join(format!(".{hash}.partial-dead")), b"partial").unwrap();
+        std::fs::write(shard.join(&hash), b"corrupt").unwrap();
+        let s = FsBlobStore::with_limits(dir.path(), limits);
+        assert!(s.get(&hash).is_none());
+        assert!(!s.has(&hash));
+        assert_eq!(s.put_checked(&hash, b"good"), Ok(()));
+        assert_eq!(s.get(&hash).as_deref(), Some(b"good".as_slice()));
+        assert!(shard.join(format!(".{hash}.partial-dead")).exists());
+    }
+
+    #[test]
+    fn filesystem_refuses_an_unbounded_startup_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = BlobStoreLimits {
+            max_blob_bytes: 8,
+            max_total_bytes: 16,
+            max_entries: 4,
+            max_scan_entries: 1,
+        };
+        for prefix in ["aa", "bb"] {
+            std::fs::create_dir_all(dir.path().join(prefix)).unwrap();
+        }
+        let s = FsBlobStore::with_limits(dir.path(), limits);
+        let hash = hash_bytes(b"x");
+        assert_eq!(
+            s.put_checked(&hash, b"x"),
+            Err(BlobStoreError::ScanLimitExceeded { limit: 1 })
+        );
     }
 }

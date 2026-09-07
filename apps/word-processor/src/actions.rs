@@ -839,7 +839,12 @@ fn apply_insert_image(
     let text = qdoc::model::block_text(dm.doc, dm.c, block).unwrap_or_default();
     let char_count = text.chars().count();
     let tail: String = text.chars().skip(at).collect();
-    let hash = dm.put_blob(bytes);
+    // Refuse the whole insertion if the bounded blob store cannot retain the
+    // bytes; splitting text and creating a `blob` reference would otherwise
+    // leave a document pointing at content this replica never stored.
+    let Some(hash) = dm.put_blob(bytes) else {
+        return;
+    };
     if let Some(tail) = char_count.checked_sub(at).filter(|n| *n > 0) {
         dm.splice_text(block, at, num::isize_of_usize(tail), "");
     }
@@ -2425,7 +2430,7 @@ mod tests {
             region: RegionKind::Body,
         };
         let bytes = b"content supplied by a preceding action";
-        let hash = qdoc::blobstore::put(bytes);
+        let hash = qdoc::blobstore::put(bytes).expect("test fixture fits blob quota");
         let resources = provide_resources(&ctx, &state.doc);
         let descriptor = qos_actions::door::survey(&resources)
             .into_iter()

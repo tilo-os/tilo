@@ -11156,6 +11156,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "libc",
  "proptest",
  "pulldown-cmark",
  "quick-xml 0.41.0",

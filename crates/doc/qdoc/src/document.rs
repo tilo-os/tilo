@@ -185,10 +185,14 @@ impl Document {
         self.doc.commit();
     }
 
-    /// Store bytes in the content-addressed blob store; returns the blake3 hex hash (used as an `image` block's `blob` attr).
-    pub fn put_blob(&mut self, bytes: &[u8]) -> String {
+    /// Store bytes in the content-addressed blob store; returns the blake3 hex
+    /// hash (used as an `image` block's `blob` attr), or `None` if the store's
+    /// quota rejects them.  A refusal does not add a blob descriptor.
+    pub fn put_blob(&mut self, bytes: &[u8]) -> Option<String> {
         let hash = self.as_mut().put_blob(bytes);
-        self.doc.commit();
+        if hash.is_some() {
+            self.doc.commit();
+        }
         hash
     }
 
