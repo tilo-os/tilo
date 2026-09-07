@@ -7670,13 +7670,11 @@ mod tests {
             ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
         ));
         app.drain_io(&mut doc);
-        for _ in 0..10_000 {
-            app.drain_interchange_worker(&mut doc);
-            if app.interchange_rx.is_none() {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        // The file codec runs on the bounded worker. Drive the same frame pump
+        // as a live app and wait by elapsed time, not an arbitrary count of
+        // yields: under a saturated CI runner ten thousand yields can elapse
+        // before the worker gets scheduled even though the operation is sound.
+        sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
         assert!(
             app.io.is_none(),
             "a delivered outcome clears the in-flight dialog"
@@ -7695,13 +7693,7 @@ mod tests {
             ui::portal::inject_for_test(PortalOutcome::Opened(path)),
         ));
         app.drain_io(&mut doc);
-        for _ in 0..10_000 {
-            app.drain_interchange_worker(&mut doc);
-            if app.interchange_rx.is_none() {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
         assert_eq!(
             SheetsDoc::sheet_count(&mut doc),
             before + 1,
