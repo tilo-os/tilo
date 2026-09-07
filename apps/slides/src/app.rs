@@ -58,6 +58,10 @@ const WHEEL_LINE_PX: f64 = 48.0;
 /// Compressed presentation bytes are bounded before opening the ZIP.  Archive
 /// member and aggregate expansion limits live beside the ODP/PPTX readers.
 const MAX_PRESENTATION_FILE_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum slide rows materialized into one accessibility frame.
+const A11Y_SLIDE_WINDOW: usize = 64;
+/// Maximum current-slide objects materialized into one accessibility frame.
+const A11Y_ELEMENT_WINDOW: usize = 128;
 
 fn image_open_request() -> PickRequest {
     PickRequest::open("Insert image", "Insert")
@@ -1014,6 +1018,7 @@ impl SlidesApp {
     /// and open the fill colour picker popover.
     fn apply_scenario_inspector_widgets(&mut self) {
         self.cur_slide = 1;
+        self.inspector_flap.open();
         self.sel = self.deck.slides.get(1).and_then(|s| {
             s.elements
                 .iter()
@@ -5100,6 +5105,178 @@ fn write_demo_image() -> Option<PathBuf> {
     Some(path)
 }
 
+impl SlidesApp {
+    fn semantic_target(&self, hit: &Hit) -> String {
+        match hit {
+            Hit::NewSlide => "slides.control.new-slide".into(),
+            Hit::DuplicateSlide => "slides.control.duplicate-slide".into(),
+            Hit::DeleteSlide => "slides.control.delete-slide".into(),
+            Hit::Present => "slides.control.present".into(),
+            Hit::Overview => "slides.control.overview".into(),
+            Hit::OpenSlide(index) | Hit::SelectSlide(index) => {
+                self.deck.slides.get(*index).map_or_else(
+                    || format!("slides.slide-index:{index}"),
+                    |slide| format!("slides.slide:{}", slide.id),
+                )
+            }
+            Hit::CyclePalette => "slides.control.cycle-palette".into(),
+            Hit::Insert(kind) => format!("slides.control.insert:{}", kind.as_str()),
+            Hit::SetFill(role) => format!("slides.control.fill:{role}"),
+            Hit::SetStroke(role) => format!("slides.control.stroke:{role}"),
+            Hit::OpenFillPicker => "slides.control.custom-fill".into(),
+            Hit::ToggleBold => "slides.control.bold".into(),
+            Hit::ToggleItalic => "slides.control.italic".into(),
+            Hit::SetAlign(align) => format!("slides.control.align:{}", align.as_str()),
+            Hit::BringFront => "slides.control.bring-front".into(),
+            Hit::SendBack => "slides.control.send-back".into(),
+            Hit::DuplicateElement => "slides.control.duplicate-element".into(),
+            Hit::DeleteElement => "slides.control.delete-element".into(),
+            Hit::SetLayout(layout) => format!("slides.control.layout:{}", layout.as_str()),
+            Hit::SetBackground(background) => {
+                format!("slides.control.background:{}", background.as_str())
+            }
+            Hit::SetPalette(palette) => format!("slides.control.palette:{}", palette.as_str()),
+            Hit::EditNotes => "slides.control.edit-notes".into(),
+            Hit::ToggleRail => "slides.control.toggle-slides".into(),
+            Hit::ToggleInspector => "slides.control.toggle-properties".into(),
+            Hit::ToggleToolbarMenu => "slides.control.more-tools".into(),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive semantic label/state mapping must stay visibly parallel to the Hit enum"
+    )]
+    fn semantic_copy(&self, hit: &Hit) -> (ui::a11y::Role, String, ui::a11y::AccessState) {
+        use ui::a11y::{AccessState, Role};
+        let selected = self.selected_element();
+        match hit {
+            Hit::NewSlide => (Role::Button, "New slide".into(), AccessState::new()),
+            Hit::DuplicateSlide => (Role::Button, "Duplicate slide".into(), AccessState::new()),
+            Hit::DeleteSlide => (
+                Role::Button,
+                "Delete slide".into(),
+                AccessState::new().disabled(self.deck.slides.len() <= 1),
+            ),
+            Hit::Present => (
+                Role::Button,
+                "Start presentation".into(),
+                AccessState::new(),
+            ),
+            Hit::Overview => (
+                Role::ToggleButton,
+                "Slide overview".into(),
+                AccessState::new().checked(self.mode == Mode::Overview),
+            ),
+            Hit::OpenSlide(index) | Hit::SelectSlide(index) => (
+                Role::Button,
+                format!("Open slide {}", index + 1),
+                AccessState::new().selected(*index == self.cur_slide),
+            ),
+            Hit::CyclePalette => (
+                Role::Button,
+                format!("Change deck theme, currently {}", self.deck.palette.label()),
+                AccessState::new(),
+            ),
+            Hit::Insert(kind) => (
+                Role::Button,
+                format!("Insert {}", kind.label().to_lowercase()),
+                AccessState::new(),
+            ),
+            Hit::SetFill(role) => (
+                Role::RadioButton,
+                format!("Fill {role}"),
+                AccessState::new().checked(selected.is_some_and(|element| element.fill == *role)),
+            ),
+            Hit::SetStroke(role) => (
+                Role::RadioButton,
+                format!("Stroke {role}"),
+                AccessState::new().checked(selected.is_some_and(|element| element.stroke == *role)),
+            ),
+            Hit::OpenFillPicker => (
+                Role::Button,
+                "Choose custom fill colour".into(),
+                AccessState::new(),
+            ),
+            Hit::ToggleBold => (
+                Role::ToggleButton,
+                "Bold".into(),
+                AccessState::new().checked(selected.is_some_and(|element| element.bold)),
+            ),
+            Hit::ToggleItalic => (
+                Role::ToggleButton,
+                "Italic".into(),
+                AccessState::new().checked(selected.is_some_and(|element| element.italic)),
+            ),
+            Hit::SetAlign(align) => (
+                Role::RadioButton,
+                format!("Align {}", align.as_str()),
+                AccessState::new().checked(selected.is_some_and(|element| element.align == *align)),
+            ),
+            Hit::BringFront => (Role::Button, "Bring to front".into(), AccessState::new()),
+            Hit::SendBack => (Role::Button, "Send to back".into(), AccessState::new()),
+            Hit::DuplicateElement => (Role::Button, "Duplicate element".into(), AccessState::new()),
+            Hit::DeleteElement => (Role::Button, "Delete element".into(), AccessState::new()),
+            Hit::SetLayout(layout) => (
+                Role::RadioButton,
+                format!("Layout {}", layout.label()),
+                AccessState::new()
+                    .checked(self.slide().is_some_and(|slide| slide.layout == *layout)),
+            ),
+            Hit::SetBackground(background) => (
+                Role::RadioButton,
+                format!("Background {}", background.label()),
+                AccessState::new().checked(
+                    self.slide()
+                        .is_some_and(|slide| slide.background == *background),
+                ),
+            ),
+            Hit::SetPalette(palette) => (
+                Role::RadioButton,
+                format!("Deck theme {}", palette.label()),
+                AccessState::new().checked(self.deck.palette == *palette),
+            ),
+            Hit::EditNotes => (
+                Role::Button,
+                "Edit speaker notes".into(),
+                AccessState::new(),
+            ),
+            Hit::ToggleRail => (
+                Role::ToggleButton,
+                "Slides panel".into(),
+                AccessState::new().checked(self.rail_open()),
+            ),
+            Hit::ToggleInspector => (
+                Role::ToggleButton,
+                "Properties panel".into(),
+                AccessState::new().checked(self.inspector_open()),
+            ),
+            Hit::ToggleToolbarMenu => (
+                Role::Button,
+                "More insert tools".into(),
+                AccessState::new().expanded(self.toolbar_tools.is_open()),
+            ),
+        }
+    }
+
+    fn tooltip_at(&self, point: Point) -> Option<&'static str> {
+        let chrome = self.compute_chrome();
+        chrome
+            .buttons
+            .iter()
+            .chain(chrome.toolbar_tools.menu_buttons.iter())
+            .find(|button| button.rect.contains(point))
+            .and_then(|button| match button.hit {
+                Hit::ToggleRail => Some("Show or hide slides"),
+                Hit::ToggleInspector => Some("Show or hide properties"),
+                Hit::Overview => Some("Slide overview"),
+                Hit::CyclePalette => Some("Change deck theme"),
+                Hit::ToggleToolbarMenu => Some("More insert tools"),
+                _ => None,
+            })
+    }
+}
+
 impl Widget for SlidesApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
@@ -5698,18 +5875,107 @@ impl Widget for SlidesApp {
         "SlidesApp"
     }
 
-    /// Slides are painted onto one canvas; represent the deck and its current
-    /// slide as a navigable list so a screen reader is not left with a generic
-    /// canvas.  The selected state follows the same `cur_slide` used by
-    /// keyboard, rail, overview, and Ctrl+K navigation.
+    /// Slides paints a single retained canvas, so every visible control and
+    /// durable object is represented as a synthetic semantic child. Controls
+    /// use the same [`Hit`] values as pointer input and stable document ids are
+    /// used for slides/elements, keeping AT activation from drifting after a
+    /// reorder or remote edit.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom-painted editor has editor, presentation, and modal semantic projections in one Widget hook"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+
+        if self.help_overlay.is_visible() {
+            let shortcuts = [
+                "N: New slide",
+                "P: Start presentation",
+                "G: Slide overview",
+                "T, R, O, L: Insert text, rectangle, ellipse, or line",
+                "Tab: Cycle objects on the slide",
+                "Enter: Edit selected text",
+                "Arrow keys: Move the selected object",
+                "Control Z and Control Y: Undo and redo",
+                "Question mark or Escape: Close keyboard shortcuts",
+            ]
+            .into_iter()
+            .map(|shortcut| AccessNode::new(Role::StaticText).with_name(shortcut))
+            .collect();
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Keyboard shortcuts")
+                    .with_description("Slides keyboard reference")
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::List)
+                            .with_name("Shortcuts")
+                            .with_children(shortcuts),
+                        AccessNode::new(Role::Button)
+                            .with_name("Close keyboard shortcuts")
+                            .with_action_target("slides.help.close")
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
+
         let count = self.deck.slides.len();
+        if self.mode == Mode::Present {
+            let title = self
+                .slide()
+                .and_then(|slide| {
+                    slide.elements.iter().find_map(|element| {
+                        (element.kind == ElementKind::Text && !element.text.trim().is_empty())
+                            .then(|| element.text.lines().next().unwrap_or("").to_string())
+                    })
+                })
+                .unwrap_or_else(|| format!("Slide {}", self.cur_slide + 1));
+            let controls = [
+                ("Previous slide", "slides.present.previous"),
+                ("Next slide", "slides.present.next"),
+                ("First slide", "slides.present.first"),
+                ("Last slide", "slides.present.last"),
+                ("Toggle speaker notes", "slides.present.notes"),
+                ("Toggle presenter view", "slides.present.presenter"),
+                ("End presentation", "slides.present.exit"),
+            ]
+            .into_iter()
+            .map(|(name, target)| {
+                AccessNode::new(Role::Button)
+                    .with_name(name)
+                    .with_action_target(target)
+                    .with_state(AccessState::new().focusable(true))
+            })
+            .collect();
+            return Some(
+                AccessNode::new(Role::Document)
+                    .with_name(format!("Presenting {}", self.deck.title))
+                    .with_value(format!("Slide {} of {count}: {title}", self.cur_slide + 1))
+                    .with_description(format!("Elapsed {}", self.presentation.clock()))
+                    .with_state(AccessState::new().focusable(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::Toolbar)
+                            .with_name("Presentation controls")
+                            .with_children(controls),
+                    ]),
+            );
+        }
+
+        // The semantic rail is windowed around the current slide. Global
+        // search and `resource(id)` resolve the entire durable deck lazily; an
+        // accessibility frame remains bounded even for an imported 1,000-slide
+        // presentation.
+        let start = self
+            .cur_slide
+            .saturating_sub(A11Y_SLIDE_WINDOW / 2)
+            .min(count.saturating_sub(A11Y_SLIDE_WINDOW));
         let slides = self
             .deck
             .slides
             .iter()
             .enumerate()
+            .skip(start)
+            .take(A11Y_SLIDE_WINDOW)
             .map(|(index, slide)| {
                 let title = slide
                     .elements
@@ -5718,24 +5984,180 @@ impl Widget for SlidesApp {
                     .map(|element| element.text.clone())
                     .filter(|text| !text.trim().is_empty())
                     .unwrap_or_else(|| format!("Slide {}", index + 1));
-                AccessNode::new(Role::ListItem)
+                AccessNode::new(Role::Button)
                     .with_name(title)
+                    .with_description(format!("Slide {} of {count}", index + 1))
+                    .with_action_target(format!("slides.slide:{}", slide.id))
                     .with_position(index + 1, count)
-                    .with_state(AccessState::new().selected(index == self.cur_slide))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(index == self.cur_slide),
+                    )
             })
             .collect();
+
+        let chrome = self.compute_chrome();
+        let mut seen = std::collections::HashSet::new();
+        let controls = chrome
+            .buttons
+            .iter()
+            .chain(chrome.toolbar_tools.menu_buttons.iter())
+            .filter(|button| self.rect.contains(button.rect.center()))
+            .filter_map(|button| {
+                let target = self.semantic_target(&button.hit);
+                if !seen.insert(target.clone()) {
+                    return None;
+                }
+                let (role, name, mut state) = self.semantic_copy(&button.hit);
+                state.focusable = !state.disabled;
+                Some(
+                    AccessNode::new(role)
+                        .with_name(name)
+                        .with_action_target(target)
+                        .with_bounds(button.rect)
+                        .with_state(state),
+                )
+            })
+            .collect();
+
+        let elements = self.slide().map_or_else(Vec::new, |slide| {
+            slide
+                .z_sorted()
+                .into_iter()
+                .take(A11Y_ELEMENT_WINDOW)
+                .map(|element| {
+                    let name =
+                        if element.kind == ElementKind::Text && !element.text.trim().is_empty() {
+                            element.text.lines().next().unwrap_or("Text").to_string()
+                        } else {
+                            element.kind.label().to_string()
+                        };
+                    AccessNode::new(if element.kind == ElementKind::Image {
+                        Role::Image
+                    } else {
+                        Role::Button
+                    })
+                    .with_name(name)
+                    .with_description(element.kind.label())
+                    .with_action_target(format!("slides.element:{}", element.id))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.sel.as_deref() == Some(element.id.as_str())),
+                    )
+                })
+                .collect()
+        });
+
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Slides controls")
+                .with_children(controls),
+            AccessNode::new(Role::List)
+                .with_name("Slides")
+                .with_description(format!(
+                    "Showing slides {} through {} of {count}",
+                    start + 1,
+                    (start + A11Y_SLIDE_WINDOW).min(count)
+                ))
+                .with_children(slides),
+            AccessNode::new(Role::Canvas)
+                .with_name(format!("Slide {} canvas", self.cur_slide + 1))
+                .with_children(elements),
+        ];
+        if let Some((message, kind)) = &self.io_toast {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(message)
+                    .with_live(if *kind == ToastKind::Error {
+                        Politeness::Assertive
+                    } else {
+                        Politeness::Polite
+                    }),
+            );
+        }
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
                 .with_value(format!("Slide {} of {count}", self.cur_slide + 1))
                 .with_description("Presentation editor with slide canvas and notes")
                 .with_state(AccessState::new().focusable(true))
-                .with_children(vec![
-                    AccessNode::new(Role::List)
-                        .with_name("Slides")
-                        .with_children(slides),
-                ]),
+                .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        if target == "slides.help.close" {
+            self.help_overlay.hide();
+            return true;
+        }
+        let present_key = match target {
+            "slides.present.previous" => Some(Key::Named(NamedKey::ArrowLeft)),
+            "slides.present.next" => Some(Key::Named(NamedKey::ArrowRight)),
+            "slides.present.first" => Some(Key::Named(NamedKey::Home)),
+            "slides.present.last" => Some(Key::Named(NamedKey::End)),
+            "slides.present.notes" => Some(Key::Character("s".into())),
+            "slides.present.presenter" => Some(Key::Character("p".into())),
+            "slides.present.exit" => Some(Key::Named(NamedKey::Escape)),
+            _ => None,
+        };
+        if let Some(key) = present_key {
+            if self.mode != Mode::Present {
+                return false;
+            }
+            let mut handled = false;
+            self.on_key_present(&key, &mut handled);
+            return handled;
+        }
+        if let Some(slide_id) = target.strip_prefix("slides.slide:") {
+            if let Some(index) = self
+                .deck
+                .slides
+                .iter()
+                .position(|slide| slide.id == slide_id)
+            {
+                self.apply_hit(state, Hit::SelectSlide(index));
+                return true;
+            }
+            return false;
+        }
+        if let Some(element_id) = target.strip_prefix("slides.element:") {
+            if self.slide().is_some_and(|slide| {
+                slide
+                    .elements
+                    .iter()
+                    .any(|element| element.id == element_id)
+            }) {
+                self.sel = Some(element_id.to_string());
+                self.editing_text = false;
+                self.editing_notes = false;
+                return true;
+            }
+            return false;
+        }
+        let chrome = self.compute_chrome();
+        let hit = chrome
+            .buttons
+            .iter()
+            .chain(chrome.toolbar_tools.menu_buttons.iter())
+            .find(|button| self.semantic_target(&button.hit) == target)
+            .map(|button| button.hit.clone());
+        if let Some(hit) = hit {
+            self.apply_hit(state, hit);
+            true
+        } else {
+            false
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -5747,6 +6169,10 @@ impl Widget for SlidesApp {
             return self.notes_input.cursor_shape(point);
         }
         None
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip_at(self.last_mouse)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -10023,10 +10449,54 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         let tree = app.accessibility().expect("presentation semantics");
         assert_eq!(tree.role, ui::a11y::Role::Document);
-        let slides = &tree.children[0];
+        let slides = tree
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::List)
+            .expect("semantic slide list");
         assert_eq!(slides.role, ui::a11y::Role::List);
         assert_eq!(slides.children.len(), app.deck.slides.len());
         assert!(slides.children.iter().any(|slide| slide.state.selected));
+        assert!(
+            slides
+                .children
+                .iter()
+                .all(|slide| slide.action_target.is_some())
+        );
+    }
+
+    #[test]
+    fn accessibility_activation_uses_stable_slide_identity_and_modal_help_owns_tree() {
+        use ui::widget::Widget as _;
+
+        let mut app = SlidesApp::demo(None);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let target_id = app.deck.slides[3].id.clone();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &format!("slides.slide:{target_id}"),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.slide().map(|slide| slide.id.as_str()),
+            Some(target_id.as_str())
+        );
+
+        app.help_overlay.show();
+        let tree = app.accessibility().expect("modal help semantics");
+        assert_eq!(tree.role, ui::a11y::Role::Dialog);
+        assert!(tree.state.modal);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "slides.help.close",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!app.help_overlay.is_visible());
     }
 
     #[test]
