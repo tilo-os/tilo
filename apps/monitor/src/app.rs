@@ -1606,7 +1606,11 @@ impl MonitorApp {
             charts::fill_rrect(scene, t, r, radius, c.lift(0.35));
             charts::stroke_rrect(scene, t, r, radius, c.border_standard, 1.0);
         }
-        let text_color = if active { Color::WHITE } else { c.text_dim };
+        let text_color = if active {
+            c.on_surface(c.accent[5]).ink
+        } else {
+            c.text_dim
+        };
         if compact {
             // Centre the icon; no label.
             let icon_r = Rect::new(
@@ -2357,14 +2361,21 @@ impl MonitorApp {
                     button.x0 + 27.0,
                     button.center().y + 7.0,
                 );
-                icons::draw_icon(scene, t, icon, Icon::Refresh, Color::WHITE, 1.5);
+                icons::draw_icon(
+                    scene,
+                    t,
+                    icon,
+                    Icon::Refresh,
+                    c.on_surface(c.accent[5]).ink,
+                    1.5,
+                );
                 let label = "Retry refresh";
                 let (_, label_h) = tr.measure_weighted(label, sm, None, TextWeight::Medium);
                 tr.draw_text_weighted(
                     scene,
                     label,
                     sm,
-                    Color::WHITE,
+                    c.on_surface(c.accent[5]).ink,
                     t * Affine::translate((
                         icon.x1 + 6.0,
                         button.center().y - f64::from(label_h) / 2.0,
