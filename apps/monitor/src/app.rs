@@ -38,13 +38,14 @@ use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::tooltip::{TooltipHost, draw_hover_tooltip};
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Toggle, ToggleFace, Widget,
 };
 
 use crate::charts::{self, Series, with_alpha};
 use crate::layout;
-use crate::model::{MonitorModel, ProcessInfo, Ring, fmt_rate, fmt_uptime};
+use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo, Ring, fmt_rate, fmt_uptime};
 use crate::prefs::Prefs;
 use crate::responsive::{ProcPane, ProcPush};
 use crate::sampler::{Sampler, StopKind};
@@ -71,7 +72,14 @@ enum ProcAction {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum MonitorOperation {
     Refresh,
-    Signal { pid: u32, signal: MonitorSignal },
+    Signal {
+        pid: u32,
+        /// Kernel start-time tick captured with the resource. It binds the
+        /// operation to one PID lifetime, preventing delayed actions from
+        /// targeting a process that reused the same PID.
+        started_at: u64,
+        signal: MonitorSignal,
+    },
 }
 
 /// The two process signals Monitor deliberately supports. This is distinct
@@ -93,6 +101,26 @@ impl MonitorSignal {
 }
 
 const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
+
+/// A process is only the same action resource for the lifetime identified by
+/// its kernel start-time tick.  In particular, do not use a bare PID here:
+/// PIDs can be recycled while a palette entry, history item, or collaborator's
+/// action is waiting to execute.
+fn process_resource_id(pid: u32, started_at: u64) -> String {
+    format!("process:{pid}:started:{started_at}")
+}
+
+fn monitor_process_target(pid: u32, started_at: u64) -> String {
+    format!("monitor.{}", process_resource_id(pid, started_at))
+}
+
+/// Decode the canonical, wire-safe process resource component used by
+/// semantic targets.  Keep parsing deliberately strict so a malformed target
+/// can never silently fall back to a PID-only action.
+fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
+    let (pid, started_at) = id.strip_prefix("process:")?.split_once(":started:")?;
+    Some((pid.parse().ok()?, started_at.parse().ok()?))
+}
 
 /// Why a signal operation is being executed. Visible UI honors the user's
 /// persisted local confirmation preference; the resource-action door already
@@ -280,6 +308,10 @@ struct ConfirmDialog {
 struct Hit {
     tab_proc: Rect,
     tab_res: Rect,
+    /// Manual one-shot sample; exported through the root resource action.
+    refresh: Rect,
+    /// Persisted periodic-sampling pause/resume control.
+    auto_refresh: Rect,
     interval: Rect,
     search: Rect,
     kernel_toggle: Rect,
@@ -294,6 +326,8 @@ struct Hit {
     kill_btn: Rect,
     /// The "Stop" (SIGTERM) button in the detail pane's action bar.
     stop_btn: Rect,
+    /// Recovery action for a process-source permission/error state.
+    retry_process_source: Rect,
     /// Context-menu item rects, recorded while the menu is open.
     menu_items: Vec<(usize, Rect)>,
     /// Summary-strip stat cells (Processes tab). Clicking one jumps to the
@@ -317,6 +351,8 @@ impl Hit {
         Self {
             tab_proc: Rect::ZERO,
             tab_res: Rect::ZERO,
+            refresh: Rect::ZERO,
+            auto_refresh: Rect::ZERO,
             interval: Rect::ZERO,
             search: Rect::ZERO,
             kernel_toggle: Rect::ZERO,
@@ -327,6 +363,7 @@ impl Hit {
             tree_toggle: Rect::ZERO,
             kill_btn: Rect::ZERO,
             stop_btn: Rect::ZERO,
+            retry_process_source: Rect::ZERO,
             menu_items: Vec::new(),
             summary_cells: Vec::new(),
             detail_back: Rect::ZERO,
@@ -370,7 +407,7 @@ pub struct MonitorApp {
     viewport_h: f64,
     /// A pending confirmation: the process and which stop signal it will get.
     /// Set only for the `Kill` (SIGKILL) path; `Stop` (SIGTERM) never gates.
-    confirm_stop: Option<(u32, StopKind)>,
+    confirm_stop: Option<(u32, u64, StopKind)>,
     /// The live confirmation dialog (shared [`ModalDialog`]) mirroring
     /// `confirm_stop`. Built lazily when a confirm is pending and dropped when
     /// it resolves; owns the scrim, centered box, footer buttons, Esc, focus
@@ -432,6 +469,9 @@ pub struct MonitorApp {
     // responsive layout
     /// The Processes master-detail push flow used only when narrow.
     proc_push: ProcPush,
+    /// One shared delayed tooltip controller for the icon-only narrow header
+    /// controls. Wide layouts keep their text labels visible instead.
+    tooltips: TooltipHost,
 
     // frame caches
     rect: Rect,
@@ -545,6 +585,7 @@ impl MonitorApp {
             interval_popover_seed: false,
             proc_cpu_hist: HashMap::new(),
             proc_push: ProcPush::default(),
+            tooltips: TooltipHost::new(),
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             last_refresh,
@@ -564,7 +605,9 @@ impl MonitorApp {
         if self.sample_only {
             return;
         }
-        if self.last_refresh.elapsed() >= Duration::from_millis(self.prefs.interval_ms) {
+        if self.prefs.auto_refresh
+            && self.last_refresh.elapsed() >= Duration::from_millis(self.prefs.interval_ms)
+        {
             self.sampler.refresh(&mut self.model);
             self.last_refresh = Instant::now();
             self.record_proc_cpu();
@@ -639,6 +682,22 @@ impl MonitorApp {
     fn selected_process(&self) -> Option<ProcessInfo> {
         let pid = self.selected_pid?;
         self.model.processes.iter().find(|p| p.pid == pid).cloned()
+    }
+
+    /// A text filter is a view boundary: do not leave an actionable detail
+    /// card for a process that is no longer represented in the table. Besides
+    /// avoiding confusing "no results" screens with stale detail below them,
+    /// this ensures Stop/Kill controls always correspond to a visible row.
+    fn clear_selection_if_filtered_out(&mut self) {
+        let Some(pid) = self.selected_pid else {
+            return;
+        };
+        if !self.visible_rows().iter().any(|row| row.pid == pid) {
+            self.selected_pid = None;
+            if self.is_narrow() {
+                self.proc_push.show_table();
+            }
+        }
     }
 
     /// Build the rows the process table renders this frame. In tree mode this
@@ -718,17 +777,28 @@ impl MonitorApp {
     /// published permission, confirmation, and retry contract before calling
     /// [`Self::invoke_resource_operation`].
     fn request_process_control(&mut self, pid: u32, action: &'static str) {
-        if self
+        if let Some(process) = self
             .model
             .processes
             .iter()
-            .any(|process| process.pid == pid)
+            .find(|process| process.pid == pid)
         {
             self.pending_control_invocation = Some(ControlInvocation {
-                address: ActionAddress::new(format!("process:{pid}"), action),
+                address: ActionAddress::new(process_resource_id(pid, process.started_at), action),
                 arguments: serde_json::Map::new(),
             });
         }
+    }
+
+    /// Queue a root-level Monitor action rather than bypassing the shared
+    /// action broker. Refresh is therefore available to palette search,
+    /// history, collaboration, and agents through the same contract as the
+    /// visible header button.
+    fn request_monitor_control(&mut self, action: &'static str) {
+        self.pending_control_invocation = Some(ControlInvocation {
+            address: ActionAddress::new("processes", action),
+            arguments: serde_json::Map::new(),
+        });
     }
 
     /// Execute the typed operation emitted by the resource catalogue. All
@@ -742,28 +812,33 @@ impl MonitorApp {
         match operation {
             MonitorOperation::Refresh => {
                 self.sampler.refresh(&mut self.model);
+                self.last_refresh = Instant::now();
                 self.record_proc_cpu();
                 self.clamp_scroll();
                 Ok(())
             }
-            MonitorOperation::Signal { pid, signal } => {
+            MonitorOperation::Signal {
+                pid,
+                started_at,
+                signal,
+            } => {
                 let kind = signal.stop_kind();
-                if !self
+                let Some(process) = self
                     .model
                     .processes
                     .iter()
-                    .any(|process| process.pid == *pid)
-                {
+                    .find(|process| process.pid == *pid && process.started_at == *started_at)
+                else {
                     return Err("process is no longer running".into());
-                }
+                };
                 if kind == StopKind::Kill
                     && confirmation == SignalConfirmation::LocalPreference
                     && self.prefs.confirm_kill
                 {
-                    self.confirm_stop = Some((*pid, kind));
+                    self.confirm_stop = Some((process.pid, process.started_at, kind));
                     return Ok(());
                 }
-                if self.do_stop(*pid, kind) {
+                if self.do_stop(process.pid, process.started_at, kind) {
                     Ok(())
                 } else {
                     Err("the operating system refused the process signal".into())
@@ -777,11 +852,11 @@ impl MonitorApp {
     /// Sample/offscreen: the signal call is a no-op (the pid isn't a real
     /// process), but we still drop the row so the UI responds — the next live
     /// refresh would do the same once the process actually exits.
-    fn do_stop(&mut self, pid: u32, kind: StopKind) -> bool {
+    fn do_stop(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
         // Sample/offscreen rows are deliberately synthetic, so a system call
         // cannot find their pids. Treat their action as a local simulation;
         // live rows only disappear after the OS accepted the signal.
-        if !self.sample_only && !self.sampler.signal(pid, kind) {
+        if !self.sample_only && !self.sampler.signal_if_current(pid, started_at, kind) {
             return false;
         }
         // SIGKILL removes the row immediately (it cannot survive); SIGTERM is
@@ -1173,6 +1248,28 @@ impl MonitorApp {
             // which isn't positioned until `draw_header` runs, so defer it).
             "interval-popover" => self.interval_popover_seed = true,
             "resources" => self.tab = Tab::Resources,
+            // Sparse-state coverage: an honest no-data panel and a filter
+            // no-match panel have distinct recovery copy, both suitable for
+            // deterministic visual review.
+            "empty" => {
+                self.model.processes.clear();
+                self.model.process_status = ProcessDataStatus::Empty;
+                self.selected_pid = None;
+            }
+            "process-loading" => {
+                self.model.processes.clear();
+                self.model.process_status = ProcessDataStatus::Loading;
+                self.selected_pid = None;
+            }
+            "process-permission-error" => {
+                self.model.processes.clear();
+                self.model.process_status = ProcessDataStatus::PermissionDenied;
+                self.selected_pid = None;
+            }
+            "no-results" => {
+                self.search_input.set_text("__no_process_matches__");
+                self.clear_selection_if_filtered_out();
+            }
             // ---- process-tree scenarios -----------------------------------
             // The default frame is already the tree COLLAPSED with summed
             // parent totals (tree_mode on, expanded empty, Sum default). The
@@ -1226,11 +1323,12 @@ impl MonitorApp {
             }
             // The shared kill/stop confirm dialog over the process table.
             "kill-confirm" => {
-                if let Some(pid) = self
+                if let Some(process) = self
                     .selected_pid
-                    .or_else(|| self.model.processes.first().map(|p| p.pid))
+                    .and_then(|pid| self.model.processes.iter().find(|p| p.pid == pid))
+                    .or_else(|| self.model.processes.first())
                 {
-                    self.confirm_stop = Some((pid, StopKind::Kill));
+                    self.confirm_stop = Some((process.pid, process.started_at, StopKind::Kill));
                 }
             }
             _ => {}
@@ -1242,6 +1340,10 @@ impl MonitorApp {
 // Drawing
 // ==========================================================================
 impl MonitorApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the header measures, lays out, paints, and records all three related controls together so their narrow-width collision guarantees stay local"
+    )]
     fn draw_header(
         &mut self,
         scene: &mut Scene,
@@ -1277,6 +1379,47 @@ impl MonitorApp {
         let iw = f64::from(tr.measure_weighted(&il, xs, None, TextWeight::Medium).0) + 22.0;
         let pill_x1 = right_block_x0 - 16.0;
         let pill_x0 = pill_x1 - iw;
+        // One-shot refresh and pause/resume stay beside the cadence chooser:
+        // they are small, icon-only controls with full accessible names. This
+        // gives a paused monitor an obvious recovery path without turning the
+        // title bar into a toolbar.
+        let show_tool_labels = inner.width() >= 900.0;
+        let refresh_label = "Refresh";
+        let auto_refresh_label = if self.prefs.auto_refresh {
+            "Pause"
+        } else {
+            "Resume"
+        };
+        let mut control_w = |label: &str| {
+            if show_tool_labels {
+                f64::from(
+                    tr.measure_weighted(
+                        label,
+                        theme.tokens.typography.scale.sm,
+                        None,
+                        TextWeight::Medium,
+                    )
+                    .0,
+                ) + 38.0
+            } else {
+                32.0
+            }
+        };
+        let refresh_w = control_w(refresh_label);
+        let auto_refresh_w = control_w(auto_refresh_label);
+        let tool_gap = 8.0;
+        let refresh_r = Rect::new(
+            pill_x0 - tool_gap - refresh_w,
+            cy + 1.0,
+            pill_x0 - tool_gap,
+            cy + seg_h - 1.0,
+        );
+        let auto_refresh_r = Rect::new(
+            refresh_r.x0 - tool_gap - auto_refresh_w,
+            cy + 1.0,
+            refresh_r.x0 - tool_gap,
+            cy + seg_h - 1.0,
+        );
 
         // The OS owns window chrome (app-name/logo/subtitle) — the header draws
         // only its functional controls (tabs, clock, interval pill), so the tab
@@ -1288,7 +1431,7 @@ impl MonitorApp {
         // brand and the interval pill, and fall back to icon-only pills when
         // even the clamped width can't seat the labels.
         let gap_l = brand_right + 16.0;
-        let gap_r = pill_x0 - 16.0;
+        let gap_r = auto_refresh_r.x0 - 12.0;
         let avail_tabs = (gap_r - gap_l).max(0.0);
         let want_seg_w = 124.0_f64;
         let compact = avail_tabs < 2.0 * 96.0 + 6.0;
@@ -1376,6 +1519,69 @@ impl MonitorApp {
             TextWeight::Medium,
         );
         self.hit.interval = interval_r;
+        for (rect, icon, label, active) in [
+            (refresh_r, Icon::Refresh, refresh_label, false),
+            (
+                auto_refresh_r,
+                if self.prefs.auto_refresh {
+                    Icon::Pause
+                } else {
+                    Icon::Play
+                },
+                auto_refresh_label,
+                self.prefs.auto_refresh,
+            ),
+        ] {
+            charts::fill_rrect(
+                scene,
+                t,
+                rect,
+                6.0,
+                c.lift(if active { 0.55 } else { 0.35 }),
+            );
+            charts::stroke_rrect(
+                scene,
+                t,
+                rect,
+                6.0,
+                if rect.contains(self.last_cursor) {
+                    c.accent[5]
+                } else {
+                    c.border_standard
+                },
+                if rect.contains(self.last_cursor) {
+                    1.5
+                } else {
+                    1.0
+                },
+            );
+            let icon_r = Rect::new(
+                rect.x0 + 8.0,
+                rect.center().y - 7.0,
+                rect.x0 + 22.0,
+                rect.center().y + 7.0,
+            );
+            icons::draw_icon(scene, t, icon_r, icon, c.text_primary, 1.6);
+            if show_tool_labels {
+                let (_, th) = tr.measure_weighted(
+                    label,
+                    theme.tokens.typography.scale.sm,
+                    None,
+                    TextWeight::Medium,
+                );
+                tr.draw_text_weighted(
+                    scene,
+                    label,
+                    theme.tokens.typography.scale.sm,
+                    c.text_primary,
+                    t * Affine::translate((icon_r.x1 + 5.0, rect.center().y - f64::from(th) / 2.0)),
+                    None,
+                    TextWeight::Medium,
+                );
+            }
+        }
+        self.hit.refresh = refresh_r;
+        self.hit.auto_refresh = auto_refresh_r;
     }
 
     /// Draw a tab pill. `compact` draws an icon-only pill (the label is
@@ -2050,6 +2256,10 @@ impl MonitorApp {
 
     /// Lay out and draw the visible rows, returning the total (unpaged) row
     /// count so the scrollbar pass can size its thumb.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the sparse-state recovery controls share the table's clip, hit-geometry, and text context; keeping them with the normal row pass prevents two divergent table layouts"
+    )]
     fn draw_table_rows(
         &mut self,
         scene: &mut Scene,
@@ -2074,6 +2284,97 @@ impl MonitorApp {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rows_clip);
         self.hit.rows.clear();
         self.hit.twisties.clear();
+        self.hit.retry_process_source = Rect::ZERO;
+        if rows.is_empty() {
+            let c = &theme.tokens.colors;
+            let (title, body, can_retry) = if self.model.processes.is_empty() {
+                match self.model.process_status {
+                    ProcessDataStatus::Loading => (
+                        "Loading processes",
+                        "Collecting the current process list…",
+                        false,
+                    ),
+                    ProcessDataStatus::Empty | ProcessDataStatus::Ready => (
+                        "No processes are running",
+                        "The operating system returned an empty process list.",
+                        false,
+                    ),
+                    ProcessDataStatus::PermissionDenied => (
+                        "Process access is restricted",
+                        "Monitor could not read the system process list. Grant process-inspection permission, then retry.",
+                        true,
+                    ),
+                    ProcessDataStatus::Unavailable => (
+                        "Process data is unavailable",
+                        "The operating system did not provide a process snapshot. Try again in a moment.",
+                        true,
+                    ),
+                }
+            } else {
+                (
+                    "No processes match this search",
+                    "Clear or broaden the process filter to see more results.",
+                    false,
+                )
+            };
+            let base = theme.tokens.typography.scale.base;
+            let sm = theme.tokens.typography.scale.sm;
+            let (tw, _) = tr.measure_weighted(title, base, None, TextWeight::Semibold);
+            let (bw, _) = tr.measure(body, sm, None);
+            let cx = geom.view.center().x;
+            let cy = geom.view.center().y;
+            tr.draw_text_weighted(
+                scene,
+                title,
+                base,
+                c.text_primary,
+                t * Affine::translate((cx - f64::from(tw) / 2.0, cy - f64::from(base) - 4.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            tr.draw_text(
+                scene,
+                body,
+                sm,
+                c.text_dim,
+                t * Affine::translate((cx - f64::from(bw) / 2.0, cy + 4.0)),
+                None,
+            );
+            if can_retry {
+                let button_w = 116.0;
+                let button_h = 32.0;
+                let button = Rect::new(
+                    cx - button_w / 2.0,
+                    cy + 28.0,
+                    cx + button_w / 2.0,
+                    cy + 28.0 + button_h,
+                );
+                charts::fill_rrect(scene, t, button, 7.0, c.accent[5]);
+                charts::stroke_rrect(scene, t, button, 7.0, c.accent[6], 1.0);
+                let icon = Rect::new(
+                    button.x0 + 13.0,
+                    button.center().y - 7.0,
+                    button.x0 + 27.0,
+                    button.center().y + 7.0,
+                );
+                icons::draw_icon(scene, t, icon, Icon::Refresh, Color::WHITE, 1.5);
+                let label = "Retry refresh";
+                let (_, label_h) = tr.measure_weighted(label, sm, None, TextWeight::Medium);
+                tr.draw_text_weighted(
+                    scene,
+                    label,
+                    sm,
+                    Color::WHITE,
+                    t * Affine::translate((
+                        icon.x1 + 6.0,
+                        button.center().y - f64::from(label_h) / 2.0,
+                    )),
+                    None,
+                    TextWeight::Medium,
+                );
+                self.hit.retry_process_source = button;
+            }
+        }
         for i in 0..self.rows_per_page {
             let idx = start + i;
             let Some(p) = rows.get(idx) else { break };
@@ -3627,7 +3928,7 @@ impl MonitorApp {
         path: &ObjId,
         handled: &mut bool,
     ) {
-        let Some((pid, kind)) = self.confirm_stop else {
+        let Some((pid, started_at, kind)) = self.confirm_stop else {
             return;
         };
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
@@ -3636,6 +3937,7 @@ impl MonitorApp {
         {
             let operation = MonitorOperation::Signal {
                 pid,
+                started_at,
                 signal: match kind {
                     StopKind::Term => MonitorSignal::Stop,
                     StopKind::Kill => MonitorSignal::Kill,
@@ -3659,6 +3961,7 @@ impl MonitorApp {
         if confirm {
             let operation = MonitorOperation::Signal {
                 pid,
+                started_at,
                 signal: match kind {
                     StopKind::Term => MonitorSignal::Stop,
                     StopKind::Kill => MonitorSignal::Kill,
@@ -3809,7 +4112,7 @@ impl MonitorApp {
         let clicked_search = self.hit.search.contains(p);
         self.search_input.set_focus(clicked_search);
 
-        if self.click_nav_chrome(p) {
+        if self.click_nav_chrome(p, doc, path) {
             *handled = true;
             return;
         }
@@ -3865,7 +4168,7 @@ impl MonitorApp {
     /// Non-tab-specific chrome: the detail-pane Back affordance, a
     /// summary-strip cell jump, the tab pills, and starting the interval
     /// pill's press-and-hold timer. Returns whether the click was consumed.
-    fn click_nav_chrome(&mut self, p: Point) -> bool {
+    fn click_nav_chrome(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId) -> bool {
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
             self.proc_push.show_table();
@@ -3899,6 +4202,20 @@ impl MonitorApp {
             self.tab = Tab::Resources;
             return true;
         }
+        if self.hit.refresh.contains(p) {
+            self.request_monitor_control("refresh");
+            return true;
+        }
+        if self.hit.auto_refresh.contains(p) {
+            self.prefs.auto_refresh = !self.prefs.auto_refresh;
+            self.prefs.store(doc, path);
+            // Resuming starts a fresh cadence window. That avoids an immediate
+            // surprise sample after the user intentionally paused inspection.
+            if self.prefs.auto_refresh {
+                self.last_refresh = Instant::now();
+            }
+            return true;
+        }
         if self.hit.interval.contains(p) {
             // The interval pill distinguishes a quick click (cycle) from a
             // press-and-hold (open the option popover). Start the hold timer on
@@ -3906,6 +4223,10 @@ impl MonitorApp {
             // `release_interval_press` cycles on an early release.
             self.interval_press = Some(Instant::now());
             self.interval_hold_opened = false;
+            return true;
+        }
+        if self.hit.retry_process_source.contains(p) {
+            self.request_monitor_control("refresh");
             return true;
         }
         false
@@ -4119,7 +4440,7 @@ impl MonitorApp {
 
     /// Global keys: Esc, selection nav, tree expand/collapse, Kill, and
     /// single-character shortcuts.
-    fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, _path: &ObjId, handled: &mut bool) {
+    fn key_global(&mut self, key: &Key, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         match key {
             // Esc pops a pushed detail pane back to the table (narrow).
             Key::Named(NamedKey::Escape) => {
@@ -4162,7 +4483,7 @@ impl MonitorApp {
                 }
             }
             Key::Character(s) => {
-                *handled = self.key_character_shortcut(s.as_str(), doc);
+                *handled = self.key_character_shortcut(s.as_str(), doc, path);
             }
             _ => {}
         }
@@ -4171,7 +4492,7 @@ impl MonitorApp {
     /// Single-character keyboard shortcuts: tab switch, search focus, sort
     /// keys, Stop, and the tree/sum toggles. Returns whether the character
     /// was recognised.
-    fn key_character_shortcut(&mut self, s: &str, _doc: &mut AutoCommit) -> bool {
+    fn key_character_shortcut(&mut self, s: &str, doc: &mut AutoCommit, path: &ObjId) -> bool {
         match s {
             "1" => self.tab = Tab::Processes,
             "2" => self.tab = Tab::Resources,
@@ -4183,6 +4504,14 @@ impl MonitorApp {
             "m" | "M" => self.set_sort(SortKey::Mem),
             "p" | "P" => self.set_sort(SortKey::Pid),
             "n" | "N" => self.set_sort(SortKey::Name),
+            "r" | "R" => self.request_monitor_control("refresh"),
+            "a" | "A" => {
+                self.prefs.auto_refresh = !self.prefs.auto_refresh;
+                self.prefs.store(doc, path);
+                if self.prefs.auto_refresh {
+                    self.last_refresh = Instant::now();
+                }
+            }
             // "s" sends SIGTERM (Stop) to the selection; "g" toggles the
             // subtree-sum mode; "t" toggles tree/flat.
             "s" | "S" => {
@@ -4263,6 +4592,26 @@ impl MonitorApp {
                     .with_bounds(self.hit.interval),
             ),
             (
+                "monitor.refresh".to_string(),
+                self.hit.refresh,
+                AccessNode::new(Role::Button)
+                    .with_name("Refresh system metrics and processes")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.hit.refresh),
+            ),
+            (
+                "monitor.auto-refresh".to_string(),
+                self.hit.auto_refresh,
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Automatic refresh")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.prefs.auto_refresh),
+                    )
+                    .with_bounds(self.hit.auto_refresh),
+            ),
+            (
                 "monitor.kernel-threads".to_string(),
                 self.hit.kernel_toggle,
                 AccessNode::new(Role::Switch)
@@ -4295,6 +4644,13 @@ impl MonitorApp {
                     .with_bounds(self.hit.sum_toggle),
             ),
         ];
+        if self.hit.retry_process_source.area() > 0.0 {
+            targets.push(button(
+                "monitor.process-source.retry",
+                self.hit.retry_process_source,
+                "Retry loading the process list",
+            ));
+        }
         if self.interval_popover.is_open() {
             let menu = self.interval_popover.rect();
             for (index, ms) in INTERVAL_OPTIONS.iter().copied().enumerate() {
@@ -4353,21 +4709,22 @@ impl MonitorApp {
             ));
         }
         for (pid, rect) in &self.hit.rows {
-            let name = self
+            let process = self
                 .model
                 .processes
                 .iter()
                 .find(|process| process.pid == *pid)
-                .map_or_else(
-                    || format!("Process {pid}"),
-                    |process| format!("{} — PID {pid}", process.name),
-                );
+                .cloned();
+            let (name, started_at) = process.map_or_else(
+                || (format!("Process {pid}"), 0),
+                |process| (format!("{} — PID {pid}", process.name), process.started_at),
+            );
             targets.push((
-                format!("monitor.process:{pid}"),
+                monitor_process_target(*pid, started_at),
                 *rect,
                 AccessNode::new(Role::ListItem)
                     .with_name(name)
-                    .with_semantic_key(format!("process:{pid}"))
+                    .with_semantic_key(process_resource_id(*pid, started_at))
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -4377,19 +4734,25 @@ impl MonitorApp {
             ));
         }
         if self.hit.stop_btn.area() > 0.0
-            && let Some(pid) = self.selected_pid
+            && let Some(process) = self.selected_process()
         {
             targets.push(button(
-                &format!("monitor.process:{pid}:stop"),
+                &format!(
+                    "{}:stop",
+                    monitor_process_target(process.pid, process.started_at)
+                ),
                 self.hit.stop_btn,
                 "Stop selected process",
             ));
         }
         if self.hit.kill_btn.area() > 0.0
-            && let Some(pid) = self.selected_pid
+            && let Some(process) = self.selected_process()
         {
             targets.push(button(
-                &format!("monitor.process:{pid}:kill"),
+                &format!(
+                    "{}:kill",
+                    monitor_process_target(process.pid, process.started_at)
+                ),
                 self.hit.kill_btn,
                 "Force kill selected process",
             ));
@@ -4423,7 +4786,7 @@ impl Widget for MonitorApp {
         }
         for process in &self.model.processes {
             let mut resource = Resource::new(
-                format!("process:{}", process.pid),
+                process_resource_id(process.pid, process.started_at),
                 "monitor.process",
                 format!("{} ({})", process.name, process.pid),
             );
@@ -4438,6 +4801,7 @@ impl Widget for MonitorApp {
                     MONITOR_OPERATION_TYPE,
                     &MonitorOperation::Signal {
                         pid: process.pid,
+                        started_at: process.started_at,
                         signal,
                     },
                 ) {
@@ -4555,9 +4919,9 @@ impl Widget for MonitorApp {
             &r,
         );
 
-        // Advance the eased push flap once per frame (the redraw loop keeps
-        // pumping while `needs_animation_frame` is true).
-        self.proc_push.tick();
+        // Advance the eased push flap only while it has motion to settle.
+        // The shared reduced-motion policy snaps it to its requested pane.
+        self.proc_push.tick(theme.reduce_motion);
 
         let content = Rect::new(
             r.x0 + OUTER_PAD,
@@ -4660,6 +5024,10 @@ impl Widget for MonitorApp {
             .map(|(_, rect, _)| *rect)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "semantic targets intentionally live beside their direct state mutations, preserving a complete auditable mapping for every custom-painted control"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -4676,6 +5044,17 @@ impl Widget for MonitorApp {
             "monitor.tab.resources" if activated => self.tab = Tab::Resources,
             "monitor.interval" if matches!(action, Action::Activate | Action::Expand) => {
                 self.open_interval_popover();
+            }
+            "monitor.refresh" if activated => self.request_monitor_control("refresh"),
+            "monitor.process-source.retry" if activated => {
+                self.request_monitor_control("refresh");
+            }
+            "monitor.auto-refresh" if activated => {
+                self.prefs.auto_refresh = !self.prefs.auto_refresh;
+                self.prefs.store(state, path);
+                if self.prefs.auto_refresh {
+                    self.last_refresh = Instant::now();
+                }
             }
             "monitor.kernel-threads" if activated => {
                 self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
@@ -4726,19 +5105,20 @@ impl Widget for MonitorApp {
                 let Some(process_target) = target.strip_prefix("monitor.process:") else {
                     return false;
                 };
-                let (pid, command) = process_target
-                    .split_once(':')
-                    .map_or((process_target, None), |(pid, command)| {
-                        (pid, Some(command))
-                    });
-                let Ok(pid) = pid.parse::<u32>() else {
+                let (resource_id, command) = match process_target.rsplit_once(':') {
+                    Some((resource_id, command @ ("stop" | "kill"))) => {
+                        (format!("process:{resource_id}"), Some(command))
+                    }
+                    _ => (format!("process:{process_target}"), None),
+                };
+                let Some((pid, started_at)) = parse_process_resource_id(&resource_id) else {
                     return false;
                 };
                 if !self
                     .model
                     .processes
                     .iter()
-                    .any(|process| process.pid == pid)
+                    .any(|process| process.pid == pid && process.started_at == started_at)
                 {
                     return false;
                 }
@@ -4777,10 +5157,53 @@ impl Widget for MonitorApp {
         self.search_input.on_commit();
     }
 
-    /// A live monitor keeps the redraw loop pumping so the throttled
-    /// sysinfo refresh and the chart histories keep advancing.
+    /// Ask for a 60 Hz frame only for a short-lived visual need. Periodic
+    /// sampling uses [`Self::next_wake_deadline`] instead, so an idle Monitor
+    /// sleeps between its selected sampling intervals rather than repainting
+    /// the entire dashboard continuously.
     fn needs_animation_frame(&self) -> bool {
-        true
+        self.proc_push.is_animating()
+            || self.copy_toast_active()
+            || self.interval_press.is_some()
+            || self.search_input.needs_animation_frame()
+            || self.tooltips.needs_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let mut next = None;
+        let mut consider = |deadline: Instant| {
+            next = Some(next.map_or(deadline, |current: Instant| current.min(deadline)));
+        };
+        if !self.sample_only {
+            // `last_refresh` is advanced only after sampling, making this a
+            // bounded, cadence-aligned wake instead of a polling frame loop.
+            consider(
+                self.last_refresh
+                    .checked_add(Duration::from_millis(self.prefs.interval_ms))
+                    .unwrap_or_else(Instant::now),
+            );
+        }
+        if let Some(started) = self.interval_press {
+            consider(
+                started
+                    .checked_add(Duration::from_millis(LONG_PRESS_MS as u64))
+                    .unwrap_or_else(Instant::now),
+            );
+        }
+        if let Some(copied_at) = self.copied_at {
+            consider(
+                copied_at
+                    .checked_add(Duration::from_millis(TOAST_MS))
+                    .unwrap_or_else(Instant::now),
+            );
+        }
+        next
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        if reduced {
+            self.proc_push.snap(self.proc_push.pane());
+        }
     }
 }
 
@@ -4915,7 +5338,14 @@ impl MonitorApp {
         // The "PID copied" toast floats above the content, below the modal.
         self.draw_toast(scene, t, text_renderer, theme);
 
-        if let Some((pid, kind)) = self.confirm_stop {
+        // `needs_animation_frame` holds the host long enough to reach the
+        // dwell deadline; this tick makes the tooltip visible when due.
+        let _ = self.tooltips.tick(Instant::now());
+        if let Some((label, anchor)) = self.tooltips.visible() {
+            draw_hover_tooltip(scene, t, text_renderer, theme, anchor, label, self.rect);
+        }
+
+        if let Some((pid, _started_at, kind)) = self.confirm_stop {
             self.ensure_confirm_dialog(pid, kind);
             self.layout_confirm_dialog();
             if let Some(cd) = self.confirm_dialog.as_mut() {
@@ -5064,6 +5494,7 @@ impl MonitorApp {
         );
         if self.search_input.take_dirty().is_some() {
             self.scroll_off = 0.0;
+            self.clear_selection_if_filtered_out();
             input_handled = true;
         }
         if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
@@ -5084,9 +5515,27 @@ impl MonitorApp {
         path: &ObjId,
         handled: &mut bool,
     ) {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) {
+            let _ = self.tooltips.dismiss();
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let tooltip = [
+                    (self.hit.refresh, "Refresh now"),
+                    (
+                        self.hit.auto_refresh,
+                        if self.prefs.auto_refresh {
+                            "Pause automatic refresh"
+                        } else {
+                            "Resume automatic refresh"
+                        },
+                    ),
+                ]
+                .into_iter()
+                .find(|(rect, _)| rect.contains(self.last_cursor))
+                .map(|(rect, label)| (rect, label.to_string()));
+                let _ = self.tooltips.on_pointer(tooltip, Instant::now());
                 // A live scrollbar thumb drag follows the cursor.
                 if self.scroll_drag.is_some() {
                     self.apply_scroll_drag(self.last_cursor);
@@ -5198,6 +5647,17 @@ mod tests {
         MonitorApp::new()
     }
 
+    fn resource_id_for(a: &MonitorApp, pid: u32) -> String {
+        let started_at = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .expect("test process remains present")
+            .started_at;
+        process_resource_id(pid, started_at)
+    }
+
     /// Lay the app out at `(w, h)` and run one real `draw` so the frame caches
     /// (`table_content_w`, `table_cols_w`, `table_viewport`, the hit rects)
     /// are populated exactly as the live renderer would. No GPU — `draw` only
@@ -5261,6 +5721,15 @@ mod tests {
     }
 
     #[test]
+    fn filtering_away_selected_process_clears_its_actionable_detail() {
+        let mut a = app();
+        assert!(a.selected_pid.is_some(), "sample starts with a selection");
+        a.search_input.set_text("__no_process_matches__");
+        a.clear_selection_if_filtered_out();
+        assert!(a.selected_pid.is_none());
+    }
+
+    #[test]
     fn kernel_threads_hidden_by_default() {
         let mut a = app();
         assert!(a.visible_processes().iter().all(|p| !p.kernel));
@@ -5272,8 +5741,15 @@ mod tests {
     fn kill_removes_the_row_and_clears_selection() {
         let mut a = app();
         let pid = a.selected_pid.unwrap();
+        let started_at = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .unwrap()
+            .started_at;
         let before = a.model.processes.len();
-        assert!(a.do_stop(pid, StopKind::Kill));
+        assert!(a.do_stop(pid, started_at, StopKind::Kill));
         assert_eq!(a.model.processes.len(), before - 1);
         assert!(a.selected_pid.is_none());
         assert!(a.model.processes.iter().all(|p| p.pid != pid));
@@ -5289,13 +5765,13 @@ mod tests {
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "stop"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
         );
         a.request_process_control(pid, "kill");
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
         );
     }
 
@@ -5309,7 +5785,7 @@ mod tests {
         let process = resources[0]
             .children
             .iter()
-            .find(|resource| resource.id.0 == format!("process:{pid}"))
+            .find(|resource| resource.id.0 == resource_id_for(&a, pid))
             .expect("process resource");
         assert_eq!(
             process
@@ -5648,7 +6124,7 @@ mod tests {
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "stop"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
         );
     }
 
@@ -5682,7 +6158,7 @@ mod tests {
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
         );
     }
 
@@ -6345,7 +6821,7 @@ mod tests {
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
         );
     }
 
@@ -6358,7 +6834,14 @@ mod tests {
         let mut a = app();
         let pid = a.visible_rows()[0].pid;
         a.selected_pid = Some(pid);
-        a.confirm_stop = Some((pid, StopKind::Kill));
+        let started_at = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .unwrap()
+            .started_at;
+        a.confirm_stop = Some((pid, started_at, StopKind::Kill));
         // A real frame builds + lays out the shared dialog so its footer button
         // rects resolve exactly as the live renderer would.
         draw_at(&mut a, 900.0, 600.0);
@@ -6377,7 +6860,14 @@ mod tests {
 
         let mut b = app();
         let pid2 = b.visible_rows()[0].pid;
-        b.confirm_stop = Some((pid2, StopKind::Kill));
+        let started_at2 = b
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid2)
+            .unwrap()
+            .started_at;
+        b.confirm_stop = Some((pid2, started_at2, StopKind::Kill));
         draw_at(&mut b, 900.0, 600.0);
         let secondary = b.confirm_dialog.as_ref().unwrap().dialog.secondary_rect();
         dispatch_ev(
@@ -6399,7 +6889,14 @@ mod tests {
     fn confirm_modal_keyboard_enter_confirms_escape_cancels() {
         let mut a = app();
         let pid = a.visible_rows()[0].pid;
-        a.confirm_stop = Some((pid, StopKind::Kill));
+        let started_at = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .unwrap()
+            .started_at;
+        a.confirm_stop = Some((pid, started_at, StopKind::Kill));
         let h = dispatch_ev(&mut a, &synth_key(NamedKey::Enter));
         assert!(h);
         assert!(a.confirm_stop.is_none());
@@ -6410,7 +6907,14 @@ mod tests {
 
         let mut b = app();
         let pid2 = b.visible_rows()[0].pid;
-        b.confirm_stop = Some((pid2, StopKind::Kill));
+        let started_at2 = b
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid2)
+            .unwrap()
+            .started_at;
+        b.confirm_stop = Some((pid2, started_at2, StopKind::Kill));
         let h2 = dispatch_ev(&mut b, &synth_key(NamedKey::Escape));
         assert!(h2);
         assert!(b.confirm_stop.is_none());
@@ -6778,7 +7282,7 @@ mod tests {
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
         );
     }
 
@@ -6841,10 +7345,11 @@ mod tests {
         let mut a = app();
         draw_at(&mut a, 1_280.0, 720.0);
         let pid = a.selected_pid.expect("sample selects a process");
+        let started_at = a.selected_process().unwrap().started_at;
         let mut doc = AutoCommit::new();
         assert!(Widget::perform_semantic_action(
             &mut a,
-            &format!("monitor.process:{pid}:kill"),
+            &format!("{}:kill", monitor_process_target(pid, started_at)),
             &ui::a11y::Action::Activate,
             &mut doc,
             &automerge::ROOT,
@@ -6852,7 +7357,7 @@ mod tests {
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
-            Some(ActionAddress::new(format!("process:{pid}"), "kill"))
+            Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
         );
         assert!(a.model.processes.iter().any(|process| process.pid == pid));
 
@@ -6875,7 +7380,7 @@ mod tests {
         let process = resources[0]
             .children
             .iter()
-            .find(|resource| resource.id.0 == format!("process:{pid}"))
+            .find(|resource| resource.id.0 == resource_id_for(&a, pid))
             .expect("selected process is a stable resource");
         let kill = process
             .actions
@@ -6895,8 +7400,17 @@ mod tests {
             "semantic targets are stable and unique"
         );
 
+        let started_at = a
+            .model
+            .processes
+            .iter()
+            .find(|candidate| candidate.pid == pid)
+            .expect("selected sample process remains in the model")
+            .started_at;
+
         let payload = serde_json::to_vec(&MonitorOperation::Signal {
             pid,
+            started_at,
             signal: MonitorSignal::Kill,
         })
         .expect("typed monitor operation serializes");
@@ -6917,5 +7431,106 @@ mod tests {
             "no inaccessible local dialog is opened"
         );
         assert!(a.model.processes.iter().all(|process| process.pid != pid));
+    }
+
+    /// Process effects are bound to a PID generation, not merely a reusable
+    /// PID. A stale palette/agent payload must fail before it reaches the
+    /// sampler, leaving the currently displayed process intact.
+    #[test]
+    fn stale_process_generation_is_rejected_before_signal_dispatch() {
+        let mut a = app();
+        let process = a.model.processes[0].clone();
+        let result = a.perform_operation(
+            &MonitorOperation::Signal {
+                pid: process.pid,
+                started_at: process.started_at.saturating_add(1),
+                signal: MonitorSignal::Kill,
+            },
+            SignalConfirmation::ActionContract,
+        );
+        assert!(result.is_err(), "a PID-reused target is rejected");
+        assert!(
+            a.model
+                .processes
+                .iter()
+                .any(|candidate| candidate.pid == process.pid),
+            "the current process remains untouched"
+        );
+    }
+
+    #[test]
+    fn stale_semantic_process_target_cannot_queue_a_pid_only_action() {
+        let mut a = app();
+        let process = a.model.processes[0].clone();
+        let mut doc = AutoCommit::new();
+        assert!(!Widget::perform_semantic_action(
+            &mut a,
+            &format!(
+                "{}:kill",
+                monitor_process_target(process.pid, process.started_at.saturating_add(1))
+            ),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(a.take_control_invocation().is_none());
+    }
+
+    #[test]
+    fn process_source_permission_state_has_an_accessible_shared_retry() {
+        let mut a = app();
+        a.seed_shot_scenario("process-permission-error");
+        draw_at(&mut a, 1_280.0, 800.0);
+        assert!(
+            a.hit.retry_process_source.area() > 0.0,
+            "the permission recovery panel exposes a visible retry control"
+        );
+        assert!(a.accessibility_targets().iter().any(|(target, _, node)| {
+            target == "monitor.process-source.retry"
+                && node.name.as_deref() == Some("Retry loading the process list")
+        }));
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "monitor.process-source.retry",
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new("processes", "refresh")),
+            "recovery uses the root resource action, not a direct sampler call"
+        );
+    }
+
+    /// A live monitor asks the host for one cadence-aligned wake rather than
+    /// pinning the app to a 60 Hz animation loop while it is otherwise idle.
+    #[test]
+    fn idle_sampling_uses_a_deadline_not_continuous_frames() {
+        let a = MonitorApp::new_live();
+        assert!(
+            !a.needs_animation_frame(),
+            "a static monitor is not animated"
+        );
+        assert!(
+            a.next_wake_deadline().is_some(),
+            "the first real sample is scheduled as a bounded wake"
+        );
+        let sample = app();
+        assert!(
+            sample.next_wake_deadline().is_none(),
+            "deterministic screenshots never schedule live sampling"
+        );
+    }
+
+    #[test]
+    fn reduced_motion_snaps_a_pending_process_push() {
+        let mut a = app();
+        a.proc_push.show_detail();
+        assert!(a.proc_push.is_animating());
+        Widget::set_motion_reduced(&mut a, true);
+        assert_eq!(a.proc_push.slide(), 1.0);
+        assert!(!a.proc_push.is_animating());
     }
 }
