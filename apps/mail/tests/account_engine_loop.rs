@@ -130,26 +130,33 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     //    regardless of which backend the default `spawn()` would select.
     let (tx, rx) = mail::engine::spawn_with(Box::new(mail::engine::StubEngine));
 
-    tx.send(EngineRequest::Connect {
-        account: loaded.clone(),
-    })
-    .unwrap();
-    match recv(&rx).expect("engine answered within the timeout") {
-        EngineEvent::Connected { account_id } => {
-            assert_eq!(account_id, "ada@analytical.example");
-        }
-        other => panic!("expected Connected, got {other:?}"),
-    }
+    let connect = EngineRequest::connect(loaded.clone());
+    let connect_id = connect.request_id();
+    tx.send(connect).unwrap();
+    assert!(matches!(
+        recv(&rx).expect("engine answered within the timeout"),
+        EngineEvent::Error { request_id, kind: mail::engine::EngineRequestKind::Connect, context, .. }
+            if request_id == connect_id && context == "offline"
+    ));
+    assert!(matches!(
+        recv(&rx).expect("engine answered within the timeout"),
+        EngineEvent::Completed { request_id, kind: mail::engine::EngineRequestKind::Connect }
+            if request_id == connect_id
+    ));
 
-    tx.send(EngineRequest::Fetch {
-        account: loaded.clone(),
-        folder: Folder::Inbox,
-    })
-    .unwrap();
-    match recv(&rx).expect("engine answered within the timeout") {
-        EngineEvent::Fetched { folder, .. } => assert_eq!(folder, Folder::Inbox),
-        other => panic!("expected Fetched, got {other:?}"),
-    }
+    let fetch = EngineRequest::fetch(loaded.clone(), Folder::Inbox);
+    let fetch_id = fetch.request_id();
+    tx.send(fetch).unwrap();
+    assert!(matches!(
+        recv(&rx).expect("engine answered within the timeout"),
+        EngineEvent::Error { request_id, kind: mail::engine::EngineRequestKind::Fetch, context, .. }
+            if request_id == fetch_id && context == "offline"
+    ));
+    assert!(matches!(
+        recv(&rx).expect("engine answered within the timeout"),
+        EngineEvent::Completed { request_id, kind: mail::engine::EngineRequestKind::Fetch }
+            if request_id == fetch_id
+    ));
 
     // 4a) A compose produces a well-formed SMTP payload: the Send request builds
     //     real RFC 5322 MIME and reports its wire size.
@@ -160,19 +167,19 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
         body: "This travels through the engine.".into(),
         ..Default::default()
     };
-    tx.send(EngineRequest::Send {
-        account: loaded.clone(),
-        draft: Box::new(draft.clone()),
-    })
-    .unwrap();
-    let wire = match recv(&rx).expect("engine answered within the timeout") {
-        EngineEvent::Sent { wire_bytes } => wire_bytes,
-        other => panic!("expected Sent, got {other:?}"),
-    };
-    assert!(
-        wire > 0,
-        "the engine built and measured a real MIME payload on Send"
-    );
+    let send = EngineRequest::send(loaded.clone(), Box::new(draft.clone()));
+    let send_id = send.request_id();
+    tx.send(send).unwrap();
+    assert!(matches!(
+        recv(&rx).expect("engine answered within the timeout"),
+        EngineEvent::Error { request_id, kind: mail::engine::EngineRequestKind::Send, context, message }
+            if request_id == send_id && context == "send" && message.contains("validated") && message.contains("did not send")
+    ));
+    assert!(matches!(
+        recv(&rx).expect("engine answered within the timeout"),
+        EngineEvent::Completed { request_id, kind: mail::engine::EngineRequestKind::Send }
+            if request_id == send_id
+    ));
     assert_send_builds_real_mime(&loaded, &draft);
 
     // 4b) A fetch parses a message: the exact decode a live UID FETCH runs, with

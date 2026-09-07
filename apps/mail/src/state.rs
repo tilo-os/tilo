@@ -332,10 +332,10 @@ impl MailState {
         if account.email.is_empty() {
             return;
         }
-        self.push_intent(Intent::Engine(EngineRequest::StoreFlag {
+        self.push_intent(Intent::Engine(EngineRequest::store_flag(
             account,
-            message: Box::new(msg),
-        }));
+            Box::new(msg),
+        )));
     }
 
     /// Push a live-path request to move a message to another folder
@@ -347,11 +347,11 @@ impl MailState {
         if account.email.is_empty() {
             return;
         }
-        self.push_intent(Intent::Engine(EngineRequest::Move {
+        self.push_intent(Intent::Engine(EngineRequest::move_message(
             account,
-            message: Box::new(source),
+            Box::new(source),
             to,
-        }));
+        )));
     }
 
     /// Ask the live backend to permanently remove exactly this server message.
@@ -362,10 +362,10 @@ impl MailState {
         if account.email.is_empty() {
             return;
         }
-        self.push_intent(Intent::Engine(EngineRequest::Purge {
+        self.push_intent(Intent::Engine(EngineRequest::purge(
             account,
-            message: Box::new(source),
-        }));
+            Box::new(source),
+        )));
     }
 
     pub fn set_active_account(&mut self, doc: &mut AutoCommit, idx: usize) {
@@ -393,7 +393,7 @@ impl MailState {
         // Ask the live engine to fetch this folder (a no-op offline).
         let account = self.accounts.active_config();
         if !account.email.is_empty() {
-            self.push_intent(Intent::Engine(EngineRequest::Fetch { account, folder }));
+            self.push_intent(Intent::Engine(EngineRequest::fetch(account, folder)));
         }
         self.dirty = true;
     }
@@ -409,7 +409,7 @@ impl MailState {
             .and_then(|thread| thread.message_ids.last().copied());
         let account = self.accounts.active_config();
         if !account.email.is_empty() {
-            self.push_intent(Intent::Engine(EngineRequest::Fetch { account, folder }));
+            self.push_intent(Intent::Engine(EngineRequest::fetch(account, folder)));
         }
         self.push_intent(Intent::ShowOverview);
         self.dirty = true;
