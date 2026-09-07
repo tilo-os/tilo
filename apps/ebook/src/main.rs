@@ -59,6 +59,8 @@ pub fn main() {
                 "page-bubble",
                 "settings-library",
                 "narrow",
+                "import-error",
+                "import-loading",
                 "type",
                 "library-scrolled",
                 "serif",
