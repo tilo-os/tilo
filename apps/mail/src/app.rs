@@ -25,7 +25,7 @@
 //! account shows an empty state. The bundled sample corpus is used only by the
 //! hermetic `--shots` / test constructors.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
@@ -67,6 +67,11 @@ const OVERVIEW_W: f64 = 340.0;
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
 /// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
+/// Maximum number of resource-originated opens awaiting the next mutable
+/// document boundary.  A palette/agent can submit hostile input faster than a
+/// frame can render it; bounding this queue keeps that from turning into an
+/// unbounded batch of otherwise-valid mark-read actions.
+const MAX_PENDING_REVEAL_READS: usize = 64;
 /// How long a status toast ("Synced N messages", "Account saved", …) stays on
 /// screen before it fades out on its own, like any normal transient toast.
 const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
@@ -209,13 +214,16 @@ pub struct MailApp {
     /// their terminal worker acknowledgement.
     awaiting_engine: bool,
     pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
+    /// The one refresh invocation currently owned by the resource-operation
+    /// host.  It remains occupied until the host has polled its terminal
+    /// update, so a subsequent refresh cannot overwrite an unobserved result.
     resource_refresh_invocation: Option<(EngineRequestId, qos_actions::InvocationId)>,
     resource_refresh_result: Option<qos_actions::InvocationUpdate>,
-    /// A normal resource/action open first changes the local view through the
-    /// view operation door, then the next mutable sync records the same read
+    /// Normal resource/action opens first change the local view through the
+    /// view-operation door, then the next mutable sync records the same read
     /// action as a direct row open. The separate explicit inspection operation
-    /// intentionally never fills this slot.
-    pending_reveal_read: Option<MessageId>,
+    /// intentionally never fills this bounded queue.
+    pending_reveal_reads: VecDeque<MessageId>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -316,7 +324,7 @@ impl MailApp {
             pending_engine_requests: HashMap::new(),
             resource_refresh_invocation: None,
             resource_refresh_result: None,
-            pending_reveal_read: None,
+            pending_reveal_reads: VecDeque::new(),
             last_auto_refresh_min: 0,
             toast_text: None,
             toast_deadline: None,
@@ -1482,7 +1490,7 @@ impl MailApp {
                         if self
                             .resource_refresh_invocation
                             .is_some_and(|(pending, _)| pending == request_id)
-                            && let Some((_, invocation)) = self.resource_refresh_invocation.take()
+                            && let Some((_, invocation)) = self.resource_refresh_invocation
                         {
                             self.resource_refresh_result =
                                 Some(qos_actions::InvocationUpdate::Succeeded {
@@ -1575,7 +1583,7 @@ impl MailApp {
                         if self
                             .resource_refresh_invocation
                             .is_some_and(|(pending, _)| pending == request_id)
-                            && let Some((_, invocation)) = self.resource_refresh_invocation.take()
+                            && let Some((_, invocation)) = self.resource_refresh_invocation
                         {
                             self.resource_refresh_result =
                                 Some(qos_actions::InvocationUpdate::Failed {
@@ -2695,7 +2703,7 @@ impl Widget for MailApp {
             }
             self.shared.borrow_mut().seeded = true;
         }
-        if let Some(id) = self.pending_reveal_read.take() {
+        while let Some(id) = self.pending_reveal_reads.pop_front() {
             let unread = self
                 .shared
                 .borrow()
@@ -2747,6 +2755,10 @@ impl Widget for MailApp {
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource-operation door intentionally keeps every Mail effect and view arm together, so their validation and canonical routing can be audited as one contract"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -2798,10 +2810,17 @@ impl Widget for MailApp {
                 let id = id
                     .parse::<crate::model::MessageId>()
                     .map_err(|_| "invalid message id")?;
+                if !self.pending_reveal_reads.contains(&id)
+                    && self.pending_reveal_reads.len() >= MAX_PENDING_REVEAL_READS
+                {
+                    return Err("too many message opens are awaiting read settlement".into());
+                }
                 if !self.shared.borrow_mut().reveal_message(id, false) {
                     return Err("message is no longer loaded".into());
                 }
-                self.pending_reveal_read = Some(id);
+                if !self.pending_reveal_reads.contains(&id) {
+                    self.pending_reveal_reads.push_back(id);
+                }
                 self.process_intents();
             }
             (
@@ -2916,6 +2935,7 @@ impl Widget for MailApp {
             .as_ref()
             .is_some_and(|update| update.invocation() == invocation)
         {
+            self.resource_refresh_invocation = None;
             self.resource_refresh_result.take()
         } else {
             None
@@ -4480,6 +4500,113 @@ mod tests {
     }
 
     #[test]
+    fn resource_opens_before_one_sync_each_keep_normal_read_semantics() {
+        let (mut app, mut doc) = app();
+        let ids: Vec<_> = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .into_iter()
+            .filter(|message| !message.read)
+            .map(|message| message.id)
+            .take(2)
+            .collect();
+        assert_eq!(ids.len(), 2, "sample contains two unread inbox messages");
+
+        for id in &ids {
+            let payload = serde_json::to_vec(&crate::actions::MailOperation::RevealMessage {
+                id: id.to_string(),
+            })
+            .unwrap();
+            assert!(
+                app.invoke_resource_operation(
+                    qos_actions::OperationKind::View,
+                    crate::actions::MAIL_OPERATION_TYPE,
+                    &payload,
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap()
+            );
+        }
+
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(ids.iter().all(|id| {
+            app.shared
+                .borrow()
+                .mailbox
+                .get(*id)
+                .is_some_and(|message| message.read)
+        }));
+    }
+
+    #[test]
+    fn full_pending_open_queue_refuses_without_changing_presentation_or_document() {
+        let (mut app, mut doc) = app();
+        let target = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Inbox)
+            .first()
+            .map(|message| message.id)
+            .expect("sample contains an inbox message");
+        app.pending_reveal_reads = (0..MAX_PENDING_REVEAL_READS)
+            .map(|_| uuid::Uuid::new_v4())
+            .collect();
+        let queued_before = app.pending_reveal_reads.clone();
+        let (folder_before, selected_before, inspection_before, search_before, status_before) = {
+            let state = app.shared.borrow();
+            (
+                state.folder,
+                state.selected,
+                state.inspection,
+                state.search.clone(),
+                state.status.clone(),
+            )
+        };
+        let target_read_before = app
+            .shared
+            .borrow()
+            .mailbox
+            .get(target)
+            .is_some_and(|message| message.read);
+        let heads_before = doc.get_heads();
+        let payload = serde_json::to_vec(&crate::actions::MailOperation::RevealMessage {
+            id: target.to_string(),
+        })
+        .unwrap();
+
+        let error = app
+            .invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect_err("a full queue must reject the next distinct open");
+
+        assert!(error.contains("awaiting read settlement"));
+        assert_eq!(app.pending_reveal_reads, queued_before);
+        assert_eq!(doc.get_heads(), heads_before);
+        let state = app.shared.borrow();
+        assert_eq!(state.folder, folder_before);
+        assert_eq!(state.selected, selected_before);
+        assert_eq!(state.inspection, inspection_before);
+        assert_eq!(state.search, search_before);
+        assert_eq!(state.status, status_before);
+        assert_eq!(
+            state
+                .mailbox
+                .get(target)
+                .is_some_and(|message| message.read),
+            target_read_before
+        );
+    }
+
+    #[test]
     fn explicit_resource_preview_keeps_an_unread_message_unread_and_announces_that_fact() {
         let (mut app, mut doc) = app();
         let id = app
@@ -4662,11 +4789,16 @@ mod tests {
             })
             .unwrap();
         app.drain_engine(&mut doc);
-        assert!(app.resource_refresh_invocation.is_none());
+        assert!(app.resource_refresh_invocation.is_some());
         assert!(matches!(
             app.resource_refresh_result.as_ref(),
             Some(qos_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == invocation
         ));
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == invocation
+        ));
+        assert!(app.resource_refresh_invocation.is_none());
         assert!(app.pending_send.is_some());
 
         incoming_tx
@@ -4684,6 +4816,52 @@ mod tests {
         app.drain_engine(&mut doc);
         assert!(app.pending_send.is_none());
         assert!(!app.awaiting_engine);
+    }
+
+    #[test]
+    fn completed_refresh_cannot_be_replaced_before_its_owner_polls() {
+        let (mut app, doc) = app();
+        let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
+        let (_incoming_tx, incoming) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming,
+        });
+        let request_id = uuid::Uuid::new_v4();
+        let owner = qos_actions::InvocationId::new();
+        app.resource_refresh_invocation = Some((request_id, owner));
+        app.resource_refresh_result = Some(qos_actions::InvocationUpdate::Succeeded {
+            invocation: owner,
+            output: qos_actions::ActionOutput::default(),
+        });
+
+        let payload =
+            serde_json::to_vec(&crate::actions::MailOperation::RefreshCurrentFolder).unwrap();
+        assert!(
+            app.start_resource_operation(
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::Effect,
+                crate::actions::MAIL_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(
+            app.poll_resource_operation(
+                qos_actions::InvocationId::new(),
+                false,
+                &doc,
+                &automerge::ROOT
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            app.poll_resource_operation(owner, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == owner
+        ));
+        assert!(app.resource_refresh_invocation.is_none());
     }
 
     #[test]
