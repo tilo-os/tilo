@@ -1918,11 +1918,23 @@ fn route_keyboard_input(
     let pressed = key.state == ElementState::Pressed;
     // DRM mirrors winit's repeat events for in-process qOS widgets. Native
     // Wayland clients already synthesize repeats from `wl_keyboard.repeat_info`;
-    // sending another pressed edge would double every held key. Swallow the
-    // adapter repeat when a client owns focus, otherwise let it continue to
-    // `FrameBuilder` like hosted-winit input does.
+    // sending another pressed edge would double every held key. Shell-owned
+    // repeats must still reach the host so navigation can repeat and the host
+    // can absorb edge-triggered actions (close/open/toggle) without running
+    // them again.
     if key.repeat {
-        return !captured && state.client_input.keyboard_focus.is_some();
+        let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
+        let configured_shortcut = fb
+            .host()
+            .configured_shortcut_action(&key.logical_key, modifiers)
+            .is_some();
+        let shell_owns =
+            captured || configured_shortcut || is_shell_chord(event, &modifiers, overlay_open);
+        return if shell_owns {
+            false
+        } else {
+            !captured && state.client_input.keyboard_focus.is_some()
+        };
     }
     let Some(code) = evdev_keycode(key) else {
         return false;

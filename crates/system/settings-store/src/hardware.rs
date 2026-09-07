@@ -870,6 +870,7 @@ impl QuickSettingsConfig {
 #[cfg(test)]
 mod quick_settings_tests {
     use super::{QuickSettingsConfig, QuickSettingsControl};
+    use serial_test::serial;
 
     #[test]
     fn quick_settings_config_deduplicates_and_keeps_network_recovery() {
@@ -893,6 +894,45 @@ mod quick_settings_tests {
                 .controls
                 .contains(&QuickSettingsControl::AirplaneMode)
         );
+    }
+
+    #[test]
+    #[serial]
+    fn quick_settings_order_survives_restart_without_replacing_other_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: this process-global mutation is serialised with the other
+        // settings-path tests and restored before returning.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", temp.path()) };
+        let path = crate::settings_path().unwrap();
+        crate::update_section_at(
+            &path,
+            "appearance",
+            serde_json::json!({"theme": "dark"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        let expected = QuickSettingsConfig {
+            controls: vec![
+                QuickSettingsControl::NightLight,
+                QuickSettingsControl::Wifi,
+                QuickSettingsControl::Bluetooth,
+            ],
+        };
+        expected.save().unwrap();
+
+        assert_eq!(QuickSettingsConfig::load(), expected);
+        assert_eq!(
+            crate::load_at(&path)["appearance"]["theme"],
+            serde_json::json!("dark")
+        );
+
+        match old_xdg {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
     }
 }
 

@@ -26,6 +26,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// settle while making the eventual unavailable state deterministic.
 const MAX_RECOVERY_ATTEMPTS: u8 = 3;
 const STABLE_UPTIME: Duration = Duration::from_secs(30);
+const KEYMAP_UPDATE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Keep the compatibility server out of the security-hardened qOS image.
 pub(crate) const fn enabled_for(mode: super::InstallMode) -> bool {
@@ -55,10 +56,19 @@ pub(crate) struct XwaylandSupervisor {
     retry_at: Option<Instant>,
     ready_since: Option<Instant>,
     unavailable_announced: bool,
+    keyboard: super::backend::drm::input_config::KeyboardSettings,
+    keyboard_update: Option<KeyboardUpdate>,
+}
+
+struct KeyboardUpdate {
+    child: Child,
+    requested: super::backend::drm::input_config::KeyboardSettings,
+    started: Instant,
 }
 
 impl XwaylandSupervisor {
     pub(crate) fn start(wayland_socket: &OsStr) -> Self {
+        let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
         let mut supervisor = Self {
             bridge: None,
             starting: None,
@@ -66,9 +76,39 @@ impl XwaylandSupervisor {
             retry_at: None,
             ready_since: None,
             unavailable_announced: false,
+            keyboard,
+            keyboard_update: None,
         };
         supervisor.start_async(wayland_socket, "starting");
         supervisor
+    }
+
+    /// Apply an updated qOS keymap to the already-running private X server.
+    /// Xwayland cannot consume the Wayland seat's keymap, so without this an
+    /// Electron/X11 application keeps the layout from session startup until
+    /// logout. `setxkbmap` updates the server in place: existing windows stay
+    /// open and subsequent key events use the same map as native clients.
+    pub(crate) fn reload_keyboard_settings(&mut self) {
+        let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
+        if keyboard == self.keyboard {
+            return;
+        }
+        if self.keyboard_update.is_some() {
+            return;
+        }
+        let Some(bridge) = self.bridge.as_ref() else {
+            // A bridge currently starting will load the newest settings in its
+            // worker. Keep the old snapshot so the next settings poll retries
+            // after it has published rather than falsely considering it done.
+            return;
+        };
+        match start_keyboard_update(bridge, keyboard) {
+            Ok(update) => self.keyboard_update = Some(update),
+            Err(error) => tracing::warn!(
+                %error,
+                "Xwayland: could not start keyboard settings update; preserving the working keymap"
+            ),
+        }
     }
 
     /// Poll from the compositor's frame loop. Retrying only happens after the
@@ -80,6 +120,7 @@ impl XwaylandSupervisor {
         wayland_socket: &OsStr,
         chrome: &crate::shell::chrome_state::Chrome,
     ) {
+        self.poll_keyboard_update();
         if let Some(starting) = self.starting.as_ref() {
             match starting.try_recv() {
                 Ok(Ok(mut bridge)) => {
@@ -93,6 +134,10 @@ impl XwaylandSupervisor {
                     self.ready_since = Some(Instant::now());
                     self.unavailable_announced = false;
                     tracing::info!("rootless Xwayland compatibility bridge ready");
+                    // A settings write can race the asynchronous startup. In
+                    // that case the earlier reload deliberately had no bridge
+                    // to update; retry now that the private X server exists.
+                    self.reload_keyboard_settings();
                 }
                 Ok(Err(error)) => {
                     self.starting = None;
@@ -134,6 +179,45 @@ impl XwaylandSupervisor {
         }
         self.retry_at = None;
         self.start_async(wayland_socket, "recovering");
+    }
+
+    fn poll_keyboard_update(&mut self) {
+        let Some(update) = self.keyboard_update.as_mut() else {
+            return;
+        };
+        let result = match update.child.try_wait() {
+            Ok(Some(status)) if status.success() => Ok(true),
+            Ok(Some(status)) => Err(format!("setxkbmap exited with {status}")),
+            Ok(None) if update.started.elapsed() < KEYMAP_UPDATE_TIMEOUT => Ok(false),
+            Ok(None) => {
+                let _ = update.child.kill();
+                let _ = update.child.wait();
+                Err(format!(
+                    "setxkbmap did not finish within {} seconds",
+                    KEYMAP_UPDATE_TIMEOUT.as_secs()
+                ))
+            }
+            Err(error) => Err(format!("checking setxkbmap: {error}")),
+        };
+        match result {
+            Ok(false) => return,
+            Ok(true) => {
+                let update = self.keyboard_update.take().expect("update exists");
+                tracing::info!(
+                    sources = ?update.requested.source_ids,
+                    active = update.requested.active_index,
+                    "Xwayland: applied per-user XKB sources"
+                );
+                self.keyboard = update.requested;
+            }
+            Err(error) => {
+                self.keyboard_update = None;
+                tracing::warn!(
+                    %error,
+                    "Xwayland: could not apply keyboard settings; preserving the working keymap"
+                );
+            }
+        }
     }
 
     /// Launch the potentially five-second readiness probe off the compositor
@@ -200,6 +284,48 @@ impl XwaylandSupervisor {
         notification.bypass_dnd = true;
         chrome.borrow_mut().push_notification_full(notification);
     }
+}
+
+fn setxkbmap_args(keyboard: &super::backend::drm::input_config::KeyboardSettings) -> Vec<OsString> {
+    let active = keyboard
+        .active_index
+        .min(keyboard.layouts.split(',').count().saturating_sub(1));
+    let layout = keyboard.layouts.split(',').nth(active).unwrap_or("us");
+    let variant = keyboard.variants.split(',').nth(active).unwrap_or("");
+    let mut args = vec![OsString::from("-layout"), OsString::from(layout)];
+    if !variant.is_empty() {
+        args.extend([OsString::from("-variant"), OsString::from(variant)]);
+    }
+    // Clear inherited/server options before applying the exact qOS set.
+    args.extend([OsString::from("-option"), OsString::new()]);
+    if let Some(options) = keyboard
+        .options
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        args.extend([OsString::from("-option"), OsString::from(options)]);
+    }
+    args
+}
+
+fn start_keyboard_update(
+    bridge: &SessionXwayland,
+    keyboard: super::backend::drm::input_config::KeyboardSettings,
+) -> Result<KeyboardUpdate, String> {
+    let child = Command::new("/usr/bin/setxkbmap")
+        .args(setxkbmap_args(&keyboard))
+        .env("DISPLAY", &bridge.display)
+        .env("XAUTHORITY", &bridge.authority)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("starting setxkbmap: {error}"))?;
+    Ok(KeyboardUpdate {
+        child,
+        requested: keyboard,
+        started: Instant::now(),
+    })
 }
 
 fn retry_delay(consecutive_failures: u8) -> Duration {
@@ -483,6 +609,7 @@ fn push_u16(buffer: &mut Vec<u8>, value: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::backend::drm::input_config::KeyboardSettings;
     use std::os::unix::net::UnixListener;
 
     #[test]
@@ -506,6 +633,40 @@ mod tests {
         assert_eq!(settings.layouts, "de");
         assert_eq!(settings.variants, "nodeadkeys");
         assert_eq!(settings.options.as_deref(), Some("compose:rwin"));
+    }
+
+    #[test]
+    fn live_xwayland_update_selects_the_active_layout_and_clears_old_options() {
+        let section = serde_json::json!({
+            "keyboard_layouts": ["us", "de:nodeadkeys"],
+            "keyboard_layout": "de:nodeadkeys",
+            "compose_key": "rwin"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let settings =
+            crate::compositor::backend::drm::input_config::KeyboardSettings::from_section(&section);
+        assert_eq!(
+            setxkbmap_args(&settings),
+            [
+                "-layout",
+                "de",
+                "-variant",
+                "nodeadkeys",
+                "-option",
+                "",
+                "-option",
+                "grp:alt_shift_toggle,compose:rwin",
+            ]
+            .map(OsString::from)
+        );
+
+        let plain = KeyboardSettings::default();
+        assert_eq!(
+            setxkbmap_args(&plain),
+            ["-layout", "us", "-option", ""].map(OsString::from)
+        );
     }
 
     #[test]
@@ -565,6 +726,8 @@ mod tests {
             retry_at: None,
             ready_since: None,
             unavailable_announced: false,
+            keyboard: KeyboardSettings::default(),
+            keyboard_update: None,
         };
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::default(),
@@ -575,6 +738,41 @@ mod tests {
             started.elapsed() < Duration::from_millis(50),
             "poll must only try_recv while the startup worker waits for readiness"
         );
+    }
+
+    #[test]
+    fn completed_keyboard_update_adopts_the_requested_map_without_blocking() {
+        let requested = KeyboardSettings {
+            source_ids: vec!["de:nodeadkeys".into()],
+            layouts: "de".into(),
+            variants: "nodeadkeys".into(),
+            options: None,
+            active_index: 0,
+        };
+        let child = Command::new("/usr/bin/true").spawn().unwrap();
+        let mut supervisor = XwaylandSupervisor {
+            bridge: None,
+            starting: None,
+            consecutive_failures: 0,
+            retry_at: None,
+            ready_since: None,
+            unavailable_announced: false,
+            keyboard: KeyboardSettings::default(),
+            keyboard_update: Some(KeyboardUpdate {
+                child,
+                requested: requested.clone(),
+                started: Instant::now(),
+            }),
+        };
+        for _ in 0..100 {
+            supervisor.poll_keyboard_update();
+            if supervisor.keyboard_update.is_none() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(supervisor.keyboard_update.is_none());
+        assert_eq!(supervisor.keyboard, requested);
     }
 
     #[test]
@@ -590,6 +788,8 @@ mod tests {
             retry_at: None,
             ready_since: now.checked_sub(STABLE_UPTIME),
             unavailable_announced: false,
+            keyboard: KeyboardSettings::default(),
+            keyboard_update: None,
         };
         supervisor.record_failure(now, &chrome);
         assert_eq!(supervisor.consecutive_failures, 1);
