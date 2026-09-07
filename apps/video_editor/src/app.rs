@@ -1536,6 +1536,10 @@ pub struct VideoEditorApp {
     /// Which pane the keyboard is in, and where inside each one. Drives both
     /// arrow navigation and the accessibility tree's active descendant.
     focus: PaneCursor,
+    /// The pane to return to after the narrow media-bin overlay closes. The
+    /// overlay owns input while its scrim is visible, but closing it must not
+    /// strand a keyboard user at an unrelated bin row.
+    bin_focus_before_open: Option<Pane>,
     /// Whether the host has given this widget keyboard focus. The exported
     /// tree only nominates an active descendant while it has — an unfocused
     /// widget must not move a screen reader's cursor.
@@ -1810,6 +1814,7 @@ impl VideoEditorApp {
             inspector_scroll: 0.0,
             bin_scroll: 0.0,
             focus: PaneCursor::default(),
+            bin_focus_before_open: None,
             has_focus: false,
             show_help: false,
             goto_entry: None,
@@ -2245,6 +2250,18 @@ impl VideoEditorApp {
     fn scroll_by(&mut self, dt: f64, r: &Regions) {
         self.scroll += dt;
         self.clamp_scroll(r);
+    }
+
+    /// Pan the timeline by one readable page. Page Up/Down provide a
+    /// keyboard equivalent to the horizontal scrollbar and Shift-wheel path
+    /// without stealing Left/Right from frame stepping and clip nudging.
+    fn scroll_timeline_page(&mut self, later: bool, r: &Regions) -> bool {
+        let page = self.visible_seconds(r) * 0.9;
+        if page <= 0.0 {
+            return false;
+        }
+        self.scroll_by(if later { page } else { -page }, r);
+        true
     }
 
     /// Bring `t` into view, keeping a margin at whichever edge it crossed so
@@ -2957,7 +2974,41 @@ impl VideoEditorApp {
 
     /// Toggle the media bin flap (the topbar hamburger / `B` shortcut).
     fn toggle_bin(&mut self) {
-        self.bin_flap.toggle(self.bin_layout());
+        let layout = self.bin_layout();
+        if layout != SplitLayout::Overlay {
+            self.bin_flap.toggle(layout);
+            return;
+        }
+        if self.bin_flap.is_open(layout) {
+            self.close_bin_overlay();
+            return;
+        }
+        self.bin_focus_before_open = Some(self.focus.pane);
+        // A modal surface cannot inherit a half-finished drag from the canvas
+        // it is covering. Dropping after opening the bin must not silently
+        // commit a trim, marquee, or bin-to-timeline placement behind it.
+        self.drag = None;
+        self.marquee = None;
+        self.bin_drag = None;
+        self.pending_rename = None;
+        self.bin_flap.open();
+        self.focus.pane = Pane::Bin;
+        self.clamp_pane_cursor();
+    }
+
+    /// Dismiss the narrow media-bin overlay and restore the pane that opened
+    /// it. This is shared by the toggle, Escape, and scrim click so every
+    /// close path has the same focus-return behaviour.
+    fn close_bin_overlay(&mut self) {
+        self.bin_flap.close();
+        if let Some(previous) = self.bin_focus_before_open.take() {
+            self.focus.pane = previous;
+            self.clamp_pane_cursor();
+        }
+    }
+
+    fn bin_overlay_is_open(&self) -> bool {
+        self.bin_layout() == SplitLayout::Overlay && self.bin_flap.is_open(SplitLayout::Overlay)
     }
 
     /// Toggle the inspector flap (the topbar toggle / `Tab`). On a wide
@@ -8294,6 +8345,7 @@ impl Widget for VideoEditorApp {
         taffy: &TaffyTree<()>,
     ) {
         let r = self.regions();
+        let bin_overlay_open = self.bin_overlay_is_open();
         // An in-flight inline rename owns input: forward every event to the
         // shared editable label, then reconcile its outcome. A blur-commit
         // (click outside) is intentionally not consumed, so the same click also
@@ -8522,6 +8574,22 @@ impl Widget for VideoEditorApp {
                 return;
             }
         }
+        // The bin flap's full-window scrim is modal for secondary input too.
+        // Do this before context-menu hit testing: a hidden track must not
+        // receive a right click merely because its rect is under the scrim.
+        if bin_overlay_open
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Right,
+                    ..
+                }
+            )
+        {
+            *handled = true;
+            return;
+        }
         // Right-click on a bin item or a track header opens its context menu.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -8550,7 +8618,14 @@ impl Widget for VideoEditorApp {
             } => {
                 // Before the press, while the layout still describes what the
                 // user was actually looking at when they clicked.
-                self.place_cursor_at(&r, self.last_mouse);
+                // A click on the bin's scrim is only a dismissal; it must not
+                // first move the hidden timeline or inspector focus cursor.
+                if !bin_overlay_open
+                    || r.bin.contains(self.last_mouse)
+                    || r.menu_btn.contains(self.last_mouse)
+                {
+                    self.place_cursor_at(&r, self.last_mouse);
+                }
                 self.handle_press(state, &r, modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
@@ -8564,6 +8639,12 @@ impl Widget for VideoEditorApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                if bin_overlay_open {
+                    // Opening the flap cancels active drags. Consume the
+                    // matching release so it cannot complete an edit below.
+                    *handled = true;
+                    return;
+                }
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position;
                     // a bin press that never moved may instead begin a rename.
@@ -8590,14 +8671,22 @@ impl Widget for VideoEditorApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
                 self.update_hover(&r);
-                self.apply_drag(&r);
-                self.update_bin_drag();
+                if !bin_overlay_open {
+                    self.apply_drag(&r);
+                    self.update_bin_drag();
+                }
                 *handled = true;
             }
             // External file drop (an OS drag-and-drop onto the window) imports
             // media, exactly like the portal pick — the whole editor accepts it.
             WindowEvent::DroppedFile(path) => {
                 self.file_hovering = false;
+                if bin_overlay_open {
+                    // Importing through a covered canvas would contradict the
+                    // scrim's input boundary. Dismiss first, then drop again.
+                    *handled = true;
+                    return;
+                }
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
                 let report = self.import_files(state, std::slice::from_ref(path));
@@ -8605,7 +8694,7 @@ impl Widget for VideoEditorApp {
                 *handled = true;
             }
             WindowEvent::HoveredFile(_) => {
-                self.file_hovering = true;
+                self.file_hovering = !bin_overlay_open;
                 *handled = true;
             }
             WindowEvent::HoveredFileCancelled => {
@@ -8613,6 +8702,12 @@ impl Widget for VideoEditorApp {
                 *handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if bin_overlay_open && !r.bin.contains(self.last_mouse) {
+                    // Do not pan/zoom a timeline which is visibly unavailable
+                    // behind the narrow bin overlay.
+                    *handled = true;
+                    return;
+                }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (*x as f64, *y as f64),
                     MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
@@ -9052,7 +9147,7 @@ impl Widget for VideoEditorApp {
         // export dialog. A scrim is a promise that what is behind it is
         // unavailable; if the click still lands there, the promise is a lie
         // and the edit it makes is one the user cannot see coming.
-        self.is_modal()
+        self.is_modal() || self.bin_overlay_is_open()
     }
 
     /// The widgets this editor mounts inside itself. They paint and take
@@ -9109,14 +9204,21 @@ impl Widget for VideoEditorApp {
     /// turns into the tree's active descendant — so a reader lands on the clip
     /// the user is on rather than on "video editor, canvas".
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut kids = vec![
-            self.a11y_topbar(),
-            self.a11y_project(),
-            self.a11y_bin(),
-            self.a11y_transport(),
-            self.a11y_timeline(),
-            self.a11y_inspector(),
-        ];
+        let mut kids = if self.bin_overlay_is_open() {
+            // The scrim says the bin owns input, so the semantic tree must
+            // not leave a reader walking controls it cannot use. The topbar
+            // contributes only the pressed bin toggle in this state.
+            vec![self.a11y_topbar(), self.a11y_bin()]
+        } else {
+            vec![
+                self.a11y_topbar(),
+                self.a11y_project(),
+                self.a11y_bin(),
+                self.a11y_transport(),
+                self.a11y_timeline(),
+                self.a11y_inspector(),
+            ]
+        };
         if self.show_export {
             kids.push(self.a11y_export_dialog());
         }
@@ -9235,6 +9337,9 @@ impl Widget for VideoEditorApp {
             }
             return false;
         };
+        if self.bin_overlay_is_open() && pane != Pane::Bin {
+            return false;
+        }
         let rest = &key_path[1..];
         // Focusing anything inside a pane also moves the pane cursor there, so
         // the keyboard and the reader stay on the same element.
@@ -9304,6 +9409,9 @@ impl VideoEditorApp {
             return false;
         };
         let r = self.regions();
+        if self.bin_overlay_is_open() && key != hash_key(&TOPBAR_BIN_KEY) {
+            return false;
+        }
         match action {
             Action::Focus => [
                 (TOPBAR_BIN_KEY, r.menu_btn.width() > 0.0),
@@ -9852,10 +9960,11 @@ impl VideoEditorApp {
         }
         let mut node = self.a11y_pane(Pane::Timeline, tracks);
         node = node.with_value(format!(
-            "playhead at {}, {} of {} clips selected",
+            "playhead at {}, {} of {} clips selected, timeline view starts at {}; Page Up and Page Down scroll the timeline",
             crate::timecode::timecode(self.playhead, self.project.fps),
             self.selection.len(),
-            self.project.clips.len()
+            self.project.clips.len(),
+            crate::timecode::timecode(self.scroll, self.project.fps),
         ));
         node
     }
@@ -10425,6 +10534,12 @@ impl VideoEditorApp {
                     }),
             );
         }
+        if self.bin_overlay_is_open() {
+            return AccessNode::new(Role::Toolbar)
+                .with_name("Video editor commands")
+                .with_key(ui::a11y::hash_key(&TOPBAR_A11Y_KEY))
+                .with_children(kids);
+        }
         if r.inspector_btn.width() > 0.0 {
             kids.push(
                 AccessNode::new(Role::ToggleButton)
@@ -10705,6 +10820,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
         "View",
         &[
             ("Tab", "Next pane (Shift+Tab: previous)"),
+            ("Page Up / Down", "Scroll timeline (when it has focus)"),
             ("Z", "Zoom to fit"),
             ("+ / -", "Zoom in / out"),
             ("B", "Toggle media bin"),
@@ -10808,6 +10924,11 @@ impl VideoEditorApp {
     /// Move to the next / previous pane, clamping each pane's cursor to what it
     /// currently holds so Tab never lands on a row that has since been deleted.
     fn focus_pane(&mut self, back: bool) {
+        if self.bin_overlay_is_open() {
+            self.focus.pane = Pane::Bin;
+            self.clamp_pane_cursor();
+            return;
+        }
         self.focus.pane = self.focus.pane.step(back);
         self.clamp_pane_cursor();
     }
@@ -11766,10 +11887,41 @@ impl VideoEditorApp {
             }
             return true;
         }
+        if self.bin_overlay_is_open() {
+            // The narrow bin paints a full-window scrim, so it owns keyboard
+            // input as well as pointer input. Keep the one useful pane walk
+            // inside the bin and give both Escape and B the visible toggle's
+            // close behaviour; no timeline edit may happen behind the veil.
+            return match key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close_bin_overlay();
+                    true
+                }
+                Key::Named(NamedKey::Tab) => {
+                    self.focus.pane = Pane::Bin;
+                    self.clamp_pane_cursor();
+                    true
+                }
+                Key::Named(NamedKey::ArrowUp) => self.nav_arrow(true, true, state),
+                Key::Named(NamedKey::ArrowDown) => self.nav_arrow(false, true, state),
+                Key::Named(NamedKey::Enter) => self.activate_focused(state),
+                Key::Character(c) if c.eq_ignore_ascii_case("b") => {
+                    self.close_bin_overlay();
+                    true
+                }
+                _ => false,
+            };
+        }
         match key {
             Key::Named(NamedKey::Space) => {
                 self.toggle_play();
                 true
+            }
+            Key::Named(NamedKey::PageUp) if self.focus.pane == Pane::Timeline => {
+                self.scroll_timeline_page(false, r)
+            }
+            Key::Named(NamedKey::PageDown) if self.focus.pane == Pane::Timeline => {
+                self.scroll_timeline_page(true, r)
             }
             // Arrows nudge every selected clip a frame (Shift = one second);
             // with nothing selected they step the playhead instead.
@@ -12008,7 +12160,7 @@ impl VideoEditorApp {
                 if self.bin_layout() == SplitLayout::Overlay
                     && self.bin_flap.is_open(SplitLayout::Overlay)
                 {
-                    self.bin_flap.close();
+                    self.close_bin_overlay();
                 } else if self.inspector_split() == SplitLayout::Overlay
                     && self.inspector_flap.is_open(SplitLayout::Overlay)
                 {
@@ -12097,6 +12249,15 @@ impl VideoEditorApp {
             self.toggle_bin();
             return;
         }
+        // An open bin overlay owns every click outside its flap. This check
+        // must precede the other top-bar controls: otherwise the scrim could
+        // look modal while Import, Export, or the inspector still changed
+        // behind it.
+        let bin_visible = self.bin_is_visible(r);
+        if r.bin_overlay && bin_visible && !r.bin.contains(p) && !r.menu_btn.contains(p) {
+            self.close_bin_overlay();
+            return;
+        }
         // Inspector toggle (overlay layout only).
         if r.inspector_overlay && r.inspector_btn.contains(p) {
             self.toggle_inspector();
@@ -12139,14 +12300,6 @@ impl VideoEditorApp {
         // "+ Title" in the bin header.
         if self.bin_is_visible(r) && self.add_title_rect(r).contains(p) {
             self.add_title(state);
-            return;
-        }
-        // While the bin is an open overlay, a click on the scrim (anywhere
-        // outside the flap and the topbar toggle) dismisses it — matching the
-        // flap kernel's scrim/Esc behaviour.
-        let bin_visible = self.bin_is_visible(r);
-        if r.bin_overlay && bin_visible && !r.bin.contains(p) && !r.menu_btn.contains(p) {
-            self.bin_flap.close();
             return;
         }
         // Media bin (only when it's on-screen: docked, or overlay open).
@@ -20208,6 +20361,55 @@ mod tests {
     }
 
     #[test]
+    fn narrow_bin_overlay_traps_input_and_returns_to_the_opening_pane() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        app.rect = Rect::new(0.0, 0.0, 720.0, 820.0);
+        app.advance_flap();
+        app.focus.pane = Pane::Timeline;
+
+        app.toggle_bin();
+        app.bin_flap.snap(true);
+        assert!(app.bin_overlay_is_open());
+        assert!(app.traps_focus(), "the scrim makes the bin modal");
+        assert_eq!(
+            app.focus.pane,
+            Pane::Bin,
+            "opening moves focus into the bin"
+        );
+
+        // The scrim must swallow a covered top-bar action rather than opening
+        // an export dialog the user cannot see. A pointer press dismisses the
+        // flap and restores the invoking pane, just like Escape.
+        let regions = app.regions();
+        app.last_mouse = regions.export_btn.center();
+        app.handle_press(&mut doc, &regions, false);
+        assert!(!app.bin_overlay_is_open());
+        assert!(!app.show_export, "the covered Export button is inert");
+        assert_eq!(app.focus.pane, Pane::Timeline);
+
+        app.toggle_bin();
+        app.bin_flap.snap(true);
+
+        // Tab cannot walk a hidden transport, timeline, or inspector.
+        assert!(nav_key(
+            &mut app,
+            &mut doc,
+            Key::Named(NamedKey::Tab),
+            false
+        ));
+        assert_eq!(app.focus.pane, Pane::Bin);
+        // A timeline mutation shortcut is refused while the overlay owns input.
+        assert!(!nav_key(&mut app, &mut doc, ch("s"), false));
+
+        assert!(nav_key(&mut app, &mut doc, ch("b"), false));
+        assert!(!app.bin_overlay_is_open());
+        assert!(!app.traps_focus());
+        assert_eq!(app.focus.pane, Pane::Timeline, "closing returns focus");
+    }
+
+    #[test]
     fn crossing_breakpoint_returns_to_docked_default() {
         let mut app = app_with_sample();
         // Narrow + summon the overlay bin.
@@ -22151,6 +22353,39 @@ mod tests {
         wheel(&mut app, &mut doc, -3.0, 0.0, ModifiersState::empty());
         assert!(app.scroll > 0.0, "a horizontal wheel panned the timeline");
         assert_eq!(app.zoom, zoom, "and left the zoom alone");
+    }
+
+    #[test]
+    fn page_keys_scroll_and_announce_the_overflowing_timeline() {
+        let (mut app, mut doc) = app_and_doc();
+        app.focus.pane = Pane::Timeline;
+        app.zoom = 160.0;
+        let before = app.scroll;
+
+        assert!(nav_key(
+            &mut app,
+            &mut doc,
+            Key::Named(NamedKey::PageDown),
+            false
+        ));
+        assert!(
+            app.scroll > before,
+            "Page Down pans to later timeline content"
+        );
+        assert!(
+            app.a11y_timeline()
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains("Page Up and Page Down"))
+        );
+
+        assert!(nav_key(
+            &mut app,
+            &mut doc,
+            Key::Named(NamedKey::PageUp),
+            false
+        ));
+        assert!(app.scroll < app.max_scroll(&app.regions()));
     }
 
     #[test]
@@ -27241,6 +27476,28 @@ mod tests {
             &automerge::ROOT,
         ));
         assert!(app.bin_flap.is_open(app.bin_layout()));
+        assert!(
+            !app.perform_action_at(
+                &activate,
+                &[
+                    ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
+                    ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
+                ],
+                &mut doc,
+                &automerge::ROOT,
+            ),
+            "the open bin scrim makes other topbar actions unavailable"
+        );
+        assert!(app.perform_action_at(
+            &activate,
+            &[
+                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
+                ui::a11y::hash_key(&TOPBAR_BIN_KEY),
+            ],
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!app.bin_flap.is_open(app.bin_layout()));
         assert!(app.perform_action_at(
             &activate,
             &[
