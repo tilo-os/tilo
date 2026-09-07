@@ -6070,14 +6070,13 @@ impl ShellOverlayHost {
     /// Open the real session menu and optionally arm Shut down, then pin its
     /// entrance animation so deterministic screenshots capture the resting
     /// production surface rather than a wall-clock-dependent intermediate.
-    pub fn force_power_menu_for_visual_test(&mut self, arm_shutdown: bool) {
+    pub fn force_power_menu_for_visual_test(&mut self, select_shutdown: bool) {
         self.power_menu.open();
-        if arm_shutdown {
+        if select_shutdown {
             use winit::keyboard::{Key, NamedKey};
             for _ in 0..5 {
                 let _ = self.power_menu.key(&Key::Named(NamedKey::ArrowDown), false);
             }
-            let _ = self.power_menu.key(&Key::Named(NamedKey::Enter), false);
         }
         self.power_menu.force_settled_for_visual_test();
     }
@@ -6323,8 +6322,10 @@ impl ShellOverlayHost {
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
     fn quick_settings_rect(&self) -> Rect {
-        let popover_w = if self.rect.width() >= 720.0 {
+        let popover_w = if self.rect.width() >= 1200.0 {
             400.0
+        } else if self.rect.width() >= 720.0 {
+            360.0
         } else {
             320.0
         };
@@ -8064,6 +8065,8 @@ impl ShellOverlayHost {
         }
         let configured_action = self.configured_shortcut_action(logical_key, modifiers);
         let shortcut_pressed = |action| configured_action == Some(action);
+        // F1 is the fixed, hardware-neutral desktop help key. The configured
+        // shortcut is a second route to the exact same guide.
         let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
             || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
         if help_chord {
@@ -10494,7 +10497,10 @@ fn shortcut_reference_rows(
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
         ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        ("This guide", chord(ShortcutAction::ShortcutHelp)),
+        (
+            "Shortcut guide",
+            format!("F1  /  {}", chord(ShortcutAction::ShortcutHelp)),
+        ),
         ("Workspace wheel", "Super+S".into()),
         ("Wireless display", "Super+P".into()),
         ("Capture screenshot", "Super+Shift+S".into()),
@@ -12848,7 +12854,7 @@ impl ShellOverlayHost {
             &RoundedRect::from_rect(rect, rect.height() / 2.0),
         );
         let size = theme.tokens.typography.scale.sm;
-        let label = "Keyboard shortcuts  F1";
+        let label = "Help  F1 · Super+?";
         let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text_weighted(
             scene,
@@ -12920,7 +12926,7 @@ impl ShellOverlayHost {
         let title_size = theme.tokens.typography.scale.xl;
         text_renderer.draw_text_weighted(
             scene,
-            "Move around your desktop",
+            "Desktop help",
             title_size,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 28.0, panel.y0 + 22.0).into()),
@@ -12929,7 +12935,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Windows stay in horizontal strips. Focus moves the viewport; nothing needs to overlap.",
+            "F1 opens this desktop guide anywhere. Super+? is the configurable shortcut for the same guide.",
             theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 28.0, panel.y0 + 58.0).into()),
@@ -17211,7 +17217,7 @@ mod palette_dispatch_tests {
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
-            "This guide:Super+/",
+            "Shortcut guide:F1  /  Super+/",
             "Workspace wheel:Super+S",
             "Wireless display:Super+P",
             "Capture screenshot:Super+Shift+S",
@@ -17390,6 +17396,46 @@ mod palette_dispatch_tests {
         assert!(description.contains("workspaces with"));
         assert!(description.contains("move groups with"));
         assert!(description.contains("Screenshot: Print Screen"));
+        assert!(description.contains("Shortcut guide: F1  /  Super+/"));
+    }
+
+    #[test]
+    fn f1_and_configured_global_help_both_open_the_same_desktop_guide() {
+        use settings_store::hardware::ShortcutAction;
+
+        let (mut host, chrome) = host_with_chrome();
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.shortcut_help);
+
+        chrome.borrow_mut().overlays.shortcut_help = false;
+        let chord = host
+            .shortcut_config
+            .bindings
+            .get(&ShortcutAction::ShortcutHelp)
+            .cloned()
+            .expect("default global help binding");
+        let key = Key::Character(chord.key.clone().into());
+        let modifiers = Modifiers::from(ModifiersState::SUPER);
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &key,
+            modifiers,
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.shortcut_help);
     }
 
     #[test]
