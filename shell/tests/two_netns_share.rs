@@ -167,7 +167,7 @@ fn run_host_thread(
         let now = Instant::now();
         let _ = host_session.encode_next_frame(now);
         while let Some(frame) = host_session.poll_stream_frame(VIEWER_PEER) {
-            let bytes = frame.encode();
+            let bytes = frame.encode().expect("test frame fits wire limit");
             // UDP is bounded per packet — fragment into chunks that fit inside a
             // common MTU (1400 bytes, avoiding IP fragmentation) and frame *inside*
             // the UDP payload so `SurfaceStreamReceiver` re-assembles them; packet
@@ -225,7 +225,7 @@ fn run_viewer_thread(
 
     while !viewer_stop.load(Ordering::Acquire) {
         while let Ok((n, _from)) = video_sock_viewer.recv_from(&mut recv_buf) {
-            rx.push_bytes(&recv_buf[..n]);
+            let _ = rx.push_bytes(&recv_buf[..n]);
         }
 
         let Ok(events) = rx.drain() else {
@@ -406,7 +406,7 @@ fn netns_host_process() {
         session.deposit_captured_rgba(gradient());
         let _ = session.encode_next_frame(Instant::now());
         while let Some(frame) = session.poll_stream_frame(VIEWER_PEER) {
-            let bytes = frame.encode();
+            let bytes = frame.encode().expect("test frame fits wire limit");
             for chunk in bytes.chunks(1400) {
                 let _ = video_send.send_to(chunk, &video_addr);
             }
@@ -457,7 +457,7 @@ fn netns_viewer_process() {
 
     while Instant::now() < deadline {
         while let Ok((n, _)) = video_in.recv_from(&mut buf) {
-            rx.push_bytes(&buf[..n]);
+            let _ = rx.push_bytes(&buf[..n]);
         }
         if let Ok(events) = rx.drain() {
             for ev in events {
@@ -508,7 +508,7 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
         .poll_stream_frame(VIEWER_PEER)
         .expect("frame emitted");
 
-    let bytes = frame.encode();
+    let bytes = frame.encode().expect("test frame fits wire limit");
     for chunk in bytes.chunks(1400) {
         sender_sock.send_to(chunk, addr).expect("udp send");
     }
@@ -525,7 +525,7 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
         .expect("1s from now must not overflow Instant");
     while Instant::now() < deadline && received_frame.is_none() {
         if let Ok((n, _)) = viewer_sock.recv_from(&mut buf) {
-            rx.push_bytes(&buf[..n]);
+            let _ = rx.push_bytes(&buf[..n]);
         }
         if let Ok(events) = rx.drain() {
             for ev in events {

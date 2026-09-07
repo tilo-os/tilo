@@ -1,17 +1,17 @@
 //! The chat app's permission gate.
 //!
-//! Sharing a channel and embedding a file both cross the qOS permission
+//! Sharing a channel and embedding a blob both cross the qOS permission
 //! boundary: a peer only sees a workspace's channels and can only hydrate a
-//! `/var/workspace/...` embed if the OS has granted it access. This module
+//! content-addressed embed if the OS has granted it access. This module
 //! routes those decisions through the toolkit's [`ui::permissions`] model
 //! (the `PermissionContext` the compositor hands each app in `draw`), rather
 //! than a local allow-all stub.
 //!
 //! Three concrete gates:
 //! * [`ChatPermissions::can_embed`] — may this peer hydrate the bytes behind a
-//!   file/image/video attachment? Checked before the image cache reads the
-//!   path **and** before the renderer paints it, so an ungranted embed shows a
-//!   locked card and never touches the file.
+//!   file/image/video attachment? Checked before the image cache requests the
+//!   blob **and** before the renderer paints it, so an ungranted embed shows a
+//!   locked card and never asks a collaborator for bytes.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
 //!   call in the current workspace? (`Write` on the room.)
 //! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
@@ -53,13 +53,14 @@ impl ChatPermissions {
         Self { ctx }
     }
 
-    /// May this peer hydrate + render the bytes behind an attachment at `path`?
-    /// A `Read` capability on the path. Roles carry no authority over the
-    /// filesystem at all, so this always needs an explicit grant: the
-    /// unrestricted local user has a workspace-wide one; a member has only the
-    /// paths that were shared with them.
-    pub fn can_embed(&self, path: &str) -> bool {
-        self.ctx.check(&PermissionScope::path(path, Verb::Read))
+    /// May this peer hydrate + render the bytes behind an attachment `blob`?
+    /// A valid qdoc/demo identity plus workspace Read. Attachments belong to
+    /// the conversation, not a peer-local filesystem path, so a viewer who
+    /// can read the room can hydrate the room's verified shared bytes.
+    pub fn can_embed(&self, blob: &str) -> bool {
+        let valid_hash = blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let valid_demo = matches!(blob, "qos-demo://call-grid" | "qos-demo://shared-shot");
+        (valid_hash || valid_demo) && self.ctx.check(&PermissionScope::workspace(Verb::Read))
     }
 
     /// May this peer post / react / join a call here? `Write` on the room (a
@@ -104,16 +105,16 @@ mod tests {
     #[test]
     fn permissive_admin_allows_everything() {
         let p = ChatPermissions::permissive();
-        assert!(p.can_embed("/var/workspace/design/handoff.png"));
+        assert!(p.can_embed(&"a".repeat(64)));
         assert!(p.can_participate());
         assert!(p.allows(CallAction::Join));
         assert!(p.allows(CallAction::ShareScreen));
     }
 
     #[test]
-    fn restricted_member_is_gated_on_embeds_and_writes() {
+    fn restricted_member_reads_verified_embeds_but_cannot_write() {
         let p = restricted_member();
-        // No file grant → an embed is gated (bytes never hydrate).
+        assert!(p.can_embed(&"a".repeat(64)));
         assert!(!p.can_embed("/var/workspace/secret.png"));
         // No workspace-admin → can't post / react / start a call…
         assert!(!p.can_participate());

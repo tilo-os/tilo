@@ -103,6 +103,13 @@ pub enum ChatOperation {
     OpenPerson {
         user: String,
     },
+    /// Start one local, bounded attachment import. The path is never
+    /// replicated; a successful worker result becomes a qdoc-backed
+    /// `SendMessage` only during the owner's next sync.
+    ImportAttachment {
+        channel: String,
+        path: String,
+    },
 }
 
 /// Decode a Chat-local view operation addressed through a resource action.
@@ -147,8 +154,8 @@ pub enum ChatAction {
     /// authoring time and carried here, so replay is byte-identical. A chat
     /// message is discrete (not a co-edited flowing document), so a whole-message
     /// `text` payload is the correct grain. `parent` is `Some` for a threaded
-    /// reply. `attachment` references a projected FUSE file **by path** — the
-    /// row insert is the action; the bytes/transport are external.
+    /// reply. `attachment` references portable shared qdoc bytes by content
+    /// key, so a peer never needs the sender's filesystem path.
     SendMessage {
         channel: String,
         id: String,
@@ -1173,6 +1180,10 @@ fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> R
 
 /// A channel resource: its actions (post/rename/archive/mark-read/delete),
 /// plus — only when it's the open channel — its messages as sub-resources.
+#[allow(
+    clippy::expect_used,
+    reason = "ChatOperation consists only of serde-serializable strings; ActionSpec's infallible builder cannot return an error"
+)]
 fn build_channel_resource(
     ctx: &ChatResourceCtx,
     doc: &AutoCommit,
@@ -1219,6 +1230,31 @@ fn build_channel_resource(
                     None,
                     mentions,
                 ))
+            }
+        },
+    ));
+
+    // An agent and the picker use the same local import lifecycle. The path
+    // stays local to the machine that can read it; only the resulting bytes
+    // and canonical SendMessage action are collaborative.
+    channel = channel.with_action(ActionSpec::prompted_operation(
+        "attach",
+        "Attach file",
+        "File path",
+        "/var/workspace/report.pdf",
+        OperationKind::Effect,
+        CHAT_OPERATION_TYPE,
+        {
+            let channel = ch.id.clone();
+            move |path: &str| {
+                EncodedAction::encode_operation(
+                    CHAT_OPERATION_TYPE,
+                    &ChatOperation::ImportAttachment {
+                        channel: channel.clone(),
+                        path: path.trim().to_owned(),
+                    },
+                )
+                .expect("ChatOperation is always serializable")
             }
         },
     ));
@@ -2049,6 +2085,13 @@ mod tests {
             .unwrap();
         assert_eq!(open.kind, OperationKind::View);
         assert!(!open.contract.reversible);
+        let attach = channel
+            .actions
+            .iter()
+            .find(|action| action.id == "attach")
+            .unwrap();
+        assert_eq!(attach.kind, OperationKind::Effect);
+        assert_eq!(attach.operation_type.as_deref(), Some(CHAT_OPERATION_TYPE));
         let source = ChatDoc::list_messages(&doc, "c_crit").remove(0);
         let ctx = ctx_from(&doc);
         let ch = ctx.channels.iter().find(|ch| ch.id == "c_crit").unwrap();
