@@ -46,10 +46,16 @@ use ui::qos_actions::{
 };
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    CardGrid, Column, Container, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput,
-    ToggleGroup, Widget,
+    CardGrid, Column, Container, Dropdown, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text,
+    TextInput, ToggleGroup, Widget,
 };
-use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
+use ui::{
+    Theme,
+    icons::Icon,
+    permissions::PermissionContext,
+    presence::PresenceCtx,
+    text_render::{TextRenderer, TextWeight},
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -75,12 +81,12 @@ const REFRESH_KEY: &str = "store.refresh_pressed";
 /// CRDT `Text` object the header search box binds to. `sync` seeds
 /// the object (the toolkit's `TextInput` binds to an existing `Text`
 /// but never lazily creates one) and reads the typed query back out.
-const SEARCH_QUERY_KEY: &str = "store.search_query";
+const SEARCH_QUERY_KEY: &str = crate::doc_actions::SEARCH_QUERY_KEY;
 /// Shared, replayable catalogue-view preferences. A collaborator reopening
 /// this Store document sees the same scoped result set, rather than a stale
 /// private toggle selection.
-const SOURCE_FILTER_KEY: &str = "store.source_filter";
-const CATEGORY_FILTER_KEY: &str = "store.category_filter";
+const SOURCE_FILTER_KEY: &str = crate::doc_actions::SOURCE_FILTER_KEY;
+const CATEGORY_FILTER_KEY: &str = crate::doc_actions::CATEGORY_FILTER_KEY;
 const ACTION_CLICK_KEY_PREFIX: &str = "store.action_click.";
 /// Secondary "mark installed" (pin) toggle, one per item id.
 const PIN_CLICK_KEY_PREFIX: &str = "store.pin_click.";
@@ -607,6 +613,20 @@ fn detail_binding(item: &StoreItem) -> Option<ActionBinding<()>> {
     ActionBinding::unit_for(&resource, "show-details").ok()
 }
 
+fn open_surface_binding(
+    resource_id: &str,
+    resource_kind: &str,
+    resource_label: &str,
+    action_id: &str,
+    action_label: &str,
+    type_id: &str,
+) -> Option<ActionBinding<()>> {
+    let spec =
+        ActionSpec::operation(action_id, action_label, OperationKind::View, type_id, &()).ok()?;
+    let resource = Resource::new(resource_id, resource_kind, resource_label).with_action(spec);
+    ActionBinding::unit_for(&resource, action_id).ok()
+}
+
 /// Root widget.
 #[allow(
     clippy::struct_excessive_bools,
@@ -682,16 +702,6 @@ pub struct StoreApp {
         Vec<u8>,
     )>,
     pending_moderation: Vec<(ModerationIntent, qos_actions::InvocationId)>,
-    /// Segment index the source-filter `ToggleGroup` last committed.
-    /// The `on_change` closure is `'static` and can't borrow `self`,
-    /// so it parks the click here; `sync` reads it back and flips
-    /// [`active_filter`]. Shared (`Rc`) because the closure is rebuilt
-    /// into a fresh `ToggleGroup` every `build_layout`.
-    filter_click: Rc<Cell<Option<usize>>>,
-    /// Same retained selection bridge as `filter_click`, for categories. Using
-    /// one `ToggleGroup` gives the selected category a visible and semantic
-    /// state instead of presenting a row of indistinguishable buttons.
-    category_click: Rc<Cell<Option<usize>>>,
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
@@ -757,8 +767,6 @@ impl StoreApp {
             pending_control_invocation: None,
             report_export: None,
             pending_moderation: Vec::new(),
-            filter_click: Rc::new(Cell::new(None)),
-            category_click: Rc::new(Cell::new(None)),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             catalog_page: 0,
             status_bubble: ui::StatusBubble::new(),
@@ -996,6 +1004,7 @@ impl StoreApp {
         if self.active_filter != f {
             self.active_filter = f;
             self.catalog_page = 0;
+            self.scroll_offset.set((0.0, 0.0));
             self.structure_dirty = true;
         }
     }
@@ -1018,6 +1027,7 @@ impl StoreApp {
         if self.active_category != c {
             self.active_category = c;
             self.catalog_page = 0;
+            self.scroll_offset.set((0.0, 0.0));
             self.structure_dirty = true;
         }
     }
@@ -1030,6 +1040,7 @@ impl StoreApp {
         if self.query != q {
             self.query = q;
             self.catalog_page = 0;
+            self.scroll_offset.set((0.0, 0.0));
             self.pending_search = Some(self.query.clone());
             self.structure_dirty = true;
         }
@@ -1122,12 +1133,22 @@ impl StoreApp {
             // Search and the two facets are one catalogue surface, rather
             // than three unrelated full-width bands.  It also gives the
             // desktop grid a deliberate shared reading width.
-            let catalogue_controls = Column::new()
+            let mut catalogue_controls = Column::new()
                 .with_intrinsic_height()
                 .with_gap(10.0)
-                .push(header)
-                .push(self.build_filter_row(theme))
-                .push(self.build_category_row(theme));
+                .push(header);
+            catalogue_controls = if self.compact_layout() {
+                catalogue_controls.push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(self.build_filter_row(theme))
+                        .push(self.build_category_row(theme)),
+                ))
+            } else {
+                catalogue_controls
+                    .push(self.build_filter_row(theme))
+                    .push(self.build_category_row(theme))
+            };
             column = column.push(
                 self.centered_content(Box::new(
                     Container::new()
@@ -1710,6 +1731,10 @@ impl StoreApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the responsive catalogue header is one cohesive search, navigation, status, and toolbar surface"
+    )]
     fn build_header(&self, theme: &Theme) -> Box<dyn Widget> {
         // Live search box: a real `TextInput` bound to a CRDT `Text`
         // object at `SEARCH_QUERY_KEY`. `sync` seeds the object and
@@ -1718,6 +1743,7 @@ impl StoreApp {
         let search = TextInput::new(vec![])
             .with_id("store.search")
             .with_on_change_path(SEARCH_QUERY_KEY)
+            .on_action(crate::doc_actions::search_binding(&self.category_labels()))
             .with_placeholder("Search apps…");
         // Refresh button writes REFRESH_KEY; the outer host drives
         // the real refetch when it sees the bit go high.
@@ -1727,35 +1753,94 @@ impl StoreApp {
             refresh_btn = refresh_btn.on_action(binding);
         }
         let refresh_btn = refresh_btn.tooltip("Refresh configured catalogues");
-        let remotes_btn =
+        let mut remotes_btn =
             ui::widget::Button::new("store.remotes", "Remotes", Some(REMOTES_OPEN_KEY))
+                .with_icon(Icon::Globe)
+                .fit_content(40.0)
                 .tooltip("Manage Flatpak remotes");
-        let safety_btn = ui::widget::Button::new("store.safety", "Trust", Some(SAFETY_OPEN_KEY))
-            .tooltip("Understand signatures, review, reports and appeals");
+        if let Some(binding) = open_surface_binding(
+            "store:remotes",
+            "store.remote-list",
+            "Flatpak remotes",
+            "show",
+            "Show Flatpak remotes",
+            "store.view-remotes",
+        ) {
+            remotes_btn = remotes_btn.on_action(binding);
+        }
+        let mut safety_btn =
+            ui::widget::Button::new("store.safety", "Trust", Some(SAFETY_OPEN_KEY))
+                .with_icon(Icon::Shield)
+                .fit_content(40.0)
+                .tooltip("Understand signatures, review, reports and appeals");
+        if let Some(binding) = open_surface_binding(
+            "store:moderation",
+            "store.moderation",
+            "Trust & moderation",
+            "show",
+            "Show trust and moderation",
+            "store.view-trust",
+        ) {
+            safety_btn = safety_btn.on_action(binding);
+        }
+        let refresh_btn = refresh_btn.with_icon(Icon::Refresh).fit_content(40.0);
         let title_row: Box<dyn Widget> = if self.compact_layout() {
             Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(8.0)
-                    .push(Box::new(Text::new("Apps").with_size(24.0)))
+                    .push(Box::new(
+                        Text::new("Apps")
+                            .with_size(28.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_heading_level(1),
+                    ))
                     .push(Box::new(
                         Row::new()
+                            .no_wrap()
                             .push(Box::new(safety_btn))
-                            .push(Box::new(remotes_btn)),
-                    ))
-                    .push(Box::new(refresh_btn)),
+                            .push(Box::new(remotes_btn))
+                            .push(Box::new(refresh_btn)),
+                    )),
             )
         } else {
             let controls = Row::new()
+                .no_wrap()
                 .push(Box::new(safety_btn))
                 .push(Box::new(remotes_btn))
                 .push(Box::new(refresh_btn));
             Box::new(
                 Row::new()
-                    .push(Box::new(Text::new("Apps").with_size(24.0)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(controls)),
+                    .no_wrap()
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_child(Box::new(
+                                Column::new()
+                                    .with_no_padding()
+                                    .with_intrinsic_height()
+                                    .with_gap(3.0)
+                                    .push(Box::new(
+                                        Text::new("Apps")
+                                            .with_size(30.0)
+                                            .with_weight(TextWeight::Semibold)
+                                            .with_heading_level(1),
+                                    ))
+                                    .push(Box::new(
+                                        Text::new("Trusted software, ready when you need it.")
+                                            .with_size(13.0)
+                                            .with_color(theme.text_dim),
+                                    )),
+                            )),
+                    ))
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(318.0)
+                            .with_no_padding()
+                            .with_child(Box::new(controls)),
+                    )),
             )
         };
         let mut header = Column::new().with_intrinsic_height().with_gap(8.0);
@@ -1775,14 +1860,15 @@ impl StoreApp {
                 },
             );
         }
-        header = header
-            .push(title_row)
-            .push(Box::new(
+        header = header.push(title_row);
+        if self.compact_layout() {
+            header = header.push(Box::new(
                 Text::new("Find trusted tools and open them instantly.")
                     .with_size(12.0)
                     .with_color(theme.text_dim),
-            ))
-            .push(Box::new(search));
+            ));
+        }
+        header = header.push(Box::new(search));
         if self.worker_busy {
             header = header.push(Box::new(
                 Text::new(if self.status_line.is_empty() {
@@ -1805,6 +1891,31 @@ impl StoreApp {
     }
 
     fn build_filter_row(&self, _theme: &Theme) -> Box<dyn Widget> {
+        if self.compact_layout() {
+            let values = SourceFilter::ALL
+                .iter()
+                .map(|filter| {
+                    (
+                        filter.label().to_owned(),
+                        format!("Source · {}", filter.label()),
+                    )
+                })
+                .collect();
+            let mut dropdown = Dropdown::new(Vec::new(), "")
+                .with_id("store.source-filter")
+                .with_accessible_name("App source")
+                .on_action(crate::doc_actions::source_filter_value_binding(
+                    &self.category_labels(),
+                ));
+            dropdown.set_value_options(values);
+            dropdown.set_selected(self.active_filter.label());
+            return Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(154.0)
+                    .with_child(Box::new(dropdown)),
+            );
+        }
         let segs: Vec<Segment> = SourceFilter::ALL
             .iter()
             .map(|f| Segment::new(f.label()))
@@ -1813,15 +1924,11 @@ impl StoreApp {
             .iter()
             .position(|f| *f == self.active_filter)
             .unwrap_or(0);
-        // The `on_change` callback runs inside `handle_event` and is
-        // `'static`, so it can't borrow `self`. It parks the clicked
-        // segment index in the shared `filter_click` cell; `sync`
-        // reads it back next frame and flips `active_filter`, which
-        // re-filters the catalog.
-        let sink = self.filter_click.clone();
-        let group = ToggleGroup::new(segs, selected).on_view("store.source-filter", move |idx| {
-            sink.set(Some(idx));
-        });
+        let group = ToggleGroup::new(segs, selected)
+            .with_id("store.source-filter")
+            .on_action(crate::doc_actions::source_filter_binding(
+                &self.category_labels(),
+            ));
         Box::new(
             Scrollable::new(ScrollAxis::Horizontal)
                 // Facets remain scrollable by wheel, touch and keyboard.  A
@@ -1835,17 +1942,33 @@ impl StoreApp {
 
     fn build_category_row(&self, _theme: &Theme) -> Box<dyn Widget> {
         let labels = self.category_labels();
+        if self.compact_layout() {
+            let values = labels
+                .iter()
+                .map(|label| (label.clone(), format!("Category · {label}")))
+                .collect();
+            let mut dropdown = Dropdown::new(Vec::new(), "")
+                .with_id("store.category-filter")
+                .with_accessible_name("App category")
+                .on_action(crate::doc_actions::category_filter_value_binding(&labels));
+            dropdown.set_value_options(values);
+            dropdown.set_selected(self.active_category.as_deref().unwrap_or("All"));
+            return Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(154.0)
+                    .with_child(Box::new(dropdown)),
+            );
+        }
         let selected = self
             .active_category
             .as_ref()
             .and_then(|active| labels.iter().position(|label| label == active))
             .unwrap_or(0);
-        let segments = labels.into_iter().map(Segment::new).collect();
-        let sink = self.category_click.clone();
-        let group =
-            ToggleGroup::new(segments, selected).on_view("store.category-filter", move |idx| {
-                sink.set(Some(idx));
-            });
+        let segments = labels.iter().cloned().map(Segment::new).collect();
+        let group = ToggleGroup::new(segments, selected)
+            .with_id("store.category-filter")
+            .on_action(crate::doc_actions::category_filter_binding(&labels));
         Box::new(
             Scrollable::new(ScrollAxis::Horizontal)
                 .with_scrollbar(false)
@@ -1881,6 +2004,7 @@ impl StoreApp {
             return Box::new(EmptyState::new(title).with_message(message));
         }
         let page_count = visible.len().div_ceil(PAGE_SIZE).max(1);
+        let visible_count = visible.len();
         let page = self.catalog_page.min(page_count.saturating_sub(1));
         let start = page.saturating_mul(PAGE_SIZE);
         let mut column = Column::new().with_intrinsic_height();
@@ -1912,7 +2036,7 @@ impl StoreApp {
                 self.images.clone(),
                 item_action_binding(item, action),
                 detail_binding(item),
-                true,
+                self.compact_layout(),
             ));
         }
         if self.compact_layout() {
@@ -1922,21 +2046,34 @@ impl StoreApp {
         } else {
             let recommended = Column::new()
                 .with_intrinsic_height()
-                .with_gap(24.0)
+                .with_gap(12.0)
                 .push(Box::new(
-                    Text::new("Recommended for you")
-                        .with_size(18.0)
-                        .with_heading_level(2),
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(
+                            Text::new(if self.query.trim().is_empty() {
+                                "Recommended for you"
+                            } else {
+                                "Search results"
+                            })
+                            .with_size(20.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_heading_level(2),
+                        ))
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(
+                            Text::new(&format!("{visible_count} apps"))
+                                .with_size(12.0)
+                                .with_color(theme.text_dim),
+                        )),
                 ))
-                // CardGrid owns its own paint bounds, so reserve a concrete
-                // breathing lane instead of relying solely on flex gaps.
                 .push(Box::new(
-                    Container::new().with_no_padding().with_height(22.0),
+                    Container::new().with_no_padding().with_height(12.0),
                 ))
                 .push(Box::new(
                     CardGrid::new(cards)
                         .with_min_card_width(280.0)
-                        .with_card_height(280.0)
+                        .with_card_height(220.0)
                         .with_gap(16.0),
                 ));
             column = column.push(Box::new(
@@ -2075,9 +2212,6 @@ impl StoreApp {
     /// `true` if anything changed (used by callers as a signal to
     /// re-render).
     fn drain_click_keys(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        // Source-filter chips are wired through the `filter_click`
-        // cell (see `sync`), not a CRDT key, so there is no filter
-        // loop here.
         let mut any = self.drain_primary_action_click(state, path);
         any |= self.drain_secondary_clicks(state, path);
         any |= self.drain_detail_back_click(state, path);
@@ -2457,6 +2591,8 @@ impl Widget for StoreApp {
             "store.app",
             "store.remote",
             "store.view",
+            "store.view-remotes",
+            "store.view-trust",
             "store.report-export",
             "store.moderation",
             "store.moderation-status",
@@ -2513,6 +2649,9 @@ impl Widget for StoreApp {
         let mut publisher_resources = publishers.into_values().collect::<Vec<_>>();
         publisher_resources.sort_by(|a, b| a.label.cmp(&b.label));
         root.children.extend(publisher_resources);
+        root.children.push(crate::doc_actions::preferences_resource(
+            &self.category_labels(),
+        ));
         if self.items.len() > RESOURCE_SNAPSHOT_LIMIT {
             root.children.push(Resource::new(
                 "store:catalogue-snapshot",
@@ -2525,6 +2664,15 @@ impl Widget for StoreApp {
         }
 
         let mut remotes = Resource::new("store:remotes", "store.remote-list", "Flatpak remotes");
+        if let Ok(show) = ActionSpec::operation(
+            "show",
+            "Show Flatpak remotes",
+            OperationKind::View,
+            "store.view-remotes",
+            &(),
+        ) {
+            remotes.actions.push(show);
+        }
         if let Ok(refresh) = ActionSpec::operation(
             "refresh",
             "Refresh remotes",
@@ -2598,6 +2746,15 @@ impl Widget for StoreApp {
 
         let mut moderation =
             Resource::new("store:moderation", "store.moderation", "Trust & moderation");
+        if let Ok(show) = ActionSpec::operation(
+            "show",
+            "Show trust and moderation",
+            OperationKind::View,
+            "store.view-trust",
+            &(),
+        ) {
+            moderation.actions.push(show);
+        }
         for report in &self.reports {
             let mut report_resource = Resource::new(
                 report.id.clone(),
@@ -2743,6 +2900,26 @@ impl Widget for StoreApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        if kind == OperationKind::View && type_id == "store.view-remotes" {
+            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            self.remotes_open = true;
+            self.safety_open = false;
+            self.focused_detail = None;
+            self.pending_control_invocation = Some(ControlInvocation {
+                address: ActionAddress::new("store:remotes", "refresh"),
+                arguments: serde_json::Map::new(),
+            });
+            self.structure_dirty = true;
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "store.view-trust" {
+            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            self.safety_open = true;
+            self.remotes_open = false;
+            self.focused_detail = None;
+            self.structure_dirty = true;
+            return Ok(true);
+        }
         if kind == OperationKind::View && type_id == "store.view" {
             let app_id: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             let item = self
@@ -2993,8 +3170,9 @@ impl Widget for StoreApp {
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_report_export();
-        // Take shared selections first. A local activation below then writes
-        // its choice into the same CRDT location during this sync turn.
+        // Catalogue preferences are replayable document actions. Adopting
+        // their CRDT state here keeps pointer, keyboard, assistive technology,
+        // search, agents, history, undo, and collaborators on one path.
         if let Some(filter) = scalar_string_at(state, path, SOURCE_FILTER_KEY) {
             self.set_active_filter_from_document(&filter);
         }
@@ -3008,21 +3186,6 @@ impl Widget for StoreApp {
             // A stale category after a catalog refresh fails safely to All
             // instead of trapping collaborators in an empty result view.
             self.set_active_category(if valid { category } else { None });
-        }
-        // A source-filter chip parked its segment index in the shared
-        // cell during the last `handle_event`; adopt it now.
-        if let Some(idx) = self.filter_click.take()
-            && let Some(f) = SourceFilter::ALL.get(idx).copied()
-        {
-            self.set_active_filter(f);
-            let _ = state.put(path, SOURCE_FILTER_KEY, f.label());
-        }
-        if let Some(idx) = self.category_click.take() {
-            let category = self.category_labels().get(idx).cloned();
-            let category = category.filter(|label| label != "All");
-            self.set_active_category(category.clone());
-            let _ = state.put(path, CATEGORY_FILTER_KEY, category.unwrap_or_default());
-            self.scroll_offset.set((0.0, 0.0));
         }
         // Seed the search box's backing `Text` object *before* the
         // children sync so the `TextInput` resolves a real object to
@@ -3245,6 +3408,7 @@ impl Widget for StoreApp {
 mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
+    use qos_actions::Action;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
@@ -3361,6 +3525,7 @@ mod tests {
 
         for id in [
             "store",
+            "store:filters",
             "store:remotes",
             "remote:flathub",
             "store:moderation",
@@ -3372,6 +3537,11 @@ mod tests {
         }
         let remote = Widget::resource(&app, &doc, "remote:flathub").unwrap();
         assert!(remote.actions.iter().any(|action| action.id == "remove"));
+        let filters = Widget::resource(&app, &doc, "store:filters").unwrap();
+        assert_eq!(filters.actions.len(), 3);
+        assert!(filters.actions.iter().all(|action| {
+            action.kind == OperationKind::Document && action.contract.reversible
+        }));
     }
 
     #[test]
@@ -3499,13 +3669,16 @@ mod tests {
 
     #[test]
     fn filter_chip_click_flips_active_filter_through_sync() {
-        // Prove the wired filter chips: the `on_change` closure parks
-        // a segment index in `filter_click`; `sync` adopts it and the
-        // catalog re-filters.
+        // The same replayable action emitted by the segmented control is
+        // adopted through sync and re-filters the catalogue.
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        app.filter_click.set(Some(1)); // segment 1 == SourceFilter::Qos
+        crate::doc_actions::StoreDocumentAction::SetSourceFilter {
+            value: "qOS".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
         app.sync(&mut doc, &root);
         assert_eq!(app.active_filter(), SourceFilter::Qos);
         let names: Vec<&str> = app
@@ -3522,12 +3695,11 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         app.scroll_offset.set((0.0, 240.0));
-        let games = app
-            .category_labels()
-            .iter()
-            .position(|label| label == "Games")
-            .expect("Games category exists");
-        app.category_click.set(Some(games));
+        crate::doc_actions::StoreDocumentAction::SetCategoryFilter {
+            value: "Games".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.active_category(), Some("Games"));
         assert_eq!(app.scroll_offset.get(), (0.0, 0.0));
@@ -3540,13 +3712,16 @@ mod tests {
 
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        app.filter_click.set(Some(1)); // qOS
-        let games = app
-            .category_labels()
-            .iter()
-            .position(|label| label == "Games")
-            .unwrap();
-        app.category_click.set(Some(games));
+        crate::doc_actions::StoreDocumentAction::SetSourceFilter {
+            value: "qOS".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        crate::doc_actions::StoreDocumentAction::SetCategoryFilter {
+            value: "Games".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             scalar_string_at(&doc, &automerge::ROOT, SOURCE_FILTER_KEY).as_deref(),
@@ -3722,7 +3897,7 @@ mod tests {
     }
 
     #[test]
-    fn exported_store_operations_are_background_jobs() {
+    fn exported_store_effects_are_background_jobs() {
         let app = seeded_app();
         let doc = AutoCommit::new();
         for action in Widget::resources(&app, &doc).iter().flat_map(|resource| {
@@ -3733,6 +3908,9 @@ mod tests {
                     .flat_map(|child| child.actions.iter()),
             )
         }) {
+            if action.kind != OperationKind::Effect {
+                continue;
+            }
             assert!(matches!(
                 action.contract.execution,
                 ExecutionMode::Background { cancellable: false }
