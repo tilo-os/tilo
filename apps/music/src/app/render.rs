@@ -232,8 +232,8 @@ fn anim_time() -> f64 {
 /// Normalised `0..=1` heights for the 3-bar now-playing equalizer. While
 /// `playing` the bars bounce on out-of-phase sinusoids; paused they hold a
 /// static silhouette.
-fn eq_bars(playing: bool) -> [f64; 3] {
-    if !playing {
+fn eq_bars(playing: bool, reduce_motion: bool) -> [f64; 3] {
+    if !playing || reduce_motion {
         return [0.35, 0.72, 0.48];
     }
     let ti = anim_time();
@@ -254,7 +254,16 @@ fn draw_skeleton_block(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: &P
     if r.width() <= 0.0 || r.height() <= 0.0 {
         return;
     }
-    fill_rrect(scene, t, r, radius, c.card);
+    // High Contrast intentionally uses black for both base and raised
+    // surfaces. A normal card-coloured skeleton would therefore disappear
+    // completely, leaving no loading affordance. `skeleton` is a visible,
+    // non-text decorative tier on that accessibility track.
+    fill_rrect(scene, t, r, radius, c.skeleton);
+    // Motion-sensitive users get the same clearly-visible loading geometry
+    // without any travelling bands or striped frozen frame.
+    if c.reduce_motion {
+        return;
+    }
     // Moving highlight sweep, clipped to the block's rounded rect.
     scene.push_layer(
         Fill::NonZero,
@@ -414,6 +423,18 @@ impl Widget for MusicApp {
             return Ok(false);
         };
         match (kind, operation) {
+            (qos_actions::OperationKind::View, crate::actions::MusicOperation::OpenView { id }) => {
+                // A forged operation must not acquire arbitrary local routing
+                // authority. Check the exported allowlist before converting it
+                // to the exact view this app implements.
+                if crate::actions::known_view_label(&id).is_none() {
+                    return Err("unknown Music destination".into());
+                }
+                let Some(view) = Self::top_level_view(&id) else {
+                    return Err("unsupported Music destination".into());
+                };
+                self.on_nav(view);
+            }
             (
                 qos_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::PlayTrack { id },
@@ -1701,6 +1722,26 @@ impl MusicApp {
             None,
         );
 
+        // On a narrow non-search page, a text field cannot coexist with the
+        // title, optional Back button and hamburger without leaving a visibly
+        // clipped placeholder. Use a compact, icon-labelled search affordance
+        // there; it opens the full Search screen, whose field has room to edit.
+        let compact_search = r.width() < 600.0 && !matches!(self.view, View::Search);
+        if compact_search {
+            let btn = Rect::new(r.x1 - 58.0, r.y0 + 18.0, r.x1 - 22.0, r.y0 + 54.0);
+            self.search_pill_rect = btn;
+            let hover = self.push_hit(btn, Action::FocusSearch);
+            fill_rrect(scene, t, btn, 12.0, if hover { c.white10 } else { c.panel });
+            if hover {
+                scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(btn, 12.0));
+            }
+            icon::draw(scene, t, Icon::Search, btn.center(), 18.0, c.text);
+            // Do not retain a stale wide text-field rect that could accept a
+            // pointer event behind this compact button.
+            self.search_input.apply_layout_external(Rect::ZERO);
+            return;
+        }
+
         // Search pill on the right. The pill chrome (bg, focus/hover ring, the
         // magnifier) is drawn here; the editable text itself is a real
         // `ui::TextInput` laid into the pill's text area, so it carries its own
@@ -2804,7 +2845,7 @@ impl MusicApp {
         } else if is_current {
             // Now-playing equalizer: animates while playing, static
             // (a fixed silhouette) when paused.
-            let bars = eq_bars(self.pb.playing);
+            let bars = eq_bars(self.pb.playing, c.reduce_motion);
             let mid = y + row_h / 2.0;
             for (bar_i, &frac) in bars.iter().enumerate() {
                 let bx = left + 6.0 + bar_i as f64 * 6.0;
@@ -3066,7 +3107,11 @@ impl MusicApp {
                 );
                 // Spin ~1 turn every 1.1s; sweep between a quarter-turn
                 // (just started) and a near-full turn (almost done).
-                let spin = anim_time() * (std::f64::consts::TAU / 1.1);
+                let spin = if c.reduce_motion {
+                    0.0
+                } else {
+                    anim_time() * (std::f64::consts::TAU / 1.1)
+                };
                 let sweep = std::f64::consts::FRAC_PI_2
                     + (std::f64::consts::TAU - std::f64::consts::FRAC_PI_2) * f64::from(f);
                 let arc = vello::kurbo::Arc::new(center, (radius, radius), spin, sweep, 0.0);
@@ -3452,7 +3497,7 @@ impl MusicApp {
         }
         if is_live_album_id(id) && !self.lib.albums.contains_key(id) {
             if self.failed_pages.contains(id) {
-                return Self::draw_detail_error(scene, t, tr, c, body, y, "album");
+                return self.draw_detail_error(scene, t, tr, c, body, y, "album");
             }
             return Self::draw_loading_detail(scene, t, tr, c, body, y, "ALBUM", id);
         }
@@ -3633,8 +3678,11 @@ impl MusicApp {
 
     /// An honest error state for a live detail page whose fetch failed (offline,
     /// geo-block, network error) — shown instead of an endless skeleton. The OS
-    /// chrome's Back affordance returns the user; this just explains the gap.
+    /// chrome's Back affordance returns the user; a visible Home recovery is
+    /// included too because a deep link can legitimately have no local Back
+    /// history to return to.
     fn draw_detail_error(
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3651,6 +3699,8 @@ impl MusicApp {
         icon::draw(scene, t, Icon::Disc, center, 30.0, c.dim);
         yy += 2.0 * r + 28.0;
         let head = format!("Couldn't load this {kind}");
+        let max_text_w = (body.width() - 32.0).max(1.0);
+        let head = elide(tr, &head, 20.0, TextWeight::Bold, max_text_w);
         let hw = f64::from(tr.measure_weighted(&head, 20.0, None, TextWeight::Bold).0);
         draw_text(
             tr,
@@ -3665,13 +3715,19 @@ impl MusicApp {
             None,
         );
         yy += 34.0;
-        let sub = "Check your connection and try again.";
-        let sw = f64::from(tr.measure_weighted(sub, 14.0, None, TextWeight::Regular).0);
+        let sub = elide(
+            tr,
+            "Check your connection and try again.",
+            14.0,
+            TextWeight::Regular,
+            max_text_w,
+        );
+        let sw = f64::from(tr.measure_weighted(&sub, 14.0, None, TextWeight::Regular).0);
         draw_text(
             tr,
             scene,
             t,
-            sub,
+            &sub,
             cx - sw / 2.0,
             yy,
             14.0,
@@ -3679,7 +3735,34 @@ impl MusicApp {
             TextWeight::Regular,
             None,
         );
-        yy + 40.0
+        yy += 34.0;
+        let back = Rect::new(cx - 62.0, yy, cx + 62.0, yy + 38.0);
+        let hover = self.push_hit(back, Action::Nav(View::Home));
+        fill_rrect(
+            scene,
+            t,
+            back,
+            19.0,
+            if hover { c.accent_hover } else { c.accent },
+        );
+        let label = "Back to Home";
+        let lw = f64::from(
+            tr.measure_weighted(label, 13.0, None, TextWeight::Semibold)
+                .0,
+        );
+        draw_text(
+            tr,
+            scene,
+            t,
+            label,
+            back.center().x - lw / 2.0,
+            vy(back.y0, back.height(), 13.0),
+            13.0,
+            c.bg,
+            TextWeight::Semibold,
+            None,
+        );
+        back.y1 + 32.0
     }
 
     /// A shimmering skeleton grid for the Home page while the real charts /
@@ -3749,7 +3832,7 @@ impl MusicApp {
         }
         if is_live_id(id) && !self.lib.artists.contains_key(id) {
             if self.failed_pages.contains(id) {
-                return Self::draw_detail_error(scene, t, tr, c, body, y, "artist");
+                return self.draw_detail_error(scene, t, tr, c, body, y, "artist");
             }
             return Self::draw_loading_detail(scene, t, tr, c, body, y, "ARTIST", id);
         }
@@ -4051,7 +4134,7 @@ impl MusicApp {
                 return bottom;
             }
             if self.failed_pages.contains(id) {
-                return Self::draw_detail_error(scene, t, tr, c, body, y, "playlist");
+                return self.draw_detail_error(scene, t, tr, c, body, y, "playlist");
             }
             return Self::draw_loading_detail(scene, t, tr, c, body, y, "PLAYLIST", id);
         }
@@ -6996,6 +7079,9 @@ struct Palette {
     bg: Color,
     panel: Color,
     card: Color,
+    /// Skeleton base: distinct from `card` on the all-black high-contrast
+    /// theme, where raised and base surfaces intentionally coincide.
+    skeleton: Color,
     card_hover: Color,
     text: Color,
     dim: Color,
@@ -7008,6 +7094,7 @@ struct Palette {
     white10: Color,
     toast_bg: Color,
     scrim: Color,
+    reduce_motion: bool,
 }
 
 impl Palette {
@@ -7017,6 +7104,11 @@ impl Palette {
             bg: col.neutral[0],
             panel: col.surfaces.base,
             card: col.surfaces.raised,
+            skeleton: if theme.name == "High Contrast" {
+                Color::from_rgb8(72, 72, 72)
+            } else {
+                col.surfaces.raised
+            },
             card_hover: col.neutral[3].multiply_alpha(0.6),
             text: theme.text_primary,
             dim: theme.text_dim,
@@ -7029,6 +7121,7 @@ impl Palette {
             white10: col.lift(0.72),
             toast_bg: col.surfaces.raised,
             scrim: col.surfaces.overlay,
+            reduce_motion: theme.reduce_motion,
         }
     }
 }
