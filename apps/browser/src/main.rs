@@ -362,8 +362,7 @@ fn shot_theme() -> Theme {
 /// The resource dispatcher forwards a claimed URI as one opaque positional
 /// argument. Browser deliberately accepts only the schemes it declares.
 fn launch_target(args: &[String]) -> Option<String> {
-    if let Some(uri) = args
-        .iter()
+    args.iter()
         .find(|arg| {
             arg.split_once(':').is_some_and(|(scheme, rest)| {
                 (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http"))
@@ -372,17 +371,6 @@ fn launch_target(args: &[String]) -> Option<String> {
                 && !arg.chars().any(char::is_control)
         })
         .cloned()
-    {
-        return Some(uri);
-    }
-    // File dispatch uses the launcher's existing single positional argument.
-    // Convert only an absolute path; relative names and flag values never turn
-    // into a WebView navigation by accident.
-    let path = args
-        .first()
-        .map(std::path::Path::new)
-        .filter(|path| path.is_absolute())?;
-    url::Url::from_file_path(path).ok().map(Into::into)
 }
 
 /// `--shots-live`: real engine, real network. Boot WPE, navigate, wait
@@ -648,7 +636,13 @@ mod resource_claim_tests {
     fn startup_accepts_only_declared_web_schemes_as_one_value() {
         let uri = "HTTPS://example.test/a --still-data";
         assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
-        for value in ["javascript:alert(1)", "data:text/plain,x", "mailto:a@b"] {
+        for value in [
+            "javascript:alert(1)",
+            "data:text/plain,x",
+            "mailto:a@b",
+            "file:///tmp/portal-bypass.html",
+            "/tmp/portal-bypass.html",
+        ] {
             assert_eq!(launch_target(&[value.into()]), None);
         }
     }
