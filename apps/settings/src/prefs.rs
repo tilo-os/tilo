@@ -219,7 +219,7 @@ impl InputPrefs {
     /// Decode the input object while preserving the pre-split global scrolling
     /// preference. A missing document receives the independent touchpad and
     /// mouse defaults shared with the compositor.
-    fn from_json_value(value: serde_json::Value) -> Option<Self> {
+    fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         let section = value.as_object()?;
         let mut input: InputPrefs = serde_json::from_value(value.clone()).ok()?;
         let legacy_natural_scroll = section
@@ -851,7 +851,7 @@ impl SystemPrefs {
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
             input: section("input")
-                .and_then(InputPrefs::from_json_value)
+                .and_then(|value| InputPrefs::from_json_value(&value))
                 .unwrap_or_default(),
             power: section("power")
                 .and_then(|v| serde_json::from_value(v).ok())

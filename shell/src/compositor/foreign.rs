@@ -56,9 +56,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{
-    Blob, Color, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
@@ -1370,14 +1368,19 @@ fn translated_and_scaled(base: Affine, dx: f64, dy: f64, sx: f64, sy: f64) -> Af
 /// output rectangle.  Unlike [`ForeignSurfaceWidget`], this deliberately
 /// bypasses the workspace tree: a clean audience output must not consume or
 /// redraw the presenter's local group.
-pub fn paint_output_presentation_surface(scene: &mut Scene, surface_id: SurfaceId, rect: Rect) {
+pub fn paint_output_presentation_surface(
+    scene: &mut Scene,
+    surface_id: SurfaceId,
+    rect: Rect,
+    theme: &Theme,
+) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
     // An audience surface is deliberately opaque: its renderer may carry
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
-    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &rect);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
     let Some(frame) = store().snapshot(surface_id) else {
         return;
     };

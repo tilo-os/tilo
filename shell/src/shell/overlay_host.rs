@@ -3576,6 +3576,10 @@ impl ShellOverlayHost {
                 .into_iter()
                 .filter(|tab| tree.continuation_file_references.contains_key(tab))
                 .collect();
+            // Selection is session state, not merely paint state. Persist it
+            // in the same input/frame boundary that accepted the click so a
+            // compositor crash cannot restore the previously visible tab.
+            tree.flush_to_disk();
             drop(tree);
             drop(st);
             for tab in activated_file_tabs {
@@ -4144,27 +4148,47 @@ impl ShellOverlayHost {
             let Some(&dest_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
                 continue;
             };
-            let dest_row: &mut GroupRow = unsafe { &mut *dest_ptr };
             // One globally unique id is shared by the rendered group, the
             // durable cache and the replicated document. Generating an id
             // independently inside each strip made a later resync unable to
             // identify the group the person had just moved.
             let new_group_id = crate::shell::state::next_id();
-            let destination =
-                dest_row.accept_cross_strip_drop(new_group_id, payload.desc, payload.host, release);
-            // Mirror into the persisted tree so a restart sees the tab
-            // in its new strip.
-            if dest_strip_id != src_strip_id
-                && let Some(chrome) = self.chrome.clone()
-            {
-                let st = chrome.borrow_mut();
-                st.tree_mut().move_tab_across_strips(
-                    src_strip_id,
-                    dest_strip_id,
-                    payload.tab_id,
+            let destination = {
+                let dest_row: &GroupRow = unsafe { &*dest_ptr };
+                dest_row
+                    .gap_index_for(release)
+                    .unwrap_or(dest_row.groups.len())
+                    .min(dest_row.groups.len())
+            };
+            // Commit the cache + replicated document before moving the live
+            // host. If the destination or document is stale, returning the
+            // payload to its source avoids a visual-only layout that a later
+            // resync would appear to resurrect.
+            let committed = dest_strip_id == src_strip_id
+                || self.chrome.clone().is_some_and(|chrome| {
+                    let st = chrome.borrow_mut();
+                    st.tree_mut().move_tab_across_strips(
+                        src_strip_id,
+                        dest_strip_id,
+                        payload.tab_id,
+                        new_group_id,
+                        destination,
+                    )
+                });
+            if committed {
+                let Some(&target_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
+                    continue;
+                };
+                let target_row: &mut GroupRow = unsafe { &mut *target_ptr };
+                target_row.accept_cross_strip_drop(
                     new_group_id,
-                    destination,
+                    payload.desc,
+                    payload.host,
+                    release,
                 );
+            } else if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
+                let source_row: &mut GroupRow = unsafe { &mut *source_ptr };
+                source_row.restore_cross_strip_detach(payload);
             }
         }
     }
@@ -5944,6 +5968,12 @@ impl ShellOverlayHost {
     pub fn force_quick_settings_settled(&mut self) {
         if !self.overlay_flags().quick_settings {
             return;
+        }
+        // This hook replaces the normal draw-time rising edge. Mirror the
+        // user-visible open contract completely: keyboard traversal starts
+        // on Edit instead of inheriting stale focus from a previous open.
+        if !self.qs_was_open {
+            self.qs_root.reset_focus();
         }
         self.qs_was_open = true;
         self.qs_transition = ui::Transition::open();
@@ -10283,10 +10313,8 @@ fn shortcut_reference_rows(
     vec![
         ("Screenshot", "Print Screen".into()),
         ("Switch windows", "Alt+Tab".into()),
-        ("Close tab", "Alt+F4".into()),
-        ("Close tab", "Super+W".into()),
-        ("Previous workspace", "Super+Page Up".into()),
-        ("Next workspace", "Super+Page Down".into()),
+        ("Close tab", "Alt+F4  /  Super+W".into()),
+        ("Change workspace", "Super+Page Up / Down".into()),
         ("New window", "Super+N".into()),
         ("Add tab here", "Super+T".into()),
         ("Duplicate tab", "Super+D".into()),
@@ -10801,6 +10829,12 @@ impl Widget for ShellOverlayHost {
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
         self.qs_root.set_layout_text_scale(theme.text_scale);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let state = chrome.borrow();
+            let available_height = (self.rect.height() - 64.0).max(1.0);
+            self.qs_root
+                .fit_root_layout_to_height(&state.quick_settings, available_height);
+        }
         // Split into four layer passes — was one 372-line function; see
         // each helper (in the other `impl ShellOverlayHost` block) for
         // what it covers.
@@ -12881,11 +12915,19 @@ impl ShellOverlayHost {
                         ShortcutAction::ResizeWider,
                     ),
                 ];
+                let compact = body.height() < 390.0;
+                // At compact height this first page teaches the layout model and the few
+                // recovery actions needed to keep using it. Compressing the complete reference
+                // into five tiny columns made every action technically visible but none of it
+                // comfortably readable; the full reference remains available at normal height
+                // and through command search.
+                let reference_columns = if compact { 2 } else { 4 };
+                let navigation_step = if compact { 50.0 } else { 62.0 };
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
                     let row = index / 2;
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
-                    let y = body.y0 + usize_to_f64_lossy(row) * 62.0;
+                    let y = body.y0 + usize_to_f64_lossy(row) * navigation_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -12977,7 +13019,7 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let essentials_y = body.y0 + 196.0;
+                let essentials_y = body.y0 + if compact { 158.0 } else { 196.0 };
                 text_renderer.draw_text_weighted(
                     scene,
                     "Essential desktop actions",
@@ -12988,12 +13030,20 @@ impl ShellOverlayHost {
                     TextWeight::Semibold,
                 );
                 let references = shortcut_reference_rows(&shortcuts);
-                for (index, (label, chord)) in references.iter().enumerate() {
-                    let column = index % 4;
-                    let row = index / 4;
-                    let cell_width = body.width() / 4.0;
+                let visible_references = if compact {
+                    &references[..references.len().min(8)]
+                } else {
+                    references.as_slice()
+                };
+                let reference_step = if compact { 32.0 } else { 38.0 };
+                let reference_offset = if compact { 24.0 } else { 28.0 };
+                for (index, (label, chord)) in visible_references.iter().enumerate() {
+                    let column = index % reference_columns;
+                    let row = index / reference_columns;
+                    let cell_width = body.width() / usize_to_f64_lossy(reference_columns);
                     let x = body.x0 + usize_to_f64_lossy(column) * cell_width;
-                    let y = essentials_y + 28.0 + usize_to_f64_lossy(row) * 38.0;
+                    let y =
+                        essentials_y + reference_offset + usize_to_f64_lossy(row) * reference_step;
                     text_renderer.draw_text(
                         scene,
                         label,
@@ -13024,11 +13074,15 @@ impl ShellOverlayHost {
                         chord_size,
                         colors.text_primary,
                         transform.pre_translate((pill.x0 + 7.0, pill.y0 + 4.0).into()),
-                        None,
+                        Some(f64_to_f32_lossy((pill.width() - 14.0).max(0.0))),
                         TextWeight::Semibold,
                     );
                 }
-                let pointer_y = essentials_y + 28.0 + 5.0 * 38.0 + 6.0;
+                let reference_rows = visible_references.len().div_ceil(reference_columns);
+                let pointer_y = essentials_y
+                    + reference_offset
+                    + usize_to_f64_lossy(reference_rows) * reference_step
+                    + 6.0;
                 if pointer_y + 34.0 < body.y1 {
                     scene.fill(
                         Fill::NonZero,
@@ -16753,10 +16807,8 @@ mod palette_dispatch_tests {
         for expected in [
             "Screenshot:Print Screen",
             "Switch windows:Alt+Tab",
-            "Close tab:Alt+F4",
-            "Close tab:Super+W",
-            "Previous workspace:Super+Page Up",
-            "Next workspace:Super+Page Down",
+            "Close tab:Alt+F4  /  Super+W",
+            "Change workspace:Super+Page Up / Down",
             "New window:Super+N",
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
@@ -16792,6 +16844,54 @@ mod palette_dispatch_tests {
         let rows = shortcut_reference_rows(&shortcuts);
         assert!(rows.contains(&("Global search", "Alt+G".into())));
         assert!(!rows.contains(&("Global search", "Super+K".into())));
+    }
+
+    #[test]
+    fn compact_shortcut_reference_prioritises_recovery_actions() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let body_height = 360.0;
+        let essentials_y = 158.0;
+        let reference_offset = 24.0;
+        let reference_step = 32.0;
+        let visible = &rows[..rows.len().min(8)];
+        let final_row = visible.len().div_ceil(2).saturating_sub(1);
+        let final_pill_bottom =
+            essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 31.0;
+
+        assert_eq!(
+            rows.len(),
+            19,
+            "the complete reference remains available outside compact presentation"
+        );
+        assert!(
+            final_pill_bottom <= body_height,
+            "the final shortcut pill must remain inside a 960×540 guide body"
+        );
+        for essential in [
+            "Screenshot",
+            "Switch windows",
+            "Close tab",
+            "Change workspace",
+        ] {
+            assert!(visible.iter().any(|(label, _)| *label == essential));
+        }
+    }
+
+    #[test]
+    fn compact_shortcut_recovery_actions_fit_their_cells() {
+        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let mut renderer = TextRenderer::new();
+        let chord_size = Theme::dark().tokens.typography.scale.xs;
+        // A 960-wide viewport yields a 920-wide panel and 864-wide body. The
+        // compact guide uses two readable columns and shows its first eight recovery actions.
+        let available_text_width = 864.0 / 2.0 - 26.0;
+        for (_, chord) in rows.into_iter().take(8) {
+            let (width, _) = renderer.measure(&chord, chord_size, None);
+            assert!(
+                f64::from(width) <= available_text_width,
+                "{chord:?} must not clip inside the compact guide's key pill"
+            );
+        }
     }
 
     #[test]
@@ -21650,6 +21750,36 @@ mod resync_strips_tests {
             None,
             "a missing group remains unselected until the resync drops its widget"
         );
+    }
+
+    #[test]
+    fn active_tab_writeback_is_flushed_before_the_next_frame() {
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .push(Tab {
+                id: 2,
+                title: "Second".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Browser,
+                    label: "second".into(),
+                },
+            });
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        assert!(host.focus_window_widget(strip_id, group_id, 2));
+
+        host.flush_active_tab_writeback();
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("selection writeback creates valid durable state");
+        assert_eq!(
+            restarted.workspaces[0].strips[0].window_groups[0].active_tab, 2,
+            "a crash after the input boundary must restore the newly selected tab"
+        );
+        assert_eq!(restarted.active_group_for(strip_id), Some(group_id));
     }
 
     #[test]

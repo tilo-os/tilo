@@ -183,6 +183,10 @@ enum GroupFocus {
     Unfocused,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent interaction and animation flags are not one state machine"
+)]
 pub struct TabBar {
     group_id_tag: String,
     tabs: Vec<TabDescriptor>,

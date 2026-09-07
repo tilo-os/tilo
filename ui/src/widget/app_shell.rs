@@ -786,17 +786,32 @@ impl Widget for AppShell {
             return;
         }
 
-        // Surfaces are side by side (or only one present), so a
-        // position-carrying event self-selects by rect. Content routes
-        // before sidebar so a position-less wheel scrolls content (matching
-        // a split's "content scrolls" behaviour); a sidebar click still
-        // lands, since content ignores clicks outside its rect.
+        // Mouse button/wheel events carry no position in winit; route those
+        // through the surface selected by the latest CursorMoved instead of
+        // offering them to an unrelated pane first. This matters for controls
+        // that retain hover/press state: a content control must not consume a
+        // release meant for a sidebar row, and a content wheel must reach its
+        // Scrollable rather than the sidebar list.
         let child_nodes = taffy.children(node_id).unwrap_or_default();
         let mut pairs: Vec<(Slot, NodeId)> = Vec::new();
         for (slot, &n) in self.slots.iter().zip(child_nodes.iter()) {
             pairs.push((*slot, n));
         }
-        for want in [Slot::Back, Slot::Search, Slot::Content, Slot::Nav] {
+        let pointer_order = if self.sidebar_panel_rect.contains(self.last_cursor) {
+            [Slot::Search, Slot::Nav, Slot::Back, Slot::Content]
+        } else if self.content_area_rect.contains(self.last_cursor) {
+            [Slot::Content, Slot::Back, Slot::Search, Slot::Nav]
+        } else {
+            [Slot::Back, Slot::Search, Slot::Content, Slot::Nav]
+        };
+        let order = match event {
+            WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::TouchpadPressure { .. }
+            | WindowEvent::Touch(_) => pointer_order,
+            _ => [Slot::Back, Slot::Search, Slot::Content, Slot::Nav],
+        };
+        for want in order {
             if *handled {
                 break;
             }

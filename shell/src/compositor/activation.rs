@@ -37,6 +37,8 @@ pub struct ActivationFacts {
     pub source_was_focused: bool,
 }
 
+/// # Errors
+/// Returns the precise policy denial when the token creation facts are unsafe.
 pub fn evaluate_token_creation(facts: ActivationFacts) -> Result<(), ActivationDenial> {
     if facts.age > MAX_ACTIVATION_AGE {
         return Err(ActivationDenial::Expired);
@@ -59,6 +61,8 @@ pub fn evaluate_token_creation(facts: ActivationFacts) -> Result<(), ActivationD
     Ok(())
 }
 
+/// # Errors
+/// Returns the precise policy denial when an activation request is stale or mismatched.
 pub fn evaluate_activation_request(
     age: Duration,
     target_is_toplevel: bool,

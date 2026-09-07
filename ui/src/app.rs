@@ -3888,7 +3888,7 @@ impl App {
                     crate::state::RemoteCursor {
                         x: 0.0,
                         y: 0.0,
-                        color: Color::WHITE,
+                        color: self.theme.text_primary,
                         name: String::new(),
                     },
                 );
@@ -5503,7 +5503,7 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.5),
             cursor_transform,
-            Color::WHITE,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
             None,
             &path,
         );
@@ -5512,7 +5512,7 @@ fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
             scene,
             &cursor.name,
             10.0,
-            Color::WHITE,
+            app.theme.tokens.colors.on_surface(cursor.color).ink,
             {
                 #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
                 let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
@@ -5965,7 +5965,7 @@ impl AppHandler {
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
-                base_color: Color::BLACK,
+                base_color: self.app.theme.bg_app,
                 damage_regions,
                 full_redraw: true,
             })

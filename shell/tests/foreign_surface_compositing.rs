@@ -99,6 +99,7 @@ fn output_presentation_buffer_reaches_a_nonblack_output_frame() {
         &mut scene,
         surface_id,
         vello::kurbo::Rect::new(0.0, 0.0, 80.0, 80.0),
+        &ui::Theme::dark(),
     );
     let mut renderer = OffscreenRenderer::new(80, 80);
     let rgba = renderer.render(&scene, Color::BLACK);
