@@ -253,9 +253,10 @@ fn advance_frame(
                     .as_deref()
                     .and_then(|h| container.get(h).map(<[u8]>::to_vec));
                 if let Some(bytes) = bytes {
-                    let hash = doc.put_blob(&bytes);
                     let id = start_block(doc, prev, cur, cur_len, "image");
-                    doc.set_attr(&id, "blob", hash.as_str());
+                    if let Some(hash) = doc.put_blob(&bytes) {
+                        doc.set_attr(&id, "blob", hash.as_str());
+                    }
                     let alt = if fr.title.is_empty() {
                         &fr.desc
                     } else {

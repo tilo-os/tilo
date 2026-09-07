@@ -19,7 +19,7 @@ pub fn store(bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_MEDIA_BYTES {
         return None;
     }
-    let hash = qdoc::blobstore::put(bytes);
+    let hash = qdoc::blobstore::put(bytes)?;
     let stored = qdoc::blobstore::get(&hash)?;
     (stored == bytes && qdoc::blobstore::verify(&hash, &stored))
         .then(|| format!("{MEDIA_PREFIX}{hash}"))

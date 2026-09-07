@@ -112,7 +112,8 @@ fn inspect_import_for_store(
         return Err(anyhow!("the import file is empty"));
     }
     let (kind, sizes) = backend.inspect_import(&bytes)?;
-    let hash = qdoc::blobstore::put(&bytes);
+    let hash = qdoc::blobstore::put(&bytes)
+        .ok_or_else(|| anyhow!("the local content store refused the import"))?;
     qdoc::blobstore::store()
         .has(&hash)
         .then_some((hash, kind, sizes))

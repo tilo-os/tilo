@@ -12596,7 +12596,9 @@ mod tests {
     fn explicit_image_size_is_honored() {
         let mut state = ui::State::new();
         with_doc(&mut state, |dm| {
-            let hash = dm.put_blob(A11Y_TINY_PNG);
+            let hash = dm
+                .put_blob(A11Y_TINY_PNG)
+                .expect("test image fits blob quota");
             let p = dm.insert_block(None, "paragraph");
             dm.splice_text(&p, 0, 0, "caption");
             let img = dm.insert_block(Some(&p), "image");
@@ -12636,7 +12638,9 @@ mod tests {
             // column geometry from, then the floated image, then the wrapped text.
             let r = dm.insert_block(None, "paragraph");
             dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
-            let hash = dm.put_blob(A11Y_TINY_PNG);
+            let hash = dm
+                .put_blob(A11Y_TINY_PNG)
+                .expect("test image fits blob quota");
             let img = dm.insert_block(Some(&r), "image");
             dm.set_attr(&img, "blob", hash.as_str());
             dm.set_attr(&img, "anchor", "paragraph");
@@ -12714,7 +12718,9 @@ mod tests {
         with_doc(&mut state, |dm| {
             let r = dm.insert_block(None, "paragraph");
             dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
-            let hash = dm.put_blob(A11Y_TINY_PNG);
+            let hash = dm
+                .put_blob(A11Y_TINY_PNG)
+                .expect("test image fits blob quota");
             let img = dm.insert_block(Some(&r), "image");
             dm.set_attr(&img, "blob", hash.as_str());
             dm.set_attr(&img, "anchor", "paragraph");

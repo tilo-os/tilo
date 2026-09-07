@@ -428,7 +428,7 @@ fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Auto
     photos::doc::PhotosDoc::seed(&mut photo_replica);
     let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
         .expect("the source photograph encodes");
-    let content = qdoc::blobstore::put(&png);
+    let content = qdoc::blobstore::put(&png).expect("test fixture fits blob quota");
     photos::doc::PhotosDoc::set_image(
         &mut photo_replica,
         Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&content)),

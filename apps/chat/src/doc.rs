@@ -239,7 +239,7 @@ impl ChatDoc {
         if u64::try_from(bytes.len()).ok()? > MAX_ATTACHMENT_BYTES {
             return None;
         }
-        let hash = qdoc::blobstore::put(bytes);
+        let hash = qdoc::blobstore::put(bytes)?;
         (qdoc::blobstore::get(&hash).as_deref() == Some(bytes)).then_some(hash)
     }
 

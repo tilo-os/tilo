@@ -4107,7 +4107,9 @@ impl TerminalPerformer<'_> {
         if image.mime == "image/png" && qdoc::blobstore::sniff(&image.bytes).mime != "image/png" {
             return;
         }
-        let hash = qdoc::blobstore::put(&image.bytes);
+        let Some(hash) = qdoc::blobstore::put(&image.bytes) else {
+            return;
+        };
         let index = self.state.length(&self.images_id);
         let Ok(placement) = self
             .state
