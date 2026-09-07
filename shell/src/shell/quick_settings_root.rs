@@ -359,7 +359,7 @@ impl QuickSettingsRoot {
         let gap = self.scaled(Self::GAP);
         let card = self.scaled(Self::CARD);
         let y = self.grid_top(panel) + n(row) * (card + gap);
-        if count % 2 == 1 && i + 1 == count {
+        if count % 2 == 1 && i.checked_add(1) == Some(count) {
             return Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + card);
         }
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
@@ -475,7 +475,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::MobileData => s.radios.wwan_enabled,
         }
     }
-    fn subline<'a>(c: QuickSettingsControl, s: &'a QuickSettingsState) -> &'a str {
+    fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> &str {
         match c {
             QuickSettingsControl::Wifi if !s.radios.wifi_available => s
                 .wired
@@ -561,7 +561,7 @@ impl QuickSettingsRoot {
                 s.radios.wwan_enabled = !s.radios.wwan_enabled;
                 pending.mobile = Some(s.radios.wwan_enabled);
             }
-        };
+        }
         None
     }
 
@@ -569,15 +569,21 @@ impl QuickSettingsRoot {
         let count = if self.edit_mode {
             // Editable rows, Reset defaults, Done. The header no longer
             // duplicates Done with an unexplained checkmark.
-            self.edit_controls(state).len() + 2
+            self.edit_controls(state).len().saturating_add(2)
         } else {
             // Edit, labeled destinations, Brightness, Volume, controls, power.
-            8 + self.visible_controls(state).len()
+            8_usize.saturating_add(self.visible_controls(state).len())
         };
+        if count == 0 {
+            return false;
+        }
         self.keyboard_focus = Some(match (self.keyboard_focus, backwards) {
-            (Some(i), true) => i.checked_sub(1).unwrap_or(count - 1),
-            (Some(i), false) => (i + 1) % count,
-            (None, true) => count - 1,
+            (Some(i), true) => i.checked_sub(1).unwrap_or_else(|| count.saturating_sub(1)),
+            (Some(i), false) => i
+                .checked_add(1)
+                .and_then(|next| next.checked_rem(count))
+                .unwrap_or_default(),
+            (None, true) => count.saturating_sub(1),
             (None, false) => 0,
         });
         true
@@ -589,23 +595,23 @@ impl QuickSettingsRoot {
         };
         if self.edit_mode {
             let all = self.edit_controls(state);
-            if let Some(c) = all.get(i).copied() {
-                if !c.required() {
-                    if self.config.controls.contains(&c) {
-                        self.config.controls.retain(|x| *x != c);
-                    } else {
-                        self.config.controls.push(c);
-                    }
-                    self.save_config();
-                    return RootAction::LayoutChanged;
+            if let Some(c) = all.get(i).copied()
+                && !c.required()
+            {
+                if self.config.controls.contains(&c) {
+                    self.config.controls.retain(|x| *x != c);
+                } else {
+                    self.config.controls.push(c);
                 }
+                self.save_config();
+                return RootAction::LayoutChanged;
             }
             if i == all.len() {
                 self.config = QuickSettingsConfig::default();
                 self.save_config();
                 return RootAction::LayoutChanged;
             }
-            if i == all.len() + 1 {
+            if all.len().checked_add(1) == Some(i) {
                 self.edit_mode = false;
                 return RootAction::LayoutChanged;
             }
@@ -632,11 +638,15 @@ impl QuickSettingsRoot {
         if matches!(i, 5 | 6) {
             return RootAction::None;
         }
-        if let Some(c) = controls.get(i - 7).copied() {
+        if let Some(c) = i
+            .checked_sub(7)
+            .and_then(|index| controls.get(index))
+            .copied()
+        {
             let mut p = PendingRootActions::default();
             return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
         }
-        let base = 7 + controls.len();
+        let base = 7_usize.saturating_add(controls.len());
         if i == base {
             return self.cycle_power(state);
         }
@@ -650,7 +660,9 @@ impl QuickSettingsRoot {
         let Some(i) = self.keyboard_focus.filter(|i| *i < all.len()) else {
             return false;
         };
-        let c = all[i];
+        let Some(c) = all.get(i).copied() else {
+            return false;
+        };
         let Some(from) = self.config.controls.iter().position(|x| *x == c) else {
             return false;
         };
@@ -662,12 +674,14 @@ impl QuickSettingsRoot {
         let neighbour = if direction < 0 {
             i.checked_sub(1)
         } else {
-            (i + 1 < all.len()).then_some(i + 1)
+            i.checked_add(1).filter(|next| *next < all.len())
         };
         let Some(neighbour) = neighbour else {
             return false;
         };
-        let neighbour_control = all[neighbour];
+        let Some(neighbour_control) = all.get(neighbour).copied() else {
+            return false;
+        };
         let Some(to) = self
             .config
             .controls
@@ -1113,7 +1127,7 @@ impl QuickSettingsRoot {
                     }),
                 )
                 .hovered(cursor.is_some_and(|p| face.contains(p)))
-                .focused(self.keyboard_focus == Some(5 + i))
+                .focused(self.keyboard_focus == Some(5_usize.saturating_add(i)))
                 .dragging(self.slider_drag == Some(i)),
             );
         }
@@ -1132,7 +1146,7 @@ impl QuickSettingsRoot {
             );
         }
         let r = self.power_geometry(self.panel, state);
-        let power_focus = 7 + self.visible_controls(state).len();
+        let power_focus = 7_usize.saturating_add(self.visible_controls(state).len());
         Button::paint(
             scene,
             transform,
@@ -1214,7 +1228,7 @@ impl QuickSettingsRoot {
             theme,
             &ButtonFace::new(r, "")
                 .hovered(cursor.is_some_and(|p| r.contains(p)))
-                .focused(self.keyboard_focus == Some(7 + i))
+                .focused(self.keyboard_focus == Some(7_usize.saturating_add(i)))
                 .accessible_name(Self::rendered_label(c, s)),
         );
         ui::icons::draw_icon(
@@ -1342,7 +1356,7 @@ impl QuickSettingsRoot {
                 theme,
                 &ButtonFace::new(r, "")
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
-                    .focused(self.keyboard_focus == Some(i + 1))
+                    .focused(self.keyboard_focus == Some(i.saturating_add(1)))
                     .accessible_name(Self::label(c)),
             );
             // A six-dot grip is a familiar, intentional reorder affordance;
@@ -1582,7 +1596,7 @@ impl QuickSettingsRoot {
             &ButtonFace::new(done, "Done")
                 .primary()
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
-                .focused(self.keyboard_focus == Some(edit_count + 1))
+                .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
                 .accessible_name("Finish editing Quick Settings"),
         );
     }
