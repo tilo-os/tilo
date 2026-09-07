@@ -4948,7 +4948,12 @@ mod tests {
         );
 
         let tree = app.accessibility().expect("music semantics");
-        let empty_library = tree
+        let page = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Home"))
+            .expect("active page is exposed");
+        let empty_library = page
             .children
             .iter()
             .find(|node| node.name.as_deref() == Some("Empty music library"))
@@ -4966,6 +4971,69 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(app.view, View::Search);
+    }
+
+    #[test]
+    fn active_music_page_is_bounded_and_rows_route_to_real_actions() {
+        use ui::a11y::Action as A11yAction;
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Songs;
+        let tree = app.accessibility().expect("music semantics");
+        let page = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Songs"))
+            .expect("active Songs page is exposed");
+        let list = page
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Songs items"))
+            .expect("song rows are exposed");
+        assert!(!list.children.is_empty());
+        assert!(list.children.len() <= render::ACCESSIBLE_PAGE_LIMIT);
+        let play = list.children[0]
+            .children
+            .iter()
+            .find_map(|node| node.action_target.as_deref())
+            .expect("track row has a semantic play action")
+            .to_string();
+        assert!(app.perform_semantic_action(
+            &play,
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            app.pb.current.is_some(),
+            "semantic play uses the playback reducer"
+        );
+    }
+
+    #[test]
+    fn assistive_search_edits_and_navigation_use_normal_routes() {
+        use ui::a11y::Action as A11yAction;
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = app_with_doc();
+        assert!(app.perform_semantic_action(
+            "music.search",
+            &A11yAction::SetValue("Aurora".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.view, View::Search);
+        assert_eq!(app.search_input.value(), "Aurora");
+        assert!(app.search_edit_at.is_some());
+
+        assert!(app.perform_semantic_action(
+            "music.nav.albums",
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.view, View::Albums);
     }
 
     #[test]
