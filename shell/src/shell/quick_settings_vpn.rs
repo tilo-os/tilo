@@ -91,12 +91,15 @@ impl QuickSettingsVpnPane {
 
         for (profile, row) in profiles.iter().zip(self.list.rows()) {
             let hovered = cursor.is_some_and(|point| row.contains(point));
-            let fill = if profile.active {
-                colors.accent[5].with_alpha_factor(if hovered { 0.24 } else { 0.18 })
-            } else if hovered {
-                colors.neutral[3]
+            // A discovery row is not a selected tab. Wi-Fi and Bluetooth
+            // stay quiet and reserve blue for an actual live state; VPN is
+            // a control row, so its enabled state belongs to the trailing
+            // switch while the text reads "Connected". Keeping the surface
+            // neutral avoids saying the same thing three different ways.
+            let fill = if hovered {
+                colors.neutral[3].with_alpha_factor(0.72)
             } else {
-                colors.neutral[2]
+                colors.neutral[2].with_alpha_factor(0.42)
             };
             scene.fill(
                 Fill::NonZero,
@@ -110,11 +113,7 @@ impl QuickSettingsVpnPane {
                 transform,
                 Rect::new(row.x0 + 12.0, row.y0 + 16.0, row.x0 + 32.0, row.y0 + 36.0),
                 ui::icons::Icon::Shield,
-                if profile.active {
-                    colors.accent[5]
-                } else {
-                    colors.text_dim
-                },
+                colors.text_dim,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             let toggle = Rect::new(
@@ -152,7 +151,11 @@ impl QuickSettingsVpnPane {
                     "Disconnected"
                 },
                 theme.tokens.typography.scale.xs,
-                colors.text_dim,
+                if profile.active {
+                    colors.accent[5]
+                } else {
+                    colors.text_dim
+                },
                 transform.pre_translate((row.x0 + 44.0, row.y0 + 29.0).into()),
                 Some(f64_to_f32_lossy(text_width)),
             );

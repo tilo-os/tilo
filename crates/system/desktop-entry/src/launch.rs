@@ -63,6 +63,16 @@ const INHERITED_ENV: &[&str] = &[
     "XDG_DATA_DIRS",
     "XDG_CONFIG_DIRS",
     "DBUS_SESSION_BUS_ADDRESS",
+    // Input-method bridges are desktop interoperability, not qOS authority.
+    // Omitting these makes compose/IME input fail specifically in Electron,
+    // GTK and Qt host applications while native qOS fields keep working.
+    "XMODIFIERS",
+    "GTK_IM_MODULE",
+    "QT_IM_MODULE",
+    // Qt 6 on Fedora advertises its ordered Wayland/IBus fallback through
+    // the plural spelling; keeping only QT_IM_MODULE loses that selection.
+    "QT_IM_MODULES",
+    "SDL_IM_MODULE",
 ];
 
 /// Variables that are always cleared, whatever the parent had. `DISPLAY` and
@@ -78,6 +88,7 @@ const CLEARED_ENV: &[&str] = &[
     "QOS_IDENTITY_BROKER_FD",
     "QOS_CLI_COMMAND",
     "QOS_NET_GATE",
+    "QOS_HOST_ACTIVATION_TOKEN",
 ];
 
 /// The desktop name qOS announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
@@ -163,6 +174,10 @@ pub struct LaunchEnv {
     pub x11_display: Option<String>,
     /// MIT-MAGIC-COOKIE authority file for [`Self::x11_display`].
     pub x11_authority: Option<PathBuf>,
+    /// A compositor-minted, single-use activation token for this user
+    /// initiated launch. It selects/focuses the first toplevel only; it is
+    /// not a sandbox capability or qOS authority.
+    pub activation_token: Option<String>,
     /// Documents to open, as absolute host paths. Feed `%f`/`%F`, and `%u`/`%U` as `file://` URLs.
     pub files: Vec<String>,
     /// URLs to open. Feed `%u`/`%U`.
@@ -262,10 +277,28 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         "XDG_CURRENT_DESKTOP".to_string(),
         XDG_CURRENT_DESKTOP.to_string(),
     );
+    env.insert(
+        "XDG_SESSION_DESKTOP".to_string(),
+        XDG_CURRENT_DESKTOP.to_string(),
+    );
     env.insert("XDG_SESSION_TYPE".to_string(), "wayland".to_string());
+    // Electron releases differ on whether Wayland auto-selection is the
+    // default.  This asks Electron to inspect the authoritative Wayland/X11
+    // pair above instead of inheriting a stale backend preference.
+    env.insert(
+        "ELECTRON_OZONE_PLATFORM_HINT".to_string(),
+        "auto".to_string(),
+    );
     env.insert(HOST_APP_ENV.to_string(), "1".to_string());
     for key in CLEARED_ENV {
         env.remove(*key);
+    }
+    if let Some(token) = env_spec
+        .activation_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    {
+        env.insert("XDG_ACTIVATION_TOKEN".to_string(), token.to_string());
     }
     if let (Some(display), Some(authority)) = (&env_spec.x11_display, &env_spec.x11_authority) {
         env.insert("DISPLAY".to_string(), display.clone());
@@ -274,6 +307,16 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
             authority.to_string_lossy().to_string(),
         );
         env.insert("_JAVA_AWT_WM_NONREPARENTING".to_string(), "1".to_string());
+        // Keep the conventional startup-id channel for X11 clients.  The
+        // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
+        // from the X client's environment and relays it on map.
+        if let Some(token) = env_spec
+            .activation_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+        {
+            env.insert("DESKTOP_STARTUP_ID".to_string(), token.to_string());
+        }
     }
     env
 }
@@ -382,6 +425,30 @@ mod tests {
     }
 
     #[test]
+    fn activation_token_is_standard_child_environment_not_qos_authority() {
+        let launch = plan(
+            &spotify(),
+            &LaunchEnv {
+                activation_token: Some("one-shot-token".into()),
+                x11_display: Some(":42".into()),
+                x11_authority: Some(PathBuf::from("/run/user/1000/qos/Xauthority")),
+                ..Default::default()
+            },
+        )
+        .expect("plans");
+        assert_eq!(
+            launch.env.get("XDG_ACTIVATION_TOKEN").map(String::as_str),
+            Some("one-shot-token")
+        );
+        assert_eq!(
+            launch.env.get("DESKTOP_STARTUP_ID").map(String::as_str),
+            Some("one-shot-token"),
+            "classic X11 clients receive the startup-notification bridge too; xwayland-satellite itself reads XDG_ACTIVATION_TOKEN"
+        );
+        assert!(!launch.env.contains_key("QOS_HOST_ACTIVATION_TOKEN"));
+    }
+
+    #[test]
     fn a_rootless_xwayland_bridge_adds_an_authenticated_x11_fallback() {
         let launch = plan(
             &spotify(),
@@ -405,6 +472,50 @@ mod tests {
                 .map(String::as_str),
             Some("1")
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn host_apps_keep_input_methods_and_select_the_qos_desktop() {
+        let previous = [
+            "XMODIFIERS",
+            "GTK_IM_MODULE",
+            "QT_IM_MODULE",
+            "QT_IM_MODULES",
+            "SDL_IM_MODULE",
+        ]
+        .map(|key| {
+            let value = std::env::var_os(key);
+            unsafe { std::env::set_var(key, "ibus-test") };
+            (key, value)
+        });
+        let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+        for key in [
+            "XMODIFIERS",
+            "GTK_IM_MODULE",
+            "QT_IM_MODULE",
+            "QT_IM_MODULES",
+            "SDL_IM_MODULE",
+        ] {
+            assert_eq!(launch.env.get(key).map(String::as_str), Some("ibus-test"));
+        }
+        assert_eq!(
+            launch.env.get("XDG_SESSION_DESKTOP").map(String::as_str),
+            Some("nirios")
+        );
+        assert_eq!(
+            launch
+                .env
+                .get("ELECTRON_OZONE_PLATFORM_HINT")
+                .map(String::as_str),
+            Some("auto")
+        );
+        for (key, value) in previous {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
     }
 
     #[test]
@@ -477,5 +588,46 @@ mod tests {
             assert!(vars.contains(k), "{k} must reach the child");
         }
         assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/flatpak"));
+    }
+
+    #[test]
+    fn a_real_host_process_receives_only_the_planned_desktop_handoff() {
+        let probe = entry(
+            "[Desktop Entry]\nType=Application\nName=Environment probe\nExec=/usr/bin/env\n",
+            "org.example.EnvProbe",
+        );
+        let launch = plan(
+            &probe,
+            &LaunchEnv {
+                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-qos")),
+                x11_display: Some(":71".into()),
+                x11_authority: Some(PathBuf::from("/run/user/1000/qos/Xauthority")),
+                ..Default::default()
+            },
+        )
+        .expect("plans");
+        let output = launch.to_command().output().expect("run environment probe");
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("environment is UTF-8");
+        for expected in [
+            "WAYLAND_DISPLAY=wayland-qos",
+            "XDG_RUNTIME_DIR=/run/user/1000",
+            "DISPLAY=:71",
+            "XDG_CURRENT_DESKTOP=nirios",
+            "XDG_SESSION_DESKTOP=nirios",
+            "ELECTRON_OZONE_PLATFORM_HINT=auto",
+            "QOS_HOST_APP=1",
+        ] {
+            assert!(
+                stdout.lines().any(|line| line == expected),
+                "missing {expected}"
+            );
+        }
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.starts_with("QOS_WORKSPACE_ID=")),
+            "portal attribution must never become ambient workspace authority"
+        );
     }
 }

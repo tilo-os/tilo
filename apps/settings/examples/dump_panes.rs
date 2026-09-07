@@ -23,7 +23,9 @@ fn main() -> std::io::Result<()> {
 
     let mut wide_r = OffscreenRenderer::new(wide.0, wide.1);
     for cat in Category::ALL {
-        let app = SettingsApp::with_selected(*cat).with_width_hint(wide.0 as f32);
+        let app = SettingsApp::with_selected(*cat)
+            .with_width_hint(wide.0 as f32)
+            .with_deterministic_hardware_for_shot();
         let scene = build_widget_scene(Box::new(app), wide);
         let path = format!("{out}/panel-{}.png", cat.slug());
         wide_r.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(&path));
@@ -33,6 +35,7 @@ fn main() -> std::io::Result<()> {
     {
         let app = SettingsApp::with_selected(Category::Displays)
             .with_width_hint(wide.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_search_shot("light");
         let scene = build_widget_scene(Box::new(app), wide);
         let path = format!("{out}/settings-search.png");
@@ -44,6 +47,7 @@ fn main() -> std::io::Result<()> {
     {
         let app = SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(narrow.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_narrow_list_shot();
         let scene = build_widget_scene(Box::new(app), narrow);
         let path = format!("{out}/settings-narrow-list.png");
@@ -53,6 +57,7 @@ fn main() -> std::io::Result<()> {
     {
         let app = SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(narrow.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_narrow_content_shot();
         let scene = build_widget_scene(Box::new(app), narrow);
         let path = format!("{out}/settings-narrow-content.png");

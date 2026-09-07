@@ -672,6 +672,7 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         wayland_socket,
         x11_display,
         x11_authority,
+        activation_token: std::env::var("QOS_HOST_ACTIVATION_TOKEN").ok(),
         files: open
             .as_deref()
             .map(|path| vec![path.display().to_string()])
@@ -689,6 +690,9 @@ fn run_host(args: RunHostArgs) -> ExitCode {
                 println!("args       : {:?}", plan.args);
                 println!("windows    : {:?}", plan.window_identities);
                 for (k, v) in &plan.env {
+                    if host_launch_env_is_secret(k) {
+                        continue;
+                    }
                     println!("env        : {k}={v}");
                 }
                 ExitCode::SUCCESS
@@ -837,6 +841,12 @@ fn run_installed(
     }
 }
 
+/// One-shot activation values are focus capabilities, not useful launch-plan
+/// diagnostics.  Keep them out of dry-run/error-adjacent terminal output.
+fn host_launch_env_is_secret(key: &str) -> bool {
+    matches!(key, "XDG_ACTIVATION_TOKEN" | "DESKTOP_STARTUP_ID")
+}
+
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let env = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -927,5 +937,13 @@ mod admit_share_tests {
     fn admission_refuses_a_relative_mount_from_the_service() {
         let mut stream = response("relative/path");
         assert!(request_received_mount("redacted".into(), &mut stream).is_err());
+    }
+
+    #[test]
+    fn host_launch_dry_run_redacts_one_shot_activation_values() {
+        assert!(host_launch_env_is_secret("XDG_ACTIVATION_TOKEN"));
+        assert!(host_launch_env_is_secret("DESKTOP_STARTUP_ID"));
+        assert!(!host_launch_env_is_secret("QOS_HOST_ACTIVATION_TOKEN"));
+        assert!(!host_launch_env_is_secret("WAYLAND_DISPLAY"));
     }
 }

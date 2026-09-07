@@ -151,8 +151,12 @@ pub struct DisplayOutput {
     pub label: String,
     pub connected: bool,
     pub builtin: bool,
-    /// Stable DRM connector name used by the compositor-facing contract.
+    /// Collision-free output key used by the compositor-facing persistence
+    /// contract. It is card-qualified only for duplicate raw labels.
     pub connector: String,
+    /// Raw KMS connector label, retained separately from [`Self::label`]
+    /// because the UI appends a card qualifier to duplicate labels.
+    pub connector_label: String,
     /// Modes discovered from sysfs/compositor status. An empty list means
     /// mode selection is unavailable, not that a made-up default is valid.
     pub modes: Vec<OutputMode>,
@@ -186,6 +190,7 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         connected: status.trim() == "connected",
         builtin,
         connector: name.to_string(),
+        connector_label: name.to_string(),
         modes: Vec::new(),
         current_mode: None,
         hdr: false,
@@ -210,6 +215,21 @@ fn is_virtual_connector(conn: &str) -> bool {
     lower.contains("writeback") || lower.contains("virtual")
 }
 
+/// Present one compositor descriptor without leaking a persistence collision
+/// into the UI. A unique connector remains the familiar `HDMI-A-1`; two
+/// cards with that label become e.g. `HDMI-A-1 · pci:0000:01:00.0` so every
+/// control, mirror target and saved key refers to exactly one display.
+fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
+    let base = if builtin {
+        "Built-in display"
+    } else {
+        descriptor.label()
+    };
+    descriptor
+        .card_qualifier()
+        .map_or_else(|| base.to_string(), |card| format!("{base} · {card}"))
+}
+
 /// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
 /// an empty vec when the directory is unavailable (a container under
 /// `--shots`), in which case the pane shows an honest "no displays" note.
@@ -220,16 +240,15 @@ fn read_outputs() -> Vec<DisplayOutput> {
         .into_iter()
         .flat_map(|snapshot| snapshot.outputs)
         .map(|snapshot| {
+            let label = snapshot_label(&snapshot.descriptor, snapshot.builtin);
+            let connector_label = snapshot.descriptor.label().to_string();
             let connector = snapshot.descriptor.connector;
             DisplayOutput {
-                label: if snapshot.builtin {
-                    "Built-in display".into()
-                } else {
-                    connector.clone()
-                },
+                label,
                 connected: true,
                 builtin: snapshot.builtin,
                 connector,
+                connector_label,
                 modes: snapshot.descriptor.modes,
                 current_mode: Some(snapshot.current_mode),
                 hdr: snapshot.descriptor.hdr,
@@ -342,6 +361,7 @@ impl DisplayPane {
                 connected: true,
                 builtin: true,
                 connector: "eDP-1".into(),
+                connector_label: "eDP-1".into(),
                 modes: vec![OutputMode {
                     width: 1920,
                     height: 1080,
@@ -1566,21 +1586,26 @@ impl DisplayPane {
     /// Validate the staged config against real output capabilities and, if
     /// valid, make it the pending candidate the "Apply" button can request.
     fn stage_output_candidate(&mut self, connected: &[DisplayOutput], next: DisplayConfig) {
-        let descriptors: Vec<_> = connected
-            .iter()
-            .map(|o| OutputDescriptor {
-                connector: o.connector.clone(),
-                modes: o.modes.clone(),
-                hdr: o.hdr,
-                vrr: o.vrr,
-                color_profiles: o.color_profiles.clone(),
-            })
-            .collect();
+        let descriptors: Vec<_> = connected.iter().map(Self::output_descriptor).collect();
         match next.validate_for(&descriptors) {
             Ok(()) => self.pending_candidate = Some(next),
             Err(error) => {
                 warn!(target: "qos::settings", ?error, "rejected invalid display configuration");
             }
+        }
+    }
+
+    /// Reconstruct the compositor's descriptor contract from a Settings
+    /// output. `label` is presentation-only and may include `· <bus-id>`;
+    /// validation must retain the raw DRM connector label separately.
+    fn output_descriptor(output: &DisplayOutput) -> OutputDescriptor {
+        OutputDescriptor {
+            connector: output.connector.clone(),
+            connector_label: output.connector_label.clone(),
+            modes: output.modes.clone(),
+            hdr: output.hdr,
+            vrr: output.vrr,
+            color_profiles: output.color_profiles.clone(),
         }
     }
 
@@ -1675,6 +1700,99 @@ mod tests {
         let dp = classify_connector("card1-DP-2", "connected");
         assert_eq!(dp.label, "DP-2");
         assert!(dp.connected);
+    }
+
+    #[test]
+    fn qualified_duplicate_snapshot_labels_are_distinct_in_settings() {
+        let first = OutputDescriptor {
+            connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+            connector_label: "HDMI-A-1".into(),
+            modes: vec![],
+            hdr: false,
+            vrr: false,
+            color_profiles: vec![],
+        };
+        let second = OutputDescriptor {
+            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+            connector_label: "HDMI-A-1".into(),
+            modes: vec![],
+            hdr: false,
+            vrr: false,
+            color_profiles: vec![],
+        };
+        assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
+        assert_eq!(
+            snapshot_label(&second, false),
+            "HDMI-A-1 · pci:0000:03:00.0"
+        );
+
+        let display = DisplayOutput {
+            label: snapshot_label(&first, false),
+            connector: first.connector.clone(),
+            connector_label: first.label().to_string(),
+            ..classify_connector("card0-HDMI-A-1", "connected")
+        };
+        let staged = DisplayPane::output_descriptor(&display);
+        assert_eq!(staged.connector, "pci:0000:01:00.0/HDMI-A-1");
+        assert_eq!(
+            staged.connector_label, "HDMI-A-1",
+            "the card qualifier is UI-only, never folded into descriptor data"
+        );
+    }
+
+    #[test]
+    fn duplicate_connector_migration_keeps_legacy_intent_without_cross_targeting() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let first = "pci:0000:01:00.0/HDMI-A-1";
+        let second = "pci:0000:03:00.0/HDMI-A-1";
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                DisplayOutput {
+                    label: "HDMI-A-1 · pci:0000:01:00.0".into(),
+                    connector: first.into(),
+                    ..classify_connector("card0-HDMI-A-1", "connected")
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1 · pci:0000:03:00.0".into(),
+                    connector: second.into(),
+                    ..classify_connector("card1-HDMI-A-1", "connected")
+                },
+            ]);
+        pane.output_config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+
+        let mut doc = AutoCommit::new();
+        pane.seed_state(&mut doc, &automerge::ROOT);
+
+        // The ambiguous old key remains intact for a future one-card
+        // topology, but the current topology gets independent safe defaults
+        // and independent CRDT/persistence keys.
+        assert!(!pane.output_config.outputs["HDMI-A-1"].enabled);
+        assert!(pane.output_config.outputs.contains_key(first));
+        assert!(pane.output_config.outputs.contains_key(second));
+        let persisted =
+            serde_json::to_value(&pane.output_config).expect("display config serialises");
+        let persisted_outputs = persisted
+            .get("outputs")
+            .and_then(serde_json::Value::as_object)
+            .expect("outputs map");
+        assert!(persisted_outputs.contains_key(first));
+        assert!(persisted_outputs.contains_key(second));
+        assert!(
+            doc.get(&automerge::ROOT, output_key(first, "enabled"))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            doc.get(&automerge::ROOT, output_key(second, "enabled"))
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

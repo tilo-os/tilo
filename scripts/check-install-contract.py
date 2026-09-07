@@ -52,6 +52,55 @@ linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["depen
 assert "smithay-clipboard" in linux_ui_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
+packaging_docs = (ROOT / "docs/packaging.md").read_text()
+rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
+rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()
+rpm_signing_tests = (ROOT / "dist/rpm/test-signing-contract.sh").read_text()
+rpm_repo_generator = (ROOT / "dist/rpm/make-repo-file.sh").read_text()
+rpm_build_deps = (ROOT / "dist/ci/install-build-deps.sh").read_text()
+rpm_release_verifier = (ROOT / "dist/ci/verify-release-artifacts.sh").read_text()
+assert "https://code.podesta.ai/api/packages/qos/rpm/fedora/44.repo" in packaging_docs
+assert "/api/packages/$owner/rpm/fedora/44/upload" in rpm_publisher
+assert "sudo rpm-ostree install qos-session" in packaging_docs
+assert "sudo rpm-ostree update" in packaging_docs
+assert "sudo rpm-ostree uninstall qos-session" in packaging_docs
+assert "sudo rpm-ostree rollback" in packaging_docs
+assert "public qos organization/package visibility" in packaging_docs.lower()
+assert "--netrc-file" in packaging_docs
+assert "username=<Forgejo username>" in packaging_docs
+assert "password=<PAT with read:package>" in packaging_docs
+assert "gpgcheck=1" in packaging_docs
+assert "repo_gpgcheck=0" in packaging_docs
+assert "gpgkey=file:///etc/pki/rpm-gpg/qos-rpm-signing-key.asc" in packaging_docs
+assert "releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-fedora-44.repo" in packaging_docs
+assert "releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-rpm-signing-key.asc" in packaging_docs
+assert "dnf config-manager` persists credentials" in packaging_docs
+assert "dnf stores the credential" not in packaging_docs.lower()
+assert "QOS_RPM_SIGNING_KEY_B64" in packaging_docs
+assert "unencrypted armored" in packaging_docs and "private key" in packaging_docs
+assert "QOS_RPM_SIGNING_KEY_B64" in session_workflow
+assert "QOS_RPM_SIGNING_FINGERPRINT" in session_workflow
+assert "startsWith(github.ref, 'refs/tags/desktop-v') && '1' || '0'" in session_workflow
+assert "QOS_RPM_SIGNING_KEY_ARTIFACT: ${{ matrix.arch == 'amd64' && '1' || '0' }}" in session_workflow
+rpm_job = (ROOT / "dist/ci/run-package-job.sh").read_text()
+assert "--env QOS_RPM_SIGNING_KEY_B64" in rpm_job
+assert "if [[ ${QOS_RPM_SIGNING_ENABLED:-0} == 1 ]]" in rpm_job
+assert "dist/rpm/sign-rpms.sh /artifacts" in rpm_job
+assert "QOS_RPM_SIGNING_KEY_B64" in rpm_signer
+assert "rpmkeys --dbpath" in rpm_signer
+assert "rpmsign" in rpm_signer
+assert "substituted-key" in rpm_signing_tests
+assert "QOS_FAKE_RPM_MODE=unsigned" in rpm_signing_tests
+assert "QOS_FAKE_RPM_MODE=wrong" in rpm_signing_tests
+assert "gpgcheck=1" in rpm_repo_generator
+assert "repo_gpgcheck=0" in rpm_repo_generator
+assert "make-repo-file.sh" in (ROOT / "dist/ci/run-package-job.sh").read_text()
+assert "rpm-sign" in rpm_build_deps
+assert "expected_count=17" in rpm_release_verifier
+assert "expected_count=24" in rpm_release_verifier
+assert "RPM is unsigned" in rpm_release_verifier
+assert "make-repo-file.sh" in rpm_release_verifier
+assert "cmp -- \"$expected_repo\" \"$release_dir/qos-fedora-44.repo\"" in rpm_release_verifier
 assert "Select native release lanes" in session_workflow
 assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
 assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow

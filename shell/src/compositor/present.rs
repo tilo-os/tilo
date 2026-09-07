@@ -55,6 +55,12 @@ enum PresentMsg {
     Frame {
         frame: Box<FramePaint>,
         output: OutputId,
+        /// Assigned by the logic thread at submit time. It lets a caller wait for one
+        /// *specific* frame rather than treating any frame that happened to retire afterwards
+        /// as an acknowledgement. That distinction is security-critical for the pre-sleep lock
+        /// frame: a desktop frame already queued before the lock must not release the logind
+        /// delay inhibitor.
+        serial: u64,
     },
     Resize((u32, u32)),
     Dpms(bool),
@@ -70,7 +76,14 @@ pub struct PresentPipe {
     tx: Sender<PresentMsg>,
     /// Frames handed over but not yet presented; the logic thread reads it to decide whether to build the next frame.
     inflight: Arc<AtomicUsize>,
+    /// Serial of the newest frame the render thread has finished handling.
+    /// With the FIFO channel this also equals the number of retired frames,
+    /// but the identity is what callers need for a reliable acknowledgement.
     presented: Arc<AtomicU64>,
+    /// Last serial successfully handed to the render thread.  This is kept
+    /// separately from `inflight`: the latter is a bounded queue depth, not
+    /// an identity that survives a completed presentation.
+    submitted: Arc<AtomicU64>,
     /// Ticks on which the paint gate declined because the pipe was full. Surfaced in the paint stats — a large number means the GPU is the bottleneck, a different diagnosis from a slow scene build.
     backpressured: u64,
     /// Set by the render thread just before it returns; lets [`Self::shutdown`] tell "finished" from "wedged" without committing to a `join` that might never return.
@@ -93,6 +106,7 @@ impl PresentPipe {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
         let presented_frames = Arc::new(AtomicU64::new(0));
+        let submitted_frames = Arc::new(AtomicU64::new(0));
         let thread_inflight = inflight.clone();
         let thread_presented = presented_frames.clone();
         let finished = Arc::new(AtomicBool::new(false));
@@ -104,9 +118,13 @@ impl PresentPipe {
                 let _done = FinishedOnDrop(thread_finished);
                 for msg in rx {
                     match msg {
-                        PresentMsg::Frame { frame, output } => {
+                        PresentMsg::Frame {
+                            frame,
+                            output,
+                            serial,
+                        } => {
                             presenter.present_frame(&frame, output);
-                            thread_presented.fetch_add(1, Ordering::Release);
+                            thread_presented.store(serial, Ordering::Release);
                             // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
                             thread_inflight.fetch_sub(1, Ordering::Release);
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
@@ -139,6 +157,7 @@ impl PresentPipe {
             tx,
             inflight,
             presented: presented_frames,
+            submitted: submitted_frames,
             backpressured: 0,
             finished,
             handle,
@@ -164,6 +183,21 @@ impl PresentPipe {
         self.presented.load(Ordering::Acquire)
     }
 
+    /// Serial of the latest frame accepted by the render queue.  A caller
+    /// that submits a security-sensitive scene can retain this value and
+    /// wait until [`Self::presented`] reaches it; a prior queued scene cannot
+    /// accidentally satisfy that wait.
+    pub fn submitted(&self) -> u64 {
+        self.submitted.load(Ordering::Acquire)
+    }
+
+    /// Whether the render thread has exited, normally or through a panic.
+    /// A caller waiting for a specific frame must distinguish this from a
+    /// merely slow presentation: no later retirement can satisfy its wait.
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
     /// Frames handed over but not yet presented.
     pub fn inflight(&self) -> usize {
         self.inflight.load(Ordering::Acquire)
@@ -177,12 +211,21 @@ impl PresentPipe {
 
     /// Hand a finished scene with retained-damage authority to the render thread.
     pub fn submit_frame(&mut self, frame: FramePaint, output: OutputId) -> bool {
+        // Serial zero is the unambiguous "no frame" value used by callers
+        // before their first successful submit.  A closed pipe may consume a
+        // number, but its caller immediately takes the lost-presenter path,
+        // so no acknowledgement can observe that gap.
+        let serial = self
+            .submitted
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
         self.inflight.fetch_add(1, Ordering::AcqRel);
         if self
             .tx
             .send(PresentMsg::Frame {
                 frame: Box::new(frame),
                 output,
+                serial,
             })
             .is_err()
         {
@@ -262,6 +305,14 @@ mod tests {
         seen: Arc<AtomicU64>,
         resizes: Arc<Mutex<Vec<(u32, u32)>>>,
         dpms: Arc<Mutex<Vec<bool>>>,
+    }
+
+    struct PanickingPresenter;
+
+    impl Presenter for PanickingPresenter {
+        fn present(&mut self, _scene: &Scene, _output: OutputId) {
+            panic!("intentional presenter failure");
+        }
     }
 
     impl Presenter for Blocking {
@@ -354,6 +405,61 @@ mod tests {
         assert_eq!(pipe.presented(), 0, "the present is still blocked");
         drop(held);
         wait_until(|| pipe.presented() == 1, "the released frame");
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn submitted_serial_distinguishes_the_requested_frame_from_an_older_retirement() {
+        // The sleep path must wait for the lock frame it just handed over,
+        // not merely observe that *a* frame retired.  Model a desktop frame
+        // that is already complete, then hold the lock frame in the queue:
+        // its serial remains distinguishable until that exact frame runs.
+        let gate = Arc::new(Mutex::new(()));
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
+            gate: gate.clone(),
+            seen: Arc::new(AtomicU64::new(0)),
+            resizes: Arc::new(Mutex::new(Vec::new())),
+            dpms: Arc::new(Mutex::new(Vec::new())),
+        }));
+
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        wait_until(|| pipe.presented() == 1, "the older desktop frame");
+
+        let held = gate.lock().expect("hold the lock frame in presentation");
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        let lock_frame = pipe.submitted();
+        assert_eq!(lock_frame, 2);
+        assert_eq!(
+            pipe.presented(),
+            1,
+            "retiring the older desktop frame must not acknowledge lock frame {lock_frame}"
+        );
+        drop(held);
+        wait_until(
+            || pipe.presented() >= lock_frame,
+            "the specific lock frame to retire",
+        );
+        pipe.shutdown();
+    }
+
+    #[test]
+    fn presenter_failure_is_observable_while_a_frame_is_unretired() {
+        // A security-sensitive caller waits for a particular serial.  It
+        // must be able to tell "the GPU is slow" from "the render worker is
+        // gone"; otherwise a sleep-delay lock could wait forever with an
+        // in-flight count that will never drain.
+        let mut pipe = spawn_with_retire(Box::new(PanickingPresenter));
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        let serial = pipe.submitted();
+        wait_until(
+            || pipe.is_finished(),
+            "the presenter panic to terminate its thread",
+        );
+        assert!(pipe.is_finished());
+        assert!(
+            pipe.presented() < serial,
+            "a failed presenter must not claim it retired frame {serial}"
+        );
         pipe.shutdown();
     }
 

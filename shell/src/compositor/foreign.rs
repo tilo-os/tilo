@@ -8,8 +8,8 @@
 //! ```text
 //!  client commit
 //!      ├─ wl_shm  ──► surface_readback::buffer_to_rgba ──┐
-//!      └─ dmabuf  ──► gpu_import / import_dmabuf_rgba ────┤
-//!                                                        ▼
+//!      └─ dmabuf  ──► commit Barrier ─► capture worker ───┤
+//!                                      │ GPU / CPU import  ▼
 //!                                            ForeignFrameStore (per surface)
 //!                                                        │  snapshot on seq change
 //!                                                        ▼
@@ -23,21 +23,28 @@
 //! other tile; [`ForeignSurfaceWidget::needs_animation_frame`] is `true`
 //! only when the store holds an undrawn frame, so an idle client costs one lock + lookup per tick and zero paints.
 //!
-//! dmabuf tries two routes via [`ForeignFrameStore::capture_dmabuf`]: GPU
+//! dmabuf capture is coalesced per surface and runs outside the compositor
+//! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
+//! the compositor until its worker read completes; the pixels are published
+//! only when that exact commit is subsequently applied. The worker tries GPU
 //! ([`crate::compositor::gpu_import`], the only route for a Vulkan
 //! client whose swapchain images refuse `mmap`), then CPU mmap
 //! ([`import_dmabuf_rgba`], for CPU-visible linear buffers or a box with
 //! no EGL device) — together covering the whole advertised set
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::{Client, backend::ClientId};
+use smithay::wayland::compositor::Barrier;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use ui::presence::PresenceCtx;
@@ -49,9 +56,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{
-    Blob, Color, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
@@ -340,6 +345,13 @@ struct ForeignEntry {
     /// predicate asks whether the current frame fits its tab, which
     /// briefly stops being true on every resize — un-presenting would blink the window out mid-drag, worse than what this prevents.
     presented: bool,
+    /// Capture token attached to each not-yet-applied buffer commit. The
+    /// commit's Smithay barrier keeps the client from reusing that buffer
+    /// until its worker job either completes or is explicitly superseded.
+    capture_tokens: VecDeque<u64>,
+    /// Worker results wait here until the corresponding blocked surface commit
+    /// is applied. Publishing earlier would expose pending state as current.
+    ready_captures: HashMap<u64, ReadyCapture>,
 }
 
 impl ForeignEntry {
@@ -354,6 +366,8 @@ impl ForeignEntry {
             configured: None,
             first_seen: Instant::now(),
             presented: false,
+            capture_tokens: VecDeque::new(),
+            ready_captures: HashMap::new(),
         }
     }
 }
@@ -375,10 +389,11 @@ pub struct FrameSnapshot {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
-    /// Total buffer imports performed, of any route. A dmabuf import costs
-    /// a GPU readback (or full-frame CPU map), so it must happen **once
-    /// per client commit**, never once per paint. Asserted on by `painting_does_not_reimport_the_buffer`.
-    imports: std::sync::atomic::AtomicU64,
+    /// Total completed buffer imports, of any route. A dmabuf import costs a
+    /// GPU readback (or full-frame CPU map), so burst commits are coalesced and
+    /// paint only reads the latest completed pixels.
+    imports: AtomicU64,
+    next_capture: AtomicU64,
 }
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
@@ -408,8 +423,241 @@ pub enum CaptureOutcome {
         height: u32,
         route: DmabufRoute,
     },
+    /// A dmabuf was handed to the latest-frame worker. The compositor thread
+    /// did not wait for its GPU fence or copy its pixels.
+    Queued,
     /// Neither path could produce pixels; the reason is recorded on the entry and drawn on the tile.
     Failed(String),
+}
+
+#[derive(Debug)]
+struct CaptureJob<T> {
+    surface: SurfaceId,
+    token: u64,
+    payload: T,
+    barrier: Barrier,
+    client: Client,
+}
+
+type DmabufJob = CaptureJob<Dmabuf>;
+
+#[derive(Debug)]
+struct ReadyCapture {
+    rgba: Vec<u8>,
+    result: Result<(u32, u32, DmabufRoute), String>,
+}
+
+/// One pending job per surface. A client may commit much faster than a GPU
+/// readback completes; retaining every intermediate buffer turns animation
+/// into unbounded input latency, while only the newest frame can ever become
+/// visible.
+#[derive(Debug)]
+struct LatestJobs<T> {
+    jobs: HashMap<SurfaceId, T>,
+}
+
+impl<T> Default for LatestJobs<T> {
+    fn default() -> Self {
+        Self {
+            jobs: HashMap::new(),
+        }
+    }
+}
+
+impl<T> LatestJobs<T> {
+    fn push(&mut self, surface: SurfaceId, job: T) -> Option<T> {
+        self.jobs.insert(surface, job)
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        let surface = *self.jobs.keys().next()?;
+        self.jobs.remove(&surface)
+    }
+
+    fn remove(&mut self, surface: SurfaceId) -> Option<T> {
+        self.jobs.remove(&surface)
+    }
+}
+
+struct AsyncDmabufCapture {
+    pending: Arc<Mutex<LatestJobs<DmabufJob>>>,
+    completed: Arc<Mutex<HashMap<ClientId, Client>>>,
+    /// Pixel allocations handed back after a newer frame becomes current.
+    /// Readback and painting never alias: the main thread returns the old
+    /// frame only after replacing it in the store.
+    recycled: Arc<Mutex<HashMap<SurfaceId, Vec<u8>>>>,
+    wake: SyncSender<()>,
+}
+
+fn signal_capture_barrier(barrier: &Barrier) {
+    barrier.signal();
+}
+
+fn mark_capture_complete(client: Client, completed: &Mutex<HashMap<ClientId, Client>>) {
+    completed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(client.id(), client);
+}
+
+fn release_superseded<T>(job: CaptureJob<T>, completed: &Mutex<HashMap<ClientId, Client>>) {
+    signal_capture_barrier(&job.barrier);
+    mark_capture_complete(job.client, completed);
+}
+
+impl AsyncDmabufCapture {
+    fn spawn() -> Result<Self, String> {
+        let pending: Arc<Mutex<LatestJobs<DmabufJob>>> =
+            Arc::new(Mutex::new(LatestJobs::default()));
+        let worker_pending = Arc::clone(&pending);
+        let completed = Arc::new(Mutex::new(HashMap::new()));
+        let worker_completed = Arc::clone(&completed);
+        let recycled = Arc::new(Mutex::new(HashMap::new()));
+        let worker_recycled = Arc::clone(&recycled);
+        // Capacity one is only a wake edge, never a job queue. The authoritative
+        // queue is the latest-only map above, so `try_send` cannot block the
+        // compositor even while the worker is stuck on a GPU fence.
+        let (wake, wakes) = sync_channel::<()>(1);
+        std::thread::Builder::new()
+            .name("qos-foreign-capture".into())
+            .spawn(move || {
+                let mut scratch = HashMap::<SurfaceId, Vec<u8>>::new();
+                while wakes.recv().is_ok() {
+                    loop {
+                        let job = worker_pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop();
+                        let Some(job) = job else { break };
+                        let rgba = scratch.entry(job.surface).or_default();
+                        if rgba.is_empty()
+                            && let Some(previous) = worker_recycled
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .remove(&job.surface)
+                        {
+                            *rgba = previous;
+                        }
+                        let result = decode_dmabuf(&job.payload, rgba);
+                        let accepted =
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
+                        if !accepted {
+                            // The toplevel was destroyed while this import was
+                            // in flight. Do not retain a full framebuffer in
+                            // the worker's per-surface scratch map forever.
+                            scratch.remove(&job.surface);
+                        }
+                        signal_capture_barrier(&job.barrier);
+                        mark_capture_complete(job.client, &worker_completed);
+                    }
+                }
+            })
+            .map_err(|error| format!("could not start foreign-window capture worker: {error}"))?;
+        Ok(Self {
+            pending,
+            completed,
+            recycled,
+            wake,
+        })
+    }
+
+    fn enqueue(&self, job: DmabufJob) {
+        let replaced = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(job.surface, job);
+        if let Some(replaced) = replaced {
+            // The newer commit is the only pending frame that can become
+            // visible. Release the superseded transaction deliberately; a
+            // barrier must never be abandoned in the queue.
+            release_superseded(replaced, &self.completed);
+        }
+        // Full means a wake is already waiting; disconnected means the worker
+        // failed after startup. Neither condition may stall Wayland dispatch.
+        let _ = self.wake.try_send(());
+    }
+
+    fn drain_completed(&self) -> Vec<Client> {
+        std::mem::take(
+            &mut *self
+                .completed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .into_values()
+        .collect()
+    }
+
+    fn recycle_pixels(&self, surface: SurfaceId, mut rgba: Vec<u8>) {
+        rgba.clear();
+        if rgba.capacity() == 0 {
+            return;
+        }
+        self.recycled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(surface, rgba);
+    }
+
+    fn forget_surface(&self, surface: SurfaceId) {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(surface);
+        if let Some(pending) = pending {
+            release_superseded(pending, &self.completed);
+        }
+        self.recycled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&surface);
+    }
+}
+
+static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = OnceLock::new();
+
+/// Clients whose capture barriers changed to released since the last
+/// compositor tick. Keeping the client handle here (instead of looking it up
+/// through the surface later) also releases a fused transaction if that
+/// surface was destroyed while its readback was in flight. The caller
+/// re-evaluates Smithay's transaction queue on the main thread; the worker
+/// never dispatches Wayland itself.
+pub fn drain_completed_dmabuf_captures() -> Vec<Client> {
+    ASYNC_DMABUF_CAPTURE
+        .get()
+        .and_then(|worker| worker.as_ref().ok())
+        .map_or_else(Vec::new, AsyncDmabufCapture::drain_completed)
+}
+
+fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
+    if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+        worker.recycle_pixels(surface, rgba);
+    }
+}
+
+/// Read one dmabuf outside Wayland dispatch and outside the frame-store lock.
+/// GPU import is required for device-local Vulkan buffers; CPU mmap remains
+/// the fallback for linear system-memory buffers and machines without EGL.
+fn decode_dmabuf(dmabuf: &Dmabuf, rgba: &mut Vec<u8>) -> Result<(u32, u32, DmabufRoute), String> {
+    let gpu_error = match crate::compositor::render_node::advertised() {
+        Some(node) => match crate::compositor::gpu_import::with_importer(node, |importer| {
+            importer.import(dmabuf, rgba)
+        }) {
+            Ok(Ok((width, height))) => return Ok((width, height, DmabufRoute::Gpu)),
+            Ok(Err(error)) | Err(error) => Some(error.to_string()),
+        },
+        None => Some("no dmabuf main device was advertised".to_string()),
+    };
+
+    match import_dmabuf_rgba(dmabuf, rgba) {
+        Ok((width, height)) => Ok((width, height, DmabufRoute::CpuMmap)),
+        Err(cpu_error) => Err(match gpu_error {
+            Some(gpu_error) => format!("{cpu_error}; GPU import also failed: {gpu_error}"),
+            None => cpu_error.to_string(),
+        }),
+    }
 }
 
 impl ForeignFrameStore {
@@ -422,18 +670,29 @@ impl ForeignFrameStore {
     }
 
     fn note_import(&self) {
-        self.imports
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.imports.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Buffer imports since process start, across every surface/route — read by the repaint-cost test (see the field's doc for why it must not track paints).
     pub fn import_count(&self) -> u64 {
-        self.imports.load(std::sync::atomic::Ordering::Relaxed)
+        self.imports.load(Ordering::Relaxed)
     }
 
     /// Capture the buffer a client just committed. Tries `wl_shm` readback
     /// first; a not-shm buffer routes to the dmabuf importer. The `wl_buffer → Dmabuf` lookup is done by the caller-visible [`smithay::wayland::dmabuf::get_dmabuf`], keeping this a single entry point.
     pub fn capture_commit(&self, id: SurfaceId, buffer: &WlBuffer) -> CaptureOutcome {
+        self.capture_commit_associated(id, buffer, None)
+    }
+
+    /// Capture one buffer commit with the token assigned by its pre-commit
+    /// hook. Supplying the exact token prevents an unrelated damage-only
+    /// commit from consuming a later blocked dmabuf result.
+    pub fn capture_commit_associated(
+        &self,
+        id: SurfaceId,
+        buffer: &WlBuffer,
+        dmabuf_token: Option<u64>,
+    ) -> CaptureOutcome {
         let shm_result = self.with_entry(id, |e| {
             let r = buffer_to_rgba(buffer, &mut e.rgba);
             match r {
@@ -459,8 +718,10 @@ impl ForeignFrameStore {
                 }
             }
             Err(ReadbackError::DmaBufUnsupported) => {
-                if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer) {
-                    self.capture_dmabuf(id, dmabuf)
+                if smithay::wayland::dmabuf::get_dmabuf(buffer).is_ok() {
+                    dmabuf_token
+                        .and_then(|token| self.activate_dmabuf_capture_token(id, token))
+                        .unwrap_or(CaptureOutcome::Queued)
                 } else {
                     let msg = "buffer is neither wl_shm nor dmabuf".to_string();
                     self.note_failure(id, msg.clone());
@@ -475,72 +736,134 @@ impl ForeignFrameStore {
         }
     }
 
-    /// Import an already-resolved [`Dmabuf`] into the store. Two routes, tried in order:
-    ///
-    /// 1. **GPU** ([`crate::compositor::gpu_import`]) — EGL wraps the
-    ///    buffer as a texture; the only route for a Vulkan client, since
-    ///    `wgpu`'s device-local swapchain images refuse `mmap` (`EPERM`) however linear.
-    /// 2. **CPU mmap** ([`import_dmabuf_rgba`]) — no GL context needed;
-    ///    correct for CPU-visible linear buffers, and the route with no usable EGL device.
-    ///
-    /// Both failing is reported on the tile with both routes' reasons.
-    pub fn capture_dmabuf(&self, id: SurfaceId, dmabuf: &Dmabuf) -> CaptureOutcome {
-        let gpu_err = match crate::compositor::render_node::advertised() {
-            Some(node) => {
-                let attempt = crate::compositor::gpu_import::with_importer(node, |imp| {
-                    self.with_entry(id, |e| {
-                        imp.import(dmabuf, &mut e.rgba).map(|(w, h)| {
-                            e.width = w;
-                            e.height = h;
-                            e.seq = e.seq.wrapping_add(1);
-                            e.last_error = None;
-                            (w, h)
-                        })
-                    })
-                });
-                match attempt {
-                    Ok(Ok((w, h))) => {
-                        self.note_import();
-                        return CaptureOutcome::Dmabuf {
-                            width: w,
-                            height: h,
-                            route: DmabufRoute::Gpu,
-                        };
-                    }
-                    // Either the import itself failed for this buffer, or there is no GPU import context at all.
-                    Ok(Err(e)) | Err(e) => Some(e.to_string()),
-                }
-            }
-            None => Some("no dmabuf main device was advertised".to_string()),
-        };
-
-        let result = self.with_entry(id, |e| {
-            import_dmabuf_rgba(dmabuf, &mut e.rgba).map(|(w, h)| {
-                e.width = w;
-                e.height = h;
-                e.seq = e.seq.wrapping_add(1);
-                e.last_error = None;
-                (w, h)
-            })
+    /// Queue the pending dmabuf from a surface pre-commit hook and return the
+    /// barrier that must be attached to that same commit. This is the lifetime
+    /// contract: Smithay cannot release/reuse the buffer until capture has
+    /// completed or the job has been explicitly superseded.
+    pub fn prepare_dmabuf_capture(
+        &self,
+        id: SurfaceId,
+        client: Client,
+        dmabuf: Dmabuf,
+    ) -> Option<(u64, Barrier)> {
+        let token = self
+            .next_capture
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(token);
         });
-        match result {
-            Ok((w, h)) => {
-                self.note_import();
-                CaptureOutcome::Dmabuf {
-                    width: w,
-                    height: h,
-                    route: DmabufRoute::CpuMmap,
-                }
+        let worker = ASYNC_DMABUF_CAPTURE.get_or_init(AsyncDmabufCapture::spawn);
+        match worker {
+            Ok(worker) => {
+                let barrier = Barrier::new(false);
+                worker.enqueue(DmabufJob {
+                    surface: id,
+                    token,
+                    payload: dmabuf,
+                    barrier: barrier.clone(),
+                    client,
+                });
+                Some((token, barrier))
             }
-            Err(cpu_err) => {
-                let msg = match gpu_err {
-                    Some(g) => format!("{cpu_err}; GPU import also failed: {g}"),
-                    None => cpu_err.to_string(),
-                };
-                self.note_failure(id, msg.clone());
-                CaptureOutcome::Failed(msg)
+            Err(reason) => {
+                // No worker owns this token, so it must not remain at the
+                // head of the per-commit queue and steal a later result.
+                self.with_entry(id, |entry| {
+                    if let Some(position) = entry.capture_tokens.iter().position(|v| *v == token) {
+                        entry.capture_tokens.remove(position);
+                    }
+                });
+                self.note_failure(id, reason.clone());
+                None
             }
         }
+    }
+
+    fn stage_dmabuf_capture(
+        &self,
+        id: SurfaceId,
+        token: u64,
+        result: Result<(u32, u32, DmabufRoute), String>,
+        rgba: &mut Vec<u8>,
+    ) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        if !entry.capture_tokens.contains(&token) {
+            return false;
+        }
+        let mut captured = Vec::new();
+        std::mem::swap(&mut captured, rgba);
+        entry.ready_captures.insert(
+            token,
+            ReadyCapture {
+                rgba: captured,
+                result,
+            },
+        );
+        drop(guard);
+        true
+    }
+
+    fn activate_dmabuf_capture_token(
+        &self,
+        id: SurfaceId,
+        expected_token: u64,
+    ) -> Option<CaptureOutcome> {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = guard.get_mut(&id)?;
+        let token = entry.capture_tokens.front().copied()?;
+        if token != expected_token {
+            return None;
+        }
+        entry.capture_tokens.pop_front();
+        let ready = entry.ready_captures.remove(&token)?;
+        let (outcome, imported, recycled) = match ready.result {
+            Ok((width, height, route)) => {
+                let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
+                entry.width = width;
+                entry.height = height;
+                entry.seq = entry.seq.wrapping_add(1);
+                entry.last_error = None;
+                (
+                    CaptureOutcome::Dmabuf {
+                        width,
+                        height,
+                        route,
+                    },
+                    true,
+                    previous,
+                )
+            }
+            Err(reason) => {
+                entry.rgba.clear();
+                entry.width = 0;
+                entry.height = 0;
+                entry.seq = entry.seq.wrapping_add(1);
+                entry.last_error = Some(reason.clone());
+                (CaptureOutcome::Failed(reason), false, ready.rgba)
+            }
+        };
+        drop(guard);
+        recycle_dmabuf_pixels(id, recycled);
+        if imported {
+            self.note_import();
+        }
+        Some(outcome)
+    }
+
+    #[cfg(test)]
+    fn activate_dmabuf_capture(&self, id: SurfaceId) -> Option<CaptureOutcome> {
+        let token = self.with_entry(id, |entry| entry.capture_tokens.front().copied())?;
+        self.activate_dmabuf_capture_token(id, token)
     }
 
     /// Publish an RGBA frame directly — used by callers that already hold decoded pixels (tests, future non-`wl_buffer` capture routes).
@@ -589,6 +912,10 @@ impl ForeignFrameStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
+        drop(guard);
+        if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
+            worker.forget_surface(id);
+        }
     }
 
     /// Current frame counter for `id`; `0` when nothing has landed.
@@ -1041,14 +1368,19 @@ fn translated_and_scaled(base: Affine, dx: f64, dy: f64, sx: f64, sy: f64) -> Af
 /// output rectangle.  Unlike [`ForeignSurfaceWidget`], this deliberately
 /// bypasses the workspace tree: a clean audience output must not consume or
 /// redraw the presenter's local group.
-pub fn paint_output_presentation_surface(scene: &mut Scene, surface_id: SurfaceId, rect: Rect) {
+pub fn paint_output_presentation_surface(
+    scene: &mut Scene,
+    surface_id: SurfaceId,
+    rect: Rect,
+    theme: &Theme,
+) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
     // An audience surface is deliberately opaque: its renderer may carry
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
-    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::BLACK, None, &rect);
+    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
     let Some(frame) = store().snapshot(surface_id) else {
         return;
     };
@@ -1409,13 +1741,30 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 
     // Keep titles/app-ids in step for tabs on both sides (a client can call `set_app_id` after mapping).
     for want in &wanted {
+        // A client may announce its toplevel before setting app-id.  The
+        // protocol tree re-homes that anonymous tab when the late identity
+        // arrives; apply the same claimed launch placement to the rendered
+        // mirror before syncing its label, otherwise the two trees can show
+        // the same surface in different groups.
+        if crate::compositor::tab_binding::app_id_for_surface(rendered, want.surface_id)
+            .is_some_and(|app_id| app_id.starts_with("anon-"))
+        {
+            if crate::compositor::tab_binding::rebind_toplevel_for_app_id(
+                rendered,
+                want.surface_id,
+                want.app_id.clone(),
+                Some(&want.title),
+            ) {
+                changed = true;
+            }
+        }
         for ws in &mut rendered.workspaces {
             for strip in &mut ws.strips {
                 for group in &mut strip.window_groups {
                     for tab in &mut group.tabs {
                         if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile
                             && *surface_id == want.surface_id
-                            && *app_id != want.app_id
+                            && (*app_id != want.app_id || tab.title != want.title)
                         {
                             want.app_id.clone_into(app_id);
                             want.title.clone_into(&mut tab.title);
@@ -1439,29 +1788,29 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
 /// carries duplicates on disk, so this runs every reconcile, not only at adoption. Returns whether anything was removed.
 fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
     let mut seen: std::collections::HashSet<SurfaceId> = std::collections::HashSet::new();
+    // Resolve duplicates without mutating the cache during traversal.  The
+    // ordinary close primitive updates both the cache and the Automerge
+    // document and repairs active tab/group pointers.
+    // A bare `retain` here used to make the duplicate disappear for one
+    // frame while leaving it in the room document, so the next revision
+    // resurrected it.
+    let duplicate_tabs: Vec<_> = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .filter_map(|tab| {
+            let ShellTile::Foreign { surface_id, .. } = &tab.tile else {
+                return None;
+            };
+            (!seen.insert(*surface_id)).then_some(tab.id)
+        })
+        .collect();
+
     let mut removed = false;
-    for ws in &mut tree.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                let active = group.active_tab;
-                let mut dropped_active = false;
-                group.tabs.retain(|tab| {
-                    let ShellTile::Foreign { surface_id, .. } = &tab.tile else {
-                        return true;
-                    };
-                    if seen.insert(*surface_id) {
-                        return true;
-                    }
-                    dropped_active |= active == tab.id;
-                    removed = true;
-                    false
-                });
-                // The duplicate may have been the tab the group was showing — fall back the way a closed tab does.
-                if dropped_active {
-                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                }
-            }
-        }
+    for tab in duplicate_tabs {
+        removed |= crate::compositor::tab_binding::remove_tab(tree, tab);
     }
     removed
 }
@@ -1606,6 +1955,119 @@ mod tests {
     /// Distinct ids per test so the process-wide store can't leak state between parallel test threads.
     fn sid(n: u64) -> SurfaceId {
         900_000u64.saturating_add(n)
+    }
+
+    #[test]
+    fn pending_capture_queue_keeps_only_the_latest_frame_per_surface() {
+        let mut pending = LatestJobs::default();
+        assert_eq!(pending.push(10, "old"), None);
+        assert_eq!(pending.push(20, "other surface"), None);
+        assert_eq!(pending.push(10, "new"), Some("old"));
+
+        assert_eq!(pending.jobs.len(), 2, "a burst is bounded by surface count");
+        assert_eq!(pending.jobs.get(&10), Some(&"new"));
+        assert_eq!(pending.remove(10), Some("new"));
+        assert_eq!(pending.jobs.len(), 1);
+        let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
+        assert_eq!(drained.len(), 1);
+        assert!(drained.contains(&"other surface"));
+    }
+
+    #[test]
+    fn capture_barrier_release_is_visible_across_clones() {
+        let barrier = Barrier::new(false);
+        signal_capture_barrier(&barrier);
+        assert!(barrier.is_signaled());
+    }
+
+    #[test]
+    fn worker_result_is_published_only_when_its_blocked_commit_applies() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(100);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(2);
+        });
+
+        let mut stale = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(id, 1, Ok((1, 1, DmabufRoute::Gpu)), &mut stale);
+        assert!(frames.snapshot(id).is_none());
+
+        let mut latest = vec![5, 6, 7, 8];
+        frames.stage_dmabuf_capture(id, 2, Ok((1, 1, DmabufRoute::Gpu)), &mut latest);
+        assert!(
+            frames.snapshot(id).is_none(),
+            "pending pixels must not become current before commit application"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("latest frame").rgba,
+            vec![5, 6, 7, 8]
+        );
+        assert_eq!(
+            frames.import_count(),
+            1,
+            "only published work counts as an import"
+        );
+    }
+
+    #[test]
+    fn superseded_commit_applies_without_stealing_the_newer_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(102);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.extend([3, 4]);
+        });
+        let mut newest = vec![9, 8, 7, 6];
+        frames.stage_dmabuf_capture(id, 4, Ok((1, 1, DmabufRoute::Gpu)), &mut newest);
+
+        assert!(
+            frames.activate_dmabuf_capture(id).is_none(),
+            "the superseded earlier commit has no pixels"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture(id),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+        assert_eq!(
+            frames.snapshot(id).expect("newest frame").rgba,
+            vec![9, 8, 7, 6]
+        );
+    }
+
+    #[test]
+    fn commit_token_mismatch_cannot_consume_a_later_capture() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(103);
+        frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
+        let mut pixels = vec![7, 7, 7, 7];
+        assert!(frames.stage_dmabuf_capture(id, 42, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels,));
+
+        assert!(
+            frames.activate_dmabuf_capture_token(id, 41).is_none(),
+            "an unrelated commit must not pop the next buffer's token"
+        );
+        assert!(matches!(
+            frames.activate_dmabuf_capture_token(id, 42),
+            Some(CaptureOutcome::Dmabuf { .. })
+        ));
+    }
+
+    #[test]
+    fn late_worker_completion_cannot_resurrect_a_destroyed_surface() {
+        let frames = ForeignFrameStore::default();
+        let id = sid(101);
+        frames.with_entry(id, |entry| {
+            entry.capture_tokens.push_back(7);
+        });
+        frames.forget(id);
+
+        let mut pixels = vec![1, 2, 3, 4];
+        frames.stage_dmabuf_capture(id, 7, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels);
+        assert!(frames.snapshot(id).is_none());
+        assert_eq!(frames.frame_seq(id), 0);
     }
 
     #[test]
@@ -2068,6 +2530,88 @@ mod tests {
         assert!(foreign_tabs(&rendered).is_empty());
     }
 
+    /// The rendered mirror must follow a late app-id re-home as well as the
+    /// protocol tree.  This is the two-tree version of the Electron/GTK race:
+    /// the first anonymous adoption is visible for one tick, then the launch
+    /// note is claimed when the client finally identifies itself.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn reconcile_mirrors_late_app_id_launch_placement() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = source.clone();
+        let target = source.workspaces[0].strips[0].window_groups[0].id;
+        crate::shell::launcher::set_pending_placement(
+            "org.example.electron",
+            crate::compositor::tab_binding::Placement::TabIn(target),
+        );
+
+        crate::compositor::tab_binding::adopt_toplevel(&mut source, 0x501, None);
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(foreign_tabs_anywhere(&rendered).len(), 1);
+
+        assert!(crate::compositor::tab_binding::rebind_toplevel_for_app_id(
+            &mut source,
+            0x501,
+            "org.example.electron".into(),
+            None,
+        ));
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        let mirrored = foreign_tabs_anywhere(&rendered);
+        assert_eq!(mirrored.len(), 1);
+        let mirrored_group = rendered
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
+            .expect("mirrored surface group");
+        assert_eq!(mirrored_group.id, target);
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    /// Consuming a user close removes the exact surface from the protocol
+    /// tree before reconciliation. The Wayland toplevel itself can still be
+    /// alive while processing `xdg_toplevel.close`; it must not be mirrored
+    /// back, and another window from the same application must be untouched.
+    #[test]
+    fn a_still_live_closing_surface_is_not_readopted_or_confused_with_its_sibling() {
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        for surface in [51, 52] {
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut source,
+                surface,
+                Some("com.openai.chatgpt".into()),
+            );
+        }
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, 51), 1);
+        assert_eq!(tabs_for_surface(&rendered, 52), 1);
+
+        // This is the frame-loop ordering for a queued close: remove from
+        // both tree authorities, send close to the still-live toplevel, then
+        // reconcile. The application's process and app-id are irrelevant.
+        assert!(
+            crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut rendered, 51,)
+        );
+        assert!(crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut source, 51,));
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "the consumed close leaves nothing for reconciliation to undo"
+        );
+        assert_eq!(
+            tabs_for_surface(&rendered, 51),
+            0,
+            "the still-live closing surface must not be adopted back"
+        );
+        assert_eq!(
+            tabs_for_surface(&rendered, 52),
+            1,
+            "surface identity keeps the same-app sibling exactly once"
+        );
+    }
+
     /// One window, one tab — wherever in the tree that tab sits, including a workspace other than the one the user is looking at.
     #[test]
     fn a_window_in_another_workspace_is_not_adopted_a_second_time() {
@@ -2221,6 +2765,385 @@ mod tests {
         );
     }
 
+    /// Duplicate cleanup is a document mutation, not a cosmetic `retain` on
+    /// the current frame.  A later document update previously put the second
+    /// app card back because it was never removed from the replicated list.
+    #[test]
+    fn duplicate_cleanup_replicates_and_does_not_reappear_after_resync() {
+        let surface = 34;
+        let mut source = WorkspaceTree::bootstrap_demo();
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("dev.qos.photos".into()),
+        );
+        source.seed_doc_from_cache();
+        let mut rendered = source.clone();
+
+        let twin = foreign_tabs_anywhere(&rendered)
+            .into_iter()
+            .find(|tab| tab.surface_id == surface)
+            .expect("the source foreign tab");
+        let group = rendered
+            .active_workspace_mut()
+            .and_then(|workspace| workspace.strips.first_mut())
+            .and_then(|strip| strip.window_groups.first_mut())
+            .expect("the group the tab was adopted into");
+        group.tabs.push(crate::shell::state::Tab {
+            id: twin.tab_id + 2_000_000,
+            title: twin.title,
+            tile: ShellTile::Foreign {
+                app_id: twin.app_id,
+                surface_id: twin.surface_id,
+            },
+        });
+        rendered.seed_doc_from_cache();
+        let mut stale_replica = rendered.clone();
+        let before_cleanup = rendered.current_heads();
+
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, surface), 1);
+
+        let deletion = rendered.export_changes_since(&before_cleanup);
+        stale_replica
+            .apply_changes(&deletion)
+            .expect("the document deletion applies to a stale replica");
+        assert_eq!(
+            tabs_for_surface(&stale_replica, surface),
+            1,
+            "a later resync must not restore the duplicate application"
+        );
+    }
+
+    /// A real session can receive a room revision while a local external app
+    /// is mapping.  The revision may have been authored from before a close,
+    /// so this covers the complete ordering rather than each operation in
+    /// isolation: pointer/keyboard routes close and reorder the durable
+    /// topology; the protocol side maps one foreign surface; then a stale
+    /// peer revision and a normal restart run.
+    #[test]
+    fn stale_revision_after_close_reorder_and_foreign_launch_keeps_one_live_app() {
+        use crate::compositor::tab_binding::{Placement, open_hosted_app, remove_tab};
+        use crate::shell::state::AppKind;
+
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let strip_id = source.workspaces[0].strips[0].id;
+
+        // Build a three-window shared baseline. The app that is closed is a
+        // symbolic hosted app, so its deletion is an actual room-document
+        // mutation. The app launched later is deliberately a foreign
+        // Wayland surface and therefore remains process-local.
+        let closed_tab = open_hosted_app(
+            &mut source,
+            AppKind::Other("Close fixture".into()),
+            "Close fixture",
+            Placement::NewGroup,
+        );
+        let reorder_tab = open_hosted_app(
+            &mut source,
+            AppKind::Other("Reorder fixture".into()),
+            "Reorder fixture",
+            Placement::NewGroup,
+        );
+        let closed_group = group_for_tab(&source, closed_tab);
+        let reordered_group = group_for_tab(&source, reorder_tab);
+        source.seed_doc_from_cache();
+        let base_heads = source.current_heads();
+        let bootstrap = source.export_changes_since(&[]);
+
+        let mut rendered = WorkspaceTree::default();
+        rendered
+            .apply_changes(&bootstrap)
+            .expect("rendered tree accepts its shared baseline");
+        rendered.persist_path = Some(state_path.clone());
+        rendered.flush_to_disk();
+
+        // This is the durable close route used by both the close button and
+        // Super+W after their event handlers resolve the exact tab.
+        assert!(
+            remove_tab(&mut rendered, closed_tab),
+            "the closed app must leave the rendered document"
+        );
+        assert!(
+            rendered.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != closed_group),
+            "closing the only tab removes the whole group"
+        );
+
+        // Meanwhile a peer still based on the old document reorders another
+        // group. Its change contains the now-closed group in its old list,
+        // which is the regression that used to resurrect windows.
+        assert!(source.reorder_group_within_strip(strip_id, reordered_group, 0));
+        let stale_revision = source.export_changes_since(&base_heads);
+        rendered
+            .apply_changes(&stale_revision)
+            .expect("a later peer revision applies");
+        assert!(
+            rendered.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != closed_group),
+            "a stale reorder must not bring the closed group back"
+        );
+
+        // A conventional host application maps after that room revision.
+        // It belongs to the protocol tree, then reconciliation makes exactly
+        // one chrome tab for its surface.
+        let surface = 0x51_000;
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("org.example.ExternalEditor".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(
+            tabs_for_surface(&rendered, surface),
+            1,
+            "one mapped external surface must produce exactly one tab"
+        );
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "reconciliation is idempotent once the external app is present"
+        );
+
+        // A state round-trip may not revive the closed group; live Wayland
+        // surfaces intentionally do not survive a compositor restart because
+        // their surface ids belong to the old process.
+        rendered.flush_to_disk();
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("the post-revision layout restarts cleanly");
+        assert!(
+            restarted.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != closed_group),
+            "restart must not revive the closed group"
+        );
+        assert_eq!(
+            tabs_for_surface(&restarted, surface),
+            0,
+            "a dead process-local surface must not be restored after restart"
+        );
+        assert_active_groups_are_valid(&restarted);
+    }
+
+    /// Exercise the layout as one deterministic state machine rather than a
+    /// collection of isolated mutations.  This is deliberately shaped like
+    /// a busy desktop: hosted and external apps coexist, a legacy duplicate
+    /// is discovered, tabs and groups move, focus crosses workspaces, an old
+    /// peer revision lands, a newer revision follows it, and the compositor
+    /// restarts after the external process exits.
+    ///
+    /// Pointer and keyboard close both resolve to `remove_tab` before this
+    /// layer, so using that primitive here covers their shared durable
+    /// transaction while `strip_navigation` checks both actual event routes.
+    #[test]
+    #[serial_test::serial(launch_events)]
+    fn deterministic_layout_lifecycle_survives_interleaved_mutations() {
+        use crate::compositor::tab_binding::{
+            Placement, close_tab_for_destroyed_surface, open_hosted_app, remove_tab,
+        };
+        use crate::shell::state::AppKind;
+
+        crate::shell::launcher::clear_pending_placements();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut rendered = WorkspaceTree::bootstrap_demo();
+        rendered.persist_path = Some(state_path.clone());
+
+        let strip = rendered
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.first())
+            .expect("demo workspace strip")
+            .id;
+        let anchor = rendered
+            .active_group_for(strip)
+            .expect("demo workspace active group");
+        let local_tab = open_hosted_app(
+            &mut rendered,
+            AppKind::Other("Native fixture".into()),
+            "Native fixture",
+            Placement::TabIn(anchor),
+        );
+        let reorder_tab = open_hosted_app(
+            &mut rendered,
+            AppKind::Other("Reorder fixture".into()),
+            "Reorder fixture",
+            Placement::NewGroup,
+        );
+        let reorder_group = group_for_tab(&rendered, reorder_tab);
+        let close_tab = open_hosted_app(
+            &mut rendered,
+            AppKind::Other("Close fixture".into()),
+            "Close fixture",
+            Placement::NewGroup,
+        );
+        let close_group = group_for_tab(&rendered, close_tab);
+        rendered.seed_doc_from_cache();
+
+        // Protocol and chrome start from the same layout.  A pending launch
+        // is queried independently by both trees in production; the same
+        // surface id must get the same answer rather than minting two tabs.
+        let mut source = rendered.clone();
+        crate::shell::launcher::set_pending_placement(
+            "org.example.ExternalEditor",
+            Placement::TabIn(anchor),
+        );
+        let surface = 0xC0FFEE;
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            surface,
+            Some("org.example.ExternalEditor".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, surface), 1);
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "a second frame cannot duplicate one mapped toplevel"
+        );
+
+        // Model the bad on-disk state produced by an older build.  Make the
+        // duplicate active as well, so cleanup has to repair selection, not
+        // merely shorten a background vector.
+        let original = foreign_tabs_anywhere(&rendered)
+            .into_iter()
+            .find(|tab| tab.surface_id == surface)
+            .expect("mirrored foreign tab");
+        let duplicate_id = original.tab_id.saturating_add(9_000_000);
+        let owner = group_for_tab(&rendered, original.tab_id);
+        let group = rendered
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| workspace.strips.iter_mut())
+            .flat_map(|strip| strip.window_groups.iter_mut())
+            .find(|group| group.id == owner)
+            .expect("foreign tab owner");
+        group.tabs.push(crate::shell::state::Tab {
+            id: duplicate_id,
+            title: original.title,
+            tile: ShellTile::Foreign {
+                app_id: original.app_id,
+                surface_id: surface,
+            },
+        });
+        group.active_tab = duplicate_id;
+        rendered.seed_doc_from_cache();
+        let stale_seed = rendered.export_changes_since(&[]);
+        let mut stale_peer = WorkspaceTree::default();
+        stale_peer
+            .apply_changes(&stale_seed)
+            .expect("stale peer accepts the shared baseline");
+        let stale_base = stale_peer.current_heads();
+
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, surface), 1);
+        assert!(remove_tab(&mut rendered, close_tab));
+        assert!(
+            rendered
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .all(|group| group.id != close_group),
+            "closing a group's only tab removes the group immediately"
+        );
+
+        let moved_group = rendered
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.first())
+            .and_then(|strip| strip.window_groups.last())
+            .expect("another group remains")
+            .id;
+        let _ = rendered.reorder_group_within_strip(strip, moved_group, 0);
+
+        // The old peer only reorders an unrelated surviving group.  Its
+        // change was authored while both the duplicate and closed group
+        // still existed; neither may be revived when that revision arrives.
+        assert!(stale_peer.reorder_group_within_strip(strip, reorder_group, 0));
+        let stale_changes = stale_peer.export_changes_since(&stale_base);
+        rendered
+            .apply_changes(&stale_changes)
+            .expect("old revision applies");
+        assert_eq!(tabs_for_surface(&rendered, surface), 1);
+        assert!(
+            rendered
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .all(|group| group.id != close_group),
+            "an old reorder must not revive a closed window group"
+        );
+
+        // Travel away and back, then accept a genuinely newer tab-order
+        // revision.  Focus is local state; neither activity can recreate a
+        // tab that the document has already deleted.
+        assert!(rendered.switch_down());
+        assert!(rendered.switch_up());
+        let future_seed = rendered.export_changes_since(&[]);
+        let mut future_peer = WorkspaceTree::default();
+        future_peer
+            .apply_changes(&future_seed)
+            .expect("future peer accepts the merged baseline");
+        let future_base = future_peer.current_heads();
+        let local_group = group_for_tab(&future_peer, local_tab);
+        let group = future_peer
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|group| group.id == local_group)
+            .expect("local tab group");
+        let from = group
+            .tabs
+            .iter()
+            .position(|tab| tab.id == local_tab)
+            .expect("local tab index");
+        let to = if from == 0 { 1 } else { 0 };
+        assert!(future_peer.reorder_tab_within_group(local_group, from, to));
+        let future_changes = future_peer.export_changes_since(&future_base);
+        rendered
+            .apply_changes(&future_changes)
+            .expect("newer revision applies");
+        assert_eq!(tabs_for_surface(&rendered, surface), 1);
+        assert_active_groups_are_valid(&rendered);
+
+        // A clean external exit is a protocol teardown, not a layout reset.
+        assert!(close_tab_for_destroyed_surface(&mut source, surface));
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(tabs_for_surface(&rendered, surface), 0);
+        assert!(
+            rendered
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .any(|tab| tab.id == local_tab),
+            "closing an external client must not remove the hosted sibling"
+        );
+
+        rendered.flush_to_disk();
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("interleaved layout remains restartable");
+        assert_eq!(tabs_for_surface(&restarted, surface), 0);
+        assert!(
+            restarted
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .all(|group| group.id != close_group),
+            "restart must retain the close after both old and new revisions"
+        );
+        assert_active_groups_are_valid(&restarted);
+        crate::shell::launcher::clear_pending_placements();
+    }
+
     /// How many tabs anywhere in `tree` show `surface` — walks the tree the chrome renders from, so a duplicate is counted where it'd draw.
     fn tabs_for_surface(tree: &WorkspaceTree, surface: SurfaceId) -> usize {
         tree.workspaces
@@ -2232,6 +3155,35 @@ mod tests {
                 matches!(&t.tile, ShellTile::Foreign { surface_id, .. } if *surface_id == surface)
             })
             .count()
+    }
+
+    fn group_for_tab(tree: &WorkspaceTree, tab_id: u64) -> u64 {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .find(|group| group.tabs.iter().any(|tab| tab.id == tab_id))
+            .map(|group| group.id)
+            .expect("the fixture tab belongs to one group")
+    }
+
+    fn assert_active_groups_are_valid(tree: &WorkspaceTree) {
+        for (workspace, strip_id) in &tree.active_strip {
+            let Some(strip) = tree
+                .workspaces
+                .iter()
+                .find(|candidate| candidate.id == *workspace)
+                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == *strip_id))
+            else {
+                panic!("active workspace points to a missing strip");
+            };
+            if let Some(group_id) = tree.active_group_for(*strip_id) {
+                assert!(
+                    strip.window_groups.iter().any(|group| group.id == group_id),
+                    "active strip points to a deleted group"
+                );
+            }
+        }
     }
 
     /// Detach the tab showing `surface` from wherever it is, so a test can put it somewhere else.

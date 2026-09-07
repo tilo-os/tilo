@@ -2,16 +2,18 @@
 //!
 //! A signing identity appears on a qOS machine the first time someone
 //! logs in; this module is the ceremony that puts a name and a
-//! consequence on it, rather than letting it appear silently. Three
-//! short screens, one real decision: what the identity enables;
-//! **that there is no recovery**, acknowledged explicitly; and
-//! where the key ended up, with its fingerprint.
+//! consequence on it, rather than letting it appear silently. Four short
+//! steps make the important decisions explicit: what the identity enables;
+//! **that there is no escrow or reset service**, acknowledged explicitly;
+//! a deliberate encrypted portable-backup choice; and a concise hand-off.
 //!
 //! qOS mints a personal Ed25519 root plus a distinct device key certified
 //! by that root, with no escrow or recovery phrase. `threshold-identity`
-//! implements share-based recovery but isn't wired into this path, so the
-//! only true thing to tell a user is that losing every local key and encrypted
-//! portable backup loses the identity. The copy in
+//! implements share-based recovery only after a genuine multi-device
+//! ceremony; this path creates a single-device identity, whose actual
+//! recovery material is an encrypted portable backup. The only true thing to
+//! tell a user is that losing every local key and that backup loses the
+//! identity. The copy in
 //! [`NO_RECOVERY_POINTS`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
 //! your device safe" would imply a safety net that doesn't exist. If
@@ -44,8 +46,7 @@ pub const INTRO_BODY: &str = "qOS will create a cryptographic identity that belo
 /// The specific things the identity does today, without promising that every
 /// application operation already carries a signature.
 pub const INTRO_POINTS: &[&str] = &[
-    "It gives qOS collaboration features a stable identity for you.",
-    "It certifies this device so peers can recognise it during sharing.",
+    "It gives collaboration a stable identity for you and certifies this device to peers.",
     "It is created here, on this machine. Nothing is uploaded and no server holds a copy.",
     "It is not an account and has no password — there is nothing to log in to.",
 ];
@@ -54,23 +55,12 @@ pub const INTRO_POINTS: &[&str] = &[
 pub const NO_RECOVERY_TITLE: &str =
     "If you lose this device without a backup, this identity is gone";
 
-/// The plain truth, point by point.
-///
-/// Every line here is load-bearing. Read [`tests::copy_does_not_promise_recovery`]
-/// before editing any of them.
+/// The plain truth, without making people read an implementation tour before
+/// they can reach the backup step. Read [`tests::copy_does_not_promise_recovery`]
+/// before editing these statements.
 pub const NO_RECOVERY_POINTS: &[&str] = &[
-    "There is no recovery service. qOS has no backup code, no recovery phrase, and no \
-     support desk that can recreate your key.",
-    "Setup protects your personal root key in this login's key store and creates a separate, \
-     certified key for this device. Neither is uploaded.",
-    "If this device is lost or wiped and you kept no encrypted portable backup, the \
-     identity cannot be rebuilt. Not by you, and not by anyone else.",
-    "With no backup you would start again with a new identity and rejoin shared workspaces \
-     as a new participant. Existing workspace data remains, but the old identity cannot be \
-     used or proved by you again.",
-    "Setup can save an encrypted portable backup after creating the key. Keep that file and \
-     its passphrase separately; together they can sign as you and certify devices, so treat \
-     them like a key to your house.",
+    "There is no recovery service. No backup code and no recovery phrase can recreate this identity.",
+    "The encrypted backup offered next is the only recovery path. Keep its file and passphrase separately. Without it, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.",
 ];
 
 /// The acknowledgement, phrased as the consequence rather than "I agree" — the user confirms they understood a fact, not accepted terms.

@@ -3242,9 +3242,9 @@ fn tab_drag_out_to_new_group() -> Scenario {
             Action::Snapshot("01-before-drag"),
             Action::Drag {
                 // Pill centres inside the lone bootstrap Wide=800 group
-                // bar live around y=120 (topbar=40 + Column padding=24
+                // bar live around y=128 (topbar=48 + Column padding=24
                 // + workspace_view + strip_view chrome ≈ 56 → bar
-                // mid-y ≈ 120). Pill 1 (Files) sits at x≈424 with the
+                // mid-y ≈ 128). Pill 1 (Files) sits at x≈424 with the
                 // Wide group laid out from x≈224 + 24 padding + 14 px
                 // leading icon + ~6 px gap. The integration test
                 // `driver_drag_tab_out_creates_sibling_group` reads
@@ -3620,7 +3620,7 @@ fn strip_horizontal_scroll() -> Scenario {
              forward, then back — with the rail reading out where that is.",
         actions: vec![
             // Cursor over the active tile / strip area (well below the
-            // topbar's 40 px band and well to the right of the sidebar
+            // topbar's persistent band and well to the right of the sidebar
             // gutter).
             Action::MoveCursor(Point::new(900.0, 500.0)),
             Action::Snapshot("00-before"),

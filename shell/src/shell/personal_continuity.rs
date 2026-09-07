@@ -592,6 +592,9 @@ impl DeviceContinuationSnapshot {
                                     )
                                     .or_else(|| LaunchIntent::app(app_id.clone()).ok())
                                 }
+                                TileContent::LocalApp { app_id, .. } => {
+                                    LaunchIntent::app(app_id.clone()).ok()
+                                }
                                 // Peer windows are another person's live session,
                                 // not our resumable app instance.
                                 TileContent::PeerWindow { .. } => {
