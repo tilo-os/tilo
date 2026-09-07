@@ -311,6 +311,7 @@ fn parse_http_feed(bytes: &[u8]) -> Result<(Option<String>, Vec<Article>), Strin
             blocks,
             read: false,
             starred: false,
+            tags: Vec::new(),
         });
     }
     Ok((title, articles))
@@ -366,6 +367,7 @@ async fn fetch_gemini(url: &str) -> Result<(Option<String>, Vec<Article>), Strin
         blocks,
         read: false,
         starred: false,
+        tags: Vec::new(),
     };
     Ok((title, vec![article]))
 }

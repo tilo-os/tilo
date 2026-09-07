@@ -6,12 +6,13 @@
 //! ├── "folders"  (Map id -> { name, order, collapsed })
 //! ├── "feeds"    (Map id -> { title, url, site_url, folder, order, kind })
 //! └── "articles" (Map id -> { feed, title, author, url, published,
-//!                             summary, read, starred, content })
+//!                             summary, read, starred, tags{}, content })
 //! ```
 //!
 //! `read` / `starred` are plain scalar fields so concurrent toggles merge
 //! last-writer-wins per key. Subscriptions (folders/feeds) are likewise
-//! field-level. Article *content* is an opaque JSON blob (`content`) —
+//! field-level. Tags are a CRDT map keyed by lossless hex names, so edits to
+//! different labels merge independently. Article *content* is an opaque JSON blob (`content`) —
 //! fetched bodies are immutable, so there's no value in CRDT-splitting them.
 //! Selection / scroll / filter are per-peer and never touch the document.
 
@@ -169,11 +170,13 @@ impl FeedsDoc {
     pub fn upsert_article(doc: &mut AutoCommit, a: &Article) {
         let articles = Self::map_field(doc, "articles");
         let key = a.id.to_string();
-        let obj = match doc.get(&articles, key.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&articles, key.as_str(), ObjType::Map)
-                .expect("article map"),
+        let (obj, created) = match doc.get(&articles, key.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => (id, false),
+            _ => (
+                doc.put_object(&articles, key.as_str(), ObjType::Map)
+                    .expect("article map"),
+                true,
+            ),
         };
         ui::doc::put_if_changed(doc, &obj, "feed", a.feed_id.to_string());
         ui::doc::put_if_changed(doc, &obj, "title", a.title.as_str());
@@ -183,6 +186,11 @@ impl FeedsDoc {
         ui::doc::put_if_changed(doc, &obj, "summary", a.summary.as_str());
         ui::doc::put_if_changed(doc, &obj, "read", a.read);
         ui::doc::put_if_changed(doc, &obj, "starred", a.starred);
+        // Feed refreshes update cached content but must not erase labels a
+        // collaborator attached to an existing article.
+        if created {
+            Self::replace_tags(doc, &obj, &a.tags);
+        }
         let content = serde_json::to_string(&a.blocks).unwrap_or_default();
         ui::doc::put_if_changed(doc, &obj, "content", content.as_str());
     }
@@ -300,6 +308,46 @@ impl FeedsDoc {
         if let Some(obj) = Self::article_obj(doc, id) {
             let _ = doc.put(&obj, "starred", starred);
         }
+    }
+
+    pub fn set_tags(doc: &mut AutoCommit, id: Id, tags: &[String]) {
+        if let Some(obj) = Self::article_obj(doc, id) {
+            Self::replace_tags(doc, &obj, tags);
+        }
+    }
+
+    fn replace_tags(doc: &mut AutoCommit, article: &ObjId, tags: &[String]) {
+        let tags_obj = match doc.get(article, "tags") {
+            Ok(Some((Value::Object(ObjType::Map), obj))) => obj,
+            _ => match doc.put_object(article, "tags", ObjType::Map) {
+                Ok(obj) => obj,
+                Err(_) => return,
+            },
+        };
+        let desired = tags
+            .iter()
+            .map(|tag| (Self::tag_key(tag), tag.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let existing = doc.keys(&tags_obj).collect::<Vec<_>>();
+        for key in existing {
+            if !desired.contains_key(&key) {
+                let _ = doc.delete(&tags_obj, key);
+            }
+        }
+        for (key, tag) in desired {
+            // Rewriting retained tags records this replacement's intent and
+            // gives Automerge an operation to reconcile with a concurrent edit.
+            let _ = doc.put(&tags_obj, key, tag);
+        }
+    }
+
+    fn tag_key(tag: &str) -> String {
+        use std::fmt::Write as _;
+        let mut key = String::with_capacity(tag.len().saturating_mul(2));
+        for byte in tag.as_bytes() {
+            let _ = write!(key, "{byte:02x}");
+        }
+        key
     }
 
     pub fn set_folder_collapsed(doc: &mut AutoCommit, id: Id, collapsed: bool) {
@@ -440,6 +488,28 @@ impl FeedsDoc {
                 };
                 let content = Self::get_str(doc, &obj, "content");
                 let blocks: Vec<ContentBlock> = serde_json::from_str(&content).unwrap_or_default();
+                let tags = match doc.get(&obj, "tags") {
+                    Ok(Some((Value::Object(ObjType::Map), tags_obj))) => {
+                        let mut tags = doc
+                            .keys(&tags_obj)
+                            .filter_map(|key| match doc.get(&tags_obj, key) {
+                                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                                    ScalarValue::Str(tag) => Some(tag.to_string()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
+                        tags.sort();
+                        tags.dedup();
+                        tags
+                    }
+                    // Read legacy JSON-scalar documents; the next tag edit
+                    // migrates this field to the collaborative map form.
+                    _ => {
+                        serde_json::from_str(&Self::get_str(doc, &obj, "tags")).unwrap_or_default()
+                    }
+                };
                 store.articles.push(Article {
                     id,
                     feed_id,
@@ -451,6 +521,7 @@ impl FeedsDoc {
                     blocks,
                     read: Self::get_bool(doc, &obj, "read"),
                     starred: Self::get_bool(doc, &obj, "starred"),
+                    tags,
                 });
             }
         }
@@ -496,6 +567,7 @@ mod tests {
             ],
             read: false,
             starred: true,
+            tags: vec!["example".into()],
         };
         s.upsert_folder(folder);
         s.upsert_feed(feed);
@@ -537,6 +609,47 @@ mod tests {
         FeedsDoc::set_read(&mut doc, id, true);
         let loaded = FeedsDoc::load(&doc);
         assert!(loaded.articles[0].read);
+    }
+
+    #[test]
+    fn tag_edits_round_trip_and_refreshes_preserve_them() {
+        let mut doc = AutoCommit::new();
+        let store = sample_store();
+        FeedsDoc::seed(&mut doc, &store);
+        let id = store.articles[0].id;
+        FeedsDoc::set_tags(&mut doc, id, &["design".into(), "later".into()]);
+
+        let mut refreshed = store.articles[0].clone();
+        refreshed.title = "Updated upstream title".into();
+        refreshed.tags.clear();
+        FeedsDoc::upsert_article(&mut doc, &refreshed);
+
+        let loaded = FeedsDoc::load(&doc);
+        let article = loaded.article(id).expect("article survives refresh");
+        assert_eq!(article.title, "Updated upstream title");
+        assert_eq!(article.tags, ["design", "later"]);
+    }
+
+    #[test]
+    fn concurrent_distinct_tag_additions_merge() {
+        let mut alice = AutoCommit::new();
+        let store = sample_store();
+        FeedsDoc::seed(&mut alice, &store);
+        alice.commit();
+        alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        let mut bob = alice.fork();
+        bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+        let id = store.articles[0].id;
+
+        FeedsDoc::set_tags(&mut alice, id, &["example".into(), "design".into()]);
+        FeedsDoc::set_tags(&mut bob, id, &["example".into(), "later".into()]);
+        alice.merge(&mut bob).expect("replicas merge");
+
+        assert_eq!(
+            FeedsDoc::load(&alice).article(id).expect("article").tags,
+            ["design", "example", "later"],
+            "independent tag additions survive concurrent editing"
+        );
     }
 
     #[test]

@@ -135,6 +135,7 @@ enum RowRole {
     Smart(SmartKind),
     Folder { id: Id, collapsed: bool },
     Feed { id: Id, kind: FeedKind },
+    Tag { key: crate::model::TagKey },
 }
 
 #[derive(Clone, Debug)]
@@ -286,6 +287,23 @@ impl FeedsModal {
             210.0,
         )
     }
+
+    fn edit_tags(article_id: Id, tags: &[String]) -> Self {
+        let body = ModalBody::input(
+            "Add a few useful labels, separated by commas.",
+            "Article tags",
+            &tags.join(", "),
+            "design, research, later…",
+        );
+        Self::new(
+            ModalIntent::EditArticleTags { article_id },
+            "Edit article tags",
+            body,
+            "Save",
+            520.0,
+            236.0,
+        )
+    }
 }
 
 /// Live progress for an in-flight (or just-finished) "Refresh all". Shown as a
@@ -391,6 +409,10 @@ pub struct FeedsApp {
     feed_menu_target: Option<Id>,
     /// Menu actions aligned by index with `feed_menu`'s action rows.
     feed_menu_actions: Vec<FeedMenuAction>,
+    /// Pointer help for the topmost icon-only control. The application is
+    /// custom-painted, so it publishes the same labels used by its semantic
+    /// tree through the toolkit's shared tooltip host.
+    hover_tooltip: Option<String>,
     /// `--shots` staging: open the context menu over the first feed row once
     /// geometry is known (the single-frame renderer can't reach it via input).
     stage_menu_shot: bool,
@@ -402,6 +424,7 @@ pub struct FeedsApp {
     /// Gear button (toggles the popover) + popover hit rects, recomputed each
     /// draw. Empty when the reader has no article / the popover is closed.
     settings_btn_rect: Rect,
+    tags_btn_rect: Rect,
     settings_hits: Vec<(Rect, SettingsAction)>,
 
     // --- refresh progress + non-blocking drain --------------------------
@@ -506,10 +529,12 @@ impl FeedsApp {
             feed_menu: ContextMenu::new(),
             feed_menu_target: None,
             feed_menu_actions: Vec::new(),
+            hover_tooltip: None,
             stage_menu_shot: false,
             settings: ReadSettings::default(),
             show_reader_settings: false,
             settings_btn_rect: Rect::ZERO,
+            tags_btn_rect: Rect::ZERO,
             settings_hits: Vec::new(),
             refresh: RefreshState::default(),
             resource_refresh_invocation: None,
@@ -593,6 +618,11 @@ impl FeedsApp {
         if let Some(m) = self.modal.as_mut() {
             m.dialog.content_mut().set_value(url);
         }
+    }
+
+    /// Stage the selected article's real tag editor for screenshot review.
+    pub fn stage_tag_editor(&mut self) {
+        self.open_tag_editor();
     }
 
     /// Merge the bundled sample OPML into the store so a `--shots` capture shows
@@ -730,6 +760,12 @@ impl FeedsApp {
                 .store
                 .feed(id)
                 .map_or_else(|| "Feed".into(), |f| f.title.clone()),
+            Filter::Tag(key) => self
+                .store
+                .tags()
+                .into_iter()
+                .find(|tag| crate::model::tag_key(tag) == key)
+                .map_or_else(|| "Tag".into(), |tag| format!("#{tag}")),
         }
     }
 
@@ -836,6 +872,14 @@ impl FeedsApp {
         }
     }
 
+    fn open_tag_editor(&mut self) {
+        let Some(article) = self.selected.and_then(|id| self.store.article(id)) else {
+            return;
+        };
+        self.show_reader_settings = false;
+        self.modal = Some(FeedsModal::edit_tags(article.id, &article.tags));
+    }
+
     fn mark_all_read(&mut self, doc: &mut AutoCommit) {
         let ids = self.store.mark_all_read(self.filter);
         if !ids.is_empty() {
@@ -868,39 +912,127 @@ impl FeedsApp {
     /// The presentation context Ctrl+K needs to build the reader/folder/feed
     /// actions, derived from the mirrored store (which converges with the doc).
     pub(crate) fn feeds_resource_ctx(&self) -> FeedsResourceCtx {
+        self.feeds_resource_ctx_with_limits(
+            actions::MAX_CONTEXT_FOLDER_RESOURCES,
+            actions::MAX_CONTEXT_FEED_RESOURCES,
+            actions::MAX_CONTEXT_ARTICLE_RESOURCES,
+            actions::MAX_CONTEXT_TAG_RESOURCES,
+        )
+    }
+
+    /// Build only the resource context needed for one exact lazy address.
+    /// Lookup may scan the store's compact vectors, but allocations are bound
+    /// to one folder, tag, feed and/or article rather than the archive size.
+    pub(crate) fn feeds_resource_ctx_for(&self, id: &str) -> Option<FeedsResourceCtx> {
+        if id == "feeds.reader" || id == "feeds.reader-settings" {
+            return Some(self.feeds_resource_ctx());
+        }
+        let mut ctx = FeedsResourceCtx {
+            next_feed_order: self.store.next_feed_order(None),
+            next_folder_order: self
+                .store
+                .folders
+                .iter()
+                .map(|folder| folder.order)
+                .max()
+                .map_or(0, |order| order.saturating_add(1)),
+            settings: self.settings,
+            ..FeedsResourceCtx::default()
+        };
+        if let Some(raw) = id.strip_prefix("feeds.folder:") {
+            let folder_id = raw.parse::<Id>().ok()?;
+            let folder = self.store.folder(folder_id)?;
+            ctx.folders.push(actions::FolderRef {
+                id: folder.id,
+                name: folder.name.clone(),
+                collapsed: folder.collapsed,
+            });
+        } else if let Some(raw) = id.strip_prefix("feeds.subscription:") {
+            let feed_id = raw.parse::<Id>().ok()?;
+            let feed = self.store.feed(feed_id)?;
+            ctx.feeds.push(actions::FeedRef {
+                id: feed.id,
+                title: feed.title.clone(),
+                folder: feed.folder,
+                unread: self.store.unread_ids_for(Filter::Feed(feed.id)),
+                articles: Vec::new(),
+            });
+        } else if id.starts_with("feeds.tag:") {
+            let name = actions::tag_from_resource_id(id)?;
+            if !self.store.has_tag(&name) {
+                return None;
+            }
+            ctx.tags.push(actions::TagRef { name });
+        } else {
+            let article_id = id.strip_prefix("feeds.article:")?.parse::<Id>().ok()?;
+            let article = self.store.article(article_id)?;
+            let feed = self.store.feed(article.feed_id)?;
+            ctx.feeds.push(actions::FeedRef {
+                id: feed.id,
+                title: feed.title.clone(),
+                folder: feed.folder,
+                unread: Vec::new(),
+                articles: vec![actions::ArticleRef {
+                    id: article.id,
+                    title: article.title.clone(),
+                    read: article.read,
+                    starred: article.starred,
+                    tags: article.tags.clone(),
+                }],
+            });
+        }
+        Some(ctx)
+    }
+
+    fn feeds_resource_ctx_with_limits(
+        &self,
+        folder_limit: usize,
+        feed_limit: usize,
+        article_limit: usize,
+        tag_limit: usize,
+    ) -> FeedsResourceCtx {
         let folders = self
             .store
             .folders_sorted()
             .iter()
+            .take(folder_limit)
             .map(|f| actions::FolderRef {
                 id: f.id,
                 name: f.name.clone(),
                 collapsed: f.collapsed,
             })
             .collect();
-        let mut feeds: Vec<actions::FeedRef> = self
-            .store
-            .feeds
-            .iter()
-            .map(|f| actions::FeedRef {
-                id: f.id,
-                title: f.title.clone(),
-                unread: self.store.unread_ids_for(Filter::Feed(f.id)),
-                articles: self
+        let mut sorted_feeds = self.store.feeds.iter().take(feed_limit).collect::<Vec<_>>();
+        sorted_feeds.sort_by_key(|feed| feed.title.to_lowercase());
+        let mut remaining_articles = article_limit;
+        let feeds: Vec<actions::FeedRef> = sorted_feeds
+            .into_iter()
+            .take(feed_limit)
+            .map(|f| {
+                let articles = self
                     .store
                     .articles
                     .iter()
                     .filter(|article| article.feed_id == f.id)
+                    .take(remaining_articles)
                     .map(|article| actions::ArticleRef {
                         id: article.id,
                         title: article.title.clone(),
                         read: article.read,
                         starred: article.starred,
+                        tags: article.tags.clone(),
                     })
-                    .collect(),
+                    .collect::<Vec<_>>();
+                remaining_articles = remaining_articles.saturating_sub(articles.len());
+                actions::FeedRef {
+                    id: f.id,
+                    title: f.title.clone(),
+                    folder: f.folder,
+                    unread: self.store.unread_ids_for(Filter::Feed(f.id)),
+                    articles,
+                }
             })
             .collect();
-        feeds.sort_by_key(|f| f.title.to_lowercase());
         let next_folder_order = self
             .store
             .folders
@@ -911,6 +1043,12 @@ impl FeedsApp {
         FeedsResourceCtx {
             folders,
             feeds,
+            tags: self
+                .store
+                .tags_limited(tag_limit)
+                .into_iter()
+                .map(|name| actions::TagRef { name })
+                .collect(),
             unread: self.store.unread_ids_for(Filter::All),
             next_feed_order: self.store.next_feed_order(None),
             next_folder_order,
@@ -954,6 +1092,49 @@ impl FeedsApp {
                 self.bump_setting(doc, |s| s.theme = th);
             }
         }
+    }
+
+    fn refresh_hover_tooltip(&mut self) {
+        let p = self.last_mouse;
+        self.hover_tooltip = if self.modal.is_some() || self.feed_menu.is_open() {
+            None
+        } else if self.hamburger_rect.area() > 0.0 && self.hamburger_rect.contains(p) {
+            Some(
+                if self.sidebar.is_open(self.nav_layout()) {
+                    "Hide subscriptions (Esc)"
+                } else {
+                    "Show subscriptions"
+                }
+                .into(),
+            )
+        } else if self.back_rect.area() > 0.0 && self.back_rect.contains(p) {
+            Some("Back to articles (Esc)".into())
+        } else if self.settings_btn_rect.area() > 0.0 && self.settings_btn_rect.contains(p) {
+            Some("Reading settings".into())
+        } else if self.tags_btn_rect.area() > 0.0 && self.tags_btn_rect.contains(p) {
+            Some("Edit article tags (T)".into())
+        } else if let Some(button) = self
+            .toolbar_buttons
+            .iter()
+            .find(|button| button.rect.contains(p))
+        {
+            Some(button.tip.into())
+        } else if let Some(row) = self.list_rows.iter().find(|row| row.star_rect.contains(p)) {
+            self.store.article(row.id).map(|article| {
+                if article.starred {
+                    "Unstar article"
+                } else {
+                    "Star article"
+                }
+                .into()
+            })
+        } else if self.reader_open_rect.is_some_and(|rect| rect.contains(p)) {
+            Some("Open original article".into())
+        } else if self.reader_links.iter().any(|(rect, _)| rect.contains(p)) {
+            Some("Open link".into())
+        } else {
+            None
+        };
     }
 
     /// The font family the reader body uses, derived from the setting.
@@ -1307,6 +1488,21 @@ impl FeedsApp {
             ModalIntent::AddSubscription => self.subscribe(&value, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, &value, doc),
             ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
+            ModalIntent::EditArticleTags { article_id } => {
+                let tags = actions::normalize_tags(value.split(','));
+                if self.store.set_tags(article_id, tags.clone()) {
+                    self.perform_action(doc, &actions::set_article_tags_action(article_id, &tags));
+                    self.set_toast(if tags.is_empty() {
+                        "Removed article tags".to_string()
+                    } else {
+                        format!(
+                            "Saved {} tag{}",
+                            tags.len(),
+                            if tags.len() == 1 { "" } else { "s" }
+                        )
+                    });
+                }
+            }
         }
     }
 
@@ -1501,9 +1697,14 @@ impl FeedsApp {
                 let inset = sw * reveal;
                 self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
                 let content_x0 = r.x0 + inset;
-                self.toolbar_rect = Rect::new(content_x0, r.y0, r.x1, r.y0 + HEADER_H);
                 self.list_rect = Rect::new(content_x0, r.y0, content_x0 + LIST_W, r.y1);
                 self.reader_rect = Rect::new(content_x0 + LIST_W, r.y0, r.x1, r.y1);
+                self.toolbar_rect = Rect::new(
+                    self.list_rect.x0,
+                    self.list_rect.y0,
+                    self.list_rect.x1,
+                    self.list_rect.y0 + HEADER_H,
+                );
                 self.scrim_rect = Rect::ZERO;
                 // The hamburger only appears while the docked rail is collapsing
                 // / collapsed, so a hidden rail can always be summoned back.
@@ -1756,6 +1957,34 @@ impl FeedsApp {
             }
         }
 
+        let tags = self.store.tags_limited(actions::MAX_CONTEXT_TAG_RESOURCES);
+        if !tags.is_empty() {
+            y += 10.0;
+            push(
+                &mut rows,
+                &mut y,
+                24.0,
+                14.0,
+                "TAGS".into(),
+                0,
+                false,
+                RowRole::Section,
+            );
+            for tag in tags {
+                let key = crate::model::tag_key(&tag);
+                push(
+                    &mut rows,
+                    &mut y,
+                    SIDE_ROW_H - 2.0,
+                    18.0,
+                    format!("#{tag}"),
+                    self.store.count_for(Filter::Tag(key)),
+                    matches!(self.filter, Filter::Tag(active) if active == key),
+                    RowRole::Tag { key },
+                );
+            }
+        }
+
         self.sidebar_rows = rows;
     }
 
@@ -1800,15 +2029,19 @@ impl FeedsApp {
     }
 
     fn build_toolbar(&mut self) {
+        if self.single_pane() && self.detail_pushed {
+            self.toolbar_buttons.clear();
+            return;
+        }
         let mut buttons = Vec::new();
         let cy = self.toolbar_rect.y0 + HEADER_H / 2.0;
         let mut x = self.toolbar_rect.x1 - 28.0;
         let specs = [
-            (ToolbarAction::AddSubscription, "Add subscription"),
-            (ToolbarAction::Refresh, "Refresh all"),
-            (ToolbarAction::MarkAllRead, "Mark all read"),
-            (ToolbarAction::ImportOpml, "Import OPML"),
-            (ToolbarAction::ExportOpml, "Export OPML"),
+            (ToolbarAction::AddSubscription, "Add subscription (N)"),
+            (ToolbarAction::Refresh, "Refresh all (R)"),
+            (ToolbarAction::MarkAllRead, "Mark all read (A)"),
+            (ToolbarAction::ImportOpml, "Import OPML (I)"),
+            (ToolbarAction::ExportOpml, "Export OPML (E)"),
         ];
         for (action, tip) in specs {
             let rect = Rect::new(x - 18.0, cy - 18.0, x + 18.0, cy + 18.0);
@@ -1840,8 +2073,13 @@ impl FeedsApp {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = now;
-        self.sidebar.reconcile(self.nav_layout());
-        self.sidebar.tick(self.nav_layout(), dt);
+        let nav_layout = self.nav_layout();
+        self.sidebar.reconcile(nav_layout);
+        if theme.reduce_motion {
+            self.sidebar.snap(self.sidebar.is_open(nav_layout));
+        } else {
+            self.sidebar.tick(nav_layout, dt);
+        }
         self.recompute_geometry();
 
         // `--shots` staging: with the sidebar geometry now known, open the
@@ -2038,6 +2276,7 @@ impl FeedsApp {
             let presence = PresenceCtx::empty();
             m.dialog.draw(scene, t, tr, theme, &presence);
         }
+        self.refresh_hover_tooltip();
     }
 
     /// Draw the reading-settings gear in the reader header and, when open, the
@@ -2061,6 +2300,7 @@ impl FeedsApp {
         self.settings_hits.clear();
         if !has_article {
             self.settings_btn_rect = Rect::ZERO;
+            self.tags_btn_rect = Rect::ZERO;
             self.show_reader_settings = false;
             return;
         }
@@ -2074,6 +2314,38 @@ impl FeedsApp {
         let cy = self.reader_rect.y0 + HEADER_H / 2.0;
         let btn = Rect::new(bx1 - size, cy - size / 2.0, bx1, cy + size / 2.0);
         self.settings_btn_rect = btn;
+
+        let tag_btn = Rect::new(btn.x0 - size - 8.0, btn.y0, btn.x0 - 8.0, btn.y1);
+        self.tags_btn_rect = tag_btn;
+        let tag_shape = RoundedRect::from_rect(tag_btn, 9.0);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            if tag_btn.contains(self.last_mouse) {
+                c.neutral[3]
+            } else {
+                c.surfaces.raised
+            }
+            .with_alpha_factor(0.96),
+            None,
+            &tag_shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            t,
+            alpha(c.border_standard, 150),
+            None,
+            &tag_shape,
+        );
+        tr.draw_text_weighted(
+            scene,
+            "#",
+            16.0,
+            c.text_primary,
+            t * Affine::translate((tag_btn.center().x - 4.5, tag_btn.y0 + 7.0)),
+            None,
+            TextWeight::Semibold,
+        );
 
         let shape = RoundedRect::from_rect(btn, 9.0);
         let hovered = btn.contains(self.last_mouse);
@@ -2394,6 +2666,10 @@ impl FeedsApp {
             self.show_reader_settings = !self.show_reader_settings;
             return true;
         }
+        if self.tags_btn_rect.area() > 0.0 && self.tags_btn_rect.contains(p) {
+            self.open_tag_editor();
+            return true;
+        }
         // Open popover: apply a control, or dismiss on an outside click.
         if self.show_reader_settings {
             for (rect, action) in self.settings_hits.clone() {
@@ -2443,6 +2719,7 @@ impl FeedsApp {
                     }
                 }
                 RowRole::Feed { id, .. } => self.set_filter(Filter::Feed(id)),
+                RowRole::Tag { key } => self.set_filter(Filter::Tag(key)),
                 RowRole::Section => navigated = false,
             }
             // On a narrow window, navigating from the overlay sidebar closes it
@@ -2685,7 +2962,7 @@ fn draw_sidebar(
                     dot_color,
                 );
             }
-            RowRole::Section => {}
+            RowRole::Tag { .. } | RowRole::Section => {}
         }
 
         // Badge (right-aligned), then label clipped to the remaining width.
@@ -3267,6 +3544,7 @@ fn draw_reader(
         }
         byline.push_str(&date);
     }
+    let byline_w = measure_w(tr, &byline, 13.0);
     if !byline.is_empty() {
         tr.draw_text(
             scene,
@@ -3281,6 +3559,13 @@ fn draw_reader(
     if !a.url.is_empty() {
         let label = "Open original";
         let lw = measure_w(tr, label, 13.0);
+        // A compact reader cannot fit author/date and the trailing action on
+        // one line. Give the action its own line instead of painting the two
+        // strings through each other; the full-width reader keeps the tighter
+        // single-line treatment.
+        if !byline.is_empty() && byline_w + lw + 42.0 > f64::from(content_w) {
+            y += 22.0;
+        }
         let ox = rect.x1 - pad - lw - 22.0;
         tr.draw_text(
             scene,
@@ -3300,6 +3585,38 @@ fn draw_reader(
         open_rect = Some(Rect::new(ox - 4.0, y - 4.0, rect.x1 - pad + 4.0, y + 20.0));
     }
     y += 24.0;
+    if !a.tags.is_empty() {
+        let right = rect.x1 - pad;
+        let mut chip_x = content_x;
+        let mut chip_y = y;
+        for tag in a.tags.iter().take(8) {
+            let label = format!("#{tag}");
+            let chip_w = measure_w(tr, &label, 11.5) + 18.0;
+            if chip_x > content_x && chip_x + chip_w > right {
+                chip_x = content_x;
+                chip_y += 28.0;
+            }
+            let chip = Rect::new(chip_x, chip_y - 3.0, chip_x + chip_w, chip_y + 20.0);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                palette.code_bg,
+                None,
+                &RoundedRect::from_rect(chip, 7.0),
+            );
+            tr.draw_text_weighted(
+                scene,
+                &label,
+                11.5,
+                palette.accent,
+                t * Affine::translate((chip_x + 9.0, chip_y + 2.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            chip_x += chip_w + 7.0;
+        }
+        y = chip_y + 29.0;
+    }
     hline(scene, t, content_x, rect.x1 - pad, y, palette.rule);
     y += 22.0;
 
@@ -3774,6 +4091,10 @@ impl Widget for FeedsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -3820,6 +4141,19 @@ impl Widget for FeedsApp {
                 if self.single_pane() {
                     self.detail_pushed = true;
                 }
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealTag { tag },
+            ) => {
+                let tag = actions::normalize_tags([tag.as_str()])
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "invalid empty tag".to_string())?;
+                if !self.store.has_tag(&tag) {
+                    return Err("tag no longer exists".into());
+                }
+                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
             }
             _ => return Ok(false),
         }
@@ -4039,7 +4373,7 @@ impl Widget for FeedsApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key(key_event, state, handled);
+                self.handle_key(key_event, *modifiers, state, handled);
             }
             _ => {}
         }
@@ -4053,7 +4387,44 @@ impl Widget for FeedsApp {
         self.rect
     }
 
+    fn tooltip(&self) -> Option<&str> {
+        self.hover_tooltip.as_deref()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        let interactive = (self.hamburger_rect.area() > 0.0 && self.hamburger_rect.contains(point))
+            || (self.back_rect.area() > 0.0 && self.back_rect.contains(point))
+            || (self.settings_btn_rect.area() > 0.0 && self.settings_btn_rect.contains(point))
+            || (self.tags_btn_rect.area() > 0.0 && self.tags_btn_rect.contains(point))
+            || self
+                .toolbar_buttons
+                .iter()
+                .any(|button| button.rect.contains(point))
+            || self
+                .list_rows
+                .iter()
+                .any(|row| row.star_rect.contains(point))
+            || self
+                .reader_open_rect
+                .is_some_and(|rect| rect.contains(point))
+            || self
+                .reader_links
+                .iter()
+                .any(|(rect, _)| rect.contains(point));
+        interactive.then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one semantic mirror covers the custom-painted toolbar, subscription tree, article list and reader document"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
+        if let Some(modal) = self.modal.as_ref() {
+            return modal.dialog.accessibility();
+        }
+        if self.feed_menu.is_open() {
+            return self.feed_menu.accessibility();
+        }
         let mut toolbar: Vec<_> = self
             .toolbar_buttons
             .iter()
@@ -4098,9 +4469,118 @@ impl Widget for FeedsApp {
                     .with_action_target("feeds.back"),
             );
         }
+        if self.settings_btn_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Reading settings")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.show_reader_settings),
+                    )
+                    .with_bounds(self.settings_btn_rect)
+                    .with_action_target("feeds.reader-settings"),
+            );
+        }
+        if self.tags_btn_rect.area() > 0.0 {
+            toolbar.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Edit article tags")
+                    .with_description("Add or remove comma-separated labels. Shortcut T")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.tags_btn_rect)
+                    .with_action_target("feeds.edit-tags"),
+            );
+        }
+        if self.show_reader_settings {
+            toolbar.extend(
+                self.settings_hits
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (rect, action))| {
+                        let (name, checked) = match action {
+                            SettingsAction::FontDec => {
+                                ("Decrease reader text size".to_string(), None)
+                            }
+                            SettingsAction::FontInc => {
+                                ("Increase reader text size".to_string(), None)
+                            }
+                            SettingsAction::SetFont(font) => (
+                                format!("Use {} reader font", font.label()),
+                                Some(self.settings.font == *font),
+                            ),
+                            SettingsAction::SetTheme(read_theme) => (
+                                format!("Use {} reader paper", read_theme.label()),
+                                Some(self.settings.theme == *read_theme),
+                            ),
+                        };
+                        let role = if checked.is_some() {
+                            Role::RadioButton
+                        } else {
+                            Role::Button
+                        };
+                        let mut state = AccessState::new().focusable(true);
+                        if let Some(checked) = checked {
+                            state = state.checked(checked);
+                        }
+                        AccessNode::new(role)
+                            .with_name(name)
+                            .with_state(state)
+                            .with_bounds(*rect)
+                            .with_action_target(format!("feeds.setting:{index}"))
+                    }),
+            );
+        }
+        let sidebar = self
+            .sidebar_rows
+            .iter()
+            .filter(|row| row.rect.intersect(self.sidebar_rect).area() > 0.0)
+            .map(|row| match row.role {
+                RowRole::Section => AccessNode::new(Role::Heading { level: 2 })
+                    .with_name(row.label.clone())
+                    .with_bounds(row.rect),
+                RowRole::Smart(kind) => {
+                    let target = match kind {
+                        SmartKind::All => "all",
+                        SmartKind::Unread => "unread",
+                        SmartKind::Starred => "starred",
+                    };
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(row.label.clone())
+                        .with_description(format!("{} unread", row.badge))
+                        .with_state(AccessState::new().focusable(true).checked(row.selected))
+                        .with_bounds(row.rect)
+                        .with_action_target(format!("feeds.filter:{target}"))
+                }
+                RowRole::Folder { id, collapsed } => AccessNode::new(Role::TreeItem)
+                    .with_name(row.label.clone())
+                    .with_description(format!("{} unread", row.badge))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(row.selected)
+                            .expanded(!collapsed),
+                    )
+                    .with_bounds(row.rect)
+                    .with_action_target(format!("feeds.folder:{id}")),
+                RowRole::Feed { id, .. } => AccessNode::new(Role::TreeItem)
+                    .with_name(row.label.clone())
+                    .with_description(format!("{} unread", row.badge))
+                    .with_state(AccessState::new().focusable(true).selected(row.selected))
+                    .with_bounds(row.rect)
+                    .with_action_target(format!("feeds.feed:{id}")),
+                RowRole::Tag { key } => AccessNode::new(Role::TreeItem)
+                    .with_name(row.label.clone())
+                    .with_description(format!("{} articles", row.badge))
+                    .with_state(AccessState::new().focusable(true).selected(row.selected))
+                    .with_bounds(row.rect)
+                    .with_action_target(format!("feeds.tag-filter:{key}")),
+            })
+            .collect();
         let articles = self
             .list_rows
             .iter()
+            .filter(|row| row.rect.intersect(self.list_rect_content()).area() > 0.0)
             .filter_map(|row| {
                 let article = self.store.article(row.id)?;
                 Some(
@@ -4131,11 +4611,61 @@ impl Widget for FeedsApp {
                 .with_name("Feed actions")
                 .with_bounds(self.toolbar_rect)
                 .with_children(toolbar),
+            AccessNode::new(Role::Tree)
+                .with_name("Subscriptions")
+                .with_bounds(self.sidebar_rect)
+                .with_children(sidebar),
             AccessNode::new(Role::List)
                 .with_name("Articles")
                 .with_bounds(self.list_rect)
                 .with_children(articles),
         ];
+        if let Some(article) = self.selected.and_then(|id| self.store.article(id)) {
+            let mut reader_children = Vec::new();
+            reader_children
+                .push(AccessNode::new(Role::Heading { level: 1 }).with_name(article.title.clone()));
+            if !article.author.is_empty() {
+                reader_children
+                    .push(AccessNode::new(Role::StaticText).with_name(article.author.clone()));
+            }
+            if !article.tags.is_empty() {
+                reader_children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(format!("Tags: {}", article.tags.join(", "))),
+                );
+            }
+            reader_children.extend(article.blocks.iter().enumerate().map(|(index, block)| {
+                let role = match block.kind {
+                    BlockKind::Heading1 => Role::Heading { level: 1 },
+                    BlockKind::Heading2 => Role::Heading { level: 2 },
+                    BlockKind::Heading3 => Role::Heading { level: 3 },
+                    BlockKind::Link => Role::Link,
+                    _ => Role::Paragraph,
+                };
+                let mut node = AccessNode::new(role)
+                    .with_name(block.text.clone())
+                    .with_hashed_key((article.id, index));
+                if role == Role::Link && block.href.is_some() {
+                    node = node.with_action_target(format!("feeds.reader-link:{index}"));
+                }
+                node
+            }));
+            if self.reader_open_rect.is_some() && !article.url.is_empty() {
+                reader_children.push(
+                    AccessNode::new(Role::Link)
+                        .with_name("Open original article")
+                        .with_action_target("feeds.open-original"),
+                );
+            }
+            children.push(
+                AccessNode::new(Role::Document)
+                    .with_name(article.title.clone())
+                    .with_description("Selected feed article")
+                    .with_state(AccessState::new().read_only(true))
+                    .with_bounds(self.reader_rect)
+                    .with_children(reader_children),
+            );
+        }
         if self.refresh.visible() {
             children.push(
                 AccessNode::new(Role::ProgressBar)
@@ -4154,6 +4684,10 @@ impl Widget for FeedsApp {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one routing table keeps every synthetic Feeds node on the same existing interaction and action paths"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -4161,7 +4695,16 @@ impl Widget for FeedsApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
-        if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
+        if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
+            return true;
+        }
+        if !matches!(
+            action,
+            A11yAction::Activate
+                | A11yAction::ToggleCheck
+                | A11yAction::Expand
+                | A11yAction::Collapse
+        ) {
             return false;
         }
         match target {
@@ -4172,6 +4715,98 @@ impl Widget for FeedsApp {
             "feeds.toolbar:export" => self.export_opml(),
             "feeds.sidebar" => self.sidebar.toggle(self.nav_layout()),
             "feeds.back" => self.show_master(),
+            "feeds.reader-settings" => self.show_reader_settings = !self.show_reader_settings,
+            "feeds.edit-tags" => self.open_tag_editor(),
+            "feeds.filter:all" => self.set_filter(Filter::All),
+            "feeds.filter:unread" => self.set_filter(Filter::Unread),
+            "feeds.filter:starred" => self.set_filter(Filter::Starred),
+            "feeds.open-original" => self.open_selected_link(),
+            _ if target.starts_with("feeds.setting:") => {
+                let Some(index) = target
+                    .strip_prefix("feeds.setting:")
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some((_, setting)) = self.settings_hits.get(index).copied() else {
+                    return false;
+                };
+                self.apply_settings_action(setting, state);
+            }
+            _ if target.starts_with("feeds.folder:") => {
+                let Some(id) = target
+                    .strip_prefix("feeds.folder:")
+                    .and_then(|value| value.parse::<Id>().ok())
+                else {
+                    return false;
+                };
+                if self.store.folder(id).is_none() {
+                    return false;
+                }
+                match action {
+                    A11yAction::Expand => {
+                        if self.store.folder(id).is_some_and(|folder| folder.collapsed) {
+                            self.toggle_folder(id, state);
+                        }
+                    }
+                    A11yAction::Collapse => {
+                        if self
+                            .store
+                            .folder(id)
+                            .is_some_and(|folder| !folder.collapsed)
+                        {
+                            self.toggle_folder(id, state);
+                        }
+                    }
+                    _ => self.set_filter(Filter::Folder(id)),
+                }
+            }
+            _ if target.starts_with("feeds.feed:") => {
+                let Some(id) = target
+                    .strip_prefix("feeds.feed:")
+                    .and_then(|value| value.parse::<Id>().ok())
+                else {
+                    return false;
+                };
+                if self.store.feed(id).is_none() {
+                    return false;
+                }
+                self.set_filter(Filter::Feed(id));
+            }
+            _ if target.starts_with("feeds.tag-filter:") => {
+                let Some(key) = target
+                    .strip_prefix("feeds.tag-filter:")
+                    .and_then(|value| value.parse::<crate::model::TagKey>().ok())
+                else {
+                    return false;
+                };
+                if !self.store.articles.iter().any(|article| {
+                    article
+                        .tags
+                        .iter()
+                        .any(|tag| crate::model::tag_key(tag) == key)
+                }) {
+                    return false;
+                }
+                self.set_filter(Filter::Tag(key));
+            }
+            _ if target.starts_with("feeds.reader-link:") => {
+                let Some(index) = target
+                    .strip_prefix("feeds.reader-link:")
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some(href) = self
+                    .selected
+                    .and_then(|id| self.store.article(id))
+                    .and_then(|article| article.blocks.get(index))
+                    .and_then(|block| block.href.clone())
+                else {
+                    return false;
+                };
+                self.open_url(&href);
+            }
             _ if target.starts_with("feeds.article:") => {
                 let Some(raw_id) = target.strip_prefix("feeds.article:") else {
                     return false;
@@ -4225,6 +4860,7 @@ impl FeedsApp {
     fn handle_key(
         &mut self,
         key_event: &winit::event::KeyEvent,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
@@ -4254,6 +4890,10 @@ impl FeedsApp {
             }
         }
 
+        let modified = {
+            let modifiers = modifiers.state();
+            modifiers.control_key() || modifiers.super_key() || modifiers.alt_key()
+        };
         match &key_event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 self.move_selection(1, state);
@@ -4263,7 +4903,7 @@ impl FeedsApp {
                 self.move_selection(-1, state);
                 *handled = true;
             }
-            Key::Character(s) => {
+            Key::Character(s) if !modified => {
                 let ch = s.as_str();
                 match ch {
                     "j" => {
@@ -4282,6 +4922,10 @@ impl FeedsApp {
                         if let Some(id) = self.selected {
                             self.toggle_star(id, state);
                         }
+                        *handled = true;
+                    }
+                    "t" => {
+                        self.open_tag_editor();
                         *handled = true;
                     }
                     "r" => {
@@ -4626,6 +5270,7 @@ mod tests {
             blocks: vec![],
             read: false,
             starred: false,
+            tags: Vec::new(),
         };
         let before = a.store.articles.len();
         tx.send(FetchResult::Articles {
@@ -4723,6 +5368,7 @@ mod tests {
                     ],
                     read: false,
                     starred: false,
+                    tags: Vec::new(),
                 });
                 total_new += 1;
             }
@@ -4970,6 +5616,105 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_mirrors_navigation_reader_and_reading_controls() {
+        fn has_target(node: &AccessNode, target: &str) -> bool {
+            node.action_target.as_deref() == Some(target)
+                || node.children.iter().any(|child| has_target(child, target))
+        }
+
+        let mut a = app();
+        a.force_reader_settings_open();
+        let mut doc = AutoCommit::new();
+        let mut text = TextRenderer::new();
+        let _ = headless_frame(&mut a, &mut doc, &mut text);
+        let tree = a.accessibility().expect("feeds exports a semantic window");
+        assert!(tree.children.iter().any(|node| node.role == Role::Tree));
+        assert!(
+            tree.children.iter().any(|node| node.role == Role::Document),
+            "the custom-painted article body is exposed as a document"
+        );
+        assert!(has_target(&tree, "feeds.filter:unread"));
+        assert!(has_target(&tree, "feeds.reader-settings"));
+        assert!(
+            tree.children
+                .iter()
+                .flat_map(|node| &node.children)
+                .any(|node| node
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| { target.starts_with("feeds.setting:") })),
+            "the open settings popover exposes its real controls"
+        );
+    }
+
+    #[test]
+    fn icon_only_controls_publish_teaching_tooltips() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let mut text = TextRenderer::new();
+        let _ = headless_frame(&mut a, &mut doc, &mut text);
+        let refresh = a
+            .toolbar_buttons
+            .iter()
+            .find(|button| button.action == ToolbarAction::Refresh)
+            .expect("refresh button")
+            .rect;
+        a.last_mouse = refresh.center();
+        a.refresh_hover_tooltip();
+        assert_eq!(Widget::tooltip(&a), Some("Refresh all (R)"));
+        assert_eq!(
+            Widget::cursor_shape(&a, refresh.center()),
+            Some(winit::window::CursorIcon::Pointer)
+        );
+    }
+
+    #[test]
+    fn article_tag_editor_uses_the_canonical_action_and_allows_clearing() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let id = a.selected.expect("demo selects an article");
+
+        a.open_tag_editor();
+        assert_eq!(
+            a.modal.as_ref().map(|modal| modal.intent),
+            Some(ModalIntent::EditArticleTags { article_id: id })
+        );
+        if let Some(modal) = a.modal.as_mut() {
+            modal
+                .dialog
+                .content_mut()
+                .set_value("Design, Later, design");
+        }
+        a.submit_modal(&mut doc);
+        assert_eq!(
+            a.store.article(id).expect("article").tags,
+            ["design", "later"]
+        );
+        assert_eq!(
+            FeedsDoc::load(&doc)
+                .article(id)
+                .expect("persisted article")
+                .tags,
+            ["design", "later"]
+        );
+
+        a.open_tag_editor();
+        if let Some(modal) = a.modal.as_mut() {
+            modal.dialog.content_mut().set_value("");
+        }
+        a.submit_modal(&mut doc);
+        assert!(a.store.article(id).expect("article").tags.is_empty());
+        assert!(
+            FeedsDoc::load(&doc)
+                .article(id)
+                .expect("persisted article")
+                .tags
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn compact_navigation_is_grouped_with_keyed_toolbar_actions() {
         let mut a = app();
         lay_out(&mut a, 390.0, 844.0);
@@ -4996,6 +5741,69 @@ mod tests {
                 .iter()
                 .any(|node| { node.action_target.as_deref() == Some("feeds.sidebar") })
         );
+    }
+
+    #[test]
+    fn exact_lazy_context_contains_only_the_addressed_archive_item() {
+        let mut a = app();
+        let feed_template = a.store.feeds[0].clone();
+        let article_template = a.store.articles[0].clone();
+        let mut target = article_template.id;
+        for index in 0..200_u128 {
+            let mut feed = feed_template.clone();
+            feed.id = Uuid::from_u128(50_000 + index);
+            feed.title = format!("Archive feed {index}");
+            let mut article = article_template.clone();
+            article.id = Uuid::from_u128(60_000 + index);
+            article.feed_id = feed.id;
+            article.tags = vec![format!("archive-{index}")];
+            target = article.id;
+            a.store.feeds.push(feed);
+            a.store.articles.push(article);
+        }
+
+        let article_ctx = a
+            .feeds_resource_ctx_for(&actions::article_resource_id(target))
+            .expect("late article resolves");
+        assert_eq!(article_ctx.feeds.len(), 1);
+        assert_eq!(article_ctx.feeds[0].articles.len(), 1);
+        assert_eq!(article_ctx.feeds[0].articles[0].id, target);
+        assert!(article_ctx.folders.is_empty());
+        assert!(article_ctx.tags.is_empty());
+        assert!(article_ctx.unread.is_empty());
+
+        let tag_id = actions::tag_resource_id("archive-199");
+        let tag_ctx = a
+            .feeds_resource_ctx_for(&tag_id)
+            .expect("late tag resolves");
+        assert_eq!(tag_ctx.tags.len(), 1);
+        assert!(tag_ctx.feeds.is_empty());
+        assert!(tag_ctx.folders.is_empty());
+        assert!(
+            a.feeds_resource_ctx_for(&format!("feeds.tag:{}", "aa".repeat(193)))
+                .is_none(),
+            "oversized hostile ids are rejected before materialization"
+        );
+    }
+
+    #[test]
+    fn reduced_motion_settles_the_sidebar_in_one_frame() {
+        let mut a = app();
+        lay_out(&mut a, 390.0, 844.0);
+        a.sidebar.snap(false);
+        a.sidebar.toggle(SplitLayout::Overlay);
+        assert!(a.sidebar.is_animating(SplitLayout::Overlay));
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        a.paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark().with_reduce_motion(true),
+        );
+        assert!(!a.sidebar.is_animating(SplitLayout::Overlay));
+        assert!(a.sidebar.is_open(SplitLayout::Overlay));
     }
 
     // --- responsive layout ------------------------------------------------
@@ -5701,6 +6509,7 @@ mod tests {
             )],
             read: false,
             starred: false,
+            tags: Vec::new(),
         };
         tx.send(FetchResult::Articles {
             feed_id,
