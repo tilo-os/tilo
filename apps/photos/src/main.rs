@@ -144,9 +144,16 @@ fn render_scenario(
 
     // Two ordinary frames settle responsive toolbar labels: the first gets the
     // root bounds and the second rebuilds wide labels as icon-only where
-    // necessary. Neither frame changes the viewer's contain-fit zoom or pan.
+    // necessary. A library shot gets a few more *offscreen-only* frames so
+    // its real background thumbnail worker can settle; the live UI never
+    // waits for a decode.
+    let settle_frames = if matches!(scenario, "library" | "album-manage") {
+        24
+    } else {
+        2
+    };
     let mut scene = Scene::new();
-    for _ in 0..2 {
+    for _ in 0..settle_frames {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -191,6 +198,9 @@ fn render_scenario(
             &presence,
             &permission,
         );
+        if settle_frames > 2 {
+            std::thread::sleep(std::time::Duration::from_millis(6));
+        }
     }
 
     widget.draw_overlay(
