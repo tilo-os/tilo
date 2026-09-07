@@ -14,7 +14,7 @@
 //! bespoke rendering. The action button label + click path are wired by the
 //! caller: this fn is pure composition.
 
-use ui::widget::{Button, Column, Container, Row, Text, Widget};
+use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -48,22 +48,16 @@ pub fn store_card(
 ) -> Box<dyn Widget> {
     // Left column: name + description. Secondary text reads its dim tone
     // from the live theme so it stays legible in light and dark.
-    // The text column grows to fill the space between the icon and the
-    // action buttons (`fill_remaining_height` gives it `flex_grow: 1`,
-    // `flex_basis: 0`), so the buttons sit on the right of the same row
-    // rather than being pushed off it by a full-width text block.
-    let text_col = Column::new()
+    // A flex-grow Container owns the width beside the fixed artwork. This is
+    // important because a bare Column deliberately claims the full row width.
+    let identity = Column::new()
         .with_no_padding()
-        .with_fill_remaining_height()
+        .with_intrinsic_height()
+        .with_gap(4.0)
         .push(Box::new(Text::new(&item.name).with_size(15.0)))
         .push(Box::new(
             Text::new(&badge_line(item))
                 .with_size(11.0)
-                .with_color(theme.text_dim),
-        ))
-        .push(Box::new(
-            Text::new(&item.description)
-                .with_size(12.0)
                 .with_color(theme.text_dim),
         ));
 
@@ -84,40 +78,85 @@ pub fn store_card(
     if let Some(binding) = detail_binding {
         details = details.on_action(binding);
     }
+    let details = details
+        .ghost()
+        .fit_content(40.0)
+        .tooltip(format!("Show details for {}", item.name));
+    let action_btn = action_btn.fit_content(40.0);
+
     let content: Box<dyn Widget> = if compact {
         Box::new(
             Column::new()
+                .with_no_padding()
                 .with_intrinsic_height()
+                .with_gap(12.0)
                 .push(Box::new(
                     Row::new()
                         .no_wrap()
                         .push(icon_artwork(item, images))
-                        .push(Box::new(text_col)),
+                        .push(Box::new(
+                            Container::new()
+                                .with_no_padding()
+                                .with_flex_grow()
+                                .with_child(Box::new(identity)),
+                        )),
+                ))
+                .push(Box::new(
+                    Text::new(&item.description)
+                        .with_size(12.0)
+                        .with_color(theme.text_dim),
                 ))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            details
-                                .ghost()
-                                .tooltip(format!("Show details for {}", item.name)),
-                        ))
+                        .no_wrap()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(details))
                         .push(Box::new(action_btn)),
                 )),
         )
     } else {
         Box::new(
-            Row::new()
-                .push(icon_artwork(item, images))
-                .push(Box::new(text_col))
+            Column::new()
+                .with_no_padding()
+                .with_gap(12.0)
                 .push(Box::new(
-                    details
-                        .ghost()
-                        .tooltip(format!("Show details for {}", item.name)),
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(super::Artwork::new(
+                            images,
+                            item.icon_url.as_deref(),
+                            &item.name,
+                            64.0,
+                            64.0,
+                        )))
+                        .push(Box::new(
+                            Container::new()
+                                .with_no_padding()
+                                .with_flex_grow()
+                                .with_child(Box::new(identity)),
+                        )),
                 ))
-                .push(Box::new(action_btn)),
+                .push(Box::new(
+                    Text::new(&item.description)
+                        .with_size(13.0)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(details))
+                        .push(Box::new(action_btn)),
+                )),
         )
     };
-    Box::new(Container::new().with_background().with_child(content))
+    let card = Container::new().with_background().with_child(content);
+    if compact {
+        Box::new(card)
+    } else {
+        Box::new(card.filling())
+    }
 }
 
 /// Bounded remote icon with the shared deterministic initial-art fallback.
