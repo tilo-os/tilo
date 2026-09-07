@@ -261,6 +261,10 @@ pub struct MapsApp {
     /// accidentally begin an app -> shell ownership handoff.
     navigation_end_rect: Rect,
     navigation_end_hovered: bool,
+    /// Effective accessibility motion policy supplied by the host. Floating
+    /// handoff geometry already draws settled under reduced motion; retaining
+    /// this bit also stops its decorative timer from requesting idle frames.
+    motion_reduced: bool,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     floating_surface_bounds: Rect,
@@ -309,6 +313,19 @@ impl MapsApp {
     fn navigation_rect(&self) -> Rect {
         self.navigation_placement
             .rect(self.rect, self.desktop_floating_bounds())
+    }
+
+    /// The route card is useful over the map, but duplicates the route summary
+    /// and next steps inside the narrow navigation drawer. Hiding it while that
+    /// drawer is open avoids covering the fields the user is actively editing.
+    fn navigation_surface_visible_in_app(&self) -> bool {
+        self.model.route.is_some()
+            && !self.navigation_placement.is_return_pending()
+            && matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::App { .. }
+            )
+            && !(self.overlay_mode() && self.nav_open)
     }
 
     fn desktop_floating_bounds(&self) -> Rect {
@@ -592,6 +609,7 @@ impl MapsApp {
             navigation_drag_handle: Rect::ZERO,
             navigation_end_rect: Rect::ZERO,
             navigation_end_hovered: false,
+            motion_reduced: false,
             floating_surface_bounds: Rect::ZERO,
         }
     }
@@ -2489,15 +2507,20 @@ impl MapsApp {
                 },
             );
         }
-        if self.model.route.is_some()
-            && ((!self.navigation_placement.is_return_pending()
-                && matches!(
-                    self.navigation_placement.attachment(),
-                    ui::floating_surface::Attachment::App { .. }
-                ))
-                || !self.navigation_placement.is_desktop_covered())
-        {
+        let uncovered_desktop_copy = self.model.route.is_some()
+            && matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            )
+            && !self.navigation_placement.is_desktop_covered();
+        if self.navigation_surface_visible_in_app() || uncovered_desktop_copy {
             self.draw_navigation_surface(scene, t, tr, theme);
+        } else if self.overlay_mode() && self.nav_open {
+            // Do not leave stale hit/a11y geometry behind when the drawer
+            // suppresses the attached card on this frame.
+            self.navigation_drag_handle = Rect::ZERO;
+            self.navigation_end_rect = Rect::ZERO;
+            self.navigation_end_hovered = false;
         }
 
         // The ⋯ overflow button (attribution / offline / licenses) sits bottom-
@@ -4576,6 +4599,15 @@ impl MapsApp {
             },
         ];
         targets.retain(|target| target.rect.area() > 0.0);
+        if self.navigation_end_rect.area() > 0.0 && self.model.route.is_some() {
+            targets.push(AccessibilityTarget {
+                rect: self.navigation_end_rect,
+                label: "End navigation".to_string(),
+                target: "maps.navigation.end".to_string(),
+                role: Role::Button,
+                state: AccessState::new().focusable(true),
+            });
+        }
         targets.extend(self.click_targets.iter().filter_map(|(rect, hit)| {
             self.accessibility_target_for_hit(hit)
                 .and_then(|mut target| {
@@ -4585,6 +4617,12 @@ impl MapsApp {
                     })
                 })
         }));
+        if self.overlay_mode() && self.nav_open {
+            let panel = self.panel_rect();
+            targets.retain(|target| {
+                target.target == "maps.navigation" || panel.contains(target.rect.center())
+            });
+        }
         targets
     }
 }
@@ -5060,83 +5098,38 @@ impl Widget for MapsApp {
         if resources.is_empty() {
             resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
         }
-        let Some(root) = resources.first_mut() else {
-            return resources;
-        };
-        if let Ok(spec) = ActionSpec::operation(
-            "locate",
-            "Use my location",
-            OperationKind::Effect,
-            "maps.locate",
-            &"",
-        ) {
-            root.actions.push(spec.with_contract(ActionContract {
-                availability: if !self.online {
-                    Availability::Unavailable {
-                        code: "location_service_offline".into(),
-                        reason: "The location service is unavailable in this session".into(),
-                    }
-                } else if self.location_rx.is_none() {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "request_in_progress".into(),
-                        reason: "A location request is already in progress".into(),
-                    }
-                },
-                permission: PermissionRequirement::Read,
-                retry: RetryPolicy::AtMostOnce,
-                execution: ExecutionMode::Background { cancellable: false },
-                discovery: DiscoveryScope::Launchable,
-                result: ResultSpec::Job,
-                ..ActionContract::default()
-            }));
-        }
-        if let Ok(spec) = ActionSpec::operation(
-            "toggle-traffic",
-            if self.map_controls.traffic_enabled() {
-                "Hide traffic"
-            } else {
-                "Show traffic"
-            },
-            OperationKind::View,
-            "maps.toggle-traffic",
-            &"",
-        ) {
-            root.actions
-                .push(spec.with_contract(ActionContract::view()));
-        }
-        // Saved places and committed search results are both first-class map
-        // resources. Give each the same agent-drivable Open/Directions view
-        // operations, keyed by its stable place id rather than list position.
-        for resource in root.children.iter_mut().filter(|resource| {
-            matches!(resource.kind.as_str(), "maps.place" | "maps.search-result")
-        }) {
-            let prefix = if resource.kind == "maps.place" {
-                "maps.place:"
-            } else {
-                "maps.search-result:"
-            };
-            let Some(place_id) = resource.id.0.strip_prefix(prefix) else {
-                continue;
-            };
-            if self.model.place(place_id).is_none() {
-                continue;
-            }
-            for (id, label, type_id) in [
-                ("open", "Open place", "maps.open-place"),
-                ("directions", "Get directions", "maps.directions"),
-            ] {
-                if let Ok(spec) =
-                    ActionSpec::operation(id, label, OperationKind::View, type_id, &place_id)
-                {
-                    resource
-                        .actions
-                        .insert(0, spec.with_contract(ActionContract::view()));
-                }
-            }
+        for resource in &mut resources {
+            self.decorate_live_resource(resource);
         }
         resources
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let mut resource = <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+            .or_else(|| {
+                (id == "maps.workspace")
+                    .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
+            })?;
+        self.decorate_live_resource(&mut resource);
+        Some(resource)
     }
 
     fn invoke_resource_operation(
@@ -5407,6 +5400,10 @@ impl Widget for MapsApp {
             self.dispatch_map_control(control);
             return true;
         }
+        if target == "maps.navigation.end" {
+            self.clear_route(state);
+            return true;
+        }
         // The TextInput needs a genuine pointer press to place its caret, so
         // leave it to the framework's exact-rect fallback below. Every other
         // painted action is dispatched directly by its stable semantic target.
@@ -5467,8 +5464,12 @@ impl Widget for MapsApp {
             // Keep pumping frames while a control tooltip counts toward its
             // reveal, so the dwell elapses even when the map is otherwise idle.
             || self.navigation_placement.is_dragging()
-            || self.navigation_placement.is_handoff_animating()
+            || (!self.motion_reduced && self.navigation_placement.is_handoff_animating())
             || self.map_controls.needs_frame()
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.motion_reduced = reduced;
     }
 
     fn draw_with_presence(
@@ -5486,6 +5487,99 @@ impl Widget for MapsApp {
 }
 
 impl MapsApp {
+    /// Add operations whose availability depends on this live app instance to
+    /// both eager and lazily resolved resources. Durable mutations stay on the
+    /// encoded `MapsAction` path in `actions`; these are presentation/external
+    /// effects and therefore use local operation handlers.
+    fn decorate_live_resource(&self, resource: &mut Resource) {
+        if resource.kind == "maps.workspace" {
+            if let Ok(spec) = ActionSpec::operation(
+                "locate",
+                "Use my location",
+                OperationKind::Effect,
+                "maps.locate",
+                &"",
+            ) {
+                resource.actions.push(spec.with_contract(ActionContract {
+                    availability: if !self.online {
+                        Availability::Unavailable {
+                            code: "location_service_offline".into(),
+                            reason: "The location service is unavailable in this session".into(),
+                        }
+                    } else if self.location_rx.is_none() {
+                        Availability::Available
+                    } else {
+                        Availability::Unavailable {
+                            code: "request_in_progress".into(),
+                            reason: "A location request is already in progress".into(),
+                        }
+                    },
+                    permission: PermissionRequirement::Read,
+                    retry: RetryPolicy::AtMostOnce,
+                    execution: ExecutionMode::Background { cancellable: false },
+                    discovery: DiscoveryScope::Launchable,
+                    result: ResultSpec::Job,
+                    ..ActionContract::default()
+                }));
+            }
+            if let Ok(spec) = ActionSpec::operation(
+                "toggle-traffic",
+                if self.map_controls.traffic_enabled() {
+                    "Hide traffic"
+                } else {
+                    "Show traffic"
+                },
+                OperationKind::View,
+                "maps.toggle-traffic",
+                &"",
+            ) {
+                resource
+                    .actions
+                    .push(spec.with_contract(ActionContract::view()));
+            }
+        }
+
+        let prefix = match resource.kind.as_str() {
+            "maps.place" => Some("maps.place:"),
+            "maps.search-result" => Some("maps.search-result:"),
+            _ => None,
+        };
+        if let Some(prefix) = prefix
+            && let Some(place_id) = resource.id.as_str().strip_prefix(prefix)
+            && self.model.place(place_id).is_some()
+        {
+            // Search results already export the durable SelectPlace `open`
+            // action. Saved places need a local presentation-only opener.
+            if resource.kind == "maps.place"
+                && let Ok(spec) = ActionSpec::operation(
+                    "open",
+                    "Open place",
+                    OperationKind::View,
+                    "maps.open-place",
+                    &place_id,
+                )
+            {
+                resource
+                    .actions
+                    .insert(0, spec.with_contract(ActionContract::view()));
+            }
+            if let Ok(spec) = ActionSpec::operation(
+                "directions",
+                "Get directions",
+                OperationKind::View,
+                "maps.directions",
+                &place_id,
+            ) {
+                resource
+                    .actions
+                    .insert(0, spec.with_contract(ActionContract::view()));
+            }
+        }
+        for child in &mut resource.children {
+            self.decorate_live_resource(child);
+        }
+    }
+
     /// Route a keystroke into the focused text field (search or an endpoint).
     /// Enter runs the corresponding search; any text edit is mirrored into the
     /// model (`query` / `*_query`) so the existing geocode / dropdown logic runs
@@ -8482,5 +8576,125 @@ mod tests {
             &automerge::ROOT,
         ));
         assert!(a.map_controls.traffic_enabled());
+    }
+
+    #[test]
+    fn narrow_drawer_suppresses_redundant_navigation_card_and_background_semantics() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(520.0, 840.0);
+        a.nav_open = true;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        assert_eq!(a.navigation_end_rect, Rect::ZERO);
+        let node = Widget::accessibility(&a).expect("drawer remains semantic");
+        assert!(
+            node.children.iter().all(|child| {
+                !child
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("maps.control:"))
+            }),
+            "covered map controls must not remain in the drawer's accessibility tree"
+        );
+        assert!(
+            node.children
+                .iter()
+                .any(|child| { child.action_target.as_deref() == Some("maps.navigation") }),
+            "the visible drawer toggle remains operable"
+        );
+    }
+
+    #[test]
+    fn end_navigation_is_semantic_when_the_route_card_is_visible() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1_280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.navigation_end_rect.area() > 0.0);
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        assert!(node.children.iter().any(|child| {
+            child.action_target.as_deref() == Some("maps.navigation.end")
+                && child.name.as_deref() == Some("End navigation")
+        }));
+
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "maps.navigation.end",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(a.model.route.is_none());
+    }
+
+    #[test]
+    fn reduced_motion_does_not_pump_floating_handoff_frames() {
+        let mut a = app_at(1_280.0, 800.0);
+        a.navigation_placement
+            .detach_to_desktop(Rect::new(820.0, 120.0, 1_180.0, 276.0));
+        assert!(Widget::needs_animation_frame(&a));
+        Widget::set_motion_reduced(&mut a, true);
+        assert!(!Widget::needs_animation_frame(&a));
+    }
+
+    #[test]
+    fn eager_and_lazy_resources_share_unique_live_operations() {
+        let mut a = app_at(1_280.0, 800.0);
+        let result = a
+            .model
+            .results
+            .first()
+            .expect("sample search result")
+            .clone();
+        let mut saved = result.clone();
+        saved.id = "lazy-saved".to_string();
+        saved.saved = true;
+        a.model.places.push(saved);
+        let mut doc = AutoCommit::new();
+        MapsDoc::save(&mut doc, &a.model);
+
+        let root = Widget::resources(&a, &doc)
+            .into_iter()
+            .next()
+            .expect("maps root");
+        let result_resource_id = format!("maps.search-result:{}", result.id);
+        let eager_result = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == result_resource_id)
+            .expect("eager result");
+        let mut ids: Vec<_> = eager_result
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            eager_result.actions.len(),
+            "action ids are unique"
+        );
+        assert!(
+            eager_result
+                .actions
+                .iter()
+                .any(|action| action.id == "open")
+        );
+        assert!(
+            eager_result
+                .actions
+                .iter()
+                .any(|action| action.id == "directions")
+        );
+
+        let lazy = Widget::resource(&a, &doc, "maps.place:lazy-saved")
+            .expect("exact saved-place resolver");
+        assert!(lazy.actions.iter().any(|action| action.id == "open"));
+        assert!(lazy.actions.iter().any(|action| action.id == "directions"));
     }
 }
