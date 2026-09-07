@@ -113,6 +113,8 @@ enum Action {
     CloseDetail,
     ToggleFavSelected,
     DeleteSelected,
+    ConfirmDeleteSelected,
+    CancelDelete,
     DismissScan,
     Scan(usize),
     /// Decode a QR/barcode out of a library photo (used when no camera feed
@@ -168,6 +170,10 @@ pub struct CameraApp {
     return_to: Screen,
     filter: GalleryFilter,
     selected_capture: Option<String>,
+    /// In-app destructive operations use the same explicit confirmation
+    /// contract as palette/agent invocations. The value is the exact capture
+    /// revalidated again at confirmation time.
+    pending_delete: Option<String>,
     scan_dismissed: bool,
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
@@ -222,6 +228,7 @@ pub struct CameraApp {
     /// dispatches each action, and remembers the last one so a test can prove a
     /// button and its palette `ActionSpec` build the same `EncodedAction`.
     actions: ui::ActionHost,
+    search_provider: crate::search::CameraSearchProvider,
 }
 
 impl Default for CameraApp {
@@ -262,11 +269,12 @@ impl CameraApp {
             return_to: Screen::Camera,
             filter: GalleryFilter::All,
             selected_capture: None,
+            pending_delete: None,
             scan_dismissed: false,
             scanned: None,
             scan_gen: (0, 0),
             toast: None,
-            last_mouse: Point::ZERO,
+            last_mouse: Point::new(-1_000.0, -1_000.0),
             gallery_scroll: 0.0,
             settings_scroll: 0.0,
             recording: None,
@@ -299,6 +307,7 @@ impl CameraApp {
             dirty: true,
             initialized: false,
             actions: ui::ActionHost::new(),
+            search_provider: crate::search::CameraSearchProvider::new(),
         }
     }
 
@@ -490,6 +499,8 @@ impl CameraApp {
             Action::CloseDetail => "camera.close-detail".into(),
             Action::ToggleFavSelected => "camera.favorite".into(),
             Action::DeleteSelected => "camera.delete".into(),
+            Action::ConfirmDeleteSelected => "camera.confirm-delete".into(),
+            Action::CancelDelete => "camera.cancel-delete".into(),
             Action::DismissScan => "camera.dismiss-scan".into(),
             Action::Scan(index) => format!("camera.scan:{index}"),
             Action::ScanLibraryItem(id) => format!("camera.scan-library:{id}"),
@@ -585,6 +596,16 @@ impl CameraApp {
             Action::DeleteSelected => (
                 Role::Button,
                 "Delete selected media".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::ConfirmDeleteSelected => (
+                Role::Button,
+                "Delete capture permanently".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::CancelDelete => (
+                Role::Button,
+                "Cancel deletion".into(),
                 AccessState::new().focusable(true),
             ),
             Action::DismissScan => (
@@ -716,6 +737,7 @@ impl CameraApp {
         match &self.storage {
             Storage::Sample => {
                 self.captures = sample_captures();
+                self.refresh_search_provider();
                 self.lib_dirty = false;
             }
             Storage::Disk(dir) => {
@@ -781,13 +803,25 @@ impl CameraApp {
         let items = self
             .captures
             .iter()
-            .map(|c| crate::actions::GalleryItem {
-                id: c.id.clone(),
-                label: c.label.clone(),
-                favorite: c.favorite,
-                is_video: c.is_video(),
-            })
+            .take(crate::actions::MAX_CONTEXT_CAPTURE_RESOURCES)
+            .map(Self::gallery_item)
             .collect();
+        self.camera_resource_ctx_with_items(items)
+    }
+
+    fn gallery_item(capture: &Capture) -> crate::actions::GalleryItem {
+        crate::actions::GalleryItem {
+            id: capture.id.clone(),
+            label: capture.label.clone(),
+            favorite: capture.favorite,
+            is_video: capture.is_video(),
+        }
+    }
+
+    fn camera_resource_ctx_with_items(
+        &self,
+        items: Vec<crate::actions::GalleryItem>,
+    ) -> crate::actions::CameraResourceCtx {
         let camera_devices = self.available_camera_devices();
         crate::actions::CameraResourceCtx {
             items,
@@ -800,6 +834,34 @@ impl CameraApp {
             selected_camera: self.selected_camera.clone(),
             settings: self.settings,
         }
+    }
+
+    pub(crate) fn resolve_camera_resource(
+        &self,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<qos_actions::Resource> {
+        if matches!(id, "camera.gallery" | "camera.settings" | "camera") {
+            return crate::actions::resolve_resource(&self.camera_resource_ctx(), doc, id);
+        }
+        let (capture_id, expect_video) = id
+            .strip_prefix("camera.photo:")
+            .map(|capture_id| (capture_id, false))
+            .or_else(|| {
+                id.strip_prefix("camera.video:")
+                    .map(|capture_id| (capture_id, true))
+            })?;
+        let item = self
+            .captures
+            .iter()
+            .find(|capture| capture.id == capture_id && capture.is_video() == expect_video)
+            .map(Self::gallery_item)?;
+        crate::actions::resolve_resource(&self.camera_resource_ctx_with_items(vec![item]), doc, id)
+    }
+
+    fn refresh_search_provider(&self) {
+        let items: Vec<_> = self.captures.iter().map(Self::gallery_item).collect();
+        self.search_provider.sync(&items);
     }
 
     fn apply(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
@@ -817,10 +879,18 @@ impl CameraApp {
                 self.filter = f;
                 self.gallery_scroll = 0.0;
             }
-            Action::SelectCapture(id) => self.selected_capture = Some(id),
-            Action::CloseDetail => self.selected_capture = None,
+            Action::SelectCapture(id) => {
+                self.selected_capture = Some(id);
+                self.pending_delete = None;
+            }
+            Action::CloseDetail => {
+                self.selected_capture = None;
+                self.pending_delete = None;
+            }
             Action::ToggleFavSelected => self.apply_toggle_fav_selected(doc),
-            Action::DeleteSelected => self.apply_delete_selected(doc),
+            Action::DeleteSelected => self.apply_delete_selected(),
+            Action::ConfirmDeleteSelected => self.apply_confirm_delete_selected(doc),
+            Action::CancelDelete => self.pending_delete = None,
             Action::DismissScan => self.scan_dismissed = true,
             Action::ShareSelected => self.apply_share_selected(),
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
@@ -921,14 +991,24 @@ impl CameraApp {
                     doc,
                     &crate::actions::CameraAction::SetFavorite { id: id.clone(), on },
                 );
+                self.refresh_search_provider();
             }
         }
     }
 
-    fn apply_delete_selected(&mut self, doc: &mut AutoCommit) {
-        if let Some(id) = self.selected_capture.clone()
-            && let Err(error) = self.delete_capture(&id, doc)
-        {
+    fn apply_delete_selected(&mut self) {
+        self.pending_delete = self.selected_capture.clone();
+    }
+
+    fn apply_confirm_delete_selected(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.pending_delete.take() else {
+            return;
+        };
+        if self.selected_capture.as_deref() != Some(id.as_str()) {
+            self.toast = Some("The selected capture changed; nothing was deleted".into());
+            return;
+        }
+        if let Err(error) = self.delete_capture(&id, doc) {
             self.toast = Some(format!("Couldn't delete: {error}"));
         }
     }
@@ -961,6 +1041,7 @@ impl CameraApp {
             )?;
         }
         self.captures.retain(|c| c.id != id);
+        self.refresh_search_provider();
         self.thumbs.remove(id);
         self.favorites.remove(id);
         if self.selected_capture.as_deref() == Some(id) {
@@ -1140,6 +1221,14 @@ impl CameraApp {
         use crate::actions::CameraOperation;
         match operation {
             CameraOperation::Reveal { screen } => self.screen = screen,
+            CameraOperation::OpenCapture { id } => {
+                if !self.captures.iter().any(|capture| capture.id == id) {
+                    return Err("the capture no longer exists".into());
+                }
+                self.selected_capture = Some(id);
+                self.pending_delete = None;
+                self.screen = Screen::Gallery;
+            }
             CameraOperation::Capture => self.capture(None)?,
             CameraOperation::ToggleRecording => {
                 if self.is_recording() {
@@ -1537,6 +1626,14 @@ impl Widget for CameraApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -1850,6 +1947,7 @@ impl Widget for CameraApp {
             match result.result {
                 Ok(captures) => {
                     self.captures = captures;
+                    self.refresh_search_provider();
                     self.lib_dirty = false;
                     self.thumb_pending.clear();
                     self.thumb_failed.clear();
@@ -1975,11 +2073,14 @@ impl Widget for CameraApp {
             .iter()
             .map(|capture| capture.id.as_str())
             .collect();
+        let mut search_changed = false;
+        let before_retain = self.captures.len();
         self.captures.retain(|capture| {
             capture.path.is_some()
                 || capture.media_id.is_none()
                 || shared_ids.contains(capture.id.as_str())
         });
+        search_changed |= self.captures.len() != before_retain;
         for shared in shared_captures {
             if self.captures.iter().any(|capture| capture.id == shared.id) {
                 continue;
@@ -1999,6 +2100,7 @@ impl Widget for CameraApp {
                 path: None,
                 media_id: Some(shared.media_id),
             });
+            search_changed = true;
         }
         self.captures
             .sort_by(|a, b| b.ts.cmp(&a.ts).then_with(|| a.id.cmp(&b.id)));
@@ -2006,8 +2108,13 @@ impl Widget for CameraApp {
         // rescan.
         if matches!(self.storage, Storage::Disk(_)) {
             for c in &mut self.captures {
-                c.favorite = self.favorites.contains(&c.id);
+                let favorite = self.favorites.contains(&c.id);
+                search_changed |= c.favorite != favorite;
+                c.favorite = favorite;
             }
+        }
+        if search_changed {
+            self.refresh_search_provider();
         }
         // Drop a stale selection.
         if let Some(id) = self.selected_capture.clone()
@@ -2019,6 +2126,9 @@ impl Widget for CameraApp {
         // captured headless. No effect on normal runtime (env is unset).
         if self.selected_capture.is_none() && std::env::var_os("CAMERA_SELECT").is_some() {
             self.selected_capture = self.captures.first().map(|c| c.id.clone());
+        }
+        if self.pending_delete.is_none() && std::env::var_os("CAMERA_CONFIRM_DELETE").is_some() {
+            self.pending_delete = self.selected_capture.clone();
         }
         // Screenshot hook uses the same bounded scanner path as interaction.
         if self.scanned.is_none()
@@ -2098,6 +2208,13 @@ impl Widget for CameraApp {
             Screen::Gallery => self.draw_gallery(scene, t, tr, theme, full),
             Screen::Settings => self.draw_settings(scene, t, tr, theme, full),
         }
+        if self.pending_delete.is_some() {
+            // The modal owns interaction while visible. Removing the obscured
+            // hit map also keeps the accessibility tree genuinely modal.
+            self.regions.clear();
+            self.draw_delete_confirmation(scene, t, tr, theme, full);
+        }
+        self.draw_hover_tooltip(scene, t, tr, theme);
         self.draw_toast(scene, t, tr, theme);
     }
 
@@ -2118,6 +2235,7 @@ impl Widget for CameraApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.dirty = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2157,6 +2275,18 @@ impl Widget for CameraApp {
                     },
                 ..
             } => {
+                if self.pending_delete.is_some() {
+                    let act = match logical_key {
+                        Key::Named(NamedKey::Escape) => Some(Action::CancelDelete),
+                        Key::Named(NamedKey::Enter) => Some(Action::ConfirmDeleteSelected),
+                        _ => None,
+                    };
+                    if let Some(action) = act {
+                        self.apply(action, state, path);
+                        *handled = true;
+                    }
+                    return;
+                }
                 let act = match logical_key {
                     Key::Character(c) => match c.as_str() {
                         "1" => Some(Action::Nav(Screen::Camera)),
@@ -2221,6 +2351,23 @@ impl Widget for CameraApp {
                     .then(|| self.a11y_node(*rect, action))
             })
             .collect();
+        if let Some(id) = self.pending_delete.as_deref() {
+            let label = self
+                .captures
+                .iter()
+                .find(|capture| capture.id == id)
+                .map_or("this capture", |capture| capture.label.as_str());
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Delete capture?")
+                    .with_description(format!(
+                        "{label} will be permanently removed from this device. This cannot be undone."
+                    ))
+                    .with_state(AccessState::new().modal(true))
+                    .with_bounds(self.rect)
+                    .with_children(controls),
+            );
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Camera")
@@ -2265,7 +2412,10 @@ impl Widget for CameraApp {
         self.recording
             .as_ref()
             .filter(|_| self.motion_reduced)
-            .map(|_| Instant::now() + Duration::from_millis(33))
+            // The visible counter changes once per second; four wakeups per
+            // second keep worker settlement responsive without recreating a
+            // 30 fps decorative frame loop for reduced-motion users.
+            .map(|_| Instant::now() + Duration::from_millis(250))
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
@@ -2682,6 +2832,178 @@ impl CameraApp {
                 self.push_tap_region(row, Action::SelectCamera(device.clone()));
             }
         }
+    }
+
+    fn draw_hover_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let action = self
+            .regions
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(self.last_mouse))
+            .map(|(_, action)| action);
+        let Some(action) = action else {
+            return;
+        };
+        // Visible text controls explain themselves. Tooltips are reserved for
+        // the compact icon/image affordances whose meaning would otherwise be
+        // pointer- and screen-reader-only.
+        if !matches!(
+            action,
+            Action::Nav(Screen::Settings | Screen::Gallery)
+                | Action::Back
+                | Action::Shutter
+                | Action::CycleFacing
+                | Action::ToggleGrid
+        ) {
+            return;
+        }
+        let node = self.a11y_node(Rect::ZERO, action);
+        let Some(label) = node.name.as_deref() else {
+            return;
+        };
+        let width = (f64::from(p::text_w(tr, label, 11.5)) + 22.0).min(260.0);
+        let mut x = self.last_mouse.x + 14.0;
+        let mut y = self.last_mouse.y + 18.0;
+        if x + width > self.rect.x1 - 8.0 {
+            x = self.rect.x1 - width - 8.0;
+        }
+        if y + 30.0 > self.rect.y1 - 8.0 {
+            y = self.last_mouse.y - 38.0;
+        }
+        let rect = Rect::new(
+            x.max(self.rect.x0 + 8.0),
+            y.max(self.rect.y0 + 8.0),
+            x + width,
+            y + 30.0,
+        );
+        p::fill_round(
+            scene,
+            t,
+            rect,
+            9.0,
+            p::alpha(theme.tokens.colors.neutral[0], 0.94),
+        );
+        p::stroke_round(
+            scene,
+            t,
+            rect,
+            9.0,
+            ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 30),
+            1.0,
+        );
+        p::text_in(scene, tr, rect, label, 11.5, white());
+    }
+
+    fn draw_delete_confirmation(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        full: Rect,
+    ) {
+        let Some(id) = self.pending_delete.as_deref() else {
+            return;
+        };
+        let label = self
+            .captures
+            .iter()
+            .find(|capture| capture.id == id)
+            .map_or_else(
+                || "this capture".to_string(),
+                |capture| capture.label.clone(),
+            );
+        p::fill_rect(scene, t, full, p::alpha(Color::from_rgb8(0, 0, 0), 0.68));
+        self.push_region(full, Action::CancelDelete);
+
+        let width = 420.0_f64.min((full.width() - 32.0).max(280.0));
+        let height = 214.0_f64.min((full.height() - 32.0).max(190.0));
+        let panel = Rect::new(
+            full.center().x - width / 2.0,
+            full.center().y - height / 2.0,
+            full.center().x + width / 2.0,
+            full.center().y + height / 2.0,
+        );
+        let colors = &theme.tokens.colors;
+        p::fill_round(scene, t, panel, 20.0, colors.surfaces.raised);
+        p::stroke_round(scene, t, panel, 20.0, colors.border_standard, 1.0);
+        p::circle(
+            scene,
+            t,
+            panel.x0 + 38.0,
+            panel.y0 + 40.0,
+            20.0,
+            p::alpha(colors.semantic.danger, 0.16),
+        );
+        p::icon(
+            scene,
+            t,
+            "trash",
+            Rect::new(
+                panel.x0 + 27.0,
+                panel.y0 + 29.0,
+                panel.x0 + 49.0,
+                panel.y0 + 51.0,
+            ),
+            colors.semantic.danger,
+            1.8,
+        );
+        p::text(
+            scene,
+            tr,
+            panel.x0 + 68.0,
+            panel.y0 + 25.0,
+            "Delete capture?",
+            18.0,
+            colors.text_primary,
+        );
+        let label = ellipsize(tr, &format!("“{label}”"), 13.0, panel.width() - 48.0);
+        p::text(
+            scene,
+            tr,
+            panel.x0 + 24.0,
+            panel.y0 + 82.0,
+            &label,
+            13.0,
+            colors.text_primary,
+        );
+        p::text(
+            scene,
+            tr,
+            panel.x0 + 24.0,
+            panel.y0 + 108.0,
+            "It will be permanently removed from this device.",
+            12.5,
+            colors.text_primary,
+        );
+        p::text(
+            scene,
+            tr,
+            panel.x0 + 24.0,
+            panel.y0 + 132.0,
+            "This cannot be undone.",
+            12.5,
+            colors.text_dim,
+        );
+
+        let gap = 10.0;
+        let button_w = (panel.width() - 48.0 - gap) / 2.0;
+        let y = panel.y1 - 62.0;
+        let cancel = Rect::new(panel.x0 + 24.0, y, panel.x0 + 24.0 + button_w, y + 42.0);
+        let confirm = Rect::new(cancel.x1 + gap, y, panel.x1 - 24.0, y + 42.0);
+        p::fill_round(scene, t, cancel, 12.0, colors.neutral[2]);
+        p::stroke_round(scene, t, cancel, 12.0, colors.border_standard, 1.0);
+        p::text_in(scene, tr, cancel, "Cancel", 12.5, colors.text_primary);
+        p::fill_round(scene, t, confirm, 12.0, colors.semantic.danger);
+        p::text_in(scene, tr, confirm, "Delete", 12.5, white());
+        self.push_tap_region(cancel, Action::CancelDelete);
+        self.push_tap_region(confirm, Action::ConfirmDeleteSelected);
     }
 
     fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -6183,5 +6505,80 @@ mod tests {
         assert_eq!(app.scans.len(), 1);
         assert_eq!(app.scans[0].raw, payload);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn in_app_delete_requires_a_modal_confirmation_and_traps_semantics() {
+        let (mut app, mut doc, root) = sample_app();
+        let id = app.captures[0].id.clone();
+        let before = app.captures.len();
+        app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
+        app.apply(Action::SelectCapture(id.clone()), &mut doc, &root);
+        app.apply(Action::DeleteSelected, &mut doc, &root);
+        assert_eq!(app.captures.len(), before, "request alone never deletes");
+        assert_eq!(app.pending_delete.as_deref(), Some(id.as_str()));
+
+        render_at(&mut app, &mut doc, &root, 390.0, 844.0);
+        let dialog = app.accessibility().expect("confirmation semantics");
+        assert_eq!(dialog.role, Role::Dialog);
+        assert!(dialog.state.modal);
+        let names: Vec<_> = dialog
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["Cancel deletion", "Delete capture permanently"]);
+        assert!(app.perform_semantic_action(
+            "camera.cancel-delete",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert!(app.pending_delete.is_none());
+        assert_eq!(app.captures.len(), before);
+
+        app.apply(Action::DeleteSelected, &mut doc, &root);
+        render_at(&mut app, &mut doc, &root, 390.0, 844.0);
+        assert!(app.perform_semantic_action(
+            "camera.confirm-delete",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(app.captures.len(), before - 1);
+        assert!(!app.captures.iter().any(|capture| capture.id == id));
+    }
+
+    #[test]
+    fn canonical_open_capture_operation_reveals_the_exact_gallery_item() {
+        let (mut app, _doc, _root) = sample_app();
+        let id = app.captures[3].id.clone();
+        app.perform_resource_operation(crate::actions::CameraOperation::OpenCapture {
+            id: id.clone(),
+        })
+        .expect("open capture");
+        assert_eq!(app.screen, Screen::Gallery);
+        assert_eq!(app.selected_capture.as_deref(), Some(id.as_str()));
+        assert!(
+            app.perform_resource_operation(crate::actions::CameraOperation::OpenCapture {
+                id: "missing.jpg".into(),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn synchronized_app_searches_and_resolves_canonical_capture_resources() {
+        let (app, doc, _root) = sample_app();
+        let providers = Widget::search_providers(&app);
+        assert_eq!(providers.len(), 1);
+        let hits = providers[0].search_limited("Golden hour", 4);
+        assert_eq!(hits.len(), 1);
+        let address = hits[0].action_address().expect("search action");
+        assert_eq!(address.action.as_str(), "open");
+        let resource = Widget::resource(&app, &doc, address.resource.as_str())
+            .expect("widget resolves search result");
+        assert_eq!(resource.id.as_str(), address.resource);
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
     }
 }

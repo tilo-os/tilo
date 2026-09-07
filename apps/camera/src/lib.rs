@@ -47,6 +47,7 @@ pub mod media;
 pub mod model;
 pub mod paint;
 pub mod scan;
+pub mod search;
 pub mod video;
 pub mod worker;
 

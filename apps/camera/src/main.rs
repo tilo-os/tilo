@@ -64,6 +64,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         if args.has("--scan-first") {
             std::env::set_var("CAMERA_SCAN_FIRST", "1");
         }
+        if args.has("--confirm-delete") {
+            std::env::set_var("CAMERA_CONFIRM_DELETE", "1");
+        }
         if args.has("--library-loading") {
             std::env::set_var("CAMERA_SHOT_LIBRARY_LOADING", "1");
         }
@@ -101,7 +104,11 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("light") => ui::Theme::light(),
         Some("high-contrast") => ui::Theme::high_contrast(),
         _ => ui::Theme::dark(),
-    };
+    }
+    .with_reduce_motion(matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ));
     ui::headless::FrameHarness::new_with_theme(
         ui::State::new(),
         shot_root(args)?,
@@ -117,7 +124,13 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.camera", camera::app_root)
             .shot_handler(render_shot)
-            .allowed_flags(&["--select", "--scan-first", "--disk", "--library-loading"])
+            .allowed_flags(&[
+                "--select",
+                "--scan-first",
+                "--confirm-delete",
+                "--disk",
+                "--library-loading",
+            ])
             .allowed_options(&[
                 "--screen",
                 "--dir",

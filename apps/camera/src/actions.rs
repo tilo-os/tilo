@@ -44,6 +44,10 @@ use crate::model::{
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
 pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
+/// The open-resource snapshot is contextual, not a dump of a 10,000-item
+/// camera roll. Exact/search results outside this page remain addressable via
+/// [`resolve_resource`].
+pub const MAX_CONTEXT_CAPTURE_RESOURCES: usize = 96;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraOperation {
@@ -51,6 +55,10 @@ pub enum CameraOperation {
     /// create collaboration history or move a peer away from their work.
     Reveal {
         screen: Screen,
+    },
+    /// Open one canonical capture in Gallery's detail presentation.
+    OpenCapture {
+        id: String,
     },
     Capture,
     ToggleRecording,
@@ -338,6 +346,63 @@ fn item_label(it: &GalleryItem) -> String {
     }
 }
 
+pub(crate) fn capture_resource_id(it: &GalleryItem) -> String {
+    format!(
+        "{}:{}",
+        if it.is_video {
+            "camera.video"
+        } else {
+            "camera.photo"
+        },
+        it.id
+    )
+}
+
+pub(crate) fn capture_resource(it: &GalleryItem) -> Resource {
+    let kind = if it.is_video {
+        "camera.video"
+    } else {
+        "camera.photo"
+    };
+    let (label, on) = if it.favorite {
+        ("Unfavorite", false)
+    } else {
+        ("Favorite", true)
+    };
+    let mut child = Resource::new(capture_resource_id(it), kind, item_label(it));
+    if let Ok(spec) = ActionSpec::operation(
+        "open",
+        "Open capture",
+        OperationKind::View,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::OpenCapture { id: it.id.clone() },
+    ) {
+        child = child.with_action(spec);
+    }
+    if let Some(spec) = immediate_spec("favorite", label, &set_favorite_action(&it.id, on)) {
+        child = child.with_action(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "share",
+        "Share capture",
+        OperationKind::Effect,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::Share { id: it.id.clone() },
+    ) {
+        child = child.with_action(spec);
+    }
+    if let Ok(spec) = ActionSpec::operation(
+        "delete-file",
+        "Delete capture from disk",
+        OperationKind::Effect,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::Delete { id: it.id.clone() },
+    ) {
+        child = child.with_action(spec.destructive());
+    }
+    child
+}
+
 /// Build the resource tree Camera currently has open: the gallery, with one
 /// resource per shot exporting the favorite / unfavorite action. The direction
 /// is chosen from the shot's *current* favorite state (recomputed each frame —
@@ -485,46 +550,8 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    for it in &ctx.items {
-        let kind = if it.is_video {
-            "camera.video"
-        } else {
-            "camera.photo"
-        };
-        // Explicit set toward the opposite of the current state: favoriting an
-        // unstarred shot, unfavoriting a starred one.
-        let (label, on) = if it.favorite {
-            ("Unfavorite", false)
-        } else {
-            ("Favorite", true)
-        };
-        let mut child = Resource::new(format!("{kind}:{}", it.id), kind, item_label(it));
-        if let Some(spec) = immediate_spec("favorite", label, &set_favorite_action(&it.id, on)) {
-            child = child.with_action(spec);
-        }
-        if let Ok(spec) = ActionSpec::operation(
-            "share",
-            "Share capture",
-            OperationKind::Effect,
-            CAMERA_OPERATION_TYPE,
-            &CameraOperation::Share { id: it.id.clone() },
-        ) {
-            child = child.with_action(spec);
-        }
-        // File deletion also removes collaborative capture/favourite metadata. The
-        // host's compound-operation boundary gives Camera the document only
-        // for this admission turn, so deleting through Search/Ctrl+K follows
-        // the same replayable metadata path as the on-screen Delete control.
-        if let Ok(spec) = ActionSpec::operation(
-            "delete-file",
-            "Delete capture from disk",
-            OperationKind::Effect,
-            CAMERA_OPERATION_TYPE,
-            &CameraOperation::Delete { id: it.id.clone() },
-        ) {
-            child = child.with_action(spec.destructive());
-        }
-        root = root.with_child(child);
+    for it in ctx.items.iter().take(MAX_CONTEXT_CAPTURE_RESOURCES) {
+        root = root.with_child(capture_resource(it));
     }
     let mut settings = Resource::new("camera.settings", "camera.settings", "Capture settings");
     for resolution in Resolution::ALL {
@@ -648,9 +675,27 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
     vec![root, settings, navigation]
 }
 
+/// Resolve a stable capture/root id independently of the bounded contextual
+/// snapshot. Search and agents use this to reach an exact older capture
+/// without forcing every camera-roll row into Ctrl+K on every frame.
+pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    if matches!(id, "camera.gallery" | "camera.settings" | "camera") {
+        return provide_resources(ctx, doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id);
+    }
+    ctx.items
+        .iter()
+        .find_map(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
+}
+
 impl ResourceProvider for crate::app::CameraApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.camera_resource_ctx(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.resolve_camera_resource(doc, id)
     }
 }
 
@@ -710,7 +755,13 @@ mod tests {
             .expect("a photo resource");
         let ids: Vec<&str> = photo.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"favorite"), "{ids:?}");
-        assert!(photo.actions[0].contract.reversible);
+        assert!(
+            photo
+                .actions
+                .iter()
+                .find(|action| action.id == "favorite")
+                .is_some_and(|action| action.contract.reversible)
+        );
         assert!(
             gallery.children.iter().any(|r| r.kind == "camera.video"),
             "a video resource"
@@ -1089,5 +1140,37 @@ mod tests {
                 })
                 .all(|action| action.kind == OperationKind::Effect)
         );
+    }
+
+    #[test]
+    fn contextual_capture_page_is_bounded_and_late_items_resolve_exactly() {
+        let items: Vec<GalleryItem> = (0..MAX_CONTEXT_CAPTURE_RESOURCES + 2)
+            .map(|index| GalleryItem {
+                id: format!("IMG_{index:04}.jpg"),
+                label: format!("Capture {index}"),
+                favorite: index % 2 == 0,
+                is_video: false,
+            })
+            .collect();
+        let ctx = CameraResourceCtx {
+            items,
+            ..CameraResourceCtx::default()
+        };
+        let doc = AutoCommit::new();
+        let page = provide_resources(&ctx, &doc);
+        assert_eq!(page[0].children.len(), MAX_CONTEXT_CAPTURE_RESOURCES);
+
+        let late_id = format!(
+            "camera.photo:IMG_{:04}.jpg",
+            MAX_CONTEXT_CAPTURE_RESOURCES + 1
+        );
+        let late = resolve_resource(&ctx, &doc, &late_id).expect("late capture resolves");
+        assert_eq!(late.id.as_str(), late_id);
+        let open = late
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("capture has a canonical open action");
+        assert_eq!(open.kind, OperationKind::View);
     }
 }
