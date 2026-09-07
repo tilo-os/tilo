@@ -28,6 +28,7 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
 use winit::event::WindowEvent;
 
+use ui::a11y::{AccessNode, AccessState, Role};
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
@@ -47,7 +48,7 @@ use crate::model::{
     AirQuality, CurrentConditions, DayForecast, LocationId, SavedLocation, WeatherModel,
     WeatherSnapshot,
 };
-use crate::net::{Request, Response};
+use crate::net::{Request, RequestKind, Response};
 use crate::units::{self, Units};
 use crate::wxcode::Sky;
 
@@ -335,6 +336,27 @@ impl Core {
         true
     }
 
+    /// Queue an update for exactly one durable saved location. This powers the
+    /// per-location resource operation, so agent and keyboard-oriented flows
+    /// can refresh the forecast in view without re-fetching every city.
+    pub fn refresh_location_by_id(&mut self, id: LocationId) -> bool {
+        let Some(index) = self
+            .model
+            .locations
+            .iter()
+            .position(|location| location.id == id)
+        else {
+            return false;
+        };
+        self.refresh_location(index);
+        true
+    }
+
+    /// Refresh the city currently displayed in the detail pane.
+    pub fn refresh_selected_forecast(&mut self) {
+        self.refresh_selected();
+    }
+
     fn refresh_selected(&mut self) {
         if let Some(loc) = self.model.selected_location() {
             let (id, lat, lon) = (loc.id, loc.latitude, loc.longitude);
@@ -423,14 +445,23 @@ impl Core {
                     self.sync_search_view();
                 }
             }
-            Response::Error(e) => {
-                self.inflight = self.inflight.saturating_sub(1);
-                self.geocode_inflight = false;
-                self.status = format!("Offline · {e}");
-                // A failed geocode must resolve the dropdown's spinner into an
-                // honest state rather than spin forever.
-                self.sync_search_view();
-            }
+            Response::Error { kind, .. } => match kind {
+                RequestKind::Forecast | RequestKind::AirQuality => {
+                    self.inflight = self.inflight.saturating_sub(1);
+                    self.status =
+                        "Couldn't update — check your connection and try again".to_string();
+                }
+                RequestKind::Geocode => {
+                    self.geocode_inflight = false;
+                    // A failed geocode must resolve the dropdown's spinner into
+                    // an honest state rather than spin forever.
+                    self.search_results.clear();
+                    self.search.set_status(Some(
+                        "Search unavailable — check your connection and try again".into(),
+                    ));
+                    self.search.open();
+                }
+            },
         }
     }
 
@@ -643,6 +674,101 @@ impl Core {
     /// Called by the app before drawing (only the shell knows the affordance).
     pub fn set_detail_reserve_back(&mut self, reserve: bool) {
         self.detail_reserve_back = reserve;
+    }
+
+    /// Semantic projection of the painted saved-place list. The visual rows
+    /// are custom Vello drawing, so expose their stable model identity and
+    /// current readings explicitly instead of leaving screen-reader users with
+    /// an unnamed canvas.
+    pub fn overview_accessibility(&self, rect: Rect) -> AccessNode {
+        let total = self.model.locations.len();
+        let items = self
+            .model
+            .locations
+            .iter()
+            .enumerate()
+            .map(|(index, location)| {
+                let reading = self.model.snapshot_for(location.id).map_or_else(
+                    || "Current conditions are loading".to_string(),
+                    |snapshot| {
+                        let temp = snapshot
+                            .temp_in(snapshot.current.temperature, self.units)
+                            .round();
+                        format!("{temp:.0}°, {}", Sky::label(snapshot.current.weather_code))
+                    },
+                );
+                let bounds = self
+                    .over_hotspots
+                    .iter()
+                    .find_map(|hotspot| match hotspot.action {
+                        OverAction::PressChip(i) | OverAction::SelectLocation(i) if i == index => {
+                            Some(hotspot.rect)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(rect);
+                AccessNode::new(Role::ListItem)
+                    .with_name(location.name.clone())
+                    .with_description(format!("{}; {reading}", location.subtitle()))
+                    .with_position(index + 1, total)
+                    .with_hashed_key(location.id)
+                    .with_bounds(bounds)
+                    .with_state(AccessState::new().selected(index == self.model.selected))
+            })
+            .collect();
+        AccessNode::new(Role::List)
+            .with_name("Saved places")
+            .with_description("Use Up and Down Arrow to change city, Enter to open its forecast, or slash to search for another city.")
+            .with_bounds(rect)
+            .with_children(items)
+    }
+
+    /// Semantic summary of the currently painted forecast. This mirrors the
+    /// detail card's key reading while leaving the long forecast visually
+    /// scannable and avoids forcing assistive technology through decorative
+    /// icons and chart marks.
+    pub fn detail_accessibility(&self, rect: Rect) -> AccessNode {
+        let mut node = AccessNode::new(Role::Group)
+            .with_name("Forecast")
+            .with_bounds(rect);
+        let Some(location) = self.model.selected_location() else {
+            return node.with_description(if self.model.locations.is_empty() {
+                "No cities yet. Search for a city to see its forecast."
+            } else {
+                "Choose a saved city to see its forecast."
+            });
+        };
+        let detail = self.model.snapshot_for(location.id).map_or_else(
+            || "Current conditions are loading.".to_string(),
+            |snapshot| {
+                let temp = snapshot.temp_in(snapshot.current.temperature, self.units).round();
+                let feels = snapshot.temp_in(snapshot.current.apparent, self.units).round();
+                format!(
+                    "{temp:.0}°, {}, feels like {feels:.0}°. {} hourly readings and {} daily forecasts are available.",
+                    Sky::label(snapshot.current.weather_code),
+                    snapshot.hourly.len(),
+                    snapshot.daily.len()
+                )
+            },
+        );
+        node = node
+            .with_name(format!("{} forecast", location.name))
+            .with_description(detail);
+        if self.refresh_btn != Rect::ZERO {
+            node.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Refresh forecast")
+                    .with_description("Get the latest weather and air-quality readings.")
+                    .with_hashed_key("weather.refresh-forecast")
+                    .with_bounds(self.refresh_btn)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .disabled(self.is_fetching()),
+                    ),
+            );
+        }
+        node.with_keyed_action_routes("weather-detail")
     }
 
     pub fn draw_overview(
@@ -2053,6 +2179,18 @@ impl Core {
                 c.text_dim,
             );
         }
+        if self.status.starts_with("Couldn't") || self.status.starts_with("Offline") {
+            text_left(
+                scene,
+                tr,
+                &self.status,
+                mx,
+                hy + 51.0,
+                11.0,
+                TextWeight::Medium,
+                c.semantic.warning,
+            );
+        }
         hy
     }
 
@@ -2806,7 +2944,13 @@ impl Core {
         body_h: f64,
     ) {
         let c = &theme.tokens.colors;
-        if !self.status.is_empty() {
+        // Connection/update problems are called out beside the city name,
+        // where they remain visible even when the forecast body scrolls.
+        // Keep the footer for transient success/progress text only.
+        if !self.status.is_empty()
+            && !self.status.starts_with("Couldn't")
+            && !self.status.starts_with("Offline")
+        {
             text_left(
                 scene,
                 tr,
@@ -3792,7 +3936,8 @@ mod layout_tests {
 
 #[cfg(test)]
 mod helper_tests {
-    use super::{day_extra_labels, hhmm_to_minutes, sun_arc_fraction};
+    use super::{Core, day_extra_labels, hhmm_to_minutes, sun_arc_fraction};
+    use crate::net::{RequestKind, Response};
     use crate::units::Units;
 
     #[test]
@@ -3844,5 +3989,38 @@ mod helper_tests {
         let (uv_i, wind_i) = day_extra_labels(day0, snap, Units::IMPERIAL);
         assert_eq!(uv_i, "UV 6");
         assert_eq!(wind_i, "15 mph");
+    }
+
+    #[test]
+    fn geocode_failure_does_not_complete_a_forecast_refresh() {
+        let model = crate::sample::sample_model();
+        let mut core = Core::new(model, Units::METRIC);
+        core.refresh_all();
+        let before = core.inflight;
+        core.apply_response(Response::Error {
+            kind: RequestKind::Geocode,
+            message: "network unreachable".into(),
+        });
+        assert_eq!(
+            core.inflight, before,
+            "a geocode error must not settle a separate forecast request"
+        );
+        assert!(
+            !core.status.starts_with("Couldn't"),
+            "the forecast status stays intact while only search failed"
+        );
+    }
+
+    #[test]
+    fn weather_accessibility_summarises_saved_places_and_forecast() {
+        let model = crate::sample::sample_model();
+        let core = Core::new(model, Units::METRIC);
+        let overview = core.overview_accessibility(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 700.0));
+        assert_eq!(overview.role, ui::a11y::Role::List);
+        assert_eq!(overview.children.len(), 4);
+        assert!(overview.children[0].state.selected);
+        let detail = core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
+        assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
+        assert!(detail.description.unwrap().contains("hourly readings"));
     }
 }
