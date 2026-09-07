@@ -394,7 +394,12 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
     if let Some(remove) = item.remove_action() {
         add_store_item_action(
             &mut resource,
-            "remove",
+            // Keep the published action address identical to the serialized
+            // action code. In particular, a Flatpak removal is not the qOS
+            // `remove` operation: using a generic id here made the card's
+            // typed binding point at an action that the live resource tree
+            // did not publish, so the host quite correctly rejected it.
+            action_code(remove),
             "Remove",
             remove,
             &[item.id.clone(), action_code(remove).to_string()],
@@ -609,6 +614,10 @@ pub struct StoreApp {
     remotes_open: bool,
     safety_open: bool,
     reports: Vec<ReportRecord>,
+    /// Becomes true after the first shared report resource is observed. Until
+    /// then an in-memory presentation fixture (including `--shots`) is not
+    /// mistaken for a collaborator deleting every draft from a fresh doc.
+    reports_hydrated: bool,
     report_note: String,
     pending_remote_intents: Vec<RemoteIntent>,
     pending_control_invocation: Option<ControlInvocation>,
@@ -687,6 +696,7 @@ impl StoreApp {
             remotes_open: false,
             safety_open: false,
             reports: Vec::new(),
+            reports_hydrated: false,
             report_note: String::new(),
             pending_remote_intents: Vec::new(),
             pending_control_invocation: None,
@@ -1903,6 +1913,9 @@ impl StoreApp {
     }
 
     fn sync_report_resources(&mut self, state: &AutoCommit, path: &ObjId) {
+        let has_shared_reports = state
+            .keys(path)
+            .any(|key| key.starts_with(REPORT_RESOURCE_KEY_PREFIX));
         let mut reports = state
             .keys(path)
             .filter_map(|key| {
@@ -1927,10 +1940,18 @@ impl StoreApp {
             })
             .collect::<Vec<_>>();
         reports.sort_by(|a, b| a.app_id.cmp(&b.app_id));
-        if reports != self.reports && !reports.is_empty() {
+        // A peer can deliberately delete every shared draft. Once this app
+        // has observed a document-backed report, adopt that empty state too:
+        // retaining a removed local record would leave a stale moderation
+        // target visible and could make an old action look valid. Before the
+        // first shared report, retain a presentation-only seed (used by
+        // headless scenarios) rather than treating a new empty document as a
+        // deletion.
+        if (has_shared_reports || self.reports_hydrated) && reports != self.reports {
             self.reports = reports;
             self.structure_dirty = true;
         }
+        self.reports_hydrated |= has_shared_reports;
     }
 
     fn drain_report_export(&mut self) {
@@ -2509,6 +2530,34 @@ impl Widget for StoreApp {
             {
                 return Err("Add a concern of 8–4096 characters before submitting".into());
             }
+            let item = self
+                .items
+                .iter()
+                .find(|item| item.id == envelope.app_id)
+                .ok_or_else(|| "the reported app is no longer in this catalogue".to_string())?;
+            let StoreSource::Qos {
+                registry_name: current_registry,
+            } = &item.source
+            else {
+                return Err("reports can only be submitted to the app's qOS registry".into());
+            };
+            if current_registry != &registry_name {
+                return Err("the report target no longer matches this app's registry".into());
+            }
+            let report = self
+                .reports
+                .iter()
+                .find(|report| report.app_id == envelope.app_id && !report.id.starts_with("case-"))
+                .ok_or_else(|| "the current report draft is no longer available".to_string())?;
+            // A published action is a precise snapshot, not a bearer token
+            // for any app id that happens to be in the request. Rebuild the
+            // expected envelope from the collaborative document and reject a
+            // stale or substituted submission before it reaches the worker.
+            if report_envelope(report, Some(item), &self.report_note) != envelope {
+                return Err(
+                    "the report draft changed; review it and submit the current version".into(),
+                );
+            }
             self.pending_moderation.push((
                 ModerationIntent::Submit {
                     registry_name,
@@ -2529,6 +2578,25 @@ impl Widget for StoreApp {
                     .map_err(|_| "invalid moderation case request".to_string())?;
             if registry_name.trim().is_empty() || !case_id.starts_with("case-") {
                 return Err("moderation case is no longer available".into());
+            }
+            let report = self
+                .reports
+                .iter()
+                .find(|report| report.id == case_id)
+                .ok_or_else(|| "moderation case is no longer available".to_string())?;
+            let item = self
+                .items
+                .iter()
+                .find(|item| item.id == report.app_id)
+                .ok_or_else(|| "the moderated app is no longer in this catalogue".to_string())?;
+            let StoreSource::Qos {
+                registry_name: current_registry,
+            } = &item.source
+            else {
+                return Err("this moderation case no longer has a qOS registry target".into());
+            };
+            if current_registry != &registry_name {
+                return Err("the moderation case no longer matches this app's registry".into());
             }
             let intent = if type_id == "store.moderation-status" {
                 ModerationIntent::Refresh {
@@ -3288,7 +3356,7 @@ mod tests {
             .flat_map(|publisher| publisher.children.iter())
             .find(|resource| resource.id.0 == "app:id.chess")
             .unwrap();
-        for id in ["flatpak-setup", "remove"] {
+        for id in ["flatpak-setup", "flatpak-remove"] {
             let action = chess.actions.iter().find(|action| action.id == id).unwrap();
             assert!(matches!(
                 action.contract.availability,
@@ -3337,15 +3405,18 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let invocation = qos_actions::InvocationId::new();
-        let envelope = ReportEnvelope {
-            format: "qos.store.report-envelope.v1".into(),
+        app.reports.push(ReportRecord {
+            id: "report:id.notes".into(),
             app_id: "id.notes".into(),
             status: "Draft · not submitted".into(),
-            publisher_fingerprint: Some("aa".repeat(32)),
-            catalogue_trust_claim: "Publisher signed".into(),
-            evidence_note: "The app connected to a remote host while offline mode was active."
-                .into(),
-        };
+        });
+        app.report_note =
+            "The app connected to a remote host while offline mode was active.".into();
+        let envelope = report_envelope(
+            app.reports.first().unwrap(),
+            app.items.iter().find(|item| item.id == "id.notes"),
+            &app.report_note,
+        );
         assert_eq!(
             app.start_resource_operation(
                 invocation,
@@ -3384,6 +3455,95 @@ mod tests {
                 .and_then(|(value, _)| value.to_str().map(str::to_owned)),
             Some("case-authoritative".into())
         );
+    }
+
+    #[test]
+    fn flatpak_remove_uses_its_exact_published_action_address() {
+        let mut app = seeded_app();
+        app.items
+            .iter_mut()
+            .find(|item| item.id == "id.chess")
+            .unwrap()
+            .installed = InstalledState::Installed {
+            version: "1".into(),
+            available: "1".into(),
+            pinned: false,
+        };
+        let resource = store_app_resource(
+            app.items.iter().find(|item| item.id == "id.chess").unwrap(),
+            true,
+        );
+        let remove = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "flatpak-remove")
+            .expect("Flatpak remove action is published at its concrete address");
+        assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert!(
+            item_action_binding(
+                app.items.iter().find(|item| item.id == "id.chess").unwrap(),
+                ActionKind::FlatpakRemove,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn moderation_submission_refuses_a_stale_or_substituted_report_target() {
+        let mut app = seeded_app();
+        app.reports.push(ReportRecord {
+            id: "report:id.notes".into(),
+            app_id: "id.notes".into(),
+            status: "Draft · not submitted".into(),
+        });
+        app.report_note = "The listing omitted a network dependency.".into();
+        let current = report_envelope(
+            app.reports.first().unwrap(),
+            app.items.iter().find(|item| item.id == "id.notes"),
+            &app.report_note,
+        );
+        let doc = AutoCommit::new();
+        let accepted = app.start_resource_operation(
+            qos_actions::InvocationId::new(),
+            OperationKind::Effect,
+            "store.moderation",
+            &serde_json::to_vec(&("qOS", &current)).unwrap(),
+            &doc,
+            &automerge::ROOT,
+        );
+        assert!(accepted.is_ok());
+        app.take_moderation_requests();
+
+        let mut stale = current;
+        stale.evidence_note = "Different text that was never saved in this draft.".into();
+        let rejected = app.start_resource_operation(
+            qos_actions::InvocationId::new(),
+            OperationKind::Effect,
+            "store.moderation",
+            &serde_json::to_vec(&("qOS", stale)).unwrap(),
+            &doc,
+            &automerge::ROOT,
+        );
+        assert!(rejected.is_err());
+        assert!(app.take_moderation_requests().is_empty());
+    }
+
+    #[test]
+    fn removed_collaborative_report_is_not_kept_as_a_stale_local_target() {
+        use automerge::transaction::Transactable;
+
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        let key = format!("{REPORT_RESOURCE_KEY_PREFIX}id.notes");
+        doc.put(&automerge::ROOT, &key, "Draft · not submitted")
+            .unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.reports().len(), 1);
+        // A peer deletes the final shared draft. Once the report collection
+        // has been hydrated from the document, the empty state is authoritative.
+        doc.delete(&automerge::ROOT, &key).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.reports().is_empty());
     }
 
     #[test]
