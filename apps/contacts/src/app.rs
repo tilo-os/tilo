@@ -13,8 +13,10 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -92,6 +94,13 @@ const TOAST_LIFETIME: Duration = Duration::from_millis(2600);
 const DIVIDER_W: f64 = 6.0;
 const PAD: f64 = 16.0;
 const FIELD_H: f64 = 38.0;
+/// File reads happen on the UI-owned import completion path, so keep them
+/// bounded even when an automation supplies a path rather than the picker.
+const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_IMPORT_FILES: usize = 16;
+const MAX_IMPORT_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_IMPORT_TOTAL_CARDS: usize = 2_048;
+const MAX_IMPORT_CONFLICTS: usize = 64;
 
 /// Edit-form header band geometry. The header is two stacked rows so the
 /// identity block and the Favorite control never overlap: row 1 is the
@@ -114,6 +123,56 @@ const TYPE_OPTIONS: &[&str] = &["home", "work", "mobile", "main", "other"];
 enum Mode {
     View,
     Edit,
+}
+
+#[derive(Debug, Default)]
+struct ImportSummary {
+    created: usize,
+    unchanged: usize,
+    conflicts: usize,
+    errors: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ImportConflict {
+    token: uuid::Uuid,
+    existing: ContactId,
+    incoming: Contact,
+}
+
+struct ParsedImport {
+    generation: u64,
+    contacts: Vec<Contact>,
+    errors: usize,
+}
+
+impl ImportSummary {
+    fn accepted(&self) -> usize {
+        self.created + self.unchanged
+    }
+
+    fn completed(&self) -> bool {
+        self.accepted() > 0
+    }
+
+    fn failure_message(&self) -> String {
+        if self.conflicts > 0 {
+            return format!(
+                "{} contact{} need{} review before merging",
+                self.conflicts,
+                if self.conflicts == 1 { "" } else { "s" },
+                if self.conflicts == 1 { "s" } else { "" }
+            );
+        }
+        if self.errors > 0 {
+            return format!(
+                "{} contact{} couldn't be imported",
+                self.errors,
+                if self.errors == 1 { "" } else { "s" }
+            );
+        }
+        "no contacts were imported".into()
+    }
 }
 
 /// Identifies which draft field an embedded [`TextInput`] maps to.
@@ -241,6 +300,61 @@ fn calendar_day_target(id: ContactId, year: i32, month: u32, day: u32) -> String
 
 fn group_option_target(group: &str) -> String {
     format!("contacts.group.option:{group}")
+}
+
+/// An imported UID is only an identity hint, never proof that a file is
+/// authorised to alter an existing record.  Exact re-imports of our own
+/// export are harmless no-ops; a differing payload is surfaced as a conflict
+/// for review instead of silently overwriting personal data.
+fn same_import_payload(existing: &Contact, incoming: &Contact) -> bool {
+    existing.first == incoming.first
+        && existing.last == incoming.last
+        && existing.org == incoming.org
+        && existing.title == incoming.title
+        && existing.website == incoming.website
+        && existing.birthday == incoming.birthday
+        && existing.notes == incoming.notes
+        // Favourite is an app-local presentation flag, deliberately absent
+        // from interoperable vCard; it must not turn a faithful re-import
+        // into a false conflict or be cleared by external data.
+        && existing
+            .groups
+            .iter()
+            .map(|entry| &entry.value)
+            .eq(incoming.groups.iter().map(|entry| &entry.value))
+        && existing
+            .phones
+            .iter()
+            .map(|entry| (&entry.label, &entry.value))
+            .eq(incoming.phones.iter().map(|entry| (&entry.label, &entry.value)))
+        && existing
+            .emails
+            .iter()
+            .map(|entry| (&entry.label, &entry.value))
+            .eq(incoming.emails.iter().map(|entry| (&entry.label, &entry.value)))
+        && existing
+            .addresses
+            .iter()
+            .map(|entry| {
+                (
+                    &entry.label,
+                    &entry.street,
+                    &entry.city,
+                    &entry.region,
+                    &entry.postal,
+                    &entry.country,
+                )
+            })
+            .eq(incoming.addresses.iter().map(|entry| {
+                (
+                    &entry.label,
+                    &entry.street,
+                    &entry.city,
+                    &entry.region,
+                    &entry.postal,
+                    &entry.country,
+                )
+            }))
 }
 
 struct FieldInput {
@@ -449,6 +563,21 @@ struct DeleteDialog {
     cancel: Rc<Cell<bool>>,
 }
 
+/// The explicit decision point for an untrusted imported UID collision.  The
+/// primary action is intentionally destructive: importing under a new local
+/// identity adds data to the shared address book, whereas keeping the current
+/// record simply discards the untrusted candidate.
+struct ImportConflictDialog {
+    token: uuid::Uuid,
+    dialog: ModalDialog<Text>,
+    import_as_new: Rc<Cell<bool>>,
+    keep_existing: Rc<Cell<bool>>,
+}
+
+fn import_conflict_target(token: uuid::Uuid, action: &str) -> String {
+    format!("contacts.import-conflict:{token}:{action}")
+}
+
 /// Stable identifiers for the per-contact right-click context-menu items. The
 /// visible label for [`ContextAction::Favorite`] depends on the contact's
 /// current favorite state, so the menu is built per-contact at open time via
@@ -570,6 +699,10 @@ pub struct ContactsApp {
     /// target resolves. `ModalDialog` owns the scrim, panel, buttons, Escape /
     /// backdrop dismissal, focus trap, and accessible dialog role.
     delete_dialog: Option<DeleteDialog>,
+    /// The visual, confirmation-protected front end for the first pending
+    /// imported-UID collision. Remaining collisions are presented one at a
+    /// time after each explicit decision.
+    import_conflict_dialog: Option<ImportConflictDialog>,
 
     /// Self-contained export selection modal: state, drawing and input routing.
     export_dialog: ExportDialog,
@@ -631,6 +764,8 @@ pub struct ContactsApp {
     /// In-flight import file-chooser: the portal worker's receiver, drained
     /// once per frame. `Some` ⇒ the host's multi-select Open dialog is up.
     import_rx: Option<ImportChannel>,
+    import_parse_rx: Option<Receiver<ParsedImport>>,
+    import_generation: u64,
     /// In-flight export Save dialog: the portal worker's receiver.
     export_rx: Option<ExportChannel>,
     /// The contacts + vCard version parked while the export Save dialog is up,
@@ -639,6 +774,10 @@ pub struct ContactsApp {
     resource_file: Option<(bool, PathBuf)>,
     resource_invocation: Option<qos_actions::InvocationId>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
+    /// Pending untrusted UID collisions. These never enter the document until
+    /// the user explicitly chooses a safe resolution.
+    import_conflicts: Vec<ImportConflict>,
+    pending_conflict_resolution: Option<(String, bool)>,
 
     /// Framework-owned action dispatch: every on-screen affordance routes its
     /// [`ContactsAction`](crate::actions::ContactsAction) through here so it
@@ -698,6 +837,7 @@ impl ContactsApp {
             toast: None,
             confirm_delete: None,
             delete_dialog: None,
+            import_conflict_dialog: None,
             export_dialog: ExportDialog::new(),
             pending_switch: None,
             rect: Rect::ZERO,
@@ -724,11 +864,15 @@ impl ContactsApp {
             relayout: true,
             seeded: false,
             import_rx: None,
+            import_parse_rx: None,
+            import_generation: 0,
             export_rx: None,
             pending_export: None,
             resource_file: None,
             resource_invocation: None,
             completed_resource_invocation: None,
+            import_conflicts: Vec::new(),
+            pending_conflict_resolution: None,
             actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
         }
@@ -807,6 +951,23 @@ impl ContactsApp {
     /// `--shots`.
     pub fn shots_show_confirm_delete(&mut self) {
         self.confirm_delete = self.selected;
+    }
+
+    /// Show the imported-UID conflict review for screenshot inspection. The
+    /// candidate is deliberately different from the selected sample record,
+    /// matching the safe runtime path without mutating the shot document.
+    pub fn shots_show_import_conflict(&mut self) {
+        if let Some(existing) = self.selected.and_then(|id| self.store.get(id)).cloned() {
+            let mut incoming = existing.clone();
+            incoming.notes = "Imported file has different notes".into();
+            self.import_conflicts = vec![ImportConflict {
+                token: uuid::Uuid::new_v4(),
+                existing: existing.id,
+                incoming,
+            }];
+            self.import_conflict_dialog = None;
+            self.dirty = true;
+        }
     }
 
     /// Empty the book for `--shots` so a headless frame captures the genuine
@@ -1015,6 +1176,40 @@ impl ContactsApp {
         }
     }
 
+    fn resolve_import_conflict(
+        &mut self,
+        doc: &mut AutoCommit,
+        token: &str,
+        import_as_new: bool,
+    ) -> Result<(), String> {
+        let token =
+            uuid::Uuid::parse_str(token).map_err(|_| "invalid import conflict id".to_string())?;
+        let index = self
+            .import_conflicts
+            .iter()
+            .position(|conflict| conflict.token == token)
+            .ok_or_else(|| "import conflict no longer exists".to_string())?;
+        let Some(conflict) = self.import_conflicts.get(index).cloned() else {
+            return Err("import conflict no longer exists".into());
+        };
+        if import_as_new {
+            let mut contact = conflict.incoming;
+            contact.id = uuid::Uuid::new_v4();
+            let action = crate::actions::create_contact_action(&contact);
+            self.try_perform_action(doc, &action)
+                .map_err(|error| error.to_string())?;
+            self.store.upsert(contact);
+            self.show_toast("Imported conflicting contact as new");
+        } else {
+            self.show_toast("Kept the existing contact");
+        }
+        self.import_conflicts.remove(index);
+        self.import_conflict_dialog = None;
+        self.relayout = true;
+        self.dirty = true;
+        Ok(())
+    }
+
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// tests.
     #[cfg(test)]
@@ -1027,8 +1222,20 @@ impl ContactsApp {
     pub(crate) fn contacts_resource_ctx(&self) -> crate::actions::ContactsResourceCtx {
         crate::actions::ContactsResourceCtx {
             contacts: self.store.contacts.clone(),
-            import_busy: self.import_rx.is_some(),
+            import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
             export_busy: self.export_rx.is_some(),
+            import_conflicts: self
+                .import_conflicts
+                .iter()
+                .map(|conflict| crate::actions::ImportConflictResource {
+                    token: conflict.token.to_string(),
+                    incoming_name: conflict.incoming.display_name(),
+                    existing_name: self
+                        .store
+                        .get(conflict.existing)
+                        .map_or_else(|| "Deleted contact".into(), Contact::display_name),
+                })
+                .collect(),
         }
     }
 
@@ -1162,86 +1369,254 @@ impl ContactsApp {
     /// arrive over a channel drained by [`drain_portal`]. An in-flight request
     /// is not restarted.
     fn request_import(&mut self) {
-        if self.import_rx.is_some() {
+        if self.import_rx.is_some() || self.import_parse_rx.is_some() {
             return;
         }
         self.import_rx = Some(contacts_import_request().send_multiple());
     }
 
-    /// Read, parse, and merge every vCard file in `paths` into the address
-    /// book, persisting once if anything was added. Returns the number of
-    /// contacts imported. This is the hermetic core shared by the live portal
+    /// Read and parse every vCard file in `paths` into the address
+    /// book, persisting once if anything was added. An external `UID` is only
+    /// used to identify an existing contact: a changed collision is kept out
+    /// of the shared document and returned as a review conflict. This is the
+    /// hermetic core shared by the live portal
     /// drain and the tests — it never touches the picker, so multi-file import
     /// can be driven directly without a desktop portal.
-    fn import_paths(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> usize {
+    fn import_paths(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> ImportSummary {
         if paths.is_empty() {
             // An empty selection (or a cancelled picker) fabricates nothing.
-            return 0;
+            return ImportSummary::default();
         }
-        let mut n = 0usize;
+        let mut summary = ImportSummary::default();
         let mut first_new = None;
-        let mut errors = 0usize;
         for path in paths {
-            let text = match std::fs::read_to_string(path) {
+            let text = match Self::read_import_file(path) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!(error = %e, path = %path.display(), "contacts: import read failed");
-                    errors += 1;
+                    summary.errors += 1;
                     continue;
                 }
             };
-            // Each file may hold arbitrarily many, differently-shaped cards.
-            for c in vcard::parse_vcards(&text) {
-                let action = match self.store.get(c.id) {
-                    Some(existing) => crate::actions::patch_contact_action(existing, &c),
-                    None => crate::actions::create_contact_action(&c),
-                };
-                // Route each imported card through the action model too, so the
-                // whole import is one undo boundary. A rejected row never
-                // leaks into the local projection or the reported count.
-                match self.try_perform_action(doc, &action) {
-                    Ok(()) => {
-                        if first_new.is_none() {
-                            first_new = Some(c.id);
-                        }
-                        self.store.upsert(c);
-                        n += 1;
-                    }
-                    Err(error) => {
-                        errors += 1;
-                        tracing::warn!(error = %error, "contacts: import action refused");
-                        self.store.contacts = ContactsDoc::list_contacts(doc);
-                    }
-                }
+            // Each file may hold many, differently-shaped cards; parsing is
+            // intentionally bounded so one large or malformed import cannot
+            // monopolise the UI completion path.
+            let report = vcard::parse_vcards_report(&text);
+            summary.errors += report.skipped_cards;
+            summary.errors += usize::from(report.limit_reached);
+            for c in report.contacts {
+                self.absorb_import_contact(doc, c, &mut summary, &mut first_new);
             }
         }
         if let Some(id) = first_new {
             self.selected = Some(id);
         }
-        if n > 0 {
+        if summary.created > 0 {
             Self::persist();
-            let imported = format!("Imported {n} contact{}", if n == 1 { "" } else { "s" });
-            if errors > 0 {
-                self.show_toast(format!("{imported}; {errors} couldn't be imported"));
-            } else {
-                self.show_toast(imported);
-            }
+            self.show_import_summary(&summary);
             self.relayout = true;
-        } else if errors > 0 {
-            self.show_toast("Couldn't import the selected contact(s)");
+        } else if summary.unchanged > 0 || summary.conflicts > 0 || summary.errors > 0 {
+            self.show_import_summary(&summary);
         } else {
             // A valid but empty/unparseable selection: say so rather than
             // silently doing nothing.
             self.show_toast("No contacts found in the selected file(s)");
         }
-        n
+        summary
+    }
+
+    fn absorb_import_contact(
+        &mut self,
+        doc: &mut AutoCommit,
+        c: Contact,
+        summary: &mut ImportSummary,
+        first_new: &mut Option<ContactId>,
+    ) {
+        if let Some(existing) = self.store.get(c.id) {
+            if same_import_payload(existing, &c) {
+                summary.unchanged += 1;
+            } else {
+                let contact_id = c.id;
+                if self.import_conflicts.len() < MAX_IMPORT_CONFLICTS {
+                    self.import_conflicts.push(ImportConflict {
+                        token: uuid::Uuid::new_v4(),
+                        existing: existing.id,
+                        incoming: c,
+                    });
+                    summary.conflicts += 1;
+                } else {
+                    // Do not claim this collision is reviewable when the
+                    // bounded review queue deliberately declined it.
+                    summary.errors += 1;
+                }
+                tracing::warn!(%contact_id, "contacts: import UID collision needs review");
+            }
+            return;
+        }
+        let action = crate::actions::create_contact_action(&c);
+        match self.try_perform_action(doc, &action) {
+            Ok(()) => {
+                if first_new.is_none() {
+                    *first_new = Some(c.id);
+                }
+                self.store.upsert(c);
+                summary.created += 1;
+            }
+            Err(error) => {
+                summary.errors += 1;
+                tracing::warn!(error = %error, "contacts: import action refused");
+                self.store.contacts = ContactsDoc::list_contacts(doc);
+            }
+        }
+    }
+
+    fn apply_parsed_import(&mut self, doc: &mut AutoCommit, parsed: ParsedImport) -> ImportSummary {
+        let mut summary = ImportSummary {
+            errors: parsed.errors,
+            ..ImportSummary::default()
+        };
+        let mut first_new = None;
+        for contact in parsed.contacts {
+            self.absorb_import_contact(doc, contact, &mut summary, &mut first_new);
+        }
+        if let Some(id) = first_new {
+            self.selected = Some(id);
+        }
+        if summary.created > 0 {
+            Self::persist();
+            self.relayout = true;
+        }
+        if summary.created > 0
+            || summary.unchanged > 0
+            || summary.conflicts > 0
+            || summary.errors > 0
+        {
+            self.show_import_summary(&summary);
+        } else {
+            self.show_toast("No contacts found in the selected file(s)");
+        }
+        summary
+    }
+
+    fn start_import_parse(&mut self, paths: Vec<PathBuf>) -> Result<(), String> {
+        if paths.len() > MAX_IMPORT_FILES {
+            return Err(format!(
+                "select at most {MAX_IMPORT_FILES} vCard files at once"
+            ));
+        }
+        let mut total = 0_u64;
+        for path in &paths {
+            let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+            if !metadata.is_file() {
+                return Err("selected path is not a regular file".into());
+            }
+            total = total.saturating_add(metadata.len());
+            if total > MAX_IMPORT_TOTAL_BYTES {
+                return Err(format!(
+                    "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
+                ));
+            }
+        }
+        let generation = self.advance_import_generation()?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("contacts-vcard-parser".into())
+            .spawn(move || {
+                let mut contacts = Vec::new();
+                let mut errors = 0;
+                for path in paths {
+                    match Self::read_import_file(&path) {
+                        Ok(text) => {
+                            let report = vcard::parse_vcards_report(&text);
+                            errors += report.skipped_cards + usize::from(report.limit_reached);
+                            for c in report.contacts {
+                                if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
+                                    contacts.push(c);
+                                } else {
+                                    errors += 1;
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => errors += 1,
+                    }
+                }
+                let _ = sender.send(ParsedImport {
+                    generation,
+                    contacts,
+                    errors,
+                });
+            })
+            .map_err(|error| error.to_string())?;
+        self.import_parse_rx = Some(receiver);
+        Ok(())
+    }
+
+    /// Allocate a parser generation without ever reusing the initial or a
+    /// previously-issued value.  A wrap would let a delayed worker from an
+    /// ancient import look current, so exhaustion permanently closes imports
+    /// for this app instance instead of silently returning to generation 0.
+    fn advance_import_generation(&mut self) -> Result<u64, String> {
+        let generation = self.import_generation.checked_add(1).ok_or_else(|| {
+            "import generation exhausted; restart Contacts before importing again".to_string()
+        })?;
+        self.import_generation = generation;
+        Ok(generation)
+    }
+
+    fn read_import_file(path: &std::path::Path) -> Result<String, String> {
+        let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("selected path is not a regular file".into());
+        }
+        if metadata.len() > MAX_IMPORT_FILE_BYTES {
+            return Err(format!(
+                "file exceeds the {MAX_IMPORT_FILE_BYTES}-byte import limit"
+            ));
+        }
+        let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize + 1);
+        file.take(MAX_IMPORT_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > MAX_IMPORT_FILE_BYTES {
+            return Err(format!(
+                "file exceeds the {MAX_IMPORT_FILE_BYTES}-byte import limit"
+            ));
+        }
+        String::from_utf8(bytes).map_err(|_| "vCard file is not valid UTF-8 text".into())
+    }
+
+    fn show_import_summary(&mut self, summary: &ImportSummary) {
+        let mut parts = Vec::new();
+        if summary.created > 0 {
+            parts.push(format!(
+                "Imported {} contact{}",
+                summary.created,
+                if summary.created == 1 { "" } else { "s" }
+            ));
+        }
+        if summary.unchanged > 0 {
+            parts.push(format!("{} already current", summary.unchanged));
+        }
+        if summary.conflicts > 0 {
+            parts.push(format!(
+                "{} need{} review before merging",
+                summary.conflicts,
+                if summary.conflicts == 1 { "s" } else { "" }
+            ));
+        }
+        if summary.errors > 0 {
+            parts.push(format!("{} couldn't be imported", summary.errors));
+        }
+        self.show_toast(parts.join("; "));
     }
 
     /// Whether a file-chooser portal (import or export) is currently awaiting
     /// the user's choice. Keeps the host loop pumping frames so the outcome is
     /// drained promptly once the dialog closes.
     fn portal_in_flight(&self) -> bool {
-        self.import_rx.is_some() || self.export_rx.is_some()
+        self.import_rx.is_some() || self.import_parse_rx.is_some() || self.export_rx.is_some()
     }
 
     fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
@@ -1279,11 +1654,10 @@ impl ContactsApp {
             match rx.try_recv() {
                 Ok(ImportOutcome::Selected(paths)) => {
                     self.import_rx = None;
-                    let imported = self.import_paths(doc, &paths);
-                    self.finish_resource_file(
-                        imported > 0,
-                        (imported == 0).then(|| "no contacts were imported".into()),
-                    );
+                    if let Err(error) = self.start_import_parse(paths) {
+                        self.show_toast(format!("Couldn't start import: {error}"));
+                        self.finish_resource_file(false, Some(error));
+                    }
                 }
                 Ok(ImportOutcome::Cancelled) => {
                     // A dismissed picker is a silent no-op — nothing to say.
@@ -1298,6 +1672,42 @@ impl ContactsApp {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.import_rx = None;
+                    self.finish_resource_file(
+                        false,
+                        Some("import picker stopped unexpectedly".into()),
+                    );
+                }
+            }
+        }
+        if let Some(rx) = &self.import_parse_rx {
+            match rx.try_recv() {
+                Ok(parsed) => {
+                    self.import_parse_rx = None;
+                    if parsed.generation == self.import_generation {
+                        let imported = self.apply_parsed_import(doc, parsed);
+                        let success = imported.completed();
+                        self.finish_resource_file(
+                            success,
+                            (!success).then(|| imported.failure_message()),
+                        );
+                    } else {
+                        // A superseded parser is never allowed to apply its
+                        // contacts.  It must still settle a previously
+                        // accepted broker invocation rather than leaving that
+                        // job pending forever.
+                        self.finish_resource_file(
+                            false,
+                            Some("import was superseded before parsing finished".into()),
+                        );
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.import_parse_rx = None;
+                    self.finish_resource_file(
+                        false,
+                        Some("import parser stopped unexpectedly".into()),
+                    );
                 }
             }
         }
@@ -1895,6 +2305,13 @@ impl ContactsApp {
         }
         if self.pending_switch.is_some() {
             self.draw_unsaved_modal(scene, transform, tr, theme);
+        }
+        if !self.import_conflicts.is_empty() {
+            self.ensure_import_conflict_dialog();
+            if let Some(review) = self.import_conflict_dialog.as_mut() {
+                review.dialog.layout_in(self.rect, theme, tr);
+                review.dialog.draw(scene, transform, tr, theme, presence);
+            }
         }
         if let Some(id) = self.confirm_delete {
             self.ensure_delete_dialog(id);
@@ -3296,6 +3713,52 @@ impl ContactsApp {
             self.delete_dialog = Some(self.build_delete_dialog(id));
         }
     }
+
+    fn build_import_conflict_dialog(&self, conflict: &ImportConflict) -> ImportConflictDialog {
+        let import_as_new = Rc::new(Cell::new(false));
+        let keep_existing = Rc::new(Cell::new(false));
+        let existing_name = self
+            .store
+            .get(conflict.existing)
+            .map_or_else(|| "the current contact".to_string(), Contact::display_name);
+        let body = format!(
+            "\u{201C}{}\u{201D} has the same vCard UID as \u{201C}{existing_name}\u{201D}, but its details differ. \
+             Import as new adds a separate contact; Keep existing discards the imported version.",
+            conflict.incoming.display_name(),
+        );
+        let dialog = ModalDialog::new("Review imported contact", Text::new(&body).with_size(13.0))
+            .open(true)
+            .with_max_size(480.0, 210.0)
+            .with_destructive(true)
+            .primary_action("Import as new", {
+                let import_as_new = Rc::clone(&import_as_new);
+                move || import_as_new.set(true)
+            })
+            .secondary_action("Keep existing", {
+                let keep_existing = Rc::clone(&keep_existing);
+                move || keep_existing.set(true)
+            });
+        ImportConflictDialog {
+            token: conflict.token,
+            dialog,
+            import_as_new,
+            keep_existing,
+        }
+    }
+
+    fn ensure_import_conflict_dialog(&mut self) {
+        let Some(conflict) = self.import_conflicts.first() else {
+            self.import_conflict_dialog = None;
+            return;
+        };
+        if self
+            .import_conflict_dialog
+            .as_ref()
+            .is_none_or(|dialog| dialog.token != conflict.token)
+        {
+            self.import_conflict_dialog = Some(self.build_import_conflict_dialog(conflict));
+        }
+    }
 }
 
 /// Geometry of the unsaved-changes ("Save changes?") modal.
@@ -4003,6 +4466,11 @@ impl Widget for ContactsApp {
         // canonical migration persists them before UI edits/actions can target
         // a row. It only touches missing row ids and is idempotent.
         ContactsDoc::migrate_legacy_rows(state);
+        if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
+            && let Err(error) = self.resolve_import_conflict(state, &token, import_as_new)
+        {
+            self.show_toast(format!("Couldn't resolve import review: {error}"));
+        }
         if let Some((export, file)) = self.resource_file.take() {
             if export {
                 let ids = self
@@ -4018,10 +4486,8 @@ impl Widget for ContactsApp {
                 );
             } else {
                 let imported = self.import_paths(state, &[file]);
-                self.finish_resource_file(
-                    imported > 0,
-                    (imported == 0).then(|| "no contacts were imported".into()),
-                );
+                let success = imported.completed();
+                self.finish_resource_file(success, (!success).then(|| imported.failure_message()));
             }
         }
         // Drain any in-flight file-chooser portal request first, so a chosen
@@ -4273,7 +4739,7 @@ impl Widget for ContactsApp {
                 qos_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportVcard { .. },
             ) => {
-                if self.import_rx.is_some() {
+                if self.import_rx.is_some() || self.import_parse_rx.is_some() {
                     return Err("a contact import is already in progress".into());
                 }
                 self.request_import();
@@ -4294,6 +4760,32 @@ impl Widget for ContactsApp {
                 if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
                     return Err("there are no contacts to export".into());
                 }
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::KeepImportConflict { token },
+            ) => {
+                if !self
+                    .import_conflicts
+                    .iter()
+                    .any(|conflict| conflict.token.to_string() == token)
+                {
+                    return Err("import conflict no longer exists".into());
+                }
+                self.pending_conflict_resolution = Some((token, false));
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::ContactsOperation::ImportConflictAsNew { token },
+            ) => {
+                if !self
+                    .import_conflicts
+                    .iter()
+                    .any(|conflict| conflict.token.to_string() == token)
+                {
+                    return Err("import conflict no longer exists".into());
+                }
+                self.pending_conflict_resolution = Some((token, true));
             }
             _ => return Err("operation kind does not match Contacts operation".into()),
         }
@@ -4316,7 +4808,10 @@ impl Widget for ContactsApp {
             serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match operation {
             crate::actions::ContactsOperation::ImportVcard { path: file } => {
-                if self.resource_invocation.is_some() {
+                if self.resource_invocation.is_some()
+                    || self.import_rx.is_some()
+                    || self.import_parse_rx.is_some()
+                {
                     return Err("another contact file operation is running".into());
                 }
                 self.resource_invocation = Some(invocation);
@@ -4346,7 +4841,9 @@ impl Widget for ContactsApp {
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            crate::actions::ContactsOperation::Open { .. } => self
+            crate::actions::ContactsOperation::Open { .. }
+            | crate::actions::ContactsOperation::KeepImportConflict { .. }
+            | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
                 .map(|handled| {
                     handled.then(|| {
@@ -4369,11 +4866,25 @@ impl Widget for ContactsApp {
             self.resource_invocation = None;
             self.resource_file = None;
             self.import_rx = None;
+            self.import_parse_rx = None;
+            let exhausted = self.advance_import_generation().is_err();
             self.export_rx = None;
             self.pending_export = None;
+            if exhausted {
+                self.show_toast(
+                    "Import cancelled; restart Contacts before importing again (generation exhausted)",
+                );
+            }
             return Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("contact file operation cancelled".into()),
+                message: Some(
+                    if exhausted {
+                        "contact file operation cancelled; import generation exhausted"
+                    } else {
+                        "contact file operation cancelled"
+                    }
+                    .into(),
+                ),
             });
         }
         if self
@@ -4401,13 +4912,18 @@ impl Widget for ContactsApp {
     }
 
     fn traps_focus(&self) -> bool {
-        self.confirm_delete.is_some()
+        self.confirm_delete.is_some() || !self.import_conflicts.is_empty()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.delete_dialog
+        self.import_conflict_dialog
             .as_ref()
-            .and_then(|confirm| confirm.dialog.modal_capture())
+            .and_then(|review| review.dialog.modal_capture())
+            .or_else(|| {
+                self.delete_dialog
+                    .as_ref()
+                    .and_then(|confirm| confirm.dialog.modal_capture())
+            })
     }
 
     #[allow(
@@ -4415,6 +4931,40 @@ impl Widget for ContactsApp {
         reason = "the accessibility tree mirrors the toolbar, empty state, search, and contact list in one auditable hierarchy"
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if let Some(conflict) = self.import_conflicts.first() {
+            let existing_name = self
+                .store
+                .get(conflict.existing)
+                .map_or_else(|| "current contact".to_string(), Contact::display_name);
+            let description = format!(
+                "{} shares a vCard UID with {existing_name}, but the details differ. Choose how to resolve this import.",
+                conflict.incoming.display_name()
+            );
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Review imported contact")
+                    .with_description(description)
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Keep existing contact")
+                            .with_description("Discard the imported version and keep the current contact")
+                            .with_action_target(import_conflict_target(
+                                conflict.token,
+                                "keep-existing",
+                            ))
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name("Import as new contact")
+                            .with_description("Confirmation action: add the imported version as a separate contact")
+                            .with_action_target(import_conflict_target(
+                                conflict.token,
+                                "import-as-new",
+                            ))
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
         if let Some(dialog) = self
             .delete_dialog
             .as_ref()
@@ -4615,6 +5165,19 @@ impl Widget for ContactsApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
+
+        if matches!(action, Action::Activate)
+            && let Some(conflict) = self.import_conflicts.first()
+        {
+            let keep = import_conflict_target(conflict.token, "keep-existing");
+            let import_as_new = import_conflict_target(conflict.token, "import-as-new");
+            if target == keep || target == import_as_new {
+                self.pending_conflict_resolution =
+                    Some((conflict.token.to_string(), target == import_as_new));
+                self.dirty = true;
+                return true;
+            }
+        }
 
         // Editable form fields are private draft state until Save. Semantic
         // input therefore follows the same local route as physical typing;
@@ -5055,6 +5618,17 @@ impl ContactsApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
+        if !self.import_conflicts.is_empty() {
+            self.route_import_conflict_dialog_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+            );
+            return true;
+        }
         if (self.export_dialog.is_open() || self.pending_switch.is_some())
             && let WindowEvent::KeyboardInput { event: ke, .. } = event
         {
@@ -6083,6 +6657,52 @@ impl ContactsApp {
             self.delete_dialog = None;
         }
         self.dirty = true;
+        *handled = true;
+    }
+
+    /// Route the imported-UID review modal. The modal itself is the explicit
+    /// confirmation for the destructive "Import as new" choice; backdrop and
+    /// Escape deliberately leave the pending conflict untouched.
+    fn route_import_conflict_dialog_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        self.ensure_import_conflict_dialog();
+        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            let theme = Theme::dark();
+            let mut text_renderer = TextRenderer::new();
+            if let Some(review) = self.import_conflict_dialog.as_mut() {
+                review
+                    .dialog
+                    .layout_in(self.rect, &theme, &mut text_renderer);
+            }
+        }
+        let (token, import_as_new, keep_existing) = {
+            let Some(review) = self.import_conflict_dialog.as_mut() else {
+                *handled = true;
+                return;
+            };
+            *handled = review
+                .dialog
+                .handle_detached(event, scale_factor, modifiers, state, path);
+            (
+                review.token.to_string(),
+                review.import_as_new.replace(false),
+                review.keep_existing.replace(false),
+            )
+        };
+        if import_as_new || keep_existing {
+            self.pending_conflict_resolution = Some((token, import_as_new));
+            // Do not permit a second physical click before the next sync
+            // consumes the one explicit choice.
+            self.import_conflict_dialog = None;
+            self.dirty = true;
+        }
         *handled = true;
     }
 
@@ -8967,8 +9587,11 @@ mod tests {
 
         // Drive the parse+merge core directly with the paths the portal would
         // have handed back (the picker itself can't run headless).
-        let n = app.import_paths(&mut doc, &[vcf_a, vcf_b]);
-        assert_eq!(n, 3, "all three cards across the two files were imported");
+        let summary = app.import_paths(&mut doc, &[vcf_a, vcf_b]);
+        assert_eq!(
+            summary.created, 3,
+            "all three cards across the two files were imported"
+        );
         assert_eq!(
             app.store.len(),
             3,
@@ -8992,6 +9615,92 @@ mod tests {
             "written to the doc"
         );
         let _ = path;
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reimporting_an_export_recognises_its_uid_without_duplicating_it() {
+        let (dir, _path) = scratch_book();
+        std::fs::create_dir_all(&dir).unwrap();
+        let card = sample_contacts().into_iter().next().unwrap();
+        let vcf = dir.join("contacts-export.vcf");
+        std::fs::write(&vcf, vcard::to_vcard(&card, VCardVersion::V4)).unwrap();
+
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+
+        let first = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        assert_eq!(first.created, 1);
+        assert_eq!(app.store.len(), 1);
+        let second = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        assert_eq!(second.created, 0);
+        assert_eq!(second.unchanged, 1);
+        assert_eq!(
+            app.store.len(),
+            1,
+            "an exported UID resolves to the existing contact rather than a duplicate"
+        );
+        assert_eq!(app.store.contacts[0].id, card.id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hostile_known_uid_is_reported_for_review_without_overwriting_contact() {
+        let (dir, _path) = scratch_book();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = sample_contacts().into_iter().next().unwrap();
+        let malicious = vcard::to_vcard(&original, VCardVersion::V4)
+            .replace(&original.emails[0].value, "attacker@example.invalid");
+        let original_file = dir.join("original.vcf");
+        let malicious_file = dir.join("malicious.vcf");
+        std::fs::write(&original_file, vcard::to_vcard(&original, VCardVersion::V4)).unwrap();
+        std::fs::write(&malicious_file, malicious).unwrap();
+
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.import_paths(&mut doc, &[original_file]).created, 1);
+
+        let result = app.import_paths(&mut doc, &[malicious_file]);
+        assert_eq!(result.conflicts, 1);
+        assert!(result.failure_message().contains("review"));
+        let resources = Widget::resources(&app, &doc);
+        let review = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "contacts.import-conflict")
+            .expect("the pending collision has an addressable review resource");
+        assert!(
+            review
+                .actions
+                .iter()
+                .any(|action| action.id == "keep-existing")
+        );
+        assert!(
+            review
+                .actions
+                .iter()
+                .any(|action| action.id == "import-as-new")
+        );
+        assert_eq!(
+            app.store.len(),
+            1,
+            "a collision does not create a duplicate"
+        );
+        assert_eq!(
+            app.store.get(original.id).unwrap().emails[0].value,
+            original.emails[0].value,
+            "an untrusted UID cannot overwrite the known contact"
+        );
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("review")),
+            "the collision is visible to the user"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -9026,7 +9735,16 @@ mod tests {
             app.portal_in_flight(),
             "a request is in flight until drained"
         );
-        app.sync(&mut doc, &ROOT);
+        // The picker is drained on this frame; parsing happens on a worker so
+        // a slow vCard cannot block rendering. Drive a few frames instead of
+        // assuming the scheduler has already run that worker.
+        for _ in 0..500 {
+            app.sync(&mut doc, &ROOT);
+            if !app.portal_in_flight() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(
             !app.portal_in_flight(),
             "draining the outcome clears the request"
@@ -9035,6 +9753,207 @@ mod tests {
         assert_eq!(app.store.contacts[0].first, "Drained");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn import_conflict_review_is_visible_accessible_and_resolves_both_choices() {
+        fn conflicting_app() -> (ContactsApp, AutoCommit, Contact, Contact) {
+            let original = sample_contacts().into_iter().next().unwrap();
+            let mut incoming = original.clone();
+            incoming.emails[0].value = "attacker@example.invalid".into();
+            let mut doc = AutoCommit::new();
+            let mut app = ContactsApp::new();
+            app.sync(&mut doc, &ROOT);
+            let mut summary = ImportSummary::default();
+            let mut first_new = None;
+            app.absorb_import_contact(&mut doc, original.clone(), &mut summary, &mut first_new);
+            app.absorb_import_contact(&mut doc, incoming.clone(), &mut summary, &mut first_new);
+            assert_eq!(summary.conflicts, 1);
+            (app, doc, original, incoming)
+        }
+
+        // Wide rendering exposes a real modal rather than only a toast or a
+        // palette resource, and its two decisions are in the semantic tree.
+        let (mut app, mut doc, original, _) = conflicting_app();
+        apply_at(&mut app, 1280, 800);
+        let token = app.import_conflicts[0].token;
+        let keep = import_conflict_target(token, "keep-existing");
+        let import_as_new = import_conflict_target(token, "import-as-new");
+        let tree = app.accessibility().expect("review dialog is accessible");
+        assert_eq!(tree.role, Role::Dialog);
+        assert!(tree.state.modal);
+        assert!(access_target(&tree, &keep).is_some());
+        assert!(access_target(&tree, &import_as_new).is_some());
+        app.ensure_import_conflict_dialog();
+        let mut tr = TextRenderer::new();
+        app.import_conflict_dialog
+            .as_mut()
+            .unwrap()
+            .dialog
+            .layout_in(app.rect, &Theme::dark(), &mut tr);
+        assert!(app.modal_capture().is_some(), "review dialog is painted");
+        assert!(app.perform_semantic_action(&keep, &ui::a11y::Action::Activate, &mut doc, &ROOT));
+        app.sync(&mut doc, &ROOT);
+        assert!(app.import_conflicts.is_empty());
+        assert_eq!(app.store.len(), 1);
+        assert_eq!(
+            app.store.get(original.id).unwrap().emails[0].value,
+            original.emails[0].value
+        );
+
+        // Import-as-new is the destructive, confirmation-labelled decision.
+        // It mints a fresh local id and dispatches the normal CreateContact
+        // action, never patching the contact identified by the untrusted UID.
+        let (mut app, mut doc, original, incoming) = conflicting_app();
+        apply_at(&mut app, 560, 720);
+        let token = app.import_conflicts[0].token;
+        let import_as_new = import_conflict_target(token, "import-as-new");
+        app.ensure_import_conflict_dialog();
+        let mut tr = TextRenderer::new();
+        app.import_conflict_dialog
+            .as_mut()
+            .unwrap()
+            .dialog
+            .layout_in(app.rect, &Theme::dark(), &mut tr);
+        assert!(
+            app.modal_capture().is_some(),
+            "review is also rendered narrow"
+        );
+        assert!(app.perform_semantic_action(
+            &import_as_new,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        app.sync(&mut doc, &ROOT);
+        assert!(app.import_conflicts.is_empty());
+        assert_eq!(app.store.len(), 2);
+        assert_eq!(
+            app.store.get(original.id).unwrap().emails[0].value,
+            original.emails[0].value
+        );
+        assert!(app.store.contacts.iter().any(|contact| {
+            contact.id != original.id && contact.emails[0].value == incoming.emails[0].value
+        }));
+        assert!(
+            app.last_dispatched().is_some(),
+            "Import as new uses ContactsAction"
+        );
+    }
+
+    #[test]
+    fn stale_background_parser_cannot_apply_or_leave_an_accepted_import_pending() {
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+        let mut stale = Contact::new();
+        stale.first = "Stale worker".into();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        app.import_generation = 2;
+        app.import_parse_rx = Some(receiver);
+        let invocation = qos_actions::InvocationId::new();
+        app.resource_invocation = Some(invocation);
+        sender
+            .send(ParsedImport {
+                generation: 1,
+                contacts: vec![stale],
+                errors: 0,
+            })
+            .unwrap();
+
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            app.store.is_empty(),
+            "wrong-generation data never reaches the book"
+        );
+        assert!(app.import_parse_rx.is_none());
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT),
+            Some(qos_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn exhausted_parser_generation_refuses_a_new_import_and_settles_the_job() {
+        let (dir, _path) = scratch_book();
+        std::fs::create_dir_all(&dir).unwrap();
+        let vcf = dir.join("generation-limit.vcf");
+        std::fs::write(&vcf, "BEGIN:VCARD\r\nFN:Never Parsed\r\nEND:VCARD\r\n").unwrap();
+
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+        let invocation = qos_actions::InvocationId::new();
+        app.resource_invocation = Some(invocation);
+        app.import_generation = u64::MAX;
+        app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
+            vec![vcf],
+        )));
+
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            app.store.is_empty(),
+            "no wrapped parser generation can apply data"
+        );
+        assert!(app.import_parse_rx.is_none());
+        assert_eq!(
+            app.import_generation,
+            u64::MAX,
+            "the exhausted token is never reused"
+        );
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("generation exhausted"))
+        );
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT),
+            Some(qos_actions::InvocationUpdate::Failed { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancelling_at_generation_max_invalidates_the_worker_without_wrapping() {
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let invocation = qos_actions::InvocationId::new();
+        app.resource_invocation = Some(invocation);
+        app.import_parse_rx = Some(receiver);
+        app.import_generation = u64::MAX;
+
+        let update = app
+            .poll_resource_operation(invocation, true, &doc, &ROOT)
+            .expect("accepted import is settled when cancelled");
+        assert!(matches!(
+            update,
+            qos_actions::InvocationUpdate::Cancelled { .. }
+        ));
+        assert!(
+            app.import_parse_rx.is_none(),
+            "the worker result is detached"
+        );
+        assert_eq!(
+            app.import_generation,
+            u64::MAX,
+            "cancellation never wraps to 0"
+        );
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|(message, _)| message.contains("generation exhausted"))
+        );
+        // The worker can still finish in the background, but its disconnected
+        // receiver means no stale contacts can reach this app instance.
+        let _ = sender.send(ParsedImport {
+            generation: u64::MAX,
+            contacts: vec![Contact::new()],
+            errors: 0,
+        });
+        app.sync(&mut doc, &ROOT);
+        assert!(app.store.is_empty());
     }
 
     #[test]
@@ -9049,7 +9968,7 @@ mod tests {
         assert!(app.store.is_empty());
 
         // Empty selection.
-        assert_eq!(app.import_paths(&mut doc, &[]), 0);
+        assert!(!app.import_paths(&mut doc, &[]).completed());
         // A cancelled picker drained through the real path.
         app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Cancelled));
         app.sync(&mut doc, &ROOT);
