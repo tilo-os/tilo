@@ -15,6 +15,22 @@ pub struct LibraryPhoto {
     pub image: OpenImage,
     #[serde(default)]
     pub favorite: bool,
+    /// A user-organized folder label. This is deliberately metadata rather
+    /// than an on-disk directory: a shared path only has meaning on the
+    /// machine that happened to import the picture.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Named people visible in the photograph.  These are compact labels, not
+    /// biometric data or a second copy of the image.
+    #[serde(default)]
+    pub people: Vec<String>,
+    /// Freeform, durable search labels.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Optional user-supplied capture date/time text.  Keeping the original
+    /// string avoids silently changing a collaborator's timezone or precision.
+    #[serde(default)]
+    pub captured_at: Option<String>,
 }
 
 impl LibraryPhoto {
@@ -28,7 +44,32 @@ impl LibraryPhoto {
             id,
             image,
             favorite: false,
+            folder: None,
+            people: Vec::new(),
+            tags: Vec::new(),
+            captured_at: None,
         }
+    }
+
+    /// A short, deterministic description for resource trees and assistive
+    /// technology.  Every field is optional, so an imported legacy record
+    /// still has a useful result without pretending it has metadata.
+    #[must_use]
+    pub fn metadata_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(folder) = &self.folder {
+            parts.push(format!("Folder: {folder}"));
+        }
+        if !self.people.is_empty() {
+            parts.push(format!("People: {}", self.people.join(", ")));
+        }
+        if !self.tags.is_empty() {
+            parts.push(format!("Tags: {}", self.tags.join(", ")));
+        }
+        if let Some(captured_at) = &self.captured_at {
+            parts.push(format!("Captured: {captured_at}"));
+        }
+        parts.join(" · ")
     }
 }
 
