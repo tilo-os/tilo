@@ -117,6 +117,9 @@ struct GroupDrag {
 /// published, matching what [`WindowGroup::detach_tab`] returns.
 pub struct CrossStripDetach {
     pub tab_id: u64,
+    pub source_group_id: u64,
+    pub source_group_index: usize,
+    pub source_tab_index: usize,
     pub desc: TabDescriptor,
     pub host: TileHost,
     pub release_point: Point,
@@ -460,6 +463,25 @@ impl GroupRow {
         self.structure_dirty = true;
     }
 
+    /// Move one existing group to its persisted strip position without
+    /// publishing a user drag.  Shell reconciliation uses this after a
+    /// remote/document revision changes the order: keeping the original
+    /// `WindowGroup` instance preserves its tab hosts, focus and in-flight
+    /// presentation state.
+    pub fn reorder_group_by_id(&mut self, id: u64, idx: usize) -> bool {
+        let Some(from) = self.groups.iter().position(|group| group.id == id) else {
+            return false;
+        };
+        let to = idx.min(self.groups.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        let group = self.groups.remove(from);
+        self.groups.insert(to, group);
+        self.structure_dirty = true;
+        true
+    }
+
     pub fn shift_anim_t(&self) -> f64 {
         let Some(anim) = &self.shift_anim else {
             return 1.0;
@@ -781,6 +803,16 @@ impl GroupRow {
         let Some(g) = self.groups.iter_mut().find(|g| g.id == group_id) else {
             return false;
         };
+        if !g.tabs().iter().any(|tab| tab.id == tab_id) {
+            return false;
+        }
+        // Selecting the tab already visible is still a valid address.  The
+        // shell uses this boolean as a stale-target guard before it writes
+        // durable focus, so `false` must mean "the group/tab does not
+        // exist", not merely "nothing needed repainting".
+        if g.active_tab_id() == tab_id {
+            return true;
+        }
         if !g.set_active_tab(tab_id) {
             return false;
         }
@@ -1124,17 +1156,11 @@ impl GroupRow {
     /// to sender" recovery path, called on the source row.
     pub fn accept_cross_strip_drop(
         &mut self,
+        new_id: u64,
         desc: TabDescriptor,
         host: TileHost,
         drop_pos: Point,
-    ) {
-        let new_id = self
-            .groups
-            .iter()
-            .map(|g| g.id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
+    ) -> usize {
         let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
         new_group.start_spawn_animation();
         // `gap_index_for` returns `None` when `drop_pos` falls inside an
@@ -1143,6 +1169,29 @@ impl GroupRow {
         let gap_idx = self.gap_index_for(drop_pos).unwrap_or(self.groups.len());
         let clamped = gap_idx.min(self.groups.len());
         self.groups.insert(clamped, new_group);
+        self.structure_dirty = true;
+        clamped
+    }
+
+    /// Restore a detach whose durable cross-strip transaction was refused.
+    /// The original group and position win; this path must be visually a no-op.
+    pub fn restore_cross_strip_detach(&mut self, payload: CrossStripDetach) {
+        if let Some(group) = self
+            .groups
+            .iter_mut()
+            .find(|group| group.id == payload.source_group_id)
+        {
+            group.insert_detached_tab(payload.source_tab_index, payload.desc, payload.host);
+        } else {
+            let group = WindowGroup::from_detached(
+                payload.source_group_id,
+                payload.desc,
+                payload.host,
+                WindowWidth::Normal,
+            );
+            let at = payload.source_group_index.min(self.groups.len());
+            self.groups.insert(at, group);
+        }
         self.structure_dirty = true;
     }
 }
@@ -2103,9 +2152,17 @@ impl GroupRow {
             let Some(src_group) = self.groups.get_mut(src_idx) else {
                 continue;
             };
+            let source_tab_index = src_group
+                .tabs()
+                .iter()
+                .position(|tab| tab.id == tab_id)
+                .unwrap_or_else(|| src_group.tab_count());
             if let Some((desc, host)) = src_group.detach_tab(tab_id) {
                 self.pending_cross_strip_detach = Some(CrossStripDetach {
                     tab_id,
+                    source_group_id: src_group.id,
+                    source_group_index: src_idx,
+                    source_tab_index,
                     desc,
                     host,
                     release_point,
@@ -2417,6 +2474,28 @@ mod tests {
     }
 
     #[test]
+    fn active_tab_address_must_exist_even_when_the_bar_is_stale() {
+        let stale = WindowGroup::new(
+            100,
+            vec![(
+                TabDescriptor::new(2, "surviving"),
+                TileContent::Stub {
+                    kind: crate::widget::AppKind::Settings,
+                    label: "surviving".into(),
+                },
+            )],
+            1,
+            WindowWidth::Normal,
+        );
+        let mut row = GroupRow::new(vec![stale]);
+
+        assert!(
+            !row.set_group_active_tab(100, 1),
+            "an active id left behind by a close is not a valid focus target"
+        );
+    }
+
+    #[test]
     fn split_tab_into_new_group_appends_with_empty_source_pruned() {
         let g0 = make_group(100, &[1]);
         let g1 = make_group(200, &[10, 11]);
@@ -2664,6 +2743,36 @@ mod tests {
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    #[test]
+    fn refused_cross_strip_move_restores_exact_group_and_tab_order() {
+        let mut row = make_row_with_groups(&[&[1, 2, 3], &[10]]);
+        let source_group_index = 0;
+        let source_group_id = row.groups[source_group_index].id;
+        let source_tab_index = 1;
+        let (desc, host) = row.groups[source_group_index]
+            .detach_tab(2)
+            .expect("fixture tab detaches");
+        row.restore_cross_strip_detach(CrossStripDetach {
+            tab_id: 2,
+            source_group_id,
+            source_group_index,
+            source_tab_index,
+            desc,
+            host,
+            release_point: Point::new(900.0, 900.0),
+        });
+
+        assert_eq!(row.group_ids(), vec![100, 200]);
+        assert_eq!(
+            row.groups[0]
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+        );
     }
 
     /// A point in group `idx`'s tab-bar background — right of the last tab

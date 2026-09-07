@@ -7,13 +7,28 @@
 //! [`State`] lives for the compositor's lifetime; [`ClientState`] is
 //! per-client data attached at `insert_client` time. Trait impls and `delegate_*!` macros follow.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, Copy)]
+enum ForeignCommitCapture {
+    NoBuffer,
+    Removed,
+    DirectBuffer,
+    Dmabuf(u64),
+}
+
+#[derive(Default)]
+struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
+use smithay::desktop::{
+    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, find_popup_root_surface,
+};
 use smithay::input::keyboard::{Layout, XkbConfig};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, Focus, MotionEvent, RelativeMotionEvent};
 
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
@@ -53,13 +68,16 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
 use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
     delegate_ext_data_control, delegate_fractional_scale, delegate_output,
     delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_xdg_activation, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -405,6 +423,22 @@ pub(crate) struct TrackedPopup {
     grabbed: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct FullscreenTarget {
+    pub surface_id: u64,
+    pub requested_output: Option<WlOutput>,
+    pub surface: ToplevelSurface,
+    pub configured_size: Option<(i32, i32)>,
+}
+
+#[derive(Debug, Clone)]
+struct HostLaunchActivation {
+    desktop_id: String,
+    display_name: String,
+    placement: crate::compositor::tab_binding::Placement,
+    issued: std::time::Instant,
+}
+
 /// The compositor's process-wide state.
 ///
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
@@ -417,6 +451,18 @@ pub struct State {
     pub compositor_state: CompositorState,
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
+    /// `xdg_activation_v1` token store. Client-minted tokens enter it only
+    /// after [`XdgActivationHandler::token_created`] proves they came from a
+    /// recent serial on this seat and a focused source surface.
+    pub xdg_activation_state: XdgActivationState,
+    /// Metadata for compositor-created activation tokens passed to one host
+    /// launch. Kept separate from client token data: host app-ids need not
+    /// match their desktop-file id.
+    host_launch_activations: HashMap<String, HostLaunchActivation>,
+    /// Canonical labels claimed by a compositor-issued host-launch token.
+    /// A late client `set_app_id` may update routing identity but must not
+    /// replace this user-selected host application name.
+    host_launch_surface_labels: HashMap<u64, String>,
     /// `zxdg_decoration_manager_v1` global state — who draws the frame
     /// around a toplevel.
     ///
@@ -492,6 +538,11 @@ pub struct State {
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
+    /// Recently issued seat serials and their issue time. The activation
+    /// protocol carries a serial but no timestamp for the underlying input;
+    /// retaining this short bounded history lets us reject fabricated and
+    /// stale serials instead of treating the opaque integer as authority.
+    pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
     /// Per-peer virtual-seat attribution. Click focus scopes which shared
@@ -571,6 +622,7 @@ pub struct State {
     /// steals the presenter's local keyboard.
     output_presentation_focus: Option<SurfaceId>,
     output_presentation_sequences: HashMap<SurfaceId, u64>,
+    pub(crate) fullscreen_target: Option<FullscreenTarget>,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -592,6 +644,7 @@ pub struct State {
     /// XDG popups are separate surfaces, not tabs.  They are captured and
     /// composed above their parent through this registry.
     pub(crate) popups: Vec<TrackedPopup>,
+    pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
     pub(crate) input_method_popups: Vec<InputMethodPopupSurface>,
@@ -822,6 +875,7 @@ impl State {
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
@@ -854,9 +908,12 @@ impl State {
         // (e.g. 1.5×) and have the compositor composite the correct logical size; the preferred scale is pushed per-surface on commit.
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
-        // Advertise `ext_session_lock_manager_v1` for standard-protocol locking; the compositor still owns the lock UI + authentication.
+        // Session locking controls the compositor's authentication boundary:
+        // only clients accepted on the session's privileged socket may even
+        // see the manager. Sandboxed and ordinary host applications receive
+        // the public socket and cannot acquire (or later release) the lock.
         let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&display_handle, |_client| true);
+            SessionLockManagerState::new::<Self, _>(&display_handle, is_privileged_client);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
@@ -871,6 +928,9 @@ impl State {
             display_handle,
             compositor_state,
             xdg_shell_state,
+            xdg_activation_state,
+            host_launch_activations: HashMap::new(),
+            host_launch_surface_labels: HashMap::new(),
             xdg_decoration_state,
             shm_state,
             dmabuf_state,
@@ -890,6 +950,7 @@ impl State {
             surface_tracker: SurfaceTracker::new(),
             seat,
             serial_counter: 0,
+            activation_serials: VecDeque::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             surface_handles: HashMap::new(),
@@ -909,12 +970,14 @@ impl State {
             pending_presentation_outputs: HashMap::new(),
             output_presentation_focus: None,
             output_presentation_sequences: HashMap::new(),
+            fullscreen_target: None,
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
+            popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
@@ -1538,19 +1601,50 @@ impl State {
     /// so its tab can paint the client's actual pixels.
     ///
     /// Split out of [`CompositorHandler::commit`] to keep the hook a plain
-    /// dispatch. `wl_shm` and dmabuf are both handled by
-    /// [`crate::compositor::foreign::ForeignFrameStore::capture_commit`]; a buffer neither path can decode is recorded as an error the tile renders, never a silently stale frame.
+    /// dispatch. `wl_shm` is copied here; a dmabuf worker result was staged by
+    /// the pre-commit barrier and is activated here. A buffer neither path can
+    /// decode is recorded as an error the tile renders, never a silently stale frame.
     fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
+            // SurfaceAttributes.current().buffer is intentionally aggregated
+            // until a compositor clears it; therefore it may still contain a
+            // previous NewBuffer on a damage-only commit. Consume the marker
+            // created by this exact pre-commit hook instead of inferring the
+            // commit kind from that sticky current state.
+            let association = states
+                .data_map
+                .get::<ForeignCommitCaptures>()
+                .and_then(|commits| {
+                    commits
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .pop_front()
+                })
+                .unwrap_or(ForeignCommitCapture::NoBuffer);
+            if matches!(association, ForeignCommitCapture::NoBuffer) {
+                return;
+            }
+            if matches!(association, ForeignCommitCapture::Removed) {
+                store().clear_frame(surface_id);
+                return;
+            }
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
-                    if let CaptureOutcome::Failed(reason) =
-                        store().capture_commit(surface_id, buffer)
-                    {
+                    let outcome = match association {
+                        ForeignCommitCapture::DirectBuffer => {
+                            store().capture_commit(surface_id, buffer)
+                        }
+                        ForeignCommitCapture::Dmabuf(token) => {
+                            store().capture_commit_associated(surface_id, buffer, Some(token))
+                        }
+                        ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Removed => return,
+                    };
+                    if let CaptureOutcome::Failed(reason) = outcome {
                         tracing::warn!(
                             target: "shell::compositor::foreign",
                             surface_id,
@@ -2172,6 +2266,71 @@ impl RemoteInputSink for State {
     }
 }
 
+impl State {
+    fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
+        let surface_id = crate::compositor::state::surface_id(surface);
+        let captured_here = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
+            .is_some()
+            || self.osk_surface == Some(surface_id)
+            || self.is_floating_toplevel(surface_id);
+        if !captured_here {
+            return;
+        }
+        let association = wl_compositor::with_states(surface, |states| {
+            let mut attrs = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>();
+            let buffer = match &attrs.pending().buffer {
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer,
+                Some(wl_compositor::BufferAssignment::Removed) => {
+                    return ForeignCommitCapture::Removed;
+                }
+                None => return ForeignCommitCapture::NoBuffer,
+            };
+            let Some(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned() else {
+                return ForeignCommitCapture::DirectBuffer;
+            };
+            drop(attrs);
+            let Some(client) = surface.client() else {
+                return ForeignCommitCapture::NoBuffer;
+            };
+            if let Some((token, barrier)) = crate::compositor::foreign::store()
+                .prepare_dmabuf_capture(surface_id, client, dmabuf)
+            {
+                wl_compositor::add_blocker(surface, barrier);
+                ForeignCommitCapture::Dmabuf(token)
+            } else {
+                ForeignCommitCapture::NoBuffer
+            }
+        });
+        wl_compositor::with_states(surface, |states| {
+            states
+                .data_map
+                .insert_if_missing_threadsafe(ForeignCommitCaptures::default);
+            if let Some(commits) = states.data_map.get::<ForeignCommitCaptures>() {
+                commits
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push_back(association);
+            }
+        });
+    }
+
+    /// Re-evaluate transactions whose off-thread buffer capture completed.
+    /// Called by the compositor loop on its owning thread; worker threads only
+    /// flip barriers and enqueue owning client handles.
+    pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) {
+        let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
+        for client in completed {
+            let Some(client_state) = client.get_data::<ClientState>() else {
+                continue;
+            };
+            client_state.compositor_state.blocker_cleared(self, display);
+        }
+    }
+}
+
 /// Per-client state stored in the `wayland-server` `Client` user-data slot.
 /// `CompositorHandler::client_compositor_state` must hand back a
 /// `&CompositorClientState`; smithay's convention is to stash one inside a `ClientData` impl so it's lifetime-tied to the client.
@@ -2189,11 +2348,12 @@ pub struct ClientState {
     /// Whether this connection arrived on the compositor's **privileged**
     /// socket rather than the public one.
     ///
-    /// The only thing it gates is the clipboard-manager protocol pair
-    /// (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`), which
-    /// hands its holder every selection on the seat with no focus requirement
-    /// — see [`crate::compositor::selection`]. A *socket* privilege, not a flag
-    /// a client can ask for: the sandbox launcher bind-mounts only the public socket into a sandbox.
+    /// This gates authority-bearing globals: the clipboard-manager protocol
+    /// pair (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`) and
+    /// `ext_session_lock_manager_v1`. The former hands its holder every
+    /// selection without focus; the latter controls the compositor's lock
+    /// lifecycle. A *socket* privilege, not a flag a client can ask for: the
+    /// sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
     /// Connection accepted on the compositor-owned OSK socket. This is the
     /// only credential accepted by the input-method and virtual-keyboard
@@ -2247,6 +2407,17 @@ fn is_osk_client(client: &Client) -> bool {
     client.get_data::<ClientState>().is_some_and(|d| d.osk)
 }
 
+/// Connection-provenance gate for authority-bearing Wayland protocols.
+///
+/// A client cannot opt into this bit: only the dedicated privileged socket
+/// acceptor constructs this state, while the sandbox launcher exposes only
+/// the public socket.
+fn is_privileged_client(client: &Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .is_some_and(|data| data.privileged)
+}
+
 /// The compositor's globally unique id for `surface`.
 ///
 /// A Wayland object id is unique only within one client's connection, so
@@ -2289,6 +2460,12 @@ impl CompositorHandler for State {
             crate::compositor::state::surface_id(surface),
             surface.clone(),
         );
+        // A dmabuf remains client-owned until wl_buffer.release. Capture it
+        // from pending state on a worker, and block this commit from replacing
+        // (and releasing) the previous buffer until that read is done.
+        wl_compositor::add_pre_commit_hook::<Self, _>(surface, |state, _, surface| {
+            state.prepare_pending_foreign_capture(surface);
+        });
     }
 
     fn commit(&mut self, surface: &WlSurface) {
@@ -2296,7 +2473,12 @@ impl CompositorHandler for State {
         // scale of the *output it is on*, not one session-wide number,
         // since a docked laptop has two different right answers. Runs for
         // every surface so any HiDPI-aware client with a `wp_fractional_scale_v1` object learns its scale. `set_preferred_scale` is idempotent, only emitting a wire event on real change, and stores the value even before the client creates the object (smithay replays it on `get_fractional_scale`).
-        let scale = self.surface_scale(crate::compositor::state::surface_id(surface));
+        // The cache is keyed by [`surface_id`], which includes the client
+        // index. Using the bare Wayland object id worked only for the first
+        // client and made a second client's surface fall back to the
+        // session-wide scale after moving between monitors.
+        let surface_id = crate::compositor::state::surface_id(surface);
+        let scale = self.surface_scale(surface_id);
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -2304,7 +2486,6 @@ impl CompositorHandler for State {
         });
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
-        let surface_id = crate::compositor::state::surface_id(surface);
         let is_shared = self
             .workspace_tree
             .workspaces
@@ -2460,7 +2641,9 @@ impl DmabufHandler for State {
         // [`smithay::wayland::dmabuf::get_dmabuf`]. We don't stash the
         // Dmabuf here since we don't yet know which surface it will land
         // on — a client can import DMABUFs eagerly and attach them later.
-        // Per-surface caches are populated at commit time (`foreign::ForeignFrameStore::capture_commit` for tiles, `SurfaceTracker::note_dmabuf_committed` for share sessions).
+        // Per-surface caches are populated around commit time (the foreign
+        // tile pre-commit worker plus `capture_commit`, and
+        // `SurfaceTracker::note_dmabuf_committed` for share sessions).
         let _ = notifier.successful::<Self>();
         tracing::debug!(
             target: "shell::compositor::dmabuf",
@@ -2653,6 +2836,16 @@ impl State {
             .collect()
     }
 
+    #[doc(hidden)]
+    pub fn xdg_popup_count(&self) -> usize {
+        self.popups.len()
+    }
+
+    #[doc(hidden)]
+    pub fn popup_surfaces_for_tests(&self) -> Vec<(SurfaceId, Rect)> {
+        self.popup_surfaces()
+    }
+
     /// Candidate windows provided by the privileged input method.  They use
     /// the focused text field as their parent and are clipped to its output,
     /// so a candidate strip cannot escape a multi-monitor desktop.
@@ -2774,6 +2967,179 @@ impl State {
     }
 }
 
+impl State {
+    /// Mint the standard one-shot token immediately before a user-selected
+    /// host launch. Only the launched process receives its opaque value.
+    #[doc(hidden)]
+    pub fn issue_host_launch_activation(
+        &mut self,
+        desktop_id: String,
+        display_name: String,
+        placement: crate::compositor::tab_binding::Placement,
+    ) -> String {
+        self.expire_host_launch_activations();
+        let (token, _) = self.xdg_activation_state.create_external_token(None);
+        let token = token.as_str().to_string();
+        self.host_launch_activations.insert(
+            token.clone(),
+            HostLaunchActivation {
+                desktop_id,
+                display_name,
+                placement,
+                issued: std::time::Instant::now(),
+            },
+        );
+        token
+    }
+
+    pub(crate) fn cancel_host_launch_activation(&mut self, token: &str) {
+        self.host_launch_activations.remove(token);
+        let _ = self
+            .xdg_activation_state
+            .remove_token(&XdgActivationToken::from(token.to_string()));
+    }
+
+    /// Expire compositor-created launch tokens even when no subsequent launch
+    /// occurs. Smithay owns the protocol store; qOS owns the placement
+    /// metadata and retires both together after the same bounded age.
+    pub(crate) fn expire_host_launch_activations(&mut self) {
+        let now = std::time::Instant::now();
+        let stale: Vec<_> = self
+            .host_launch_activations
+            .iter()
+            .filter_map(|(token, launch)| {
+                (now.saturating_duration_since(launch.issued)
+                    > crate::compositor::activation::MAX_ACTIVATION_AGE)
+                    .then_some((token.clone(), launch.desktop_id.clone()))
+            })
+            .collect();
+        for (token, desktop_id) in stale {
+            self.cancel_host_launch_activation(&token);
+            crate::shell::launcher::clear_pending_placement(&desktop_id);
+        }
+    }
+}
+
+impl XdgActivationHandler for State {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        use crate::compositor::activation::{ActivationFacts, evaluate_token_creation};
+
+        let now = std::time::Instant::now();
+        self.activation_serials.retain(|(_, _, issued)| {
+            now.saturating_duration_since(*issued)
+                <= crate::compositor::activation::MAX_ACTIVATION_AGE
+        });
+        let source_id = data.surface.as_ref().map(surface_id);
+        let serial_belongs_to_source = data.serial.as_ref().is_some_and(|(serial, _)| {
+            self.activation_serials
+                .iter()
+                .any(|(issued, recipient, _)| issued == serial && Some(*recipient) == source_id)
+        });
+        let seat_is_owned = data
+            .serial
+            .as_ref()
+            .is_some_and(|(_, seat)| self.seat.owns(seat));
+        let source_exists = source_id.is_some_and(|id| self.client_input.is_known(id));
+        let source_belongs_to_creator = data
+            .surface
+            .as_ref()
+            .and_then(Resource::client)
+            .zip(data.client_id.as_ref())
+            .is_some_and(|(client, creator)| client.id() == *creator);
+        let source_was_focused = source_id.is_some_and(|id| {
+            self.client_input.keyboard_focus() == Some(id)
+                || self.client_input.pointer_focus() == Some(id)
+        });
+        let facts = ActivationFacts {
+            age: now.saturating_duration_since(data.timestamp),
+            serial_belongs_to_source,
+            seat_is_owned,
+            source_exists,
+            source_belongs_to_creator,
+            source_was_focused,
+        };
+        match evaluate_token_creation(facts) {
+            Ok(()) => true,
+            Err(reason) => {
+                tracing::debug!(
+                    target: "shell::compositor::activation",
+                    ?reason,
+                    source_id,
+                    app_id = data.app_id.as_deref(),
+                    "refusing xdg-activation token"
+                );
+                false
+            }
+        }
+    }
+
+    fn request_activation(
+        &mut self,
+        token: XdgActivationToken,
+        data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        use crate::compositor::activation::{app_ids_match, evaluate_activation_request};
+
+        let host_launch = self.host_launch_activations.remove(token.as_str());
+        // A token is a one-shot launch capability. Consume before evaluating
+        // the target so neither an accepted request nor probing a wrong app id
+        // can replay it later against another window.
+        let _ = self.xdg_activation_state.remove_token(&token);
+        let target = surface_id(&surface);
+        let actual_app_id = tab_binding::app_id_for_surface(&self.workspace_tree, target);
+        let app_id_matches_target = data.app_id.as_deref().map_or(true, |requested| {
+            actual_app_id.is_some_and(|actual| app_ids_match(requested, actual))
+        });
+        if let Some(host_launch) = host_launch.as_ref() {
+            crate::shell::launcher::clear_pending_placement(&host_launch.desktop_id);
+            if host_launch.issued.elapsed() > crate::compositor::activation::MAX_ACTIVATION_AGE {
+                return;
+            }
+        }
+        let result = evaluate_activation_request(
+            data.timestamp.elapsed(),
+            self.client_input.is_known(target) && actual_app_id.is_some(),
+            app_id_matches_target,
+        );
+        if let Err(reason) = result {
+            tracing::debug!(
+                target: "shell::compositor::activation",
+                ?reason,
+                target,
+                requested_app_id = data.app_id.as_deref(),
+                actual_app_id,
+                "refusing xdg-activation focus request"
+            );
+            return;
+        }
+        if let Some(host_launch) = host_launch {
+            if tab_binding::relocate_foreign_toplevel(
+                &mut self.workspace_tree,
+                target,
+                host_launch.placement,
+                &host_launch.display_name,
+            ) {
+                self.host_launch_surface_labels
+                    .insert(target, host_launch.display_name.clone());
+                tracing::debug!(target, desktop_id = %host_launch.desktop_id, "placed host launch through activation token");
+            }
+        }
+        if tab_binding::activate_surface(&mut self.workspace_tree, target) {
+            self.set_client_keyboard_focus(Some(target));
+            tracing::debug!(
+                target: "shell::compositor::activation",
+                target,
+                "accepted single-use xdg-activation focus request"
+            );
+        }
+    }
+}
+
 impl XdgShellHandler for State {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
@@ -2852,7 +3218,18 @@ impl XdgShellHandler for State {
             self.fullscreen_group = None;
             self.fullscreen_output = None;
         }
-        let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
+        if self
+            .fullscreen_target
+            .as_ref()
+            .is_some_and(|target| target.surface_id == surface_id)
+        {
+            self.fullscreen_target = None;
+        }
+        let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut self.workspace_tree,
+            surface_id,
+        );
+        self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
         // `BufferAssignment::Removed` branch already forgets the slot on
         // `attach(NULL)`, but a destroy without that prior detach left the
@@ -2918,13 +3295,31 @@ impl XdgShellHandler for State {
                 }
                 return;
             }
-            let _ = tab_binding::rename_tab_for_app_id(
+            let host_launch_title = self
+                .host_launch_surface_labels
+                .get(&surface_id)
+                .map(String::as_str);
+            let _ = tab_binding::rebind_toplevel_for_app_id(
                 &mut self.workspace_tree,
                 surface_id,
                 app_id.clone(),
+                host_launch_title,
             );
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
+        }
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        let surface_id = surface_id(surface.wl_surface());
+        let title = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|data| data.title.clone()))
+        });
+        if let Some(title) = title {
+            let _ = tab_binding::rename_tab_for_title(&mut self.workspace_tree, surface_id, title);
         }
     }
 
@@ -2948,6 +3343,12 @@ impl XdgShellHandler for State {
             geometry,
             grabbed: false,
         });
+        if let Err(error) = self
+            .popup_manager
+            .track_popup(PopupKind::from(surface.clone()))
+        {
+            tracing::debug!(?error, parent, "could not register popup grab tree");
+        }
         if let Err(error) = surface.send_configure() {
             tracing::warn!(
                 target: "shell::compositor::popup",
@@ -2958,7 +3359,26 @@ impl XdgShellHandler for State {
         }
     }
 
-    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        if !self.seat.owns(&seat) {
+            return;
+        }
+        let popup_kind = PopupKind::from(surface.clone());
+        let Ok(root) = find_popup_root_surface(&popup_kind) else {
+            return;
+        };
+        let Ok(grab) = self
+            .popup_manager
+            .grab_popup(root, popup_kind, &self.seat, serial)
+        else {
+            return;
+        };
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Clear);
+        }
         if let Some(popup) = self
             .popups
             .iter_mut()
@@ -3028,6 +3448,12 @@ impl XdgShellHandler for State {
             self.fullscreen_group =
                 tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
             self.fullscreen_output = requested;
+            self.fullscreen_target = self.fullscreen_group.map(|_| FullscreenTarget {
+                surface_id,
+                requested_output: wl_output.clone(),
+                surface: surface.clone(),
+                configured_size: None,
+            });
         }
         let (w, h) = if presentation {
             self.output_presentation_surfaces
@@ -3064,6 +3490,7 @@ impl XdgShellHandler for State {
         {
             self.fullscreen_group = None;
             self.fullscreen_output = None;
+            self.fullscreen_target = None;
         }
         surface.with_pending_state(|state| {
             state.states.unset(
@@ -3215,6 +3642,10 @@ impl FractionalScaleHandler for State {
         // A client just created a `wp_fractional_scale_v1` for this
         // surface. Seed it with the output's scale (or session-wide if not
         // yet placed) immediately so it doesn't wait for its first commit; `set_preferred_scale` is idempotent and safe before any buffer is attached.
+        // The protocol id is only unique within a client connection.  Use the
+        // same connection-qualified key as `commit` and `update_surface_scales`
+        // so a second client cannot inherit the first client's cached output
+        // scale when both happen to allocate the same wl_surface id.
         let scale = self.surface_scale(crate::compositor::state::surface_id(&surface));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
@@ -3227,6 +3658,7 @@ impl FractionalScaleHandler for State {
 // Delegate macros — wire each protocol's `Dispatch` impls onto `State`.
 
 delegate_compositor!(State);
+delegate_xdg_activation!(State);
 delegate_xdg_shell!(State);
 // `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
 delegate_xdg_decoration!(State);

@@ -43,7 +43,10 @@ pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 /// evdev keycodes the scrubber names directly.
 mod keycode {
     pub const DELETE: u32 = 111;
+    #[cfg(test)]
     pub const TAB: u32 = 15;
+    #[cfg(test)]
+    pub const PRINT_SCREEN: u32 = 99;
     pub const LEFT_META: u32 = 125;
     pub const RIGHT_META: u32 = 126;
     pub const LEFT_CTRL: u32 = 29;
@@ -507,7 +510,12 @@ impl RemoteInputFirewall {
 
         let chord = chord_key_for_evdev(keycode);
 
-        // Everything the shell grabs from local input, in one table, so a chord added to the shell is refused here automatically.
+        // Remote input intentionally does not invoke the local user's
+        // configurable shortcuts: a sharing peer may type into the selected
+        // client, but cannot operate the desktop or race a Settings rebind.
+        // It still shares the immutable-system policy with local input (F1,
+        // Print Screen, launcher/lock chords), so remote input cannot bypass
+        // those compositor safety boundaries.
         if shell_owns_chord(chord, mods, overlay_open) {
             return Err(Denial::SystemChord);
         }
@@ -524,11 +532,6 @@ impl RemoteInputFirewall {
                 return Err(Denial::SystemChord);
             }
         }
-        // Alt+Tab isn't bound by the shell today, but a guest must still not be able to send it.
-        if mods.alt && keycode == keycode::TAB {
-            return Err(Denial::SystemChord);
-        }
-
         Ok(())
     }
 
@@ -898,6 +901,24 @@ mod tests {
     }
 
     #[test]
+    fn print_screen_is_kept_on_the_host() {
+        let mut fw = firewall();
+        assert_eq!(
+            fw.review(
+                PEER,
+                SHARED,
+                &InputEvent::Key {
+                    keysym: keycode::PRINT_SCREEN,
+                    pressed: true,
+                    modifiers: 0,
+                },
+                Instant::now()
+            ),
+            Err(Denial::SystemChord),
+        );
+    }
+
+    #[test]
     fn the_super_key_never_reaches_the_seat() {
         let mut fw = firewall();
         assert_eq!(
@@ -915,27 +936,19 @@ mod tests {
         );
     }
 
-    /// A chord the shell grabs is refused by the same table without naming it here: `Ctrl+K` opens the search palette.
+    /// An immutable chord is refused by the same table without a second
+    /// remote-only list. Configurable desktop bindings deliberately remain
+    /// client input for a sharing peer.
     #[test]
-    fn a_chord_the_shell_grabs_is_refused_from_the_shared_table() {
+    fn immutable_chord_is_refused_from_the_shared_table() {
         let mut fw = firewall();
         let now = Instant::now();
-        let _ = fw.review(
-            PEER,
-            SHARED,
-            &InputEvent::Key {
-                keysym: keycode::LEFT_CTRL,
-                pressed: true,
-                modifiers: 0,
-            },
-            now,
-        );
         assert_eq!(
             fw.review(
                 PEER,
                 SHARED,
                 &InputEvent::Key {
-                    keysym: 37, // 'k'
+                    keysym: 59, // F1
                     pressed: true,
                     modifiers: 0
                 },

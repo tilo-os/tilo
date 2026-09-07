@@ -18,6 +18,10 @@ use crate::shell::overlay_host::{
 pub(crate) enum PowerMenuClick {
     Ignored,
     Consumed,
+    /// Locking is handled by the native compositor's `SessionManager`, not
+    /// by the external session-action helper.  That keeps the lock scene and
+    /// client-input cutoff in one authoritative lifecycle.
+    Lock,
     Execute(os_actions::SessionAction),
 }
 
@@ -25,6 +29,7 @@ pub(crate) struct PowerMenu {
     open: bool,
     transition: ui::Transition,
     armed: Option<usize>,
+    selected: usize,
 }
 
 impl Default for PowerMenu {
@@ -33,14 +38,20 @@ impl Default for PowerMenu {
             open: false,
             transition: ui::Transition::closed(),
             armed: None,
+            selected: 0,
         }
     }
 }
 
 impl PowerMenu {
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
     pub(crate) fn open(&mut self) {
         self.open = true;
         self.armed = None;
+        self.selected = 0;
         self.transition.set_open(
             true,
             Duration::from_millis(MODAL_OPEN_ANIM_MS),
@@ -66,6 +77,14 @@ impl PowerMenu {
         self.transition.is_animating(now)
     }
 
+    /// Pin the production modal at its resting state for deterministic visual
+    /// review. This is deliberately test-only state control: opening and
+    /// arming still go through [`Self::open`] and [`Self::key`].
+    pub(crate) fn force_settled_for_visual_test(&mut self) {
+        self.transition
+            .set_open(self.open, Duration::ZERO, ui::Curve::Linear);
+    }
+
     pub(crate) fn click(&mut self, viewport: Rect, point: Point) -> PowerMenuClick {
         if !self.open {
             return PowerMenuClick::Ignored;
@@ -79,18 +98,71 @@ impl PowerMenu {
         else {
             return PowerMenuClick::Consumed;
         };
-        if index >= 3 && self.armed != Some(index) {
+        self.selected = index;
+        self.activate(index)
+    }
+
+    pub(crate) fn key(&mut self, key: &winit::keyboard::Key, shift: bool) -> PowerMenuClick {
+        use winit::keyboard::{Key, NamedKey};
+        if !self.open {
+            return PowerMenuClick::Ignored;
+        }
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.close();
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
+                self.selected = self
+                    .selected
+                    .checked_sub(1)
+                    .unwrap_or(ACTIONS.len().saturating_sub(1));
+                self.armed = None;
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
+                self.selected = if self.selected.saturating_add(1) >= ACTIONS.len() {
+                    0
+                } else {
+                    self.selected.saturating_add(1)
+                };
+                self.armed = None;
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::Tab) => {
+                if shift {
+                    self.selected = self
+                        .selected
+                        .checked_sub(1)
+                        .unwrap_or(ACTIONS.len().saturating_sub(1));
+                } else {
+                    self.selected = if self.selected.saturating_add(1) >= ACTIONS.len() {
+                        0
+                    } else {
+                        self.selected.saturating_add(1)
+                    };
+                }
+                self.armed = None;
+                PowerMenuClick::Consumed
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => self.activate(self.selected),
+            _ => PowerMenuClick::Consumed,
+        }
+    }
+
+    fn activate(&mut self, index: usize) -> PowerMenuClick {
+        let Some(action) = ACTIONS.get(index) else {
+            return PowerMenuClick::Consumed;
+        };
+        if action.0.requires_confirmation() && self.armed != Some(index) {
             self.armed = Some(index);
             return PowerMenuClick::Consumed;
         }
         self.close();
-        // `index` is drawn from `0..ACTIONS.len()` above, so this is
-        // always present; `.get()` keeps the lookup panic-free regardless.
-        ACTIONS
-            .get(index)
-            .map_or(PowerMenuClick::Consumed, |action| {
-                PowerMenuClick::Execute(action.0)
-            })
+        match action.0 {
+            PowerMenuAction::Lock => PowerMenuClick::Lock,
+            PowerMenuAction::External(action) => PowerMenuClick::Execute(action),
+        }
     }
 
     pub(crate) fn draw(
@@ -173,11 +245,14 @@ impl PowerMenu {
         for (index, (_, label, detail, icon)) in ACTIONS.iter().enumerate() {
             let row = action_rect(viewport, index);
             let armed = self.armed == Some(index);
+            let selected = self.selected == index;
             scene.fill(
                 Fill::NonZero,
                 transform,
                 if armed {
                     colors.semantic.danger.with_alpha_factor(0.18)
+                } else if selected {
+                    colors.accent[5].with_alpha_factor(0.16)
                 } else {
                     colors.neutral[2]
                 },
@@ -199,7 +274,7 @@ impl PowerMenu {
             text_renderer.draw_text_weighted(
                 scene,
                 if armed {
-                    "Click again to confirm"
+                    "Activate again to confirm"
                 } else {
                     label
                 },
@@ -221,33 +296,58 @@ impl PowerMenu {
     }
 }
 
-const ACTIONS: [(os_actions::SessionAction, &str, &str, ui::icons::Icon); 5] = [
+#[derive(Clone, Copy)]
+enum PowerMenuAction {
+    Lock,
+    External(os_actions::SessionAction),
+}
+
+impl PowerMenuAction {
+    const fn requires_confirmation(self) -> bool {
+        matches!(
+            self,
+            Self::External(
+                os_actions::SessionAction::Logout
+                    | os_actions::SessionAction::Restart
+                    | os_actions::SessionAction::ShutDown
+            )
+        )
+    }
+}
+
+const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
     (
-        os_actions::SessionAction::Lock,
+        PowerMenuAction::Lock,
         "Lock",
         "Keep apps running",
         ui::icons::Icon::Shield,
     ),
     (
-        os_actions::SessionAction::Logout,
+        PowerMenuAction::External(os_actions::SessionAction::Logout),
         "Log out",
         "End this session",
         ui::icons::Icon::ArrowRight,
     ),
     (
-        os_actions::SessionAction::Suspend,
+        PowerMenuAction::External(os_actions::SessionAction::SwitchUser),
+        "Switch user",
+        "Keep this session running",
+        ui::icons::Icon::Users,
+    ),
+    (
+        PowerMenuAction::External(os_actions::SessionAction::Suspend),
         "Suspend",
         "Resume where you left off",
         ui::icons::Icon::Sun,
     ),
     (
-        os_actions::SessionAction::Restart,
+        PowerMenuAction::External(os_actions::SessionAction::Restart),
         "Restart",
         "Restart the computer",
         ui::icons::Icon::RotateCw,
     ),
     (
-        os_actions::SessionAction::ShutDown,
+        PowerMenuAction::External(os_actions::SessionAction::ShutDown),
         "Shut down",
         "Turn off the computer",
         ui::icons::Icon::Power,
@@ -256,7 +356,7 @@ const ACTIONS: [(os_actions::SessionAction, &str, &str, ui::icons::Icon); 5] = [
 
 fn panel_rect(viewport: Rect) -> Rect {
     let width = 420.0_f64.min(viewport.width() - 48.0);
-    let height = 388.0_f64.min(viewport.height() - 48.0);
+    let height = 446.0_f64.min(viewport.height() - 48.0);
     let centre = viewport.center();
     Rect::new(
         centre.x - width / 2.0,
@@ -306,27 +406,45 @@ mod tests {
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
     #[test]
-    fn ordinary_actions_execute_on_first_click() {
+    fn lock_switch_user_and_suspend_execute_on_first_click() {
         let mut menu = PowerMenu::default();
-        menu.open();
-        assert_eq!(
-            menu.click(VIEWPORT, action_rect(VIEWPORT, 0).center()),
-            PowerMenuClick::Execute(os_actions::SessionAction::Lock)
-        );
-        assert!(!menu.open);
+        for (index, expected) in [
+            (0, PowerMenuClick::Lock),
+            (
+                2,
+                PowerMenuClick::Execute(os_actions::SessionAction::SwitchUser),
+            ),
+            (
+                3,
+                PowerMenuClick::Execute(os_actions::SessionAction::Suspend),
+            ),
+        ] {
+            menu.open();
+            assert_eq!(
+                menu.click(VIEWPORT, action_rect(VIEWPORT, index).center()),
+                expected
+            );
+            assert!(!menu.open);
+        }
     }
 
     #[test]
     fn destructive_actions_require_two_clicks() {
-        let mut menu = PowerMenu::default();
-        menu.open();
-        let point = action_rect(VIEWPORT, 4).center();
-        assert_eq!(menu.click(VIEWPORT, point), PowerMenuClick::Consumed);
-        assert!(menu.open);
-        assert_eq!(
-            menu.click(VIEWPORT, point),
-            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
-        );
+        for (index, expected) in [
+            (1, os_actions::SessionAction::Logout),
+            (4, os_actions::SessionAction::Restart),
+            (5, os_actions::SessionAction::ShutDown),
+        ] {
+            let mut menu = PowerMenu::default();
+            menu.open();
+            let point = action_rect(VIEWPORT, index).center();
+            assert_eq!(menu.click(VIEWPORT, point), PowerMenuClick::Consumed);
+            assert!(menu.open);
+            assert_eq!(
+                menu.click(VIEWPORT, point),
+                PowerMenuClick::Execute(expected)
+            );
+        }
     }
 
     #[test]
@@ -334,11 +452,11 @@ mod tests {
         let mut menu = PowerMenu::default();
         menu.open();
         assert_eq!(
-            menu.click(VIEWPORT, action_rect(VIEWPORT, 3).center()),
+            menu.click(VIEWPORT, action_rect(VIEWPORT, 4).center()),
             PowerMenuClick::Consumed
         );
         assert_eq!(
-            menu.click(VIEWPORT, action_rect(VIEWPORT, 4).center()),
+            menu.click(VIEWPORT, action_rect(VIEWPORT, 5).center()),
             PowerMenuClick::Consumed
         );
         assert!(menu.open);
@@ -349,6 +467,52 @@ mod tests {
         let mut menu = PowerMenu::default();
         menu.open();
         assert_eq!(menu.click(VIEWPORT, Point::ZERO), PowerMenuClick::Consumed);
+        assert!(!menu.open);
+    }
+
+    #[test]
+    fn keyboard_navigation_reaches_actions_and_keeps_confirmation() {
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut menu = PowerMenu::default();
+        menu.open();
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::ArrowDown), false),
+            PowerMenuClick::Consumed
+        );
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Consumed
+        );
+        assert!(menu.open, "first activation only arms Log out");
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Enter), false),
+            PowerMenuClick::Execute(os_actions::SessionAction::Logout)
+        );
+
+        menu.open();
+        menu.selected = 5;
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Space), false),
+            PowerMenuClick::Consumed
+        );
+        assert!(menu.open, "first activation only arms Shut down");
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Space), false),
+            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_keyboard_modal_without_an_action() {
+        use winit::keyboard::{Key, NamedKey};
+
+        let mut menu = PowerMenu::default();
+        menu.open();
+        assert_eq!(
+            menu.key(&Key::Named(NamedKey::Escape), false),
+            PowerMenuClick::Consumed
+        );
         assert!(!menu.open);
     }
 

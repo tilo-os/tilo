@@ -203,6 +203,10 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
+    /// `true` only when BlueZ reported a physical adapter. Keeping this
+    /// separate from `bluetooth` prevents an unavailable controller from
+    /// looking like a permanently-off switch.
+    pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
     /// Read-only kernel battery snapshot for the quick status row.
@@ -236,6 +240,7 @@ impl Default for QuickSettingsState {
             volume: 0.4,
             wifi: true,
             bluetooth: false,
+            bluetooth_available: false,
             wired: None,
             battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
                 "/nonexistent/qos-power-supply",
@@ -360,6 +365,11 @@ pub struct ChromeState {
     /// While `true`, the notification stack withholds app
     /// names/summaries/bodies and shows only a count.
     session_locked: bool,
+    /// Edge-triggered request from the shell's power menu.  The native
+    /// compositor drains this and is the only layer allowed to transition
+    /// the session lock state, so a UI action cannot diverge from the lock
+    /// screen, client-focus and input-capture lifecycle.
+    session_lock_requested: bool,
     /// Id of the group full-screened via `xdg_toplevel.set_fullscreen`.
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`].
@@ -385,6 +395,11 @@ pub struct ChromeState {
     /// id, record kind)`. Queued because the room's index lives on
     /// the overlay host, unreachable from an action's `apply`.
     record_requests: Vec<(String, String)>,
+    /// Foreign surfaces whose tab close affordance was activated. The native
+    /// compositor drains this edge and sends `xdg_toplevel.close`; keeping it
+    /// here lets the chrome remove its durable tab immediately without owning
+    /// Wayland protocol handles.
+    close_surface_requests: Vec<u64>,
     /// Docked at the strip's left edge by default; `Some(point)`
     /// detaches the wheel to the pointer. Cleared on Escape or
     /// picking a workspace.
@@ -436,6 +451,7 @@ impl ChromeState {
             dnd: false,
             visual_alert_until: None,
             session_locked: false,
+            session_lock_requested: false,
             fullscreen_group: None,
             maximized_group: None,
             peer_sync_enabled: false,
@@ -443,6 +459,7 @@ impl ChromeState {
             peer_sync_requests: Vec::new(),
             wheel_summon: None,
             record_requests: Vec::new(),
+            close_surface_requests: Vec::new(),
             strip_viewport: None,
             records: RecordStore::in_memory(),
         }))
@@ -486,6 +503,16 @@ impl ChromeState {
 
     pub fn take_record_requests(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.record_requests)
+    }
+
+    pub fn request_surface_close(&mut self, surface_id: u64) {
+        if !self.close_surface_requests.contains(&surface_id) {
+            self.close_surface_requests.push(surface_id);
+        }
+    }
+
+    pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.close_surface_requests)
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {
@@ -647,6 +674,10 @@ impl ChromeState {
             {
                 g.active_tab = tab;
             }
+            // Focus is part of the serialized local session view. Commit
+            // the complete address together so a compositor restart cannot
+            // reopen the right layout with an older window selected.
+            tree.flush_to_disk();
         }
         self.bump();
     }
@@ -738,9 +769,9 @@ impl ChromeState {
         let app_id = match &tab.tile {
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
-            TileContent::Foreign { app_id, .. } | TileContent::PeerWindow { app_id, .. } => {
-                app_id.clone()
-            }
+            TileContent::Foreign { app_id, .. }
+            | TileContent::PeerWindow { app_id, .. }
+            | TileContent::LocalApp { app_id, .. } => app_id.clone(),
             TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
                 kind.app_id()
             }
@@ -864,6 +895,7 @@ impl ChromeState {
                 return false;
             }
             tree.active_strip.insert(ws_id, sid);
+            tree.flush_to_disk();
             drop(tree);
             (true, name)
         };
@@ -1204,6 +1236,20 @@ impl ChromeState {
         self.session_locked
     }
 
+    /// Queue a lock requested by the in-compositor power menu.  This is an
+    /// edge, rather than a second source of truth for whether the session is
+    /// locked: the native loop drains it into [`SessionManager`].
+    pub fn request_session_lock(&mut self) {
+        self.session_lock_requested = true;
+    }
+
+    /// Consume one pending shell-originated lock request.  Kept private to
+    /// the shell crate because only the compositor runtime may perform the
+    /// session transition.
+    pub(crate) fn take_session_lock_request(&mut self) -> bool {
+        std::mem::take(&mut self.session_lock_requested)
+    }
+
     /// Called once per frame; no-op when no bridge is installed.
     pub fn pump_dbus_notifications(&mut self) {
         use chrono::{Datelike, Timelike};
@@ -1375,6 +1421,53 @@ mod active_tab_tests {
         let chrome = ChromeState::new_with_handle(handle);
         let st = chrome.borrow();
         assert_eq!(st.active_tab_id(), Some(100));
+    }
+
+    #[test]
+    fn focus_tab_and_strip_focus_survive_restart() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("workspace.json");
+        let mut tree = tree_with(100);
+        let workspace = tree.active;
+        let first_strip = tree.workspaces[0].strips[0].id;
+        let first_group = tree.workspaces[0].strips[0].window_groups[0].id;
+        let second_strip = StripId::new();
+        let second_group = 81;
+        tree.workspaces[0].strips.push(Strip {
+            id: second_strip,
+            name: "Other".into(),
+            window_groups: vec![StateGroup {
+                id: second_group,
+                tabs: vec![Tab {
+                    id: 300,
+                    title: "Third".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "third".into(),
+                    },
+                }],
+                active_tab: 300,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        });
+        tree.persist_path = Some(path.clone());
+        tree.flush_to_disk();
+        let chrome = ChromeState::new(tree);
+
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, first_strip, first_group, 200);
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("focus state");
+        assert_eq!(restarted.active_group_for(first_strip), Some(first_group));
+        assert_eq!(
+            restarted.workspaces[0].strips[0].window_groups[0].active_tab,
+            200
+        );
+
+        assert!(chrome.borrow_mut().focus_strip_index(1));
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("strip focus");
+        assert_eq!(restarted.active_strip.get(&workspace), Some(&second_strip));
     }
 
     #[test]
