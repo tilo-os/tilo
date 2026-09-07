@@ -293,7 +293,7 @@ impl WeatherApp {
             if !resps.is_empty() {
                 let mut core = self.core.borrow_mut();
                 for r in resps {
-                    if let crate::net::Response::Error(message) = &r
+                    if let crate::net::Response::Error { message, .. } = &r
                         && self.resource_refresh_invocation.is_some()
                     {
                         self.resource_refresh_failure = Some(message.clone());
@@ -322,6 +322,9 @@ impl WeatherApp {
     /// * `"search"` — the live-search dropdown showing geocoded matches.
     /// * `"search_loading"` — the dropdown's in-flight loading state.
     /// * `"search_empty"` — the dropdown's "no matches" state.
+    /// * `"offline"` — cached conditions remain readable while connectivity
+    ///   is unavailable.
+    /// * `"error"` — a refresh error with a clear recovery message.
     /// * `"onboarding"` — the fresh-launch empty state a live first run shows:
     ///   no saved places (the sample cities + readings dropped), inviting the
     ///   user to search. Mirrors what [`WeatherApp::live`] renders on first run.
@@ -351,6 +354,13 @@ impl WeatherApp {
                 .seed_search_highlighted("Par", crate::sample::sample_geocode_results()),
             "search_loading" => self.core.borrow_mut().seed_search_loading("Reykjav"),
             "search_empty" => self.core.borrow_mut().seed_search_empty("Zzqx"),
+            "offline" => {
+                self.core.borrow_mut().status = "Offline — showing last saved forecast".into();
+            }
+            "error" => {
+                self.core.borrow_mut().status =
+                    "Couldn't update — check your connection and try again".into();
+            }
             _ => {}
         }
     }
@@ -367,6 +377,7 @@ impl Widget for WeatherApp {
         &[
             crate::actions::OPEN_LOCATION_OPERATION,
             crate::actions::REFRESH_OPERATION,
+            crate::actions::REFRESH_LOCATION_OPERATION,
         ]
     }
 
@@ -490,6 +501,31 @@ impl Widget for WeatherApp {
                             .actions
                             .push(spec.with_contract(ActionContract::view()));
                     }
+                    if let Ok(spec) = ActionSpec::operation(
+                        "refresh",
+                        "Refresh this forecast",
+                        OperationKind::Effect,
+                        crate::actions::REFRESH_LOCATION_OPERATION,
+                        &location.id.to_string(),
+                    ) {
+                        resource.actions.push(spec.with_contract(ActionContract {
+                            availability: if self.live {
+                                Availability::Available
+                            } else {
+                                Availability::Unavailable {
+                                    code: "network_disabled".into(),
+                                    reason: "Network refresh is disabled for this weather view"
+                                        .into(),
+                                }
+                            },
+                            permission: PermissionRequirement::Read,
+                            retry: RetryPolicy::Idempotent,
+                            execution: ExecutionMode::Background { cancellable: false },
+                            discovery: DiscoveryScope::Launchable,
+                            result: ResultSpec::None,
+                            ..ActionContract::default()
+                        }));
+                    }
                     if let Ok(spec) = ActionSpec::immediate(
                         "use-as-default",
                         "Use as default location",
@@ -547,14 +583,29 @@ impl Widget for WeatherApp {
             }
             return Ok(true);
         }
-        if kind != OperationKind::Effect || type_id != crate::actions::REFRESH_OPERATION {
+        if kind != OperationKind::Effect
+            || !matches!(
+                type_id,
+                crate::actions::REFRESH_OPERATION | crate::actions::REFRESH_LOCATION_OPERATION
+            )
+        {
             return Ok(false);
         }
         if !self.live {
             return Err("network refresh is disabled for this weather view".into());
         }
         self.ensure_service();
-        self.core.borrow_mut().refresh_all();
+        if type_id == crate::actions::REFRESH_LOCATION_OPERATION {
+            let raw: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            let id = raw
+                .parse()
+                .map_err(|_| "Invalid weather location id".to_string())?;
+            if !self.core.borrow_mut().refresh_location_by_id(id) {
+                return Err("Weather location is no longer saved".into());
+            }
+        } else {
+            self.core.borrow_mut().refresh_all();
+        }
         self.last_activity = Instant::now();
         Ok(true)
     }
@@ -568,7 +619,12 @@ impl Widget for WeatherApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != crate::actions::REFRESH_OPERATION {
+        if kind != OperationKind::Effect
+            || !matches!(
+                type_id,
+                crate::actions::REFRESH_OPERATION | crate::actions::REFRESH_LOCATION_OPERATION
+            )
+        {
             return Ok(None);
         }
         if self.resource_refresh_invocation.is_some() || self.core.borrow().is_fetching() {
@@ -1831,6 +1887,14 @@ mod interaction_tests {
         let first = &root.children[0];
         let second = &root.children[1];
         assert!(first.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            first.actions.iter().any(|action| {
+                action.id == "refresh"
+                    && action.operation_type.as_deref()
+                        == Some(crate::actions::REFRESH_LOCATION_OPERATION)
+            }),
+            "each saved forecast exports a bounded per-location refresh operation"
+        );
         assert!(
             first
                 .actions
