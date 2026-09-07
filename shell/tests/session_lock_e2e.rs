@@ -38,19 +38,23 @@ const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 
 /// Spawn the compositor headless and wait for its control socket.
 fn spawn_headless_locking() -> (Child, PathBuf) {
-    let socket_path = PathBuf::from(format!("/tmp/nirios-lock-e2e-{}.sock", std::process::id()));
+    // Use the same short, host/container-shared runtime root as the full
+    // compositor protocol fixture. Besides crossing the build namespace,
+    // this keeps every Wayland Unix socket safely below SUN_LEN.
+    let runtime_dir = PathBuf::from(format!(
+        "/run/user/{}/qos-lock-{}",
+        unsafe { libc::getuid() },
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&runtime_dir).expect("create lock test runtime dir");
+    let socket_path = runtime_dir.join("ctl");
     let _ = std::fs::remove_file(&socket_path);
 
-    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("target")
-        .join("debug")
-        .join("shell");
-    assert!(
-        binary.exists(),
-        "expected the compositor binary at {}; run `cargo build -p shell` first",
-        binary.display()
-    );
+    // Cargo provides the exact binary built for this integration-test run,
+    // including a caller-selected `CARGO_TARGET_DIR`. A repository-relative
+    // `target/debug/shell` can be stale or linked against another container's
+    // libraries and previously made startup failures look like lock failures.
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_shell"));
 
     let mut child = Command::new(&binary)
         .args(["--mode", "native", "--backend", "headless"])
@@ -62,24 +66,51 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         .env("QOS_IDLE_LOCK_SECS", "2")
         .env("QOS_IDLE_BLANK_SECS", "0")
         .env("NIRIOS_HEADLESS_SIZE", "1280x800")
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
+        .env("XDG_DATA_HOME", runtime_dir.join("data"))
+        .env("XDG_STATE_HOME", runtime_dir.join("state"))
+        .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("DISPLAY")
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .expect("spawn compositor");
 
     let stderr = child.stderr.take().expect("stderr piped");
-    let (tx, rx) = mpsc::channel::<()>();
+    let (tx, rx) = mpsc::channel::<Result<PathBuf, String>>();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
         let mut signalled = false;
+        let mut diagnostics = String::new();
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 // EOF (child exited) or a read error both end the drain.
-                Ok(0) | Err(_) => return,
+                Ok(0) | Err(_) => {
+                    if !signalled {
+                        let _ = tx.send(Err(diagnostics));
+                    }
+                    return;
+                }
                 Ok(_) => {
+                    if diagnostics.len() < 16 * 1024 {
+                        diagnostics.push_str(&line);
+                    }
                     if !signalled && line.contains("test_control listening on") {
-                        let _ = tx.send(());
+                        let announced = line
+                            .split_once("test_control listening on")
+                            .map(|(_, path)| PathBuf::from(path.trim().trim_matches('"')))
+                            .unwrap_or_default();
+                        let _ = tx.send(Ok(announced));
+                        signalled = true;
+                    } else if !signalled
+                        && (line.contains("error:")
+                            || line.contains("panicked at")
+                            || line.contains("FAILED"))
+                    {
+                        let _ = tx.send(Err(diagnostics.clone()));
                         signalled = true;
                     }
                 }
@@ -99,12 +130,17 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
         }
     });
 
-    if let Ok(()) = rx.recv_timeout(Duration::from_secs(20)) {
-        (child, socket_path)
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("timed out waiting for the control socket to listen");
+    match rx.recv_timeout(Duration::from_secs(20)) {
+        Ok(Ok(announced)) => (child, announced),
+        result => {
+            let _ = child.kill();
+            let status = child.wait().ok();
+            let diagnostics = match result {
+                Ok(Err(diagnostics)) => diagnostics,
+                Ok(Ok(_)) | Err(_) => String::new(),
+            };
+            panic!("compositor did not open the control socket (status {status:?})\n{diagnostics}");
+        }
     }
 }
 
@@ -159,7 +195,30 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
     let (child, socket_path) = spawn_headless_locking();
     let _guard = KillOnDrop(child);
 
-    let mut stream = UnixStream::connect(&socket_path).expect("connect to control socket");
+    // The compositor may run in the host mount namespace while Cargo runs
+    // this fixture in the build container. Try both names for the same
+    // shared checkout socket; neither points at the user's live desktop.
+    let host_socket = PathBuf::from("/run/host").join(
+        socket_path
+            .strip_prefix("/")
+            .unwrap_or(socket_path.as_path()),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut stream = loop {
+        if let Ok(stream) = UnixStream::connect(&socket_path) {
+            break stream;
+        }
+        if let Ok(stream) = UnixStream::connect(&host_socket) {
+            break stream;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "connect to control socket at {} or {}",
+            socket_path.display(),
+            host_socket.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
 
     assert!(!is_locked(&mut stream), "session should start unlocked");
 
