@@ -14,7 +14,7 @@
 //! ├── "messages"     (Map<chId,  List<Message>>)
 //! │      Message = { id, author, ts, text(Text), edited(bool),
 //! │                  parent(Str ""), reactions(List<{emoji,user}>),
-//! │                  history(List<{ts,text}>), attachment(Map?) }
+//! │                  history(List<{ts,text}>), attachment(Map? blob hash) }
 //! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
 //! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
 //! └── "drafts"       (Map<chId, Text>)           # per-channel composer body
@@ -53,6 +53,24 @@ use crate::model::{
     Attachment, Category, Channel, ChannelKind, EditRecord, Message, Presence, Reaction, User,
     VoiceMember, Workspace,
 };
+
+/// A qdoc namespace nested in the chat CRDT. It holds portable
+/// content-addressed attachment descriptors; bytes are kept in qdoc's shared
+/// blob store so a message never names a sender-local filesystem path.
+/// One sync migration visits at most this many message rows. The app invokes
+/// it once per loaded document, so hostile legacy history cannot tax every
+/// frame forever.
+const LEGACY_MIGRATION_VISIT_BUDGET: usize = 256;
+const LEGACY_MIGRATION_WRITE_BUDGET: usize = 32;
+/// Legacy paths are only examined for our fixed demo identities. Keeping the
+/// copied scalar small makes the one-shot migration fail closed even when a
+/// hostile old document contains megabyte-scale path fields.
+const LEGACY_MIGRATION_PATH_BYTES: usize = 256;
+
+/// A deliberately small import ceiling. Media is transferred by qdoc's blob
+/// transport, but accepting an arbitrary local file on the UI event path would
+/// still let one click exhaust memory and room bandwidth.
+pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Deterministic "now" for the seeded fixture so the offline screenshot is
 /// stable (epoch → 2026-06-30 12:40 UTC). Runtime sends use wall-clock.
@@ -214,6 +232,80 @@ fn monogram(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 impl ChatDoc {
+    /// Store and verify bytes in qdoc's shared blobstore. This is deliberately
+    /// document-free: callers do it on a bounded worker before `sync` authors
+    /// the small hash-only `SendMessage` action.
+    pub fn store_attachment_blob(bytes: &[u8]) -> Option<String> {
+        if u64::try_from(bytes.len()).ok()? > MAX_ATTACHMENT_BYTES {
+            return None;
+        }
+        let hash = qdoc::blobstore::put(bytes);
+        (qdoc::blobstore::get(&hash).as_deref() == Some(bytes)).then_some(hash)
+    }
+
+    /// Resolve attachment bytes by their qdoc content hash. The blob store
+    /// performs a non-blocking shared-transport request on a miss, so callers
+    /// can render a stable loading/unavailable state without filesystem I/O on
+    /// the UI thread.
+    pub fn attachment_blob(hash: &str) -> Option<Vec<u8>> {
+        qdoc::blobstore::get(hash)
+    }
+
+    /// Upgrade only legacy demo rows, whose content is deterministic and has
+    /// no local I/O. Historic filesystem-backed rows intentionally remain
+    /// inert until their owning machine explicitly re-shares the file through
+    /// the bounded import worker; reading arbitrary old paths from `sync`
+    /// would both block the UI and replicate a peer-local identity onward.
+    pub fn migrate_legacy_attachment_paths(doc: &mut AutoCommit) {
+        let Some(channels) = map_at(doc, &ROOT, "messages") else {
+            return;
+        };
+        let mut legacy = Vec::new();
+        let mut visited = 0usize;
+        for channel in doc.keys(&channels).take(LEGACY_MIGRATION_VISIT_BUDGET) {
+            let Some(messages) = list_at(doc, &channels, &channel) else {
+                continue;
+            };
+            for index in 0..doc.length(&messages) {
+                if visited >= LEGACY_MIGRATION_VISIT_BUDGET {
+                    break;
+                }
+                visited += 1;
+                let Ok(Some((Value::Object(ObjType::Map), message))) = doc.get(&messages, index)
+                else {
+                    continue;
+                };
+                let Some(attachment) = map_at(doc, &message, "attachment") else {
+                    continue;
+                };
+                let blob_is_empty = match doc.get(&attachment, "blob") {
+                    Ok(None) => true,
+                    Ok(Some((Value::Scalar(value), _))) => {
+                        matches!(value.as_ref(), ScalarValue::Str(blob) if blob.is_empty())
+                    }
+                    _ => false,
+                };
+                if !blob_is_empty {
+                    continue;
+                }
+                let Ok(Some((Value::Scalar(value), _))) = doc.get(&attachment, "path") else {
+                    continue;
+                };
+                let ScalarValue::Str(path) = value.as_ref() else {
+                    continue;
+                };
+                if path.len() <= LEGACY_MIGRATION_PATH_BYTES
+                    && path.starts_with(crate::images::DEMO_SCHEME)
+                {
+                    legacy.push((attachment, path.to_string()));
+                }
+            }
+        }
+        for (attachment, path) in legacy.into_iter().take(LEGACY_MIGRATION_WRITE_BUDGET) {
+            let _ = doc.put(&attachment, "blob", path);
+            let _ = doc.delete(&attachment, "path");
+        }
+    }
     pub fn is_seeded(doc: &AutoCommit) -> bool {
         get_bool(doc, &ROOT, "seeded")
     }
@@ -495,7 +587,7 @@ impl ChatDoc {
                     text: "Here's the frame — the host tile keeps the live camera, everyone else collapses to chips when they're audio-only.".into(),
                     attachment: Some(Attachment::Image {
                         name: "call-overlay-v3.png".into(),
-                        path: crate::images::DEMO_CALL_GRID.into(),
+                        blob: crate::images::DEMO_CALL_GRID.into(),
                         w: 640,
                         h: 360,
                     }),
@@ -540,7 +632,7 @@ impl ChatDoc {
                     text: "Dropping the transport notes here so they don't get lost.".into(),
                     attachment: Some(Attachment::File {
                         name: "moq-over-iroh.md".into(),
-                        path: "/var/workspace/notes/moq-over-iroh.md".into(),
+                        blob: "demo:moq-over-iroh".into(),
                         size: 18_944,
                     }),
                     ..Default::default()
@@ -554,7 +646,7 @@ impl ChatDoc {
                     text: "Screen recording of the tile-promotion motion — this is the feel I'm after:".into(),
                     attachment: Some(Attachment::Video {
                         name: "tile-promotion.webm".into(),
-                        path: "/var/workspace/design/tile-promotion.webm".into(),
+                        blob: "demo:tile-promotion".into(),
                         w: 1280,
                         h: 720,
                         size: 6_815_744,
@@ -896,31 +988,31 @@ impl ChatDoc {
             .put_object(block, "attachment", ObjType::Map)
             .expect("att");
         match att {
-            Attachment::Image { name, path, w, h } => {
+            Attachment::Image { name, blob, w, h } => {
                 let _ = doc.put(&a, "kind", "image");
                 let _ = doc.put(&a, "name", name.as_str());
-                let _ = doc.put(&a, "path", path.as_str());
+                let _ = doc.put(&a, "blob", blob.as_str());
                 let _ = doc.put(&a, "w", i64::from(*w));
                 let _ = doc.put(&a, "h", i64::from(*h));
             }
             Attachment::Video {
                 name,
-                path,
+                blob,
                 w,
                 h,
                 size,
             } => {
                 let _ = doc.put(&a, "kind", "video");
                 let _ = doc.put(&a, "name", name.as_str());
-                let _ = doc.put(&a, "path", path.as_str());
+                let _ = doc.put(&a, "blob", blob.as_str());
                 let _ = doc.put(&a, "w", i64::from(*w));
                 let _ = doc.put(&a, "h", i64::from(*h));
                 let _ = doc.put(&a, "size", *size as i64);
             }
-            Attachment::File { name, path, size } => {
+            Attachment::File { name, blob, size } => {
                 let _ = doc.put(&a, "kind", "file");
                 let _ = doc.put(&a, "name", name.as_str());
-                let _ = doc.put(&a, "path", path.as_str());
+                let _ = doc.put(&a, "blob", blob.as_str());
                 let _ = doc.put(&a, "size", *size as i64);
             }
         }
@@ -1861,23 +1953,35 @@ impl ChatDoc {
 
     fn read_attachment(doc: &AutoCommit, msg: &ObjId) -> Option<Attachment> {
         let a = map_at(doc, msg, "attachment")?;
+        // A historic row can still carry a peer-local `path`. Preserve it in
+        // this peer's projection so the file card is not erased, but never
+        // read it here or write it back as a blob: only an explicit local
+        // re-share enters the bounded importer and collaborative document.
+        let blob = {
+            let current = get_str(doc, &a, "blob");
+            if current.is_empty() {
+                get_str(doc, &a, "path")
+            } else {
+                current
+            }
+        };
         match get_str(doc, &a, "kind").as_str() {
             "image" => Some(Attachment::Image {
                 name: get_str(doc, &a, "name"),
-                path: get_str(doc, &a, "path"),
+                blob,
                 w: get_i64(doc, &a, "w") as u32,
                 h: get_i64(doc, &a, "h") as u32,
             }),
             "video" => Some(Attachment::Video {
                 name: get_str(doc, &a, "name"),
-                path: get_str(doc, &a, "path"),
+                blob,
                 w: get_i64(doc, &a, "w") as u32,
                 h: get_i64(doc, &a, "h") as u32,
                 size: get_i64(doc, &a, "size") as u64,
             }),
             "file" => Some(Attachment::File {
                 name: get_str(doc, &a, "name"),
-                path: get_str(doc, &a, "path"),
+                blob,
                 size: get_i64(doc, &a, "size") as u64,
             }),
             _ => None,
@@ -2459,8 +2563,8 @@ mod tests {
 
     #[test]
     fn video_attachment_round_trips_through_the_crdt() {
-        // A video share references the FUSE path (no bytes in the CRDT) and
-        // reads back as a Video with its resolution + size intact.
+        // A video share references a portable qdoc hash (no bytes in the
+        // CRDT) and reads back with its resolution + size intact.
         let mut doc = seeded();
         ChatDoc::push_message(
             &mut doc,
@@ -2470,7 +2574,7 @@ mod tests {
                 ts: NOW,
                 attachment: Some(Attachment::Video {
                     name: "demo.mp4".into(),
-                    path: "/var/workspace/clips/demo.mp4".into(),
+                    blob: "a".repeat(64),
                     w: 1920,
                     h: 1080,
                     size: 4_200_000,
@@ -2482,18 +2586,114 @@ mod tests {
         match msgs.last().and_then(|m| m.attachment.clone()) {
             Some(Attachment::Video {
                 name,
-                path,
+                blob,
                 w,
                 h,
                 size,
             }) => {
                 assert_eq!(name, "demo.mp4");
-                assert_eq!(path, "/var/workspace/clips/demo.mp4");
+                assert_eq!(blob, "a".repeat(64));
                 assert_eq!((w, h), (1920, 1080));
                 assert_eq!(size, 4_200_000);
             }
             other => panic!("expected a Video attachment, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn attachment_blobs_are_portable_hashes_not_paths() {
+        let bytes = b"shared attachment bytes";
+        let hash = ChatDoc::store_attachment_blob(bytes).expect("small blob accepted");
+        assert_eq!(hash.len(), 64);
+        assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(ChatDoc::attachment_blob(&hash), Some(bytes.to_vec()));
+    }
+
+    #[test]
+    fn attachment_blob_import_fails_closed_at_the_size_limit() {
+        let too_large = vec![0; MAX_ATTACHMENT_BYTES as usize + 1];
+        assert!(ChatDoc::store_attachment_blob(&too_large).is_none());
+    }
+
+    #[test]
+    fn legacy_local_paths_remain_visible_but_are_never_promoted_in_sync() {
+        let mut doc = seeded();
+        let id = ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_crit",
+            "m_legacy_attachment",
+            NewMessage {
+                author: model::ME.into(),
+                ts: NOW,
+                attachment: Some(Attachment::File {
+                    name: "old-local.pdf".into(),
+                    blob: String::new(),
+                    size: 7,
+                }),
+                ..Default::default()
+            },
+        );
+        let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
+        let attachment = map_at(&doc, &message, "attachment").unwrap();
+        let _ = doc.put(&attachment, "path", "/old-machine/old-local.pdf");
+
+        ChatDoc::migrate_legacy_attachment_paths(&mut doc);
+        let row = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|row| row.id == id)
+            .unwrap();
+        assert_eq!(row.attachment.unwrap().blob(), "/old-machine/old-local.pdf");
+        assert_eq!(
+            get_str(&doc, &attachment, "path"),
+            "/old-machine/old-local.pdf",
+            "sync neither reads nor rewrites a peer-local path"
+        );
+    }
+
+    #[test]
+    fn legacy_migration_has_a_fixed_total_visit_and_write_budget() {
+        let mut doc = seeded();
+        for n in 0..=LEGACY_MIGRATION_VISIT_BUDGET {
+            let id = format!("m_legacy_budget_{n}");
+            ChatDoc::push_message_with_id(
+                &mut doc,
+                "c_crit",
+                &id,
+                NewMessage {
+                    author: model::ME.into(),
+                    ts: NOW,
+                    attachment: Some(Attachment::File {
+                        name: format!("{n}.txt"),
+                        blob: String::new(),
+                        size: 1,
+                    }),
+                    ..Default::default()
+                },
+            );
+            let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
+            let attachment = map_at(&doc, &message, "attachment").unwrap();
+            let _ = doc.put(&attachment, "path", crate::images::DEMO_CALL_GRID);
+        }
+
+        ChatDoc::migrate_legacy_attachment_paths(&mut doc);
+        let migrated = (0..=LEGACY_MIGRATION_VISIT_BUDGET)
+            .filter(|n| {
+                let id = format!("m_legacy_budget_{n}");
+                let message = ChatDoc::find_message_obj(&doc, "c_crit", &id).unwrap();
+                let attachment = map_at(&doc, &message, "attachment").unwrap();
+                get_str(&doc, &attachment, "blob") == crate::images::DEMO_CALL_GRID
+            })
+            .count();
+        assert!(migrated <= LEGACY_MIGRATION_WRITE_BUDGET);
+        assert!(
+            {
+                let message =
+                    ChatDoc::find_message_obj(&doc, "c_crit", "m_legacy_budget_256").unwrap();
+                let attachment = map_at(&doc, &message, "attachment").unwrap();
+                get_str(&doc, &attachment, "blob").is_empty()
+            },
+            "the bounded one-shot migration leaves rows beyond its visit budget untouched"
+        );
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! "state lives in the CRDT" contract.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Receiver, SyncSender};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -174,6 +175,45 @@ pub(crate) struct RowSwipe {
     pub channel_index: usize,
     pub origin: Point,
     pub current: Point,
+}
+
+/// The bounded worker's result. File I/O and header sniffing happen before
+/// this crosses back to the UI thread; the only UI-thread write is the
+/// canonical qdoc descriptor + `SendMessage` action in `sync`.
+pub(crate) enum AttachmentImportResult {
+    Ready {
+        token: u64,
+        name: String,
+        blob: String,
+        size: u64,
+        width: u32,
+        height: u32,
+        video: bool,
+    },
+    Failed {
+        token: u64,
+        reason: String,
+    },
+}
+
+/// The picker enumerates files off-thread too: even metadata on a mounted or
+/// hostile workspace must not stall the composer click.
+pub(crate) enum AttachmentPickerResult {
+    Ready {
+        generation: u64,
+        entries: Vec<crate::picker::PickEntry>,
+    },
+    Failed {
+        generation: u64,
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AttachmentImportPending {
+    pub token: u64,
+    pub channel: Id,
+    pub author: Id,
 }
 
 impl RowSwipe {
@@ -488,6 +528,19 @@ pub struct ChatApp {
     // Attachment picker (browses the shared workspace for a file to share).
     pub(crate) attach_open: bool,
     pub(crate) attach_entries: Vec<crate::picker::PickEntry>,
+    /// Exactly one import may run at a time. This is a deliberate resource
+    /// bound: selecting another file while one is reading is refused rather
+    /// than creating unbounded reader threads and byte buffers.
+    pub(crate) attachment_pending: Option<AttachmentImportPending>,
+    pub(crate) attachment_next_token: u64,
+    pub(crate) attachment_result_tx: SyncSender<AttachmentImportResult>,
+    pub(crate) attachment_result_rx: Receiver<AttachmentImportResult>,
+    /// A settled import outcome for the picker/status UI and accessibility.
+    pub(crate) attachment_status: Option<String>,
+    pub(crate) attachment_picker_pending: Option<u64>,
+    pub(crate) attachment_picker_generation: u64,
+    pub(crate) attachment_picker_result_tx: SyncSender<AttachmentPickerResult>,
+    pub(crate) attachment_picker_result_rx: Receiver<AttachmentPickerResult>,
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
@@ -631,8 +684,21 @@ pub struct ChatApp {
     // keyed by sender. The receive half of the shared stack.
     #[cfg(feature = "live-media")]
     remote_screen_rx: HashMap<String, qos_callstream::VideoStreamReceiver>,
+    /// Highest accepted sequence per remote sender + track. The transport is
+    /// deliberately lossy under pressure; rejecting late frames here prevents
+    /// a delayed packet from visibly rewinding a peer's camera or screen.
+    #[cfg(feature = "live-media")]
+    remote_media_seq: HashMap<(String, crate::media::TrackKind), u64>,
     #[cfg(feature = "live-media")]
     media_seq: u64,
+    /// Terminal local media-publish outcome. Kept visible until the call is
+    /// reset so sequence exhaustion is never an invisible early return.
+    pub(crate) media_error: Option<String>,
+    /// A capture-side terminal error has changed the share bit outside an
+    /// input event. `sync` owns the corresponding small canonical action so
+    /// collaborators do not retain a stale featured-stage reservation.
+    screen_share_needs_sync: bool,
+    legacy_migration_attempted: bool,
 }
 
 impl Default for ChatApp {
@@ -670,11 +736,18 @@ impl ChatApp {
         Self::bare()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete app state is deliberately initialized together so bounded channels and their lifecycles cannot drift"
+    )]
     fn bare() -> Self {
         // The host call tile is a real VideoPlayer with no frame until a live
         // capture feeds one; there is no synthesised stand-in. Its honest
         // "camera off" state is painted over the empty surface.
         let video = VideoPlayer::new();
+        let (attachment_result_tx, attachment_result_rx) = std::sync::mpsc::sync_channel(1);
+        let (attachment_picker_result_tx, attachment_picker_result_rx) =
+            std::sync::mpsc::sync_channel(1);
         Self {
             workspaces: Vec::new(),
             channels: Vec::new(),
@@ -706,6 +779,15 @@ impl ChatApp {
             edit_input: Self::new_message_editor(),
             attach_open: false,
             attach_entries: Vec::new(),
+            attachment_pending: None,
+            attachment_next_token: 0,
+            attachment_result_tx,
+            attachment_result_rx,
+            attachment_status: None,
+            attachment_picker_pending: None,
+            attachment_picker_generation: 0,
+            attachment_picker_result_tx,
+            attachment_picker_result_rx,
             menu: None,
             rename: None,
             rename_input: Self::new_rename_input(),
@@ -763,7 +845,12 @@ impl ChatApp {
             #[cfg(feature = "live-media")]
             remote_screen_rx: HashMap::new(),
             #[cfg(feature = "live-media")]
+            remote_media_seq: HashMap::new(),
+            #[cfg(feature = "live-media")]
             media_seq: 0,
+            media_error: None,
+            screen_share_needs_sync: false,
+            legacy_migration_attempted: false,
         }
     }
 
@@ -782,11 +869,10 @@ impl ChatApp {
         self.perms.can_participate()
     }
 
-    /// Whether the local peer may hydrate + render the bytes behind an
-    /// attachment. An ungranted embed shows a locked card and never touches
-    /// the file — the permission boundary for a projected FUSE share.
-    pub(crate) fn embed_allowed(&self, path: &str) -> bool {
-        self.perms.can_embed(path)
+    /// Whether the local peer may hydrate + render an attachment blob. An
+    /// ungranted embed shows a locked card and never requests shared bytes.
+    pub(crate) fn embed_allowed(&self, blob: &str) -> bool {
+        self.perms.can_embed(blob)
     }
 
     // --- action dispatch ----------------------------------------------------
@@ -1005,6 +1091,20 @@ impl ChatApp {
                 ];
                 self.attach_open = true;
             }
+            "attach-loading" => {
+                self.seed_shot_scenario("attach");
+                // This mirrors the actual asynchronous picker state rather
+                // than a hand-painted status string: no entries are usable
+                // until the worker's generation-checked reply settles.
+                self.attach_entries.clear();
+                self.attachment_picker_pending = Some(0);
+                self.attachment_status = Some("Loading attachments…".into());
+            }
+            "attach-error" => {
+                self.seed_shot_scenario("attach");
+                self.attachment_status =
+                    Some("Attachment import failed: file is unavailable".into());
+            }
             "edit" => {
                 // The inline message editor open on your own last message,
                 // with an earlier message still carrying the static "(edited)"
@@ -1166,15 +1266,20 @@ impl ChatApp {
         self.screen_session = None;
         self.remote_decoders.clear();
         self.remote_screen_rx.clear();
+        self.remote_media_seq.clear();
         self.remote_frames.clear();
         self.remote_screens.clear();
+        // A new call is a fresh local stream. Remote receivers recognize the
+        // first seq=0/pts=0 object as the corresponding stream reset.
+        self.media_seq = 0;
+        self.media_error = None;
     }
 
     /// Microphone → Opus → publish (only while transmitting).
     #[cfg(feature = "live-media")]
     fn pump_mic(&mut self, me: &str) {
         use crate::call::CallAction;
-        use crate::media::{MediaObject, TrackKind};
+        use crate::media::TrackKind;
         use std::time::Duration;
 
         let transmit =
@@ -1192,14 +1297,10 @@ impl ChatApp {
             .map(super::audio::MicCapture::poll)
             .unwrap_or_default();
         for pkt in packets {
-            let seq = self.next_media_seq();
-            self.media.transport_mut().send(MediaObject {
-                sender: me.to_string(),
-                kind: TrackKind::Audio,
-                seq,
-                pts: Duration::from_millis(seq * 20),
-                payload: pkt,
-            });
+            let pts = Duration::from_millis(self.media_seq.saturating_mul(20));
+            if !self.send_media_frame(me, TrackKind::Audio, pts, pkt) {
+                return;
+            }
         }
     }
 
@@ -1207,7 +1308,7 @@ impl ChatApp {
     #[cfg(feature = "live-media")]
     fn pump_camera(&mut self, me: &str) {
         use crate::call::CallAction;
-        use crate::media::{MediaObject, TrackKind};
+        use crate::media::TrackKind;
         use std::time::Duration;
 
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
@@ -1240,14 +1341,8 @@ impl ChatApp {
         // Feed the host tile's VideoPlayer so this peer sees its own
         // camera (the surface yields its placeholder to a real frame).
         self.video.feed_frame(&nalus);
-        let seq = self.next_media_seq();
-        self.media.transport_mut().send(MediaObject {
-            sender: me.to_string(),
-            kind: TrackKind::Video,
-            seq,
-            pts: Duration::from_millis(seq * 33),
-            payload: nalus,
-        });
+        let pts = Duration::from_millis(self.media_seq.saturating_mul(33));
+        let _ = self.send_media_frame(me, TrackKind::Video, pts, nalus);
     }
 
     /// Screen capture → shared stack (throttle + encode → `SurfaceFrame`) →
@@ -1256,26 +1351,95 @@ impl ChatApp {
     /// already a wire-ready, rate-capped frame.
     #[cfg(feature = "live-media")]
     fn pump_screen(&mut self, me: &str) {
-        use crate::media::{MediaObject, TrackKind};
+        use crate::media::TrackKind;
         use std::time::Duration;
 
-        let screen_wire = match (self.screen.as_mut(), self.screen_session.as_mut()) {
+        let screen_result = match (self.screen.as_mut(), self.screen_session.as_mut()) {
             (Some(scr), Some(session)) => scr
                 .poll()
-                .and_then(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
+                .map(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
             _ => None,
         };
-        let Some(wire) = screen_wire else {
+        let Some(result) = screen_result else {
             return;
         };
-        let seq = self.next_media_seq();
-        self.media.transport_mut().send(MediaObject {
+        let wire = match result {
+            Ok(Some(wire)) => wire,
+            Ok(None) => return,
+            Err(error) => {
+                self.stop_screen_for_error(&error);
+                return;
+            }
+        };
+        let pts = Duration::from_millis(self.media_seq.saturating_mul(33));
+        let _ = self.send_media_frame(me, TrackKind::Screen, pts, wire);
+    }
+
+    /// Submit one already-encoded frame. Transport queue pressure is expected
+    /// for real-time media and is deliberately a non-fatal drop. A frame that
+    /// can never fit Chat's object contract is different: report it once and
+    /// stop that producer instead of attempting (and silently losing) it on
+    /// every frame.
+    #[cfg(feature = "live-media")]
+    fn send_media_frame(
+        &mut self,
+        me: &str,
+        kind: crate::media::TrackKind,
+        pts: std::time::Duration,
+        payload: Vec<u8>,
+    ) -> bool {
+        if payload.len() > crate::media::MAX_MEDIA_PAYLOAD {
+            self.stop_unrepresentable_media_track(kind, payload.len());
+            return false;
+        }
+        let Some(seq) = self.next_media_seq() else {
+            return false;
+        };
+        // `false` here is a bounded, ordinary transport rejection (usually a
+        // full realtime queue). Do not turn transient backpressure into a
+        // terminal call failure.
+        let _ = self.media.transport_mut().send(crate::media::MediaObject {
             sender: me.to_string(),
-            kind: TrackKind::Screen,
+            kind,
             seq,
-            pts: Duration::from_millis(seq * 33),
-            payload: wire,
+            pts,
+            payload,
         });
+        true
+    }
+
+    #[cfg(feature = "live-media")]
+    fn stop_unrepresentable_media_track(&mut self, kind: crate::media::TrackKind, bytes: usize) {
+        let label = match kind {
+            crate::media::TrackKind::Audio => "Microphone",
+            crate::media::TrackKind::Video => "Camera",
+            crate::media::TrackKind::Screen => "Screen sharing",
+        };
+        self.media_error = Some(format!(
+            "{label} stopped: encoded frame ({bytes} bytes) exceeds Chat's {} byte media limit",
+            crate::media::MAX_MEDIA_PAYLOAD
+        ));
+        self.media.transport_mut().unpublish(kind);
+        match kind {
+            crate::media::TrackKind::Audio => self.mic = None,
+            crate::media::TrackKind::Video => {
+                self.camera = None;
+                self.cam_encoder = None;
+            }
+            crate::media::TrackKind::Screen => {
+                self.call.sharing = false;
+                self.release_screen();
+                self.screen_share_needs_sync = true;
+            }
+        }
+    }
+
+    #[cfg(feature = "live-media")]
+    fn stop_screen_for_error(&mut self, error: &qos_callstream::FrameError) {
+        self.media_error = Some(format!("Screen sharing stopped: {error}"));
+        self.call.sharing = false;
+        self.release_screen();
+        self.screen_share_needs_sync = true;
     }
 
     /// Receive: decode + play whatever arrived from peers.
@@ -1288,6 +1452,20 @@ impl ChatApp {
             if o.sender == me {
                 continue;
             }
+            let sequence_key = (o.sender.clone(), o.kind);
+            // A peer that rejoined starts a new stream at 0. This explicit
+            // zero timestamp reset is accepted while ordinary late/reordered
+            // frames still fail closed.
+            let reset = o.seq == 0 && o.pts.is_zero();
+            if !reset
+                && self
+                    .remote_media_seq
+                    .get(&sequence_key)
+                    .is_some_and(|seen| o.seq <= *seen)
+            {
+                continue;
+            }
+            self.remote_media_seq.insert(sequence_key, o.seq);
             match o.kind {
                 TrackKind::Audio => {
                     if !self.call.deafened {
@@ -1331,10 +1509,29 @@ impl ChatApp {
     }
 
     #[cfg(feature = "live-media")]
-    fn next_media_seq(&mut self) -> u64 {
+    fn next_media_seq(&mut self) -> Option<u64> {
         let s = self.media_seq;
-        self.media_seq = self.media_seq.wrapping_add(1);
-        s
+        let Some(next) = self.media_seq.checked_add(1) else {
+            self.media_error = Some(
+                "Media stopped: stream sequence limit reached. Leave and rejoin to restart it."
+                    .into(),
+            );
+            for kind in [
+                crate::media::TrackKind::Audio,
+                crate::media::TrackKind::Video,
+                crate::media::TrackKind::Screen,
+            ] {
+                self.media.transport_mut().unpublish(kind);
+            }
+            if self.call.sharing {
+                self.call.sharing = false;
+                self.release_screen();
+                self.screen_share_needs_sync = true;
+            }
+            return None;
+        };
+        self.media_seq = next;
+        Some(s)
     }
 
     /// Acquire a screen-share source through the portal seam: check the
@@ -1365,7 +1562,7 @@ impl ChatApp {
         let Some(src) = self.portal.request() else {
             return false;
         };
-        #[cfg(feature = "live-media")]
+        #[cfg(all(feature = "live-media", not(test)))]
         {
             if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
                 self.screen = Some(scr);
@@ -1379,6 +1576,21 @@ impl ChatApp {
                     .transport_mut()
                     .publish(crate::media::TrackKind::Screen);
             }
+        }
+        #[cfg(all(feature = "live-media", test))]
+        {
+            // A fake portal source has no real PipeWire node. Tests still use
+            // the production sender/transport contract, but must never block
+            // opening a host device merely to verify the shared call state.
+            self.screen_session = qos_callstream::VideoStreamSender::new(
+                src.width,
+                src.height,
+                crate::video::DEFAULT_FPS,
+            )
+            .ok();
+            self.media
+                .transport_mut()
+                .publish(crate::media::TrackKind::Screen);
         }
         let _ = src;
         true
@@ -2196,10 +2408,10 @@ impl ChatApp {
         // including threaded replies and the thread parent, so one pass covers
         // the timeline and the open thread panel.
         for m in &self.messages {
-            if let Some(crate::model::Attachment::Image { path, .. }) = &m.attachment {
+            if let Some(crate::model::Attachment::Image { blob, .. }) = &m.attachment {
                 // Never hydrate the bytes of an embed this peer isn't granted.
-                if self.embed_allowed(path) {
-                    let _ = self.images.get(path);
+                if self.embed_allowed(blob) {
+                    let _ = self.images.get(&crate::images::blob_key(blob));
                 }
             }
         }
@@ -2466,6 +2678,17 @@ impl Widget for ChatApp {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
         }
+        if !self.legacy_migration_attempted {
+            ChatDoc::migrate_legacy_attachment_paths(doc);
+            self.legacy_migration_attempted = true;
+        }
+        if self.screen_share_needs_sync {
+            self.sync_local_sharing(doc);
+            self.screen_share_needs_sync = false;
+            self.request_relayout();
+        }
+        self.settle_attachment_picker();
+        self.settle_attachment_import(doc);
         self.reload(doc);
         if self.ensure_selection() {
             // Re-picking the workspace changes which channels/messages apply.
@@ -2998,6 +3221,10 @@ impl Widget for ChatApp {
         &[crate::actions::CHAT_OPERATION_TYPE]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive operation dispatcher preserves the resource contract at a single boundary"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -3006,12 +3233,18 @@ impl Widget for ChatApp {
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if !chat_navigation_kind(kind)? {
-            return Ok(false);
-        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        match &operation {
+            crate::actions::ChatOperation::ImportAttachment { .. } => {
+                if kind != qos_actions::OperationKind::Effect {
+                    return Err("attachment import requires an Effect operation".into());
+                }
+            }
+            _ if !chat_navigation_kind(kind)? => return Ok(false),
+            _ => {}
+        }
         match operation {
             crate::actions::ChatOperation::OpenWorkspace { workspace } => {
                 self.reveal_workspace_resource(workspace)?;
@@ -3101,6 +3334,17 @@ impl Widget for ChatApp {
                 self.revealed_person = Some(user);
                 self.focus = Focus::Main;
                 self.right_flap.open();
+            }
+            crate::actions::ChatOperation::ImportAttachment { channel, path } => {
+                if path.is_empty() {
+                    return Err("attachment path is empty".into());
+                }
+                if !self.channels.iter().any(|item| item.id == channel) {
+                    return Err("conversation no longer exists".into());
+                }
+                if !self.begin_attachment_import_into(&channel, std::path::Path::new(&path)) {
+                    return Err("attachment import was not accepted".into());
+                }
             }
         }
         Ok(true)
@@ -3359,6 +3603,7 @@ mod screenshare_reuse_tests {
         let mut sender = VideoStreamSender::new(W, H, 30).expect("shared-stack sender");
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
+            .expect("shared sender accepts the frame")
             .expect("throttle admits the first frame + encoder emits a NALU");
         app.media.transport_mut().send(MediaObject {
             sender: "u_remote".into(),
@@ -3384,6 +3629,50 @@ mod screenshare_reuse_tests {
             (img.width, img.height),
             (W, H),
             "featured-tile image carries the decoded frame's dimensions"
+        );
+    }
+
+    #[test]
+    fn screen_stream_error_is_visible_and_unpublishes_the_track() {
+        let mut app = ChatApp::new_ephemeral();
+        app.call.sharing = true;
+        app.screen_session = VideoStreamSender::new(96, 64, 30).ok();
+        app.media.transport_mut().publish(TrackKind::Screen);
+
+        app.stop_screen_for_error(&qos_callstream::FrameError::SequenceExhausted);
+
+        assert!(!app.call.sharing);
+        assert!(app.screen_session.is_none());
+        assert!(
+            app.media_error
+                .as_deref()
+                .is_some_and(|message| message.contains("sequence space exhausted"))
+        );
+    }
+
+    #[test]
+    fn oversized_screen_object_stops_the_track_instead_of_silent_transport_drop() {
+        use crate::media::{MAX_MEDIA_PAYLOAD, TrackKind};
+        use std::time::Duration;
+
+        let mut app = ChatApp::new_ephemeral();
+        app.call.sharing = true;
+        app.screen_session = VideoStreamSender::new(96, 64, 30).ok();
+        app.media.transport_mut().publish(TrackKind::Screen);
+
+        assert!(!app.send_media_frame(
+            "u_me",
+            TrackKind::Screen,
+            Duration::ZERO,
+            vec![0; MAX_MEDIA_PAYLOAD + 1],
+        ));
+        assert!(!app.call.sharing);
+        assert!(app.screen_session.is_none());
+        assert!(app.screen_share_needs_sync);
+        assert!(
+            app.media_error
+                .as_deref()
+                .is_some_and(|message| message.contains("media limit"))
         );
     }
 }

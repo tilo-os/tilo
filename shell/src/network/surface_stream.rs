@@ -11,6 +11,6 @@
 //! [`crate::network::protocol`]'s `u64` aliases, identical to the re-exported crate's.
 
 pub use qos_callstream::stream::{
-    DEFAULT_QUEUE_CAP, FLAG_KEYFRAME, FRAME_HEADER_LEN, FrameError, ReceiverEvent, SurfaceFrame,
-    SurfaceStreamReceiver, SurfaceStreamSender,
+    DEFAULT_QUEUE_CAP, FLAG_KEYFRAME, FRAME_HEADER_LEN, FrameError, MAX_BUFFERED_STREAM_LEN,
+    MAX_ENCODED_FRAME_LEN, ReceiverEvent, SurfaceFrame, SurfaceStreamReceiver, SurfaceStreamSender,
 };
