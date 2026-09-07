@@ -47,14 +47,30 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     }
 }
 
+/// Render the same scenario under the desktop's accessible palette variants.
+/// The live app receives its theme from the compositor; `--shots` has no
+/// compositor, so this is the explicit seam the visual/a11y harness uses.
+fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    let viewport = args.viewport.unwrap_or_else(|| shot_viewport(args));
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => ui::Theme::light(),
+        Some("high-contrast") => ui::Theme::high_contrast(),
+        _ => ui::Theme::dark(),
+    };
+    ui::headless::FrameHarness::new_with_theme(ui::State::new(), shot_root(args)?, viewport, theme)
+        .render_png(out);
+    println!("dev.qos.slides: wrote shot to {}", out.display());
+    Ok(())
+}
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.slides", slides::app_root)
-            .shot_root(shot_root)
-            .shot_viewport(shot_viewport)
+            .shot_handler(render_shot)
             .scenarios(&[
                 "overview",
                 "present",
