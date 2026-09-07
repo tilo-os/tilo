@@ -12490,6 +12490,27 @@ mod interaction_tests {
     }
 
     #[test]
+    fn disconnected_picker_settles_the_pending_resource_invocation() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        let invocation = qos_actions::InvocationId::new();
+        let (sender, receiver) = std::sync::mpsc::channel::<PortalOutcome>();
+        drop(sender);
+        app.resource_invocation = Some(invocation);
+        app.portal_rx = Some(receiver);
+
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert!(app.portal_rx.is_none());
+        assert!(app.resource_invocation.is_none());
+        assert!(matches!(
+            app.completed_resource_invocation,
+            Some(qos_actions::InvocationUpdate::Failed { invocation: got, ref error })
+                if got == invocation && error.code == "ebook.portal_disconnected"
+        ));
+    }
+
+    #[test]
     fn import_worker_never_blocks_and_rejects_a_stale_result() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
