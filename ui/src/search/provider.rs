@@ -195,6 +195,12 @@ pub enum SearchCatalogError {
     EmptyResourceId,
     NonCanonicalResult,
     ResourceAddressMismatch,
+    /// A retained catalogue has consumed every generation value. Mutating it
+    /// again would make an old continuation cursor appear current.
+    GenerationExhausted,
+    /// A retained catalogue has assigned every browse ordinal. Reusing one
+    /// would overwrite another resource in empty-query browsing.
+    BrowseOrdinalExhausted,
 }
 
 impl std::fmt::Display for SearchCatalogError {
@@ -206,6 +212,12 @@ impl std::fmt::Display for SearchCatalogError {
             }
             Self::ResourceAddressMismatch => formatter.write_str(
                 "search result action must address the same stable resource id as the index row",
+            ),
+            Self::GenerationExhausted => formatter.write_str(
+                "search catalogue generation exhausted; rebuild the catalogue before mutating it",
+            ),
+            Self::BrowseOrdinalExhausted => formatter.write_str(
+                "search catalogue browse identity exhausted; rebuild the catalogue before inserting",
             ),
         }
     }
@@ -304,13 +316,20 @@ impl SearchCatalog {
         {
             return Ok(());
         }
+        let next_generation = inner
+            .generation
+            .checked_add(1)
+            .ok_or(SearchCatalogError::GenerationExhausted)?;
         let browse_ordinal = if let Some(previous) = inner.entries.remove(resource_id.as_ref()) {
             let ordinal = previous.browse_ordinal;
             remove_postings(&mut inner, resource_id.as_ref(), &previous);
             ordinal
         } else {
             let ordinal = inner.next_browse_ordinal;
-            inner.next_browse_ordinal = inner.next_browse_ordinal.wrapping_add(1);
+            inner.next_browse_ordinal = inner
+                .next_browse_ordinal
+                .checked_add(1)
+                .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
             inner.browse_order.insert(ordinal, Arc::clone(&resource_id));
             ordinal
         };
@@ -345,7 +364,7 @@ impl SearchCatalog {
                 browse_ordinal,
             },
         );
-        inner.generation = inner.generation.wrapping_add(1);
+        inner.generation = next_generation;
         drop(inner);
         Ok(())
     }
@@ -356,12 +375,18 @@ impl SearchCatalog {
             .inner
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Returning `false` is the existing fail-closed contract for a remove
+        // that was not performed. Do not mutate at MAX: keeping the row is
+        // safer than making a previously-issued cursor current again.
+        if inner.generation == u64::MAX {
+            return false;
+        }
         let Some(previous) = inner.entries.remove(resource_id) else {
             return false;
         };
         inner.browse_order.remove(&previous.browse_ordinal);
         remove_postings(&mut inner, resource_id, &previous);
-        inner.generation = inner.generation.wrapping_add(1);
+        inner.generation = inner.generation.saturating_add(1);
         drop(inner);
         true
     }
@@ -1105,5 +1130,45 @@ mod tests {
             catalog.upsert("document:a", "A", catalog_hit("document:different", "A")),
             Err(SearchCatalogError::ResourceAddressMismatch)
         );
+    }
+
+    #[test]
+    fn catalogue_refuses_generation_reuse_without_partial_mutation() {
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .upsert("document:a", "old phrase", catalog_hit("document:a", "A"))
+            .unwrap();
+        catalog
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .generation = u64::MAX;
+
+        assert_eq!(
+            catalog.upsert("document:a", "new phrase", catalog_hit("document:a", "A")),
+            Err(SearchCatalogError::GenerationExhausted)
+        );
+        assert_eq!(catalog.search_limited("old", 4).len(), 1);
+        assert!(catalog.search_limited("new", 4).is_empty());
+        assert!(!catalog.remove("document:a"));
+        assert_eq!(catalog.stats().records, 1);
+        assert_eq!(catalog.stats().generation, u64::MAX);
+    }
+
+    #[test]
+    fn catalogue_refuses_browse_ordinal_reuse_without_inserting() {
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .next_browse_ordinal = u64::MAX;
+
+        assert_eq!(
+            catalog.upsert("document:a", "phrase", catalog_hit("document:a", "A")),
+            Err(SearchCatalogError::BrowseOrdinalExhausted)
+        );
+        assert_eq!(catalog.stats(), SearchCatalogStats::default());
+        assert!(catalog.query_page("", None, 4, 4).results.is_empty());
     }
 }
