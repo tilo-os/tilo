@@ -1,10 +1,9 @@
 //! Choosing a real file to share into a channel.
 //!
 //! qOS files live in the P2P FUSE workspace mounted at `/var/workspace`; a
-//! chat attachment is one of those files projected into a message (its bytes
-//! hydrate on first read — see the `fs` driver). The composer's "+" opens this
-//! picker over the workspace so a share is always a *real* file the user
-//! selected, never fabricated content.
+//! chat attachment is imported as bounded shared bytes before it is projected
+//! into a message. The composer's "+" opens this picker over the workspace so
+//! a share is always a *real* file the user selected, never fabricated content.
 //!
 //! The browsed directory is the workspace mount, overridable with
 //! `QOS_CHAT_ATTACH_DIR` (for tests and for an install that mounts the shared
@@ -75,12 +74,17 @@ pub fn list_images(dir: &Path) -> Vec<PickEntry> {
     list_filtered(dir, is_image_name)
 }
 
-/// List shareable media (images **and** videos) in `dir` — its top level plus
-/// one level of subdirectories — sorted by name and capped so a large
-/// workspace can't stall the picker. A missing/unreadable directory yields an
-/// empty list. This is what the composer's "+" browses.
+/// List shareable media (images **and** videos) in `dir`. Useful for media-only
+/// galleries and retained for callers that deliberately exclude generic files.
 pub fn list_media(dir: &Path) -> Vec<PickEntry> {
     list_filtered(dir, is_media_name)
+}
+
+/// List files the attachment flow can import — images, videos, and bounded
+/// generic documents. The actual byte limit is checked by the worker, where it
+/// cannot block the UI. This is what the composer's "+" browses.
+pub fn list_attachments(dir: &Path) -> Vec<PickEntry> {
+    list_filtered(dir, |_| true)
 }
 
 fn list_filtered(dir: &Path, accept: fn(&str) -> bool) -> Vec<PickEntry> {
@@ -188,6 +192,17 @@ mod tests {
         assert!(!img.is_video);
         // The image-only listing excludes the video.
         assert!(list_images(dir.path()).iter().all(|e| e.name != "clip.mp4"));
+    }
+
+    #[test]
+    fn list_attachments_includes_generic_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"portable shared bytes").unwrap();
+
+        let entries = list_attachments(dir.path());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "notes.md");
+        assert!(!entries[0].is_video);
     }
 
     #[test]
