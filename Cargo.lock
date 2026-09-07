@@ -12006,6 +12006,7 @@ name = "remote"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "des 0.8.1",
  "iroh",

@@ -87,6 +87,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Recognised scenarios:
 /// * `"narrow"` — collapse the navigation rail into its closed overlay flap,
 ///   for the responsive small-viewport capture.
+/// * `"confirm-connect"` / `"confirm-delete"` / `"confirm-ssh-trust"` — stage the local,
+///   revalidation-aware confirmation surfaces without starting a transport or
+///   mutating the shared document.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = app::RemoteApp::new();
     app.dev_shot_scenario(scenario);
