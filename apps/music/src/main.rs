@@ -497,19 +497,29 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 }
 
 /// The OS theme a `--shots` frame renders in: `--theme light|dark|high-contrast`
-/// (or the `QOS_MUSIC_THEME` env), defaulting to dark. Lets the same scenario
-/// be captured in every supported contrast mode without altering live state.
+/// (or the `QOS_MUSIC_THEME` env), defaulting to dark. `QOS_REDUCE_MOTION`,
+/// `QOS_A11Y_REDUCE_MOTION`, or the app-scoped `QOS_MUSIC_REDUCE_MOTION` also
+/// makes a deterministic no-motion shot. This mirrors the live app's
+/// accessibility setting without altering live state.
 fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     let sel = args
         .value("--theme")
         .map(str::to_owned)
         .or_else(|| std::env::var("QOS_MUSIC_THEME").ok())
         .unwrap_or_default();
-    match sel.to_lowercase().as_str() {
+    let theme = match sel.to_lowercase().as_str() {
         "light" => Theme::light(),
         "high-contrast" | "high_contrast" => Theme::high_contrast(),
         _ => Theme::dark(),
-    }
+    };
+    let reduce_motion = [
+        "QOS_MUSIC_REDUCE_MOTION",
+        "QOS_A11Y_REDUCE_MOTION",
+        "QOS_REDUCE_MOTION",
+    ]
+    .iter()
+    .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty() && value != "0"));
+    theme.with_reduce_motion(reduce_motion)
 }
 
 /// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
