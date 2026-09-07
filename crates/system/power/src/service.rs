@@ -28,6 +28,15 @@ use crate::policy::{PowerAction, PowerPolicy};
 use crate::profiles::PowerProfilesMonitor;
 use crate::upower::UPowerMonitor;
 
+/// Retry D-Bus signal subscriptions slowly enough that a repeatedly failing
+/// bus cannot turn the service loop into a hot spin, while still recovering
+/// promptly after logind/power-profiles-daemon restarts.
+const SIGNAL_STREAM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn stream_retry_after(now: tokio::time::Instant) -> tokio::time::Instant {
+    now.checked_add(SIGNAL_STREAM_RETRY_DELAY).unwrap_or(now)
+}
+
 /// What a lid/power-key/critical decision resolves to for the service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
@@ -102,7 +111,7 @@ pub fn battery_reaction(events: &[BatteryEvent], policy: &PowerPolicy) -> (Vec<P
 #[must_use]
 pub fn sleep_reaction(going_to_sleep: bool) -> PowerSignal {
     if going_to_sleep {
-        PowerSignal::Lock
+        PowerSignal::PreparingForSleep
     } else {
         PowerSignal::ResumedFromSleep
     }
@@ -126,6 +135,12 @@ pub struct PowerService {
     /// The logind `idle:sleep` lock mirroring the registry (present iff the registry currently
     /// holds any inhibitor).
     idle_sleep_lock: Option<LogindInhibitor>,
+    /// Delay inhibitor held while awake. It is released only after the
+    /// compositor confirms that locked chrome has been submitted.
+    sleep_delay_lock: Option<LogindInhibitor>,
+    sleep_lock_drawn: bool,
+    preparing_for_sleep: bool,
+    suspend_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl PowerService {
@@ -160,6 +175,7 @@ impl PowerService {
                 None
             }
         };
+        let sleep_delay_lock = take_sleep_delay_lock(&logind).await;
 
         Ok(Self {
             logind,
@@ -172,6 +188,10 @@ impl PowerService {
             last_lid_closed: None,
             _delegate_lock: delegate,
             idle_sleep_lock: None,
+            sleep_delay_lock,
+            sleep_lock_drawn: false,
+            preparing_for_sleep: false,
+            suspend_task: None,
         })
     }
 
@@ -187,13 +207,23 @@ impl PowerService {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
         let mut ticks: u32 = 0;
 
-        // Resume stream (best-effort; a failed subscribe just disables the resume timer reset).
-        let mut sleep_stream = self.logind.receive_prepare_for_sleep().await.ok();
+        // Resume stream. D-Bus signal streams can end when the bus daemon or
+        // connection is restarted (common during a desktop/session restart),
+        // so keep a bounded retry instead of leaving resume handling disabled.
+        let mut sleep_stream = match self.logind.receive_prepare_for_sleep().await {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                warn!(target: "qos::power", %error, "PrepareForSleep subscription unavailable; retrying");
+                None
+            }
+        };
+        let mut sleep_stream_retry_at = tokio::time::Instant::now();
         let profile_monitor = self.power_profiles.clone();
         let mut profile_stream = match profile_monitor.as_ref() {
             Some(monitor) => Some(monitor.receive_active_profile_changed().await),
             None => None,
         };
+        let mut profile_stream_retry_at = tokio::time::Instant::now();
 
         if let Some(monitor) = profile_monitor.as_ref()
             && let Ok(profile) = monitor.active_profile().await
@@ -208,6 +238,30 @@ impl PowerService {
         loop {
             tokio::select! {
                 _ = tick.tick() => {
+                    let now = tokio::time::Instant::now();
+                    if sleep_stream.is_none() && now >= sleep_stream_retry_at {
+                        match self.logind.receive_prepare_for_sleep().await {
+                            Ok(stream) => {
+                                info!(target: "qos::power", "subscribed to logind PrepareForSleep");
+                                sleep_stream = Some(stream);
+                            }
+                            Err(error) => {
+                                debug!(target: "qos::power", %error, "PrepareForSleep subscription unavailable; retrying");
+                                sleep_stream_retry_at = stream_retry_after(now);
+                            }
+                        }
+                    }
+                    if profile_stream.is_none()
+                        && now >= profile_stream_retry_at
+                        && let Some(monitor) = profile_monitor.as_ref()
+                    {
+                        // power-profiles-daemon's zbus property stream has
+                        // no fallible subscription step; if its stream
+                        // ended, creating a new one is the retry.
+                        profile_stream = Some(monitor.receive_active_profile_changed().await);
+                        info!(target: "qos::power", "subscribed to power-profile changes");
+                    }
+                    self.reap_suspend_task().await;
                     self.drain_commands().await;
                     self.mirror_inhibit_registry().await;
                     self.poll_lid().await;
@@ -216,13 +270,25 @@ impl PowerService {
                         self.poll_battery().await;
                     }
                 }
-                Some(msg) = next_or_pending(&mut sleep_stream) => {
-                    self.handle_prepare_for_sleep(&msg);
+                msg = next_or_pending(&mut sleep_stream), if sleep_stream.is_some() => {
+                    if let Some(msg) = msg {
+                        self.handle_prepare_for_sleep(&msg).await;
+                    } else {
+                        warn!(target: "qos::power", "PrepareForSleep stream ended; scheduling resubscription");
+                        sleep_stream = None;
+                        sleep_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
+                    }
                 }
-                Some(changed) = next_or_pending(&mut profile_stream) => {
-                    match changed.get().await {
-                        Ok(profile) => self.apply_active_profile(&profile),
-                        Err(error) => debug!(target: "qos::power", %error, "active profile change could not be read"),
+                changed = next_or_pending(&mut profile_stream), if profile_stream.is_some() => {
+                    if let Some(changed) = changed {
+                        match changed.get().await {
+                            Ok(profile) => self.apply_active_profile(&profile),
+                            Err(error) => debug!(target: "qos::power", %error, "active profile change could not be read"),
+                        }
+                    } else {
+                        debug!(target: "qos::power", "power-profile stream ended; scheduling resubscription");
+                        profile_stream = None;
+                        profile_stream_retry_at = stream_retry_after(tokio::time::Instant::now());
                     }
                 }
             }
@@ -278,7 +344,7 @@ impl PowerService {
         }
         if suspend {
             info!(target: "qos::power", percent = snap.percent, "critical battery: suspending");
-            self.do_suspend().await;
+            self.start_suspend().await;
         }
     }
 
@@ -297,7 +363,7 @@ impl PowerService {
         match lid_edge_effect(prev, closed, &self.policy) {
             Effect::Suspend => {
                 info!(target: "qos::power", "lid closed: suspending");
-                self.do_suspend().await;
+                self.start_suspend().await;
             }
             Effect::Lock => {
                 info!(target: "qos::power", "lid closed: locking");
@@ -307,15 +373,21 @@ impl PowerService {
         }
     }
 
-    fn handle_prepare_for_sleep(&self, msg: &zbus::Message) {
+    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message) {
         // `PrepareForSleep(true)` = about to sleep, `false` = just resumed.
         if let Ok(going_to_sleep) = msg.body().deserialize::<bool>() {
             if going_to_sleep {
                 info!(target: "qos::power", "system preparing for sleep: locking session");
+                self.preparing_for_sleep = true;
+                self.bridge.push_signal(sleep_reaction(true));
+                self.release_sleep_delay_if_ready();
             } else {
                 info!(target: "qos::power", "resumed from sleep");
+                self.preparing_for_sleep = false;
+                self.sleep_lock_drawn = false;
+                self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
+                self.bridge.push_signal(sleep_reaction(false));
             }
-            self.bridge.push_signal(sleep_reaction(going_to_sleep));
         }
     }
 
@@ -323,7 +395,11 @@ impl PowerService {
     async fn drain_commands(&mut self) {
         for cmd in self.bridge.drain_commands() {
             match cmd {
-                PowerCommand::Suspend => self.do_suspend().await,
+                PowerCommand::Suspend => self.start_suspend().await,
+                PowerCommand::LockScreenDrawn => {
+                    self.sleep_lock_drawn = true;
+                    self.release_sleep_delay_if_ready();
+                }
                 PowerCommand::UpdatePolicy(policy) => self.policy = policy,
             }
         }
@@ -358,15 +434,84 @@ impl PowerService {
 
     /// Issue the real suspend, if logind says it can. The inhibitor registry is the compositor's
     /// gate for *idle* suspend; lid/critical suspends are deliberate and proceed regardless.
-    async fn do_suspend(&self) {
+    async fn start_suspend(&mut self) {
+        if self.suspend_task.is_some() {
+            return;
+        }
+        // A delay inhibitor is the safety barrier that gives the compositor
+        // time to draw its lock scene. Never initiate a compositor-requested
+        // suspend without it: otherwise a slow frame can leave app content
+        // visible during the sleep transition. Retry acquisition here as the
+        // bus may have recovered since startup/resume.
+        if self.sleep_delay_lock.is_none() {
+            self.sleep_delay_lock = take_sleep_delay_lock(&self.logind).await;
+            if self.sleep_delay_lock.is_none() {
+                warn!(target: "qos::power", "cannot suspend without a sleep-delay inhibitor");
+                self.bridge.push_signal(PowerSignal::SuspendFailed);
+                return;
+            }
+        }
         match self.logind.can_suspend().await {
             Ok(v) if v == "yes" => {
-                if let Err(e) = self.logind.suspend(false).await {
-                    warn!(target: "qos::power", error = %e, "logind Suspend failed");
-                }
+                // Ask the compositor to lock before invoking logind. The delay
+                // inhibitor remains held until the drawn-frame acknowledgement,
+                // including for externally initiated sleep.
+                self.sleep_lock_drawn = false;
+                self.bridge.push_signal(PowerSignal::PreparingForSleep);
+                let logind = self.logind.clone();
+                let bridge = self.bridge.clone();
+                self.suspend_task = Some(tokio::spawn(async move {
+                    if let Err(e) = logind.suspend(false).await {
+                        warn!(target: "qos::power", error = %e, "logind Suspend failed");
+                        bridge.push_signal(PowerSignal::SuspendFailed);
+                    }
+                }));
             }
-            Ok(v) => warn!(target: "qos::power", verdict = %v, "logind says cannot suspend"),
-            Err(e) => warn!(target: "qos::power", error = %e, "CanSuspend failed"),
+            Ok(v) => {
+                warn!(target: "qos::power", verdict = %v, "logind says cannot suspend");
+                self.bridge.push_signal(PowerSignal::SuspendFailed);
+            }
+            Err(e) => {
+                warn!(target: "qos::power", error = %e, "CanSuspend failed");
+                self.bridge.push_signal(PowerSignal::SuspendFailed);
+            }
+        }
+    }
+
+    async fn reap_suspend_task(&mut self) {
+        if self
+            .suspend_task
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+            && let Some(task) = self.suspend_task.take()
+            && let Err(error) = task.await
+        {
+            warn!(target: "qos::power", %error, "logind Suspend task failed");
+        }
+    }
+
+    fn release_sleep_delay_if_ready(&mut self) {
+        if self.preparing_for_sleep && self.sleep_lock_drawn {
+            debug!(target: "qos::power", "lock frame drawn; releasing sleep delay inhibitor");
+            self.sleep_delay_lock = None;
+        }
+    }
+}
+
+async fn take_sleep_delay_lock(logind: &LogindManager) -> Option<LogindInhibitor> {
+    match logind
+        .inhibit(
+            "sleep",
+            "qOS compositor",
+            "Draw lock screen before sleep",
+            "delay",
+        )
+        .await
+    {
+        Ok(lock) => Some(lock),
+        Err(error) => {
+            warn!(target: "qos::power", %error, "sleep delay inhibitor unavailable");
+            None
         }
     }
 }
@@ -385,6 +530,14 @@ async fn next_or_pending<S: futures_util::Stream + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ended_signal_streams_back_off_before_resubscribe() {
+        let now = tokio::time::Instant::now();
+        let retry = stream_retry_after(now);
+        assert!(retry > now);
+        assert_eq!(retry.duration_since(now), SIGNAL_STREAM_RETRY_DELAY);
+    }
 
     #[test]
     fn lid_edge_only_acts_on_close_transition() {
@@ -418,8 +571,15 @@ mod tests {
 
     #[test]
     fn sleep_always_locks_before_resume_is_reported() {
-        assert_eq!(sleep_reaction(true), PowerSignal::Lock);
+        assert_eq!(sleep_reaction(true), PowerSignal::PreparingForSleep);
         assert_eq!(sleep_reaction(false), PowerSignal::ResumedFromSleep);
+    }
+
+    #[test]
+    fn suspend_failure_is_reported_to_cancel_a_pre_sleep_latch() {
+        let bridge = crate::bridge::PowerBridge::new();
+        bridge.push_signal(PowerSignal::SuspendFailed);
+        assert_eq!(bridge.drain_signals(), vec![PowerSignal::SuspendFailed]);
     }
 
     #[test]

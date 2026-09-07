@@ -40,7 +40,10 @@ use vello::kurbo::{Affine, Point, Rect};
 // `Rect`/`Scene`/`Affine` are used by the layout + render helpers below.
 
 const W: f32 = 1200.0;
-const H: f32 = 760.0;
+// Tall enough for the complete category corpus. Sidebar scrolling itself is
+// covered by Scrollable's integration tests; this suite exercises category
+// activation and must click visible rows rather than coordinates below clip.
+const H: f32 = 1280.0;
 
 /// Run the full `build_layout → compute_layout(measure) → apply_layout` cycle
 /// the host runs each frame, returning the app's root taffy node + the live
@@ -170,6 +173,7 @@ fn click_navigates_to(target: Category) {
         return;
     }
 
+    let mut doc = AutoCommit::new();
     let rect =
         row_rect(&app, target.label()).unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
     assert!(
@@ -177,7 +181,6 @@ fn click_navigates_to(target: Category) {
         "row {target:?} has a real rect"
     );
 
-    let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
     let mods = winit::event::Modifiers::default();
     let center = rect.center();

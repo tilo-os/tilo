@@ -24,6 +24,9 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 settings-store = { path = "../../crates/system/settings-store" }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
 launcher = { path = "../../crates/packaging/launcher" }
+# The same freedesktop scanner the shell uses for host and Flatpak launches;
+# notification rules must be keyed by those canonical desktop identities.
+desktop-entry = { package = "qos-desktop-entry", path = "../../crates/system/desktop-entry" }
 # The one capability vocabulary the compositor persists. Depending on this
 # lightweight *types* crate (not the compositor) lets the Permissions pane
 # deserialise the real per-workspace grants the shell writes to

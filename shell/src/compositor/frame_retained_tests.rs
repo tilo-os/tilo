@@ -275,10 +275,14 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 
 fn rect_scene() -> Scene {
     let mut scene = Scene::new();
+    // Fixed fixture ink: the retained-scene tests compare composition and
+    // damage behavior, not application styling or theme selection.
+    #[allow(clippy::disallowed_methods)]
+    let fixture_color = Color::from_rgb8(0x2A, 0x80, 0xC4);
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        Color::from_rgb8(0x2A, 0x80, 0xC4),
+        fixture_color,
         None,
         &Rect::new(10.0, 20.0, 100.0, 120.0),
     );

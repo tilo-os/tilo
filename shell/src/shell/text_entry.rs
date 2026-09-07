@@ -121,7 +121,11 @@ pub fn apply(key: &Key, mods: Mods, buf: &mut String, sel: &mut Selection) -> Ed
                 if sel.cursor >= buf.len() {
                     return Edit::ConsumedQuiet;
                 }
-                let next = next_char_boundary(buf, sel.cursor);
+                let next = if ctrl {
+                    next_word_boundary(buf, sel.cursor)
+                } else {
+                    next_char_boundary(buf, sel.cursor)
+                };
                 buf.replace_range(sel.cursor..next, "");
             } else {
                 let r = sel.range();
@@ -329,6 +333,42 @@ mod tests {
         apply(&Key::Named(NamedKey::ArrowLeft), shift, &mut buf, &mut sel);
         assert!(!sel.is_collapsed());
         assert_eq!(sel.range(), 4..6);
+    }
+
+    #[test]
+    fn ctrl_shift_arrow_extends_by_words_and_shift_home_end_keep_anchor() {
+        let (mut buf, _) = typed("hello world");
+        let mut sel = Selection::collapsed(0);
+        let ctrl_shift = Mods {
+            shift: true,
+            ctrl: true,
+        };
+        apply(
+            &Key::Named(NamedKey::ArrowRight),
+            ctrl_shift,
+            &mut buf,
+            &mut sel,
+        );
+        assert_eq!(sel.range(), 0..6);
+        apply(
+            &Key::Named(NamedKey::End),
+            Mods {
+                shift: true,
+                ctrl: false,
+            },
+            &mut buf,
+            &mut sel,
+        );
+        assert_eq!(sel.range(), 0..buf.len());
+    }
+
+    #[test]
+    fn ctrl_delete_removes_the_next_word() {
+        let (mut buf, _) = typed("hello world");
+        let mut sel = Selection::collapsed(0);
+        apply(&Key::Named(NamedKey::Delete), ctrl(), &mut buf, &mut sel);
+        assert_eq!(buf, "world");
+        assert_eq!(sel, Selection::collapsed(0));
     }
 
     #[test]
