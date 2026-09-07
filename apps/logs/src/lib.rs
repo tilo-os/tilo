@@ -9,7 +9,9 @@
 //! document (see [`doc::LogsDoc`]) so they sync across collaborators and
 //! participate in undo/redo for free. Live tail is a deliberately local
 //! effect because it starts the local process's journal poller; journal
-//! entries themselves are an external render cache.
+//! entries themselves are an external render cache. The resource catalogue
+//! also exposes refresh, follow/pause, and an explicit-path JSON Lines export;
+//! it publishes metadata and stable entry identities, never raw log payloads.
 //!
 //! Data sources:
 //! - **Live**: parses `journalctl -o json` ([`journal::load_live`]).
@@ -76,8 +78,10 @@ pub fn app_root() -> Box<dyn Widget> {
         return Box::new(LogsApp::new(journal::sample_entries(), false));
     }
 
-    let live = journal::load_live(2000);
-    // Live-tail only makes sense against a journal we could actually read.
-    let allow_live = !live.is_empty();
-    Box::new(LogsApp::new(live, allow_live))
+    match journal::load_live(2000) {
+        // A successful empty journal is still a live-capable source: Refresh
+        // and Follow stay available as recovery controls.
+        Ok(entries) => Box::new(LogsApp::new(entries, true)),
+        Err(error) => Box::new(LogsApp::new_with_source_error(Vec::new(), true, error)),
+    }
 }
