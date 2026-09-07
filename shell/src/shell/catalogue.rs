@@ -285,6 +285,17 @@ pub fn pending_notices() -> Vec<(String, u64)> {
     lock_pending_notices().clone()
 }
 
+/// Return the active opening notice for `package_id`, if any. Launching the
+/// same app repeatedly while its first install/start is still in flight must
+/// not create a stack of indistinguishable "Opening…" cards or overwrite the
+/// only id that can retire the old cards.
+pub fn pending_notice(package_id: &str) -> Option<u64> {
+    lock_pending_notices()
+        .iter()
+        .find(|(id, _)| id == package_id)
+        .map(|(_, notification_id)| *notification_id)
+}
+
 /// So the "opening" toast is retired by the app appearing, not a timer.
 pub fn take_pending_notice(package_id: &str) -> Option<u64> {
     let mut pending = lock_pending_notices();
@@ -356,6 +367,11 @@ pub fn install_and_launch(
 }
 
 fn push_failure(package_id: &str, display_name: &str, detail: String) {
+    // Installation can fail after the search action has already reserved a
+    // placement for the eventual window. Drop that reservation with the
+    // failure event; otherwise a later, unrelated app can inherit the dead
+    // launch's destination.
+    launcher::clear_pending_placement(package_id);
     launcher::push_event(LaunchEvent {
         package_id: package_id.to_string(),
         display_name: display_name.to_string(),
@@ -435,7 +451,9 @@ mod tests {
     #[test]
     fn a_newer_open_replaces_the_notice_for_the_same_package() {
         note_pending_notice("dev.qos.replacefixture", 1);
+        assert_eq!(pending_notice("dev.qos.replacefixture"), Some(1));
         note_pending_notice("dev.qos.replacefixture", 2);
+        assert_eq!(pending_notice("dev.qos.replacefixture"), Some(2));
         assert_eq!(
             take_pending_notice("dev.qos.replacefixture"),
             Some(2),

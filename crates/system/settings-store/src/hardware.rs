@@ -41,12 +41,41 @@ impl OutputMode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDescriptor {
-    /// Connector name exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
+    /// Collision-free output key used by persisted display intent. This is
+    /// the familiar DRM connector label when it is unique, and a
+    /// card-qualified key only when another card exposes the same label.
     pub connector: String,
+    /// Raw connector label exposed by DRM, e.g. `eDP-1` or `HDMI-A-1`.
+    /// Older compositor snapshots omit this field; consumers must then use
+    /// [`Self::connector`] as the user-facing fallback.
+    #[serde(default)]
+    pub connector_label: String,
     pub modes: Vec<OutputMode>,
     pub hdr: bool,
     pub vrr: bool,
     pub color_profiles: Vec<String>,
+}
+
+impl OutputDescriptor {
+    /// Connector label suitable for a compact user-facing description. The
+    /// persisted key stays available in [`Self::connector`] for selections,
+    /// mirrors and widget ids.
+    pub fn label(&self) -> &str {
+        if self.connector_label.is_empty() {
+            &self.connector
+        } else {
+            &self.connector_label
+        }
+    }
+
+    /// The card portion of a collision-resolved key, if this descriptor had
+    /// to be qualified. Keys use `card-identity/raw-connector`; a raw
+    /// connector label never contains `/` in DRM's connector-name grammar.
+    pub fn card_qualifier(&self) -> Option<&str> {
+        self.connector
+            .strip_suffix(self.label())
+            .and_then(|prefix| prefix.strip_suffix('/'))
+    }
 }
 
 /// One compositor-published output capability snapshot.  Settings consumes
@@ -324,6 +353,14 @@ pub enum DisplayConfigError {
 }
 
 impl DisplayConfig {
+    /// Look up intent by the compositor-published collision-free output key.
+    /// A legacy raw connector entry is deliberately not a fallback for a
+    /// card-qualified key: applying it to both same-named GPU connectors
+    /// would turn one user's layout into two conflicting layouts.
+    pub fn output_for(&self, connector: &str) -> Option<&OutputConfig> {
+        self.outputs.get(connector)
+    }
+
     /// Validate intent against a fresh hardware snapshot. Unknown/disconnected
     /// configured outputs are retained for re-plug but ignored in this plan.
     ///
@@ -473,6 +510,11 @@ pub enum AccelProfile {
 // document's JSON shape and field names are load-bearing across `apps/settings`
 // and `shell`, so folding them into a bitflags type ripples well outside this
 // crate.
+/// Fedora GNOME-compatible defaults: touchpads move content with the fingers,
+/// while physical mouse wheels retain their conventional direction.
+pub const DEFAULT_TOUCHPAD_NATURAL_SCROLL: bool = true;
+pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent input-device toggles serialised by field name; consumers in other \
@@ -482,7 +524,13 @@ pub enum AccelProfile {
 #[serde(default)]
 pub struct RichInputConfig {
     pub pointer_speed: f64,
+    pub touchpad_pointer_speed: Option<f64>,
+    pub mouse_pointer_speed: Option<f64>,
+    /// Legacy fallback for settings written before mouse/touchpad scrolling
+    /// were independently configurable.
     pub natural_scroll: bool,
+    pub touchpad_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: Option<bool>,
     pub tap_to_click: bool,
     pub tap_drag: bool,
     pub disable_while_typing: bool,
@@ -490,6 +538,10 @@ pub struct RichInputConfig {
     pub left_handed: bool,
     pub accel_profile: AccelProfile,
     pub key_repeat: f64,
+    /// Exact physical repeat values imported from the host desktop. A qOS
+    /// repeat-slider choice clears both and resumes using `key_repeat`.
+    pub key_repeat_delay_ms: Option<u32>,
+    pub key_repeat_rate_hz: Option<u32>,
     /// Active source id (`layout` or `layout:variant`). Kept under the
     /// historic key so a current compositor and older Settings builds agree
     /// on the user's primary layout.
@@ -507,7 +559,11 @@ impl Default for RichInputConfig {
     fn default() -> Self {
         Self {
             pointer_speed: 0.5,
+            touchpad_pointer_speed: None,
+            mouse_pointer_speed: None,
             natural_scroll: false,
+            touchpad_natural_scroll: Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL),
+            mouse_natural_scroll: Some(DEFAULT_MOUSE_NATURAL_SCROLL),
             tap_to_click: true,
             tap_drag: true,
             disable_while_typing: true,
@@ -515,6 +571,8 @@ impl Default for RichInputConfig {
             left_handed: false,
             accel_profile: AccelProfile::Adaptive,
             key_repeat: 0.5,
+            key_repeat_delay_ms: None,
+            key_repeat_rate_hz: None,
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
@@ -580,6 +638,23 @@ impl RichInputConfig {
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let mut config: Self =
             serde_json::from_value(serde_json::Value::Object(section.clone())).unwrap_or_default();
+        // `natural_scroll` predates per-device preferences.  It must still
+        // win for an old document, but an unset document gets the distinct
+        // platform defaults rather than one global direction for every device.
+        let legacy_natural_scroll = section
+            .get("natural_scroll")
+            .and_then(serde_json::Value::as_bool);
+        config.natural_scroll = legacy_natural_scroll.unwrap_or(false);
+        config.touchpad_natural_scroll = section
+            .get("touchpad_natural_scroll")
+            .and_then(serde_json::Value::as_bool)
+            .or(legacy_natural_scroll)
+            .or(Some(DEFAULT_TOUCHPAD_NATURAL_SCROLL));
+        config.mouse_natural_scroll = section
+            .get("mouse_natural_scroll")
+            .and_then(serde_json::Value::as_bool)
+            .or(legacy_natural_scroll)
+            .or(Some(DEFAULT_MOUSE_NATURAL_SCROLL));
         // Read the keyboard fields independently as well: a wrong-typed
         // pointer field must not discard an otherwise valid input-source
         // list merely because serde rejected the whole rich object.
@@ -669,6 +744,8 @@ impl RichInputConfig {
             Some("ralt") => Some("compose:ralt"),
             Some("menu") => Some("compose:menu"),
             Some("caps") => Some("compose:caps"),
+            Some("rwin") => Some("compose:rwin"),
+            Some("lwin") => Some("compose:lwin"),
             _ => None,
         } {
             options.push(option.into());
@@ -710,6 +787,153 @@ pub struct DesktopControlsConfig {
     /// strip and reorder navigation. The ordinary arrow bindings remain
     /// available.
     pub vim_mode: bool,
+}
+
+/// A stable, per-user identifier for a control that may appear in Quick
+/// Settings.  The compositor deliberately persists identifiers rather than
+/// a rendered grid: availability is a property of the current machine while
+/// the person's ordering is durable intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickSettingsControl {
+    Wifi,
+    Bluetooth,
+    Vpn,
+    NightLight,
+    AirplaneMode,
+    MobileData,
+}
+
+impl QuickSettingsControl {
+    /// A small, useful surface for a typical laptop.  Airplane mode is an
+    /// available extra, not an always-visible destination.
+    pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
+
+    /// Wi-Fi remains reachable even after customisation: it is the recovery
+    /// path for connecting a newly installed desktop to a network.
+    pub fn required(self) -> bool {
+        matches!(self, Self::Wifi)
+    }
+}
+
+/// Quick Settings arrangement stored in the shared settings document.
+///
+/// Missing, unknown and duplicate values are normalised on load.  This both
+/// migrates the old fixed dashboard (which had no saved arrangement) and
+/// lets later releases add controls without corrupting an older layout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QuickSettingsConfig {
+    pub controls: Vec<QuickSettingsControl>,
+}
+
+impl Default for QuickSettingsConfig {
+    fn default() -> Self {
+        Self {
+            controls: QuickSettingsControl::DEFAULT.to_vec(),
+        }
+    }
+}
+
+impl QuickSettingsConfig {
+    #[must_use]
+    pub fn normalised(mut self) -> Self {
+        let mut seen = BTreeSet::new();
+        self.controls.retain(|control| seen.insert(*control));
+        if !self.controls.contains(&QuickSettingsControl::Wifi) {
+            self.controls.insert(0, QuickSettingsControl::Wifi);
+        }
+        self
+    }
+
+    pub fn load() -> Self {
+        serde_json::from_value::<Self>(serde_json::Value::Object(super::load_section(
+            "quick_settings",
+        )))
+        .unwrap_or_default()
+        .normalised()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the setting cannot be serialized or persisted.
+    pub fn save(&self) -> std::io::Result<()> {
+        let value =
+            serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;
+        super::update_section(
+            "quick_settings",
+            value.as_object().cloned().unwrap_or_default(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod quick_settings_tests {
+    use super::{QuickSettingsConfig, QuickSettingsControl};
+    use serial_test::serial;
+
+    #[test]
+    fn quick_settings_config_deduplicates_and_keeps_network_recovery() {
+        let config = QuickSettingsConfig {
+            controls: vec![
+                QuickSettingsControl::NightLight,
+                QuickSettingsControl::NightLight,
+            ],
+        }
+        .normalised();
+        assert_eq!(
+            config.controls,
+            vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
+        );
+    }
+
+    #[test]
+    fn airplane_is_available_but_not_a_default_control() {
+        assert!(
+            !QuickSettingsConfig::default()
+                .controls
+                .contains(&QuickSettingsControl::AirplaneMode)
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn quick_settings_order_survives_restart_without_replacing_other_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: this process-global mutation is serialised with the other
+        // settings-path tests and restored before returning.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", temp.path()) };
+        let path = crate::settings_path().unwrap();
+        crate::update_section_at(
+            &path,
+            "appearance",
+            serde_json::json!({"theme": "dark"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        let expected = QuickSettingsConfig {
+            controls: vec![
+                QuickSettingsControl::NightLight,
+                QuickSettingsControl::Wifi,
+                QuickSettingsControl::Bluetooth,
+            ],
+        };
+        expected.save().unwrap();
+
+        assert_eq!(QuickSettingsConfig::load(), expected);
+        assert_eq!(
+            crate::load_at(&path)["appearance"]["theme"],
+            serde_json::json!("dark")
+        );
+
+        match old_xdg {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+    }
 }
 
 impl DesktopControlsConfig {
@@ -776,6 +1000,25 @@ impl KeyChord {
         })
     }
 
+    /// `F1` and Print Screen are compositor safety/help controls, never
+    /// editable application-navigation bindings.
+    pub fn is_reserved_system_key(&self) -> bool {
+        matches!(self.key.as_str(), "f1" | "printscreen")
+    }
+
+    fn is_valid_configurable(&self) -> bool {
+        let valid_modifiers = self
+            .modifiers
+            .iter()
+            .all(|modifier| matches!(modifier.as_str(), "Super" | "Ctrl" | "Alt" | "Shift"));
+        let printable_without_modifier = self.modifiers.is_empty() && self.key.chars().count() == 1;
+        valid_modifiers
+            && !self.key.is_empty()
+            && !self.key.contains(char::is_whitespace)
+            && !self.is_reserved_system_key()
+            && !printable_without_modifier
+    }
+
     pub fn display(&self) -> String {
         let key = match self.key.as_str() {
             "left" => "Left",
@@ -805,6 +1048,13 @@ pub struct ShortcutConfig {
     pub bindings: BTreeMap<ShortcutAction, KeyChord>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShortcutConfigError {
+    ReservedSystemKey,
+    InvalidChord,
+    Conflict(ShortcutAction),
+}
+
 impl Default for ShortcutConfig {
     fn default() -> Self {
         // Built directly rather than through the fallible `KeyChord::parse`: every
@@ -821,16 +1071,33 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
+        fn ctrl_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn ctrl_shift_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string(), "Shift".to_string()]),
+                key: key.to_string(),
+            }
+        }
         let bindings = [
             (ShortcutAction::Search, super_chord("k")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
             (ShortcutAction::ShortcutHelp, super_chord("/")),
+            // Spatial arrows are the always-visible desktop model. Alt+Tab
+            // remains an immutable conventional ring alias in the shell.
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
             (ShortcutAction::FocusNextWindow, super_chord("right")),
-            (ShortcutAction::PreviousTab, super_chord("[")),
-            (ShortcutAction::NextTab, super_chord("]")),
+            // Conventional application tab cycling belongs to the focused
+            // qOS window group too. Keeping this distinct from Super+Tab
+            // means the overview is never opened while changing tabs.
+            (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
+            (ShortcutAction::NextTab, ctrl_chord("tab")),
             (ShortcutAction::PreviousStrip, super_shift_chord("up")),
             (ShortcutAction::NextStrip, super_shift_chord("down")),
             (ShortcutAction::PreviousWorkspace, super_chord("up")),
@@ -847,32 +1114,102 @@ impl Default for ShortcutConfig {
 }
 
 impl ShortcutConfig {
+    /// Validate an already assembled table before it becomes live runtime
+    /// state.  Unlike [`Self::load`], this rejects rather than repairs so a
+    /// caller cannot install ambiguous ownership in a running session.
     /// # Errors
     ///
-    /// Returns the other [`ShortcutAction`] already bound to `chord`, if
-    /// any, without changing this binding's own chord.
-    pub fn set(&mut self, action: ShortcutAction, chord: KeyChord) -> Result<(), ShortcutAction> {
+    /// Returns an error when a chord is invalid or reserved, when the lock
+    /// shortcut differs from its immutable safety binding, or when two
+    /// actions claim the same chord.
+    pub fn validate(&self) -> Result<(), ShortcutConfigError> {
+        let defaults = Self::default();
+        let default_lock = defaults.bindings.get(&ShortcutAction::Lock);
+        let mut seen = BTreeMap::<&KeyChord, ShortcutAction>::new();
+        for (action, chord) in &self.bindings {
+            if *action == ShortcutAction::Lock && Some(chord) != default_lock {
+                return Err(ShortcutConfigError::InvalidChord);
+            }
+            if chord.is_reserved_system_key() {
+                return Err(ShortcutConfigError::ReservedSystemKey);
+            }
+            if !chord.is_valid_configurable() {
+                return Err(ShortcutConfigError::InvalidChord);
+            }
+            if let Some(other) = seen.insert(chord, *action) {
+                return Err(ShortcutConfigError::Conflict(other));
+            }
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error without changing this binding when `chord` is invalid,
+    /// system-reserved, or already belongs to another action.
+    pub fn set(
+        &mut self,
+        action: ShortcutAction,
+        chord: KeyChord,
+    ) -> Result<(), ShortcutConfigError> {
+        let defaults = Self::default();
+        if action == ShortcutAction::Lock
+            && defaults.bindings.get(&ShortcutAction::Lock) != Some(&chord)
+        {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
+        if chord.is_reserved_system_key() {
+            return Err(ShortcutConfigError::ReservedSystemKey);
+        }
+        if !chord.is_valid_configurable() {
+            return Err(ShortcutConfigError::InvalidChord);
+        }
         if let Some((other, _)) = self
             .bindings
             .iter()
             .find(|(a, c)| **a != action && **c == chord)
         {
-            return Err(*other);
+            return Err(ShortcutConfigError::Conflict(*other));
         }
         self.bindings.insert(action, chord);
         Ok(())
     }
     pub fn load() -> Self {
-        let mut loaded: Self =
+        let loaded: Self =
             serde_json::from_value(serde_json::Value::Object(super::load_section("shortcuts")))
                 .unwrap_or_default();
-        // Settings written by an older release contain a valid but partial
-        // map. Merge newly introduced actions without overwriting any chord
-        // the user already chose.
-        for (action, chord) in Self::default().bindings {
-            loaded.bindings.entry(action).or_insert(chord);
+        Self::normalise(loaded)
+    }
+
+    /// Deterministically repairs manual/corrupt persisted state: begin with
+    /// defaults, then accept a stored override only when it is a valid,
+    /// non-reserved, non-conflicting chord.  Bad entries fall back to their
+    /// default instead of leaving ambiguous client ownership.
+    #[must_use]
+    pub fn normalise(loaded: Self) -> Self {
+        let defaults = Self::default();
+        let mut effective = defaults.clone();
+        for (action, chord) in loaded.bindings {
+            if action == ShortcutAction::Lock {
+                continue;
+            }
+            if !chord.is_valid_configurable() {
+                continue;
+            }
+            effective.bindings.remove(&action);
+            if effective
+                .bindings
+                .values()
+                .any(|existing| existing == &chord)
+            {
+                if let Some(default) = defaults.bindings.get(&action) {
+                    effective.bindings.insert(action, default.clone());
+                }
+                continue;
+            }
+            effective.bindings.insert(action, chord);
         }
-        loaded
+        effective
     }
     /// # Errors
     ///
@@ -890,6 +1227,7 @@ mod tests {
     fn display(name: &str) -> OutputDescriptor {
         OutputDescriptor {
             connector: name.into(),
+            connector_label: name.into(),
             modes: vec![OutputMode {
                 width: 1920,
                 height: 1080,
@@ -918,6 +1256,49 @@ mod tests {
             cfg.validate_for(&[display("DP-1")]),
             Err(DisplayConfigError::UnsupportedMode { .. })
         ));
+    }
+
+    #[test]
+    fn legacy_unqualified_connector_never_cross_targets_qualified_duplicates() {
+        let first = OutputDescriptor {
+            connector: "pci:0000:01:00.0/HDMI-A-1".into(),
+            connector_label: "HDMI-A-1".into(),
+            modes: vec![],
+            hdr: false,
+            vrr: false,
+            color_profiles: vec![],
+        };
+        let second = OutputDescriptor {
+            connector: "pci:0000:03:00.0/HDMI-A-1".into(),
+            connector_label: "HDMI-A-1".into(),
+            modes: vec![],
+            hdr: false,
+            vrr: false,
+            color_profiles: vec![],
+        };
+        let mut config = DisplayConfig::default();
+        config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+
+        assert!(config.output_for(&first.connector).is_none());
+        assert!(config.output_for(&second.connector).is_none());
+        assert_eq!(first.label(), "HDMI-A-1");
+        assert_eq!(first.card_qualifier(), Some("pci:0000:01:00.0"));
+
+        // Snapshots written before `connector_label` existed remain readable
+        // and continue to present the historical raw connector label.
+        let legacy: OutputDescriptor = serde_json::from_value(serde_json::json!({
+            "connector": "HDMI-A-1",
+            "modes": [], "hdr": false, "vrr": false, "color_profiles": []
+        }))
+        .expect("old snapshot remains compatible");
+        assert_eq!(legacy.label(), "HDMI-A-1");
+        assert_eq!(legacy.card_qualifier(), None);
     }
     #[test]
     fn rejects_mirror_cycles() {
@@ -1018,9 +1399,110 @@ mod tests {
         let old = cfg.bindings[&ShortcutAction::Lock].clone();
         assert_eq!(
             cfg.set(ShortcutAction::Lock, KeyChord::parse("Super+K").unwrap()),
-            Err(ShortcutAction::Search)
+            Err(ShortcutConfigError::InvalidChord)
         );
         assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
+    }
+
+    #[test]
+    fn reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter() {
+        let mut cfg = ShortcutConfig::default();
+        for key in ["f1", "printscreen"] {
+            assert_eq!(
+                cfg.set(
+                    ShortcutAction::Search,
+                    KeyChord {
+                        modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                        key: key.into(),
+                    },
+                ),
+                Err(ShortcutConfigError::ReservedSystemKey),
+                "{key} must remain compositor-owned"
+            );
+        }
+        cfg.set(ShortcutAction::Search, KeyChord::parse("Ctrl+J").unwrap())
+            .unwrap();
+        assert_eq!(
+            cfg.set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap()),
+            Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
+        );
+    }
+
+    #[test]
+    fn corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership() {
+        let mut corrupt = ShortcutConfig::default();
+        corrupt.bindings.insert(
+            ShortcutAction::Search,
+            KeyChord {
+                modifiers: BTreeSet::from(["Ctrl".to_string()]),
+                key: "f1".into(),
+            },
+        );
+        corrupt
+            .bindings
+            .insert(ShortcutAction::Lock, KeyChord::parse("Alt+L").unwrap());
+        corrupt.bindings.insert(
+            ShortcutAction::PreviousTab,
+            KeyChord::parse("Ctrl+J").unwrap(),
+        );
+        corrupt
+            .bindings
+            .insert(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap());
+
+        let repaired = ShortcutConfig::normalise(corrupt);
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::Search].display(),
+            "Super+k",
+            "reserved persisted keys revert to their action default"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::Lock].display(),
+            "Super+l",
+            "the native lock chord is immutable"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::PreviousTab].display(),
+            "Ctrl+j",
+            "the first action in stable action order owns a duplicate"
+        );
+        assert_eq!(
+            repaired.bindings[&ShortcutAction::NextTab].display(),
+            "Ctrl+Tab",
+            "the duplicate action deterministically falls back to default"
+        );
+        assert!(repaired.validate().is_ok());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "qos-shortcut-save-reload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        let mut saved = ShortcutConfig::default();
+        saved
+            .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
+            .unwrap();
+        saved.save().unwrap();
+        let reloaded = ShortcutConfig::load();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        std::fs::remove_dir_all(dir).ok();
+
+        assert_eq!(reloaded, saved);
+        assert!(reloaded.validate().is_ok());
     }
 
     #[test]
@@ -1033,6 +1515,15 @@ mod tests {
             cfg.bindings[&ShortcutAction::FocusPreviousWindow].display(),
             "Super+Left"
         );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::FocusNextWindow].display(),
+            "Super+Right"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::PreviousTab].display(),
+            "Ctrl+Shift+Tab"
+        );
+        assert_eq!(cfg.bindings[&ShortcutAction::NextTab].display(), "Ctrl+Tab");
     }
 
     #[test]
@@ -1045,6 +1536,21 @@ mod tests {
         assert_eq!(cfg.keyboard_layout, "de");
         assert_eq!(cfg.keyboard_layouts, ["de"]);
         assert_eq!(cfg.active_source_index(), 0);
+    }
+
+    #[test]
+    fn scroll_defaults_match_gnome_and_keep_legacy_global_documents() {
+        let empty = RichInputConfig::from_section(&serde_json::Map::new());
+        assert_eq!(empty.touchpad_natural_scroll, Some(true));
+        assert_eq!(empty.mouse_natural_scroll, Some(false));
+
+        let legacy = serde_json::json!({ "natural_scroll": false })
+            .as_object()
+            .unwrap()
+            .clone();
+        let legacy = RichInputConfig::from_section(&legacy);
+        assert_eq!(legacy.touchpad_natural_scroll, Some(false));
+        assert_eq!(legacy.mouse_natural_scroll, Some(false));
     }
 
     #[test]

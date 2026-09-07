@@ -578,6 +578,10 @@ impl Widget for CodeEditor {
         self.inner.is_focused()
     }
 
+    fn wants_tab_input(&self) -> bool {
+        self.inner.wants_tab_input()
+    }
+
     fn ime_cursor_rect(&self) -> Option<Rect> {
         Widget::ime_cursor_rect(&self.inner)
     }

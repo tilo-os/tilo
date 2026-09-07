@@ -24,6 +24,8 @@ pub struct FastReading {
     pub volume: Option<f32>,
     pub wifi: Option<bool>,
     pub bluetooth: Option<bool>,
+    /// A successful BlueZ state query proves that an adapter exists.
+    pub bluetooth_available: bool,
     pub power: Option<qs::PowerProfile>,
     pub wired: Option<qs::WiredInfo>,
     pub battery: qs::BatteryInfo,
@@ -107,11 +109,13 @@ impl QsRefresh {
 
     pub fn kick_fast(&mut self) {
         self.spawn(Tier::Fast, || {
+            let bluetooth = qs::log_qs_get("get_bluetooth", qs::get_bluetooth());
             QsReading::Fast(Box::new(FastReading {
                 brightness: qs::log_qs_get("get_brightness", qs::get_brightness()),
                 volume: qs::log_qs_get("get_volume", qs::get_volume()),
                 wifi: qs::log_qs_get("get_wifi", qs::get_wifi()),
-                bluetooth: qs::log_qs_get("get_bluetooth", qs::get_bluetooth()),
+                bluetooth_available: bluetooth.is_some(),
+                bluetooth,
                 power: qs::log_qs_get("get_power_profile", qs::get_power_profile()),
                 wired: qs::log_qs_get("get_wired", qs::get_wired()),
                 battery: qs::BatteryInfo::from_system(),
@@ -188,6 +192,7 @@ mod tests {
             volume: None,
             wifi: None,
             bluetooth: None,
+            bluetooth_available: false,
             power: None,
             wired: None,
             battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),
@@ -227,6 +232,7 @@ mod tests {
                 volume: None,
                 wifi: Some(true),
                 bluetooth: None,
+                bluetooth_available: false,
                 power: None,
                 wired: None,
                 battery: qs::BatteryInfo::from_root(std::path::Path::new("/nonexistent")),

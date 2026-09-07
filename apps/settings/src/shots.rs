@@ -80,12 +80,14 @@ impl Scenario {
             // Accounts) active — the state the nav reaches after a click — so
             // the still proves selection drives the content pane.
             Scenario::Wide => SettingsApp::with_selected(Category::ExternalAccounts)
-                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32),
+                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
+                .with_deterministic_hardware_for_shot(),
             // Narrow: the collapse default — Region & Formats' content
             // full-screen with a back arrow to the list. A collapse keeps the
             // content, never the category list.
             Scenario::Narrow => SettingsApp::with_selected(Category::RegionFormats)
-                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32),
+                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+                .with_deterministic_hardware_for_shot(),
         }
     }
 }
@@ -240,6 +242,7 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if fname.contains("narrow") && fname.contains("list") {
         let app = SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_narrow_list_shot();
         return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
     }
@@ -249,6 +252,7 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if fname.contains("narrow") && fname.contains("content") {
         let app = SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_narrow_content_shot();
         return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
     }
@@ -264,6 +268,7 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         // filtered navigation state.
         let app = SettingsApp::with_selected(Category::Appearance)
             .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_search_shot("light");
         return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
     }
@@ -293,6 +298,7 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         };
         let mut app = SettingsApp::with_selected(Category::ExternalAccounts)
             .with_width_hint(viewport.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_account_directory_for_shot(crate::accounts::sample_directory());
         if fname.contains("accountform") {
             app = app.with_account_form_for_shot(crate::accounts::AccountKind::Nextcloud);
@@ -319,11 +325,13 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             if fname.contains("narrow") {
                 let app = SettingsApp::with_selected(cat)
                     .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+                    .with_deterministic_hardware_for_shot()
                     .with_narrow_content_shot();
                 return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
             }
-            let app =
-                SettingsApp::with_selected(cat).with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32);
+            let app = SettingsApp::with_selected(cat)
+                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
+                .with_deterministic_hardware_for_shot();
             return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
         }
     }
@@ -351,9 +359,12 @@ fn responsive_app(viewport: (u32, u32)) -> SettingsApp {
     if f64::from(viewport.0) < NAV_BREAKPOINT {
         SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(viewport.0 as f32)
+            .with_deterministic_hardware_for_shot()
             .with_narrow_content_shot()
     } else {
-        SettingsApp::with_selected(Category::ExternalAccounts).with_width_hint(viewport.0 as f32)
+        SettingsApp::with_selected(Category::ExternalAccounts)
+            .with_width_hint(viewport.0 as f32)
+            .with_deterministic_hardware_for_shot()
     }
 }
 

@@ -943,6 +943,37 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_painted_close_rect_dismisses_only_that_notification() {
+        let chrome = new_chrome();
+        let first = chrome.borrow_mut().push_notification("First", "");
+        let second = chrome.borrow_mut().push_notification("Second", "");
+        let mut stack = NotificationStack::new(chrome.clone());
+        // The renderer records this exact geometry after painting. Seeding it
+        // here keeps the routing test independent of a GPU while exercising
+        // the same production hit-test path used by the overlay host.
+        stack.hit_rects.push((
+            first,
+            Rect::new(100.0, 100.0, 460.0, 164.0),
+            Rect::new(430.0, 106.0, 452.0, 128.0),
+        ));
+        stack.hit_rects.push((
+            second,
+            Rect::new(100.0, 172.0, 460.0, 236.0),
+            Rect::new(430.0, 178.0, 452.0, 200.0),
+        ));
+        assert!(stack.notify_click_at(Point::new(441.0, 189.0)));
+        let remaining: Vec<_> = chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|notification| notification.title.clone())
+            .collect();
+        assert_eq!(remaining, vec!["First".to_string()]);
+        stack.hit_rects.clear();
+        assert!(!stack.notify_click_at(Point::new(441.0, 189.0)));
+    }
+
+    #[test]
     fn cap_enforces_fifo_drop_at_max() {
         let chrome = new_chrome();
         for i in 0..(MAX_NOTIFICATIONS + 3) {
@@ -1065,6 +1096,42 @@ mod tests {
         chrome.borrow_mut().pump_dbus_notifications();
         assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
         assert_eq!(chrome.borrow().notification_badge_total(), 12);
+    }
+
+    #[test]
+    fn verified_foreign_identity_obeys_its_settings_rule() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let mut policy = settings_store::notification_policy::NotificationPolicy::default();
+        policy.per_app.insert(
+            "org.example.Chat".into(),
+            settings_store::notification_policy::AppNotificationRule {
+                banners: Some(false),
+                ..Default::default()
+            },
+        );
+        chrome
+            .borrow_mut()
+            .set_notification_policy_for_tests(policy);
+
+        let mut foreign = incoming(23, 1, 5000);
+        // This is the identity the notification service derived from a
+        // Flatpak sender's PID + cgroup, not its Notify.app_name string.
+        foreign.app_name = "Pretend Settings".into();
+        foreign.caller = Some(PortalCaller::new(
+            WorkspaceId::default(),
+            "org.example.Chat",
+        ));
+        bridge.push_incoming(foreign);
+        chrome.borrow_mut().pump_dbus_notifications();
+
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        assert_eq!(
+            chrome.borrow().notification_history()[0].app_id.as_deref(),
+            Some("org.example.Chat")
+        );
     }
 
     #[test]
