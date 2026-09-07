@@ -81,6 +81,10 @@ impl Ring {
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
     pub pid: u32,
+    /// Kernel start-time tick for this particular PID lifetime. A PID alone is
+    /// reusable; signal operations carry this value and re-check it immediately
+    /// before dispatch so a stale action can never affect a replacement process.
+    pub started_at: u64,
     /// Parent process id, when known. `None` for the synthetic forest roots
     /// (pid 0/1 or a process whose parent isn't in the sampled set). Drives
     /// the parent→child tree in [`crate::tree`].
@@ -166,11 +170,30 @@ impl Metrics {
     }
 }
 
-/// Top-level model: system metrics + process list.
+/// Availability of the operating-system process source. This deliberately
+/// distinguishes an empty but valid snapshot from a source that has not yet
+/// loaded or cannot be read, so the UI never mistakes a permission problem for
+/// an idle machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessDataStatus {
+    /// The first live snapshot is still being collected.
+    Loading,
+    /// The operating system returned one or more processes.
+    Ready,
+    /// The operating system successfully returned a genuinely empty list.
+    Empty,
+    /// The process source exists but this user is not allowed to inspect it.
+    PermissionDenied,
+    /// The platform could not provide a process snapshot for another reason.
+    Unavailable,
+}
+
+/// Top-level model: system metrics + process list + source availability.
 #[derive(Clone, Debug)]
 pub struct MonitorModel {
     pub metrics: Metrics,
     pub processes: Vec<ProcessInfo>,
+    pub process_status: ProcessDataStatus,
 }
 
 /// History depth for every time-series. ~2 minutes at a 1s cadence.
@@ -270,6 +293,7 @@ impl MonitorModel {
         Self {
             metrics,
             processes: sample_processes(),
+            process_status: ProcessDataStatus::Ready,
         }
     }
 
@@ -303,6 +327,7 @@ impl MonitorModel {
         Self {
             metrics,
             processes: Vec::new(),
+            process_status: ProcessDataStatus::Loading,
         }
     }
 }
@@ -597,6 +622,10 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
     };
     ProcessInfo {
         pid,
+        // Synthetic snapshots never reach the operating system, but retaining
+        // a deterministic generation lets the same action wire shape be used
+        // by screenshots, tests, and the live app.
+        started_at: 10_000 + u64::from(pid) * 13,
         ppid,
         name: name.to_string(),
         user: user.to_string(),
