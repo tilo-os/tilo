@@ -31,6 +31,7 @@ ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # The qOS ACTION model: Camera's `actions` module exports its gallery/scan
 # metadata operations as replayable actions the host's Ctrl+K palette dispatches.
 qos-actions = { path = "../../crates/collab/actions" }
+qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
