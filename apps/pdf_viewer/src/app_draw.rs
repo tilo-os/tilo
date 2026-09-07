@@ -960,11 +960,20 @@ impl PdfApp {
                 // A file-open failure is a durable state, not a low-priority hint:
                 // use the semantic error ink so it remains legible in both dark
                 // and high-contrast palettes.
-                Some(err) => (
-                    "Couldn't open this document",
-                    err.as_str(),
-                    c.semantic.danger,
-                ),
+                Some(err) => {
+                    let detail = if err.to_ascii_lowercase().contains("password")
+                        || err.to_ascii_lowercase().contains("encrypt")
+                    {
+                        "This PDF needs a password before it can be opened."
+                    } else if err.to_ascii_lowercase().contains("unavailable")
+                        || err.to_ascii_lowercase().contains("not a readable pdf")
+                    {
+                        "The file is unavailable or isn't a readable PDF."
+                    } else {
+                        "Check the file and try again."
+                    };
+                    ("Couldn't open this document", detail, c.semantic.danger)
+                }
                 None => (
                     "No document open",
                     "Choose a PDF to start reading.",
@@ -982,47 +991,83 @@ impl PdfApp {
             None,
             TextWeight::Semibold,
         );
-        let (sw, _) = tr.measure(sub, 12.5, Some((canvas.width() - 80.0) as f32));
+        // Error strings can be supplied by a parser, portal or native backend.
+        // Keep the visible state to one bounded, centred line instead of
+        // handing an arbitrary diagnostic to the text wrapper (which also
+        // makes a small failure state resistant to pathological input).  The
+        // complete diagnostic remains exposed in the assertive accessibility
+        // node and in `load_error` for copy/support workflows.
+        let shown_sub = truncate_to_width(tr, sub, 12.5, (canvas.width() - 80.0) as f32);
+        let (sw, _) = tr.measure(&shown_sub, 12.5, None);
         tr.draw_text(
             scene,
-            sub,
+            &shown_sub,
             12.5,
             sub_color,
             base * Affine::translate((cx - f64::from(sw) / 2.0, cy + 58.0)),
-            Some((canvas.width() - 80.0) as f32),
+            None,
         );
 
-        // Primary action: open a document from within the app.
-        let btn = self.empty_open_button_rect();
-        let hot = btn.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
-        if hot {
-            scene.fill(Fill::NonZero, base, c.lift(0.72), None, &shape);
+        if self.pending_open.is_some() {
+            // Opening is a singular, passive state.  Do not render a second
+            // open affordance (or a duplicate toast) while the worker owns the
+            // request; the quiet progress rail is enough feedback.
+            let progress = Rect::new(cx - 54.0, cy + 82.0, cx + 54.0, cy + 86.0);
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.border_standard,
+                None,
+                &RoundedRect::from_rect(progress, 2.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                base,
+                theme.accent_primary,
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(
+                        progress.x0,
+                        progress.y0,
+                        progress.x0 + progress.width() * 0.62,
+                        progress.y1,
+                    ),
+                    2.0,
+                ),
+            );
+        } else {
+            // Primary action: open a document from within the app.
+            let btn = self.empty_open_button_rect();
+            let hot = btn.contains(self.last_mouse);
+            let shape = RoundedRect::from_rect(btn, f64::from(theme.tokens.radii.md));
+            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &shape);
+            if hot {
+                scene.fill(Fill::NonZero, base, c.lift(0.72), None, &shape);
+            }
+            // Folder glyph + label as a centred group.
+            let label = "Open a PDF…";
+            let (lw, _) = tr.measure(label, 13.0, None);
+            let gsz = 16.0;
+            let gap = 8.0;
+            let group_w = gsz + gap + f64::from(lw);
+            let gx = btn.x0 + (btn.width() - group_w) / 2.0;
+            let gcy = f64::midpoint(btn.y0, btn.y1);
+            draw_folder_glyph(
+                scene,
+                base,
+                Rect::new(gx, gcy - gsz / 2.0, gx + gsz, gcy + gsz / 2.0),
+                theme.tokens.colors.on_accent(4.5),
+            );
+            tr.draw_text_weighted(
+                scene,
+                label,
+                13.0,
+                theme.tokens.colors.on_accent(4.5),
+                base * Affine::translate((gx + gsz + gap, vcenter(btn, 13.0))),
+                None,
+                TextWeight::Semibold,
+            );
         }
-        // Folder glyph + label as a centred group.
-        let label = "Open a PDF…";
-        let (lw, _) = tr.measure(label, 13.0, None);
-        let gsz = 16.0;
-        let gap = 8.0;
-        let group_w = gsz + gap + f64::from(lw);
-        let gx = btn.x0 + (btn.width() - group_w) / 2.0;
-        let gcy = f64::midpoint(btn.y0, btn.y1);
-        draw_folder_glyph(
-            scene,
-            base,
-            Rect::new(gx, gcy - gsz / 2.0, gx + gsz, gcy + gsz / 2.0),
-            theme.tokens.colors.on_accent(4.5),
-        );
-        tr.draw_text_weighted(
-            scene,
-            label,
-            13.0,
-            theme.tokens.colors.on_accent(4.5),
-            base * Affine::translate((gx + gsz + gap, vcenter(btn, 13.0))),
-            None,
-            TextWeight::Semibold,
-        );
     }
 
     fn draw_canvas(
@@ -1497,15 +1542,25 @@ impl PdfApp {
         lay: &ToolbarLayout,
     ) {
         // Open a document (folder button), left-most after the page-rail toggle.
+        let can_open = self.pending_open.is_none();
         Self::icon_button_bg(
             scene,
             base,
             theme,
             lay.open,
             false,
-            lay.open.contains(self.last_mouse),
+            can_open && lay.open.contains(self.last_mouse),
         );
-        draw_folder_glyph(scene, base, icon_inset(lay.open), theme.text_primary);
+        draw_folder_glyph(
+            scene,
+            base,
+            icon_inset(lay.open),
+            if can_open {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            },
+        );
 
         // Save annotated PDF (tray/down-arrow). Dimmed until a document with the
         // pdfium backend is open, since flattening needs pdfium.
