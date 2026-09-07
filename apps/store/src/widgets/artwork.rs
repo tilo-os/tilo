@@ -9,8 +9,78 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{TaffyTreeExt, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Fill, ImageData};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect};
+use vello::peniko::{Color, Fill, ImageData};
+
+/// A small, deliberately recognisable fallback mark. Remote metadata is
+/// allowed to omit an icon (and the Store refuses unsafe image URLs), so a
+/// catalogue full of anonymous initial tiles is not an acceptable fallback.
+/// These marks keep the card geometry stable while giving common desktop
+/// tools a useful visual identity even before artwork has downloaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallbackMark {
+    Terminal,
+    Files,
+    Media,
+    Chess,
+    Vector,
+    Notes,
+    Generic,
+}
+
+fn fallback_mark(label: &str) -> FallbackMark {
+    match label.to_ascii_lowercase().as_str() {
+        "terminal" => FallbackMark::Terminal,
+        "files" | "file explorer" => FallbackMark::Files,
+        "vlc" | "video player" | "music" => FallbackMark::Media,
+        "chess" => FallbackMark::Chess,
+        "inkscape" => FallbackMark::Vector,
+        "notes" => FallbackMark::Notes,
+        _ => FallbackMark::Generic,
+    }
+}
+
+fn fallback_colors(mark: FallbackMark, theme: &ui::Theme) -> (Color, Color, Color) {
+    // High contrast belongs to the system palette. In normal themes these
+    // muted, product-like hues make an app recognisable without turning the
+    // catalogue into a wall of unrelated saturated rectangles.
+    if theme.name == "High Contrast" {
+        return (theme.bg_active, theme.text_primary, theme.accent_primary);
+    }
+    match mark {
+        FallbackMark::Terminal => (
+            Color::from_rgb8(29, 58, 53),
+            Color::from_rgb8(208, 243, 223),
+            Color::from_rgb8(93, 207, 157),
+        ),
+        FallbackMark::Files => (
+            Color::from_rgb8(47, 74, 124),
+            Color::from_rgb8(224, 238, 255),
+            Color::from_rgb8(123, 181, 255),
+        ),
+        FallbackMark::Media => (
+            Color::from_rgb8(118, 61, 28),
+            Color::from_rgb8(255, 239, 220),
+            Color::from_rgb8(255, 169, 78),
+        ),
+        FallbackMark::Chess => (
+            Color::from_rgb8(72, 52, 99),
+            Color::from_rgb8(239, 229, 255),
+            Color::from_rgb8(184, 145, 255),
+        ),
+        FallbackMark::Vector => (
+            Color::from_rgb8(54, 67, 82),
+            Color::from_rgb8(239, 247, 255),
+            Color::from_rgb8(131, 202, 255),
+        ),
+        FallbackMark::Notes => (
+            Color::from_rgb8(108, 86, 37),
+            Color::from_rgb8(255, 248, 216),
+            Color::from_rgb8(246, 205, 92),
+        ),
+        FallbackMark::Generic => (theme.bg_hover, theme.text_primary, theme.accent_primary),
+    }
+}
 
 pub struct Artwork {
     store: Option<ui::ImageStore>,
@@ -94,6 +164,10 @@ impl Widget for Artwork {
             );
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fallback artwork marks share one paint pass so every branch uses the same clipped geometry and high-contrast palette"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -106,29 +180,204 @@ impl Widget for Artwork {
             ui::image_store::paint_image_cover(scene, transform, self.rect, image, self.radius);
             return;
         }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.bg_hover,
-            None,
-            &RoundedRect::from_rect(self.rect, self.radius),
-        );
-        let size = if self.width < 160.0 { 20.0 } else { 14.0 };
-        let (tw, th) = text.measure(&self.monogram, size, None);
-        text.draw_text(
-            scene,
-            &self.monogram,
-            size,
-            theme.text_primary,
-            transform.pre_translate(
-                (
-                    self.rect.center().x - f64::from(tw) / 2.0,
-                    self.rect.center().y - f64::from(th) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-        );
+        let mark = fallback_mark(&self.label);
+        let (background, foreground, accent) = fallback_colors(mark, theme);
+        let tile = RoundedRect::from_rect(self.rect, self.radius);
+        scene.fill(Fill::NonZero, transform, background, None, &tile);
+        let inset = self.rect.width().min(self.rect.height()) * 0.22;
+        let inner = self.rect.inset(inset);
+        match mark {
+            FallbackMark::Terminal => {
+                let chevron = BezPath::from_vec(vec![
+                    vello::kurbo::PathEl::MoveTo(Point::new(
+                        inner.x0 + inner.width() * 0.12,
+                        inner.y0 + inner.height() * 0.2,
+                    )),
+                    vello::kurbo::PathEl::LineTo(Point::new(
+                        inner.x0 + inner.width() * 0.55,
+                        inner.center().y,
+                    )),
+                    vello::kurbo::PathEl::LineTo(Point::new(
+                        inner.x0 + inner.width() * 0.12,
+                        inner.y1 - inner.height() * 0.2,
+                    )),
+                ]);
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(2.7),
+                    transform,
+                    foreground,
+                    None,
+                    &chevron,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(2.7),
+                    transform,
+                    accent,
+                    None,
+                    &vello::kurbo::Line::new(
+                        Point::new(
+                            inner.x0 + inner.width() * 0.58,
+                            inner.y1 - inner.height() * 0.23,
+                        ),
+                        Point::new(
+                            inner.x1 - inner.width() * 0.08,
+                            inner.y1 - inner.height() * 0.23,
+                        ),
+                    ),
+                );
+            }
+            FallbackMark::Files => {
+                let tab = Rect::new(
+                    inner.x0,
+                    inner.y0 + inner.height() * 0.12,
+                    inner.x0 + inner.width() * 0.48,
+                    inner.y0 + inner.height() * 0.36,
+                );
+                let folder = Rect::new(
+                    inner.x0,
+                    inner.y0 + inner.height() * 0.28,
+                    inner.x1,
+                    inner.y1 - inner.height() * 0.06,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    accent,
+                    None,
+                    &RoundedRect::from_rect(tab, 3.0),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    foreground,
+                    None,
+                    &RoundedRect::from_rect(folder, 4.0),
+                );
+            }
+            FallbackMark::Media => {
+                let center = Point::new(inner.center().x, inner.y0 + inner.height() * 0.43);
+                let cone = BezPath::from_vec(vec![
+                    vello::kurbo::PathEl::MoveTo(Point::new(center.x, inner.y0)),
+                    vello::kurbo::PathEl::LineTo(Point::new(
+                        inner.x0 + inner.width() * 0.22,
+                        inner.y1 - inner.height() * 0.23,
+                    )),
+                    vello::kurbo::PathEl::LineTo(Point::new(
+                        inner.x1 - inner.width() * 0.22,
+                        inner.y1 - inner.height() * 0.23,
+                    )),
+                    vello::kurbo::PathEl::ClosePath,
+                ]);
+                scene.fill(Fill::NonZero, transform, accent, None, &cone);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    foreground,
+                    None,
+                    &Rect::new(
+                        inner.x0 + inner.width() * 0.12,
+                        inner.y1 - inner.height() * 0.18,
+                        inner.x1 - inner.width() * 0.12,
+                        inner.y1,
+                    ),
+                );
+            }
+            FallbackMark::Chess => {
+                let head = Circle::new(
+                    Point::new(inner.center().x, inner.y0 + inner.height() * 0.28),
+                    inner.width() * 0.18,
+                );
+                let body = RoundedRect::from_rect(
+                    Rect::new(
+                        inner.x0 + inner.width() * 0.28,
+                        inner.y0 + inner.height() * 0.42,
+                        inner.x1 - inner.width() * 0.28,
+                        inner.y1 - inner.height() * 0.2,
+                    ),
+                    5.0,
+                );
+                let base = RoundedRect::from_rect(
+                    Rect::new(
+                        inner.x0 + inner.width() * 0.12,
+                        inner.y1 - inner.height() * 0.18,
+                        inner.x1 - inner.width() * 0.12,
+                        inner.y1,
+                    ),
+                    3.0,
+                );
+                scene.fill(Fill::NonZero, transform, foreground, None, &head);
+                scene.fill(Fill::NonZero, transform, foreground, None, &body);
+                scene.fill(Fill::NonZero, transform, accent, None, &base);
+            }
+            FallbackMark::Vector => {
+                let mountain = BezPath::from_vec(vec![
+                    vello::kurbo::PathEl::MoveTo(Point::new(inner.x0, inner.y1)),
+                    vello::kurbo::PathEl::LineTo(Point::new(
+                        inner.center().x,
+                        inner.y0 + inner.height() * 0.08,
+                    )),
+                    vello::kurbo::PathEl::LineTo(Point::new(inner.x1, inner.y1)),
+                    vello::kurbo::PathEl::ClosePath,
+                ]);
+                scene.fill(Fill::NonZero, transform, foreground, None, &mountain);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    accent,
+                    None,
+                    &Circle::new(
+                        Point::new(
+                            inner.x1 - inner.width() * 0.18,
+                            inner.y0 + inner.height() * 0.2,
+                        ),
+                        inner.width() * 0.1,
+                    ),
+                );
+            }
+            FallbackMark::Notes => {
+                let paper = RoundedRect::from_rect(
+                    Rect::new(
+                        inner.x0 + inner.width() * 0.12,
+                        inner.y0,
+                        inner.x1 - inner.width() * 0.12,
+                        inner.y1,
+                    ),
+                    4.0,
+                );
+                scene.fill(Fill::NonZero, transform, foreground, None, &paper);
+                for ratio in [0.32, 0.52, 0.72] {
+                    let y = inner.y0 + inner.height() * ratio;
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.5),
+                        transform,
+                        background,
+                        None,
+                        &vello::kurbo::Line::new(
+                            Point::new(inner.x0 + inner.width() * 0.26, y),
+                            Point::new(inner.x1 - inner.width() * 0.22, y),
+                        ),
+                    );
+                }
+            }
+            FallbackMark::Generic => {
+                let size = if self.width < 160.0 { 20.0 } else { 14.0 };
+                let (tw, th) = text.measure(&self.monogram, size, None);
+                text.draw_text(
+                    scene,
+                    &self.monogram,
+                    size,
+                    foreground,
+                    transform.pre_translate(
+                        (
+                            self.rect.center().x - f64::from(tw) / 2.0,
+                            self.rect.center().y - f64::from(th) / 2.0,
+                        )
+                            .into(),
+                    ),
+                    None,
+                );
+            }
+        }
     }
     fn handle_event(
         &mut self,
@@ -161,5 +410,23 @@ impl Widget for Artwork {
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FallbackMark, fallback_mark};
+
+    #[test]
+    fn known_desktop_apps_have_distinct_fallback_marks() {
+        assert_eq!(fallback_mark("Terminal"), FallbackMark::Terminal);
+        assert_eq!(fallback_mark("Files"), FallbackMark::Files);
+        assert_eq!(fallback_mark("VLC"), FallbackMark::Media);
+        assert_eq!(fallback_mark("Notes"), FallbackMark::Notes);
+    }
+
+    #[test]
+    fn unknown_catalogue_item_keeps_a_legible_generic_mark() {
+        assert_eq!(fallback_mark("Example app"), FallbackMark::Generic);
     }
 }
