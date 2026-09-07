@@ -351,6 +351,8 @@ pub enum Action {
     /// Open the production host-session first-login chrome with an isolated,
     /// nonexistent identity path so screenshot tests cannot mutate user data.
     ShowHostDesktopOnboarding,
+    SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
+    SetLockVisual(super::driver::LockVisualState),
 }
 
 /// A named, ordered list of actions.
@@ -587,6 +589,8 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_capture_execution_enabled(*enabled);
         }
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
+        Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
+        Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -1470,6 +1474,7 @@ fn escape_json_str(s: &str) -> String {
 pub fn catalogue() -> Vec<Scenario> {
     vec![
         host_desktop_first_login(),
+        lock_screen_states(),
         capture_studio(),
         capture_selection_editing(),
         capture_countdown(),
@@ -1529,9 +1534,30 @@ pub fn catalogue() -> Vec<Scenario> {
     ]
 }
 
+fn lock_screen_states() -> Scenario {
+    use super::driver::LockVisualState as Lock;
+    Scenario {
+        name: "lock_screen_states",
+        description: "Render settled production lock-screen states without locking the live session.",
+        actions: vec![
+            Action::SetLockVisual(Lock::Default),
+            Action::Snapshot("01-default"),
+            Action::SetLockVisual(Lock::Password),
+            Action::Snapshot("02-password-entered"),
+            Action::SetLockVisual(Lock::Verifying),
+            Action::Snapshot("03-verifying"),
+            Action::SetLockVisual(Lock::Error),
+            Action::Snapshot("04-auth-error"),
+            Action::SetLockVisual(Lock::Notifications),
+            Action::Snapshot("05-notification-count"),
+        ],
+    }
+}
+
 /// The exact identity introduction shown on first qOS login when the package
 /// is layered onto an existing Linux installation.
 fn host_desktop_first_login() -> Scenario {
+    use shell::onboarding_view::OnboardingVisualState as Visual;
     Scenario {
         name: "host_desktop_first_login",
         description: "Render the host-session identity setup exactly as the compositor shows it.",
@@ -1539,6 +1565,27 @@ fn host_desktop_first_login() -> Scenario {
             Action::ShowHostDesktopOnboarding,
             Action::Wait(4),
             Action::Snapshot("01-identity-introduction"),
+            Action::SetOnboardingVisual(Visual::Connect),
+            Action::Relayout,
+            Action::Snapshot("02-restore-existing"),
+            Action::SetOnboardingVisual(Visual::RestoreError),
+            Action::Relayout,
+            Action::Snapshot("03-restore-error"),
+            Action::SetOnboardingVisual(Visual::Protect),
+            Action::Relayout,
+            Action::Snapshot("04-protect-identity"),
+            Action::SetOnboardingVisual(Visual::CreateError),
+            Action::Relayout,
+            Action::Snapshot("05-create-error"),
+            Action::SetOnboardingVisual(Visual::Backup),
+            Action::Relayout,
+            Action::Snapshot("06-encrypted-backup"),
+            Action::SetOnboardingVisual(Visual::BackupVerified),
+            Action::Relayout,
+            Action::Snapshot("07-backup-verified"),
+            Action::SetOnboardingVisual(Visual::Ready),
+            Action::Relayout,
+            Action::Snapshot("08-ready"),
         ],
     }
 }
