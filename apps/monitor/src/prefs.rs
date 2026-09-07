@@ -12,6 +12,7 @@
 //! ```text
 //! root
 //! ├── "interval_ms"          (Int)  refresh cadence
+//! ├── "auto_refresh"         (Bool) periodic sampling enabled
 //! ├── "show_kernel_threads"  (Bool)
 //! └── "confirm_kill"         (Bool)
 //! ```
@@ -24,6 +25,10 @@ pub struct Prefs {
     /// Sampler cadence in milliseconds. Cycled through a small set in the
     /// header control.
     pub interval_ms: u64,
+    /// Whether periodic sampling is running. Manual Refresh remains available
+    /// while paused, making pause a low-power inspection mode rather than a
+    /// dead-end state.
+    pub auto_refresh: bool,
     /// Whether the process table lists Linux kernel worker threads.
     pub show_kernel_threads: bool,
     /// Whether the kill action pops a confirmation dialog first.
@@ -34,6 +39,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             interval_ms: 1500,
+            auto_refresh: true,
             show_kernel_threads: false,
             confirm_kill: true,
         }
@@ -65,6 +71,7 @@ impl Prefs {
         Prefs {
             interval_ms: get_int(doc, path, "interval_ms")
                 .map_or(d.interval_ms, |v| v.clamp(250, 60_000) as u64),
+            auto_refresh: get_bool(doc, path, "auto_refresh").unwrap_or(d.auto_refresh),
             show_kernel_threads: get_bool(doc, path, "show_kernel_threads")
                 .unwrap_or(d.show_kernel_threads),
             confirm_kill: get_bool(doc, path, "confirm_kill").unwrap_or(d.confirm_kill),
@@ -74,6 +81,7 @@ impl Prefs {
     /// Write the full prefs set back into the document.
     pub fn store(&self, doc: &mut AutoCommit, path: &ObjId) {
         let _ = doc.put(path, "interval_ms", self.interval_ms as i64);
+        let _ = doc.put(path, "auto_refresh", self.auto_refresh);
         let _ = doc.put(path, "show_kernel_threads", self.show_kernel_threads);
         let _ = doc.put(path, "confirm_kill", self.confirm_kill);
     }
@@ -112,6 +120,7 @@ mod tests {
         let root = automerge::ROOT;
         let p = Prefs {
             interval_ms: 3000,
+            auto_refresh: false,
             show_kernel_threads: true,
             confirm_kill: false,
         };
