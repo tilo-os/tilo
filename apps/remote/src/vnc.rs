@@ -11,12 +11,17 @@
 
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::rfb::{self, Framebuffer, PixelFormat, ServerInit};
 use crate::session::SessionStatus;
+
+/// Bound input queued while a VNC server is busy with a framebuffer read. The
+/// producer uses non-blocking `try_send`, so pointer motion can never stall
+/// the UI thread or consume unbounded memory.
+const VNC_INPUT_QUEUE_CAPACITY: usize = 256;
 
 /// Everything needed to open a VNC session.
 #[derive(Clone, Debug)]
@@ -38,8 +43,11 @@ pub enum VncInput {
 /// A live VNC session handle held by the UI.
 pub struct VncSession {
     status: Arc<Mutex<SessionStatus>>,
+    /// The latest immutable framebuffer snapshot. `Framebuffer` shares its
+    /// pixel storage copy-on-write with the worker, so the UI never clones a
+    /// full desktop merely to see whether a generation changed.
     frame: Arc<Mutex<Option<Framebuffer>>>,
-    input_tx: Sender<VncInput>,
+    input_tx: SyncSender<VncInput>,
     last_seen_gen: Option<u64>,
     _worker: std::thread::JoinHandle<()>,
 }
@@ -54,7 +62,7 @@ impl VncSession {
     pub fn connect(cfg: VncConfig) -> io::Result<VncSession> {
         let status = Arc::new(Mutex::new(SessionStatus::Connecting));
         let frame: Arc<Mutex<Option<Framebuffer>>> = Arc::new(Mutex::new(None));
-        let (input_tx, input_rx) = channel::<VncInput>();
+        let (input_tx, input_rx) = sync_channel::<VncInput>(VNC_INPUT_QUEUE_CAPACITY);
 
         let status_worker = status.clone();
         let frame_worker = frame.clone();
@@ -91,7 +99,8 @@ impl VncSession {
     }
 
     /// Return the framebuffer if it has a newer generation than last taken.
-    /// Clones only when there is genuinely a new frame to paint.
+    /// This clone is shallow: the pixel allocation remains shared until the
+    /// worker receives the next update, when `Framebuffer` performs COW.
     pub fn take_frame(&mut self) -> Option<Framebuffer> {
         let fb = {
             let guard = lock_recover(&self.frame);
@@ -112,8 +121,19 @@ impl VncSession {
             .map(|fb| (fb.width, fb.height))
     }
 
-    pub fn send_input(&self, input: VncInput) {
-        let _ = self.input_tx.send(input);
+    /// Queue input without blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bounded queue is full or the VNC worker has
+    /// already stopped.
+    pub fn send_input(&self, input: VncInput) -> Result<(), String> {
+        self.input_tx.try_send(input).map_err(|error| match error {
+            TrySendError::Full(_) => {
+                "VNC input is busy; wait for the remote desktop to catch up".into()
+            }
+            TrySendError::Disconnected(_) => "VNC session input channel is closed".into(),
+        })
     }
 }
 
