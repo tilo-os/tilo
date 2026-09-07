@@ -67,14 +67,34 @@ pub fn contact_resource_id(id: ContactId) -> String {
 /// whole book.
 pub const MAX_CONTEXT_CONTACT_RESOURCES: usize = 64;
 
+/// Group membership is durable data, but a book can accumulate far more group
+/// names than a palette page can responsibly materialise.  Keep the eagerly
+/// published page small; [`resolve_resource`] and the search provider still
+/// resolve every canonical group on demand.
+pub const MAX_CONTEXT_GROUP_RESOURCES: usize = 32;
+
 /// Canonical view action that reveals one contact in the app.
 pub fn open_contact_address(id: ContactId) -> ActionAddress {
     ActionAddress::new(contact_resource_id(id), "open")
 }
 
+/// Stable resource id for one logical group. Group names are case- and
+/// Unicode-normalised everywhere Contacts compares them, so their resource
+/// identity must use that same key rather than whichever spelling arrived
+/// first from a collaborator or vCard.
+pub fn group_resource_id(name: &str) -> String {
+    format!("contacts.group:{}", normalize_text(name.trim()))
+}
+
+/// Canonical view action that filters the book to one durable group.
+pub fn open_group_address(name: &str) -> ActionAddress {
+    ActionAddress::new(group_resource_id(name), "open")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContactsOperation {
     Open { id: String },
+    OpenGroup { name: String },
     ImportVcard { path: Option<String> },
     ExportAllVcard { path: Option<String> },
     KeepImportConflict { token: String },
@@ -117,16 +137,17 @@ fn contact_operation(
 ) -> Option<ActionSpec> {
     let spec = ActionSpec::operation(id, label, kind, CONTACTS_OPERATION_TYPE, operation).ok()?;
     match operation {
-        ContactsOperation::Open { .. } => Some(spec.retry_policy(RetryPolicy::Idempotent)),
+        ContactsOperation::Open { .. }
+        | ContactsOperation::OpenGroup { .. }
+        | ContactsOperation::KeepImportConflict { .. } => {
+            Some(spec.retry_policy(RetryPolicy::Idempotent))
+        }
         // These invocations synchronously enqueue a host-portal request and
         // return. The app has no durable job handle or cancellation channel,
         // so advertising a cancellable background lifecycle would be false.
         ContactsOperation::ImportVcard { .. } => Some(spec),
         ContactsOperation::ExportAllVcard { .. }
         | ContactsOperation::ImportConflictAsNew { .. } => Some(spec.destructive()),
-        ContactsOperation::KeepImportConflict { .. } => {
-            Some(spec.retry_policy(RetryPolicy::Idempotent))
-        }
     }
 }
 
@@ -880,6 +901,33 @@ fn ordered_contacts(contacts: &[Contact]) -> Vec<&Contact> {
     ordered
 }
 
+/// One deterministic display spelling for every logical group in the shared
+/// book.  The key is the same NFC/case-folded identity used by filtering and
+/// resource addressing; choosing the lexical spelling makes separate peers
+/// publish the same resource label even when Automerge projects rows in a
+/// different order.
+pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
+    let mut groups = std::collections::BTreeMap::<String, String>::new();
+    for contact in contacts {
+        for entry in &contact.groups {
+            let name = entry.value.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let key = normalize_text(name);
+            groups
+                .entry(key)
+                .and_modify(|existing| {
+                    if name < existing.as_str() {
+                        *existing = name.to_string();
+                    }
+                })
+                .or_insert_with(|| name.to_string());
+        }
+    }
+    groups.into_values().collect()
+}
+
 /// Split a typed full name into first / rest-as-last, so a palette "New
 /// contact" / "Rename" that collects a single name string lands the same way
 /// the form's two fields would.
@@ -1094,11 +1142,37 @@ pub fn contact_resource(contact: &Contact) -> Resource {
     child
 }
 
+/// Resource and canonical view action for a durable membership group. Groups
+/// are derived from UUID-addressed contact rows rather than stored as a second
+/// mutable index, so opening one is safely replayable without manufacturing
+/// new collaborative state.
+pub fn group_resource(name: &str) -> Resource {
+    let name = name.trim();
+    let operation = ContactsOperation::OpenGroup {
+        name: name.to_string(),
+    };
+    let mut group = Resource::new(
+        group_resource_id(name),
+        "contacts.group",
+        format!("Group: {name}"),
+    );
+    if let Some(open) = contact_operation("open", "Open group", OperationKind::View, &operation) {
+        group = group.with_action(open);
+    }
+    group
+}
+
 /// Build the contextual resource page the palette renders. Discovery stays
 /// bounded even for a very large shared book; direct resource lookup and the
 /// search provider retain complete reachability.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = book_resource(ctx);
+    for group in ordered_groups(&ctx.contacts)
+        .into_iter()
+        .take(MAX_CONTEXT_GROUP_RESOURCES)
+    {
+        root = root.with_child(group_resource(&group));
+    }
     for contact in ordered_contacts(&ctx.contacts)
         .into_iter()
         .take(MAX_CONTEXT_CONTACT_RESOURCES)
@@ -1116,6 +1190,12 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
 pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource> {
     if id == "contacts.book" {
         return Some(book_resource(ctx));
+    }
+    if let Some(raw_name) = id.strip_prefix("contacts.group:") {
+        return ordered_groups(&ctx.contacts)
+            .into_iter()
+            .find(|name| normalize_text(name) == raw_name)
+            .map(|name| group_resource(&name));
     }
     if let Some(token) = id.strip_prefix("contacts.import-conflict:")
         && let Some(conflict) = ctx
@@ -1238,6 +1318,16 @@ mod tests {
         assert!(actions.contains(&"favorite"), "{actions:?}");
         assert!(actions.contains(&"delete"), "{actions:?}");
 
+        let group = book
+            .children
+            .iter()
+            .find(|resource| resource.kind == "contacts.group")
+            .expect("a durable group resource");
+        assert!(
+            group.actions.iter().any(|action| action.id == "open"),
+            "groups export their canonical open action"
+        );
+
         // The full flattened tree exports every action, and the one palette
         // surfaces them as rows (the Actions group is display-capped, so
         // reachability is asserted on the flatten and the leading rows on the
@@ -1290,6 +1380,41 @@ mod tests {
         assert!(
             resolve_resource(&ctx, &contact_resource_id(Uuid::new_v4())).is_none(),
             "a stale contact id is refused rather than resurrected"
+        );
+    }
+
+    #[test]
+    fn group_resources_are_canonical_bounded_and_resolve_outside_the_page() {
+        let contacts = (0..(MAX_CONTEXT_GROUP_RESOURCES + 2))
+            .map(|index| Contact {
+                id: Uuid::new_v4(),
+                first: format!("Person {index:03}"),
+                groups: vec![GroupEntry::new(format!("Group {index:03}"))],
+                ..Contact::default()
+            })
+            .collect::<Vec<_>>();
+        let ctx = ContactsResourceCtx {
+            contacts,
+            import_busy: false,
+            export_busy: false,
+            import_conflicts: Vec::new(),
+        };
+
+        let page = provide_resources(&ctx, &AutoCommit::new());
+        let group_count = page[0]
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "contacts.group")
+            .count();
+        assert_eq!(group_count, MAX_CONTEXT_GROUP_RESOURCES);
+
+        let name = format!("Group {:03}", MAX_CONTEXT_GROUP_RESOURCES + 1);
+        let address = open_group_address(&name);
+        let resource = resolve_resource(&ctx, &address.resource)
+            .expect("a group outside the palette page resolves lazily");
+        assert!(
+            qos_actions::door::resolve(&[resource], &address).is_some(),
+            "the lazy resource exposes the exact group view operation"
         );
     }
 
