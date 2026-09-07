@@ -70,6 +70,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "search",
                 "search_loading",
                 "search_empty",
+                "offline",
+                "error",
             ]),
     )?;
     Ok(())
@@ -148,7 +150,7 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
                         .collect();
                     println!("probe: geocode 'Tokyo' → {}", names.join(", "));
                 }
-                Response::Error(e) => println!("probe: error — {e}"),
+                Response::Error { message, .. } => println!("probe: error — {message}"),
             }
         }
         std::thread::sleep(Duration::from_millis(20));

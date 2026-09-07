@@ -22,6 +22,8 @@ pub const WEATHER_ACTION_TYPE: &str = "weather.action";
 pub const OPEN_LOCATION_OPERATION: &str = "weather.open-location";
 /// Widget-local effect type used to refresh forecasts from the network.
 pub const REFRESH_OPERATION: &str = "weather.refresh";
+/// Widget-local effect type used to refresh one saved location only.
+pub const REFRESH_LOCATION_OPERATION: &str = "weather.refresh-location";
 
 /// Stable resource id for one saved location.
 pub fn location_resource_id(id: LocationId) -> String {
