@@ -30,10 +30,19 @@
 //! environment is a real session, otherwise the simulated one — reported via
 //! [`MediaEngine::is_live`].
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
+/// Hard resource bounds for media objects. These are deliberately shared by
+/// the simulator and QUIC transport so a test-only route cannot hide a queue
+/// or parser that production would reject.
+pub const MAX_MEDIA_PAYLOAD: usize = 2 * 1024 * 1024;
+pub const MAX_MEDIA_SENDER_BYTES: usize = 256;
+pub const MAX_MEDIA_QUEUE: usize = 128;
+pub const MAX_MEDIA_POLL: usize = 64;
+
 /// What kind of media a published track carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum TrackKind {
     Audio,
     /// Camera video.
@@ -80,6 +89,26 @@ pub struct MediaObject {
 }
 
 impl MediaObject {
+    /// Verify an object before allocating, queuing, or putting it on the wire.
+    /// An invalid sender/payload is rejected rather than truncated by a cast.
+    pub fn is_valid(&self) -> bool {
+        let sender = self.sender.as_bytes();
+        !sender.is_empty()
+            && sender.len() <= MAX_MEDIA_SENDER_BYTES
+            && self.payload.len() <= MAX_MEDIA_PAYLOAD
+            && self.pts.as_millis() <= u128::from(u64::MAX)
+    }
+
+    /// Checked serialization. The legacy `to_wire` convenience is retained
+    /// for trusted tests; all transports use this fallible form at the trust
+    /// boundary.
+    pub fn try_to_wire(&self) -> Option<Vec<u8>> {
+        if !self.is_valid() {
+            return None;
+        }
+        Some(self.to_wire())
+    }
+
     /// Serialize to the framed wire form used on the QUIC stream:
     /// `[kind:u8][seq:u64 LE][pts_ms:u64 LE][sender_len:u16 LE][sender][payload_len:u32 LE][payload]`.
     /// Self-describing so a receiver reassembles the exact object with no side
@@ -112,15 +141,27 @@ impl MediaObject {
         let pts_ms = u64::from_le_bytes(take(&mut p, 8)?.try_into().ok()?);
         let sender_len = u16::from_le_bytes(take(&mut p, 2)?.try_into().ok()?) as usize;
         let sender = String::from_utf8(take(&mut p, sender_len)?.to_vec()).ok()?;
+        if sender_len == 0 || sender_len > MAX_MEDIA_SENDER_BYTES {
+            return None;
+        }
         let payload_len = u32::from_le_bytes(take(&mut p, 4)?.try_into().ok()?) as usize;
+        if payload_len > MAX_MEDIA_PAYLOAD {
+            return None;
+        }
         let payload = take(&mut p, payload_len)?.to_vec();
-        Some(MediaObject {
+        // A frame is exact: accepting trailing bytes would silently desync a
+        // peer's object stream and makes parser smuggling possible.
+        if p != buf.len() {
+            return None;
+        }
+        let object = MediaObject {
             sender,
             kind,
             seq,
             pts: Duration::from_millis(pts_ms),
             payload,
-        })
+        };
+        object.is_valid().then_some(object)
     }
 }
 
@@ -160,7 +201,9 @@ pub trait MediaTransport {
 
     /// Push a locally-produced object onto the transport (capture → wire). The
     /// live engine fans it out to every connected peer over QUIC.
-    fn send(&mut self, obj: MediaObject);
+    /// Try to submit one object. `false` means it was rejected (malformed,
+    /// closed, or backpressured), never silently queued without a bound.
+    fn send(&mut self, obj: MediaObject) -> bool;
 
     /// Drain any media objects that have arrived for our subscriptions.
     fn poll(&mut self) -> Vec<MediaObject>;
@@ -173,7 +216,7 @@ pub trait MediaTransport {
 pub struct SimulatedTransport {
     published: Vec<TrackKind>,
     subs: Vec<Subscription>,
-    queue: Vec<MediaObject>,
+    queue: VecDeque<MediaObject>,
 }
 
 impl MediaTransport for SimulatedTransport {
@@ -199,13 +242,18 @@ impl MediaTransport for SimulatedTransport {
             self.subs.push(sub);
         }
     }
-    fn send(&mut self, obj: MediaObject) {
+    fn send(&mut self, obj: MediaObject) -> bool {
         // Loopback: deliver to ourselves so the pipeline is exercised end to
         // end on one machine.
-        self.queue.push(obj);
+        if !obj.is_valid() || self.queue.len() >= MAX_MEDIA_QUEUE {
+            return false;
+        }
+        self.queue.push_back(obj);
+        true
     }
     fn poll(&mut self) -> Vec<MediaObject> {
-        std::mem::take(&mut self.queue)
+        let take = self.queue.len().min(MAX_MEDIA_POLL);
+        self.queue.drain(..take).collect()
     }
 }
 
@@ -296,7 +344,10 @@ pub fn request_screencast() -> Option<u32> {
 // ---------------------------------------------------------------------------
 #[cfg(feature = "live-media")]
 mod live {
-    use super::{MediaObject, MediaTransport, Subscription, TrackKind};
+    use super::{
+        MAX_MEDIA_PAYLOAD, MAX_MEDIA_POLL, MAX_MEDIA_QUEUE, MAX_MEDIA_SENDER_BYTES, MediaObject,
+        MediaTransport, Subscription, TrackKind,
+    };
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -307,7 +358,7 @@ mod live {
 
     /// Hard cap on a single wire frame (`DoS` guard). One audio/video access unit
     /// is far smaller than this.
-    const MAX_FRAME: usize = 8 * 1024 * 1024;
+    const MAX_FRAME: usize = 1 + 8 + 8 + 2 + MAX_MEDIA_SENDER_BYTES + 4 + MAX_MEDIA_PAYLOAD;
 
     /// Runtime probe: should the live media stack be used here? Requires a real
     /// desktop session (a session bus or a Wayland display). Headless `--shots`
@@ -356,7 +407,7 @@ mod live {
     /// transport's inbound channel, which [`IrohTransport::poll`] drains.
     #[derive(Clone)]
     struct MediaProtocol {
-        inbound: mpsc::UnboundedSender<MediaObject>,
+        inbound: mpsc::Sender<MediaObject>,
     }
 
     impl std::fmt::Debug for MediaProtocol {
@@ -376,9 +427,17 @@ mod live {
                     Ok(buf) if buf.is_empty() => {}
                     Ok(buf) => {
                         if let Some(obj) = MediaObject::from_wire(&buf) {
-                            // Receiver gone (transport dropped) → stop reading.
-                            if self.inbound.send(obj).is_err() {
-                                break;
+                            // Bounded, non-blocking admission: never let a
+                            // fast peer grow memory or make the receive task
+                            // wait indefinitely behind the UI. A realtime
+                            // frame dropped under pressure is preferable to a
+                            // stale one arriving seconds later.
+                            match self.inbound.try_send(obj) {
+                                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                                // The receiver belongs to a dropped transport;
+                                // continuing to read would only waste a task
+                                // and hide that the operation was cancelled.
+                                Err(mpsc::error::TrySendError::Closed(_)) => break,
                             }
                         }
                     }
@@ -404,9 +463,9 @@ mod live {
         // Router owns the accept loop; kept alive so peers can dial us.
         _router: iroh::protocol::Router,
         ticket: String,
-        inbound_rx: mpsc::UnboundedReceiver<MediaObject>,
+        inbound_rx: mpsc::Receiver<MediaObject>,
         /// One outbound writer per connected peer, keyed by its ticket.
-        peers: HashMap<String, mpsc::UnboundedSender<Vec<u8>>>,
+        peers: HashMap<String, mpsc::Sender<Vec<u8>>>,
         published: Vec<TrackKind>,
         subs: Vec<Subscription>,
     }
@@ -422,7 +481,7 @@ mod live {
                     .build()
                     .ok()?,
             );
-            let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
+            let (inbound_tx, inbound_rx) = mpsc::channel(MAX_MEDIA_QUEUE);
             let (endpoint, router, ticket) = rt.block_on(async move {
                 let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
                     .bind()
@@ -471,7 +530,7 @@ mod live {
             let Ok(addr) = serde_json::from_str::<iroh::EndpointAddr>(ticket) else {
                 return false;
             };
-            let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+            let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(MAX_MEDIA_QUEUE);
             let endpoint = self.endpoint.clone();
             self.rt.spawn(async move {
                 let Ok(conn) = endpoint.connect(addr, MEDIA_ALPN).await else {
@@ -503,15 +562,31 @@ mod live {
                 self.subs.push(sub);
             }
         }
-        fn send(&mut self, obj: MediaObject) {
-            let bytes = obj.to_wire();
+        fn send(&mut self, obj: MediaObject) -> bool {
+            let Some(bytes) = obj.try_to_wire() else {
+                return false;
+            };
             // Fan out to every connected peer; drop writers whose task has
-            // ended (peer left / connection died).
-            self.peers.retain(|_, tx| tx.send(bytes.clone()).is_ok());
+            // ended (peer left / connection died). Full per-peer queues are
+            // intentionally rejected instead of becoming an unbounded latent
+            // playback buffer.
+            let mut accepted = false;
+            self.peers.retain(|_, tx| match tx.try_send(bytes.clone()) {
+                Ok(()) => {
+                    accepted = true;
+                    true
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => true,
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            });
+            accepted
         }
         fn poll(&mut self) -> Vec<MediaObject> {
             let mut out = Vec::new();
-            while let Ok(obj) = self.inbound_rx.try_recv() {
+            while out.len() < MAX_MEDIA_POLL {
+                let Ok(obj) = self.inbound_rx.try_recv() else {
+                    break;
+                };
                 out.push(obj);
             }
             out
@@ -609,6 +684,29 @@ mod tests {
     }
 
     #[test]
+    fn media_object_wire_rejects_trailing_and_oversized_fields() {
+        let obj = MediaObject {
+            sender: "x".into(),
+            kind: TrackKind::Audio,
+            seq: 1,
+            pts: Duration::ZERO,
+            payload: vec![1],
+        };
+        let mut trailing = obj.to_wire();
+        trailing.push(0);
+        assert!(MediaObject::from_wire(&trailing).is_none());
+
+        let too_large = MediaObject {
+            sender: "x".into(),
+            kind: TrackKind::Video,
+            seq: 2,
+            pts: Duration::ZERO,
+            payload: vec![0; MAX_MEDIA_PAYLOAD + 1],
+        };
+        assert!(too_large.try_to_wire().is_none());
+    }
+
+    #[test]
     fn simulated_transport_round_trips_objects() {
         let mut t = SimulatedTransport::default();
         assert!(!t.is_live());
@@ -628,6 +726,32 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].payload, vec![1, 2, 3]);
         assert!(t.poll().is_empty(), "poll drains the queue");
+    }
+
+    #[test]
+    fn simulated_transport_is_bounded_and_backpressures() {
+        let mut t = SimulatedTransport::default();
+        for seq in 0..MAX_MEDIA_QUEUE as u64 {
+            assert!(t.send(MediaObject {
+                sender: "sender".into(),
+                kind: TrackKind::Audio,
+                seq,
+                pts: Duration::ZERO,
+                payload: vec![1],
+            }));
+        }
+        assert!(
+            !t.send(MediaObject {
+                sender: "sender".into(),
+                kind: TrackKind::Audio,
+                seq: MAX_MEDIA_QUEUE as u64,
+                pts: Duration::ZERO,
+                payload: vec![1],
+            }),
+            "a full realtime queue rejects rather than growing"
+        );
+        assert_eq!(t.poll().len(), MAX_MEDIA_POLL);
+        assert_eq!(t.poll().len(), MAX_MEDIA_QUEUE - MAX_MEDIA_POLL);
     }
 
     #[test]
