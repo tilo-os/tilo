@@ -4,6 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
+const MAX_BOOKMARKS: usize = 10_000;
+const MAX_BOOKMARK_FILE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_BOOKMARK_URL_BYTES: usize = 8 * 1024;
+const MAX_BOOKMARK_TITLE_BYTES: usize = 4 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Bookmark {
     pub url: String,
@@ -29,7 +34,8 @@ impl PartialEq for Bookmarks {
 impl Eq for Bookmarks {}
 
 impl Bookmarks {
-    pub(crate) fn from_entries(entries: Vec<Bookmark>) -> Self {
+    pub(crate) fn from_entries(mut entries: Vec<Bookmark>) -> Self {
+        entries.truncate(MAX_BOOKMARKS);
         Self {
             entries,
             revision: 0,
@@ -60,7 +66,11 @@ impl Bookmarks {
 
     pub fn add(&mut self, url: &str, title: &str) -> bool {
         let url = url.trim();
-        if url.is_empty() || self.contains(url) {
+        if url.is_empty()
+            || url.len() > MAX_BOOKMARK_URL_BYTES
+            || self.entries.len() >= MAX_BOOKMARKS
+            || self.contains(url)
+        {
             return false;
         }
         self.entries.push(Bookmark {
@@ -68,7 +78,7 @@ impl Bookmarks {
             title: if title.trim().is_empty() {
                 url.to_string()
             } else {
-                title.trim().to_string()
+                bounded_text(title.trim(), MAX_BOOKMARK_TITLE_BYTES)
             },
         });
         self.revision = self.revision.wrapping_add(1);
@@ -86,9 +96,13 @@ impl Bookmarks {
     }
 
     pub fn load() -> Self {
-        Self::path()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .map_or_else(Self::default, |text| Self::from_json(&text))
+        Self::path().map_or_else(Self::default, |path| {
+            std::fs::metadata(&path)
+                .ok()
+                .filter(|metadata| metadata.len() <= MAX_BOOKMARK_FILE_BYTES as u64)
+                .and_then(|_| std::fs::read_to_string(path).ok())
+                .map_or_else(Self::default, |text| Self::from_json(&text))
+        })
     }
 
     /// Saves the bookmark collection in the platform browser-data directory.
@@ -123,14 +137,17 @@ impl Bookmarks {
     }
 
     pub(crate) fn from_json(text: &str) -> Self {
+        if text.len() > MAX_BOOKMARK_FILE_BYTES {
+            return Self::default();
+        }
         let entries = serde_json::from_str::<serde_json::Value>(text)
             .ok()
             .and_then(|value| value.as_array().cloned())
             .unwrap_or_default()
             .into_iter()
             .filter_map(|row| {
-                let url = row.get("url")?.as_str()?.trim().to_string();
-                if url.is_empty() {
+                let url = row.get("url")?.as_str()?.trim();
+                if url.is_empty() || url.len() > MAX_BOOKMARK_URL_BYTES {
                     return None;
                 }
                 Some(Bookmark {
@@ -138,18 +155,31 @@ impl Bookmarks {
                         .get("title")
                         .and_then(serde_json::Value::as_str)
                         .filter(|title| !title.trim().is_empty())
-                        .unwrap_or(&url)
-                        .to_string(),
-                    url,
+                        .map_or_else(
+                            || url.to_string(),
+                            |title| bounded_text(title.trim(), MAX_BOOKMARK_TITLE_BYTES),
+                        ),
+                    url: url.to_string(),
                 })
             })
-            .take(10_000)
+            .take(MAX_BOOKMARKS)
             .collect();
         Self {
             entries,
             revision: 0,
         }
     }
+}
+
+fn bounded_text(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    value.get(..end).unwrap_or_default().to_string()
 }
 
 #[cfg(test)]
@@ -177,5 +207,28 @@ mod tests {
             .collect::<Vec<_>>();
         let loaded = Bookmarks::from_json(&serde_json::to_string(&rows).unwrap());
         assert_eq!(loaded.entries().len(), 10_000);
+    }
+
+    #[test]
+    fn hostile_rows_cannot_create_unbounded_library_labels() {
+        let too_long_url = format!(
+            "https://example.test/{}",
+            "x".repeat(MAX_BOOKMARK_URL_BYTES)
+        );
+        let json = serde_json::json!([
+            { "url": too_long_url, "title": "ignored" },
+            {
+                "url": "https://kept.example.test",
+                "title": "t".repeat(MAX_BOOKMARK_TITLE_BYTES + 64),
+            }
+        ]);
+        let loaded = Bookmarks::from_json(&json.to_string());
+        assert_eq!(loaded.entries().len(), 1);
+        assert_eq!(loaded.entries()[0].title.len(), MAX_BOOKMARK_TITLE_BYTES);
+        assert!(
+            Bookmarks::from_json(&" ".repeat(MAX_BOOKMARK_FILE_BYTES + 1))
+                .entries()
+                .is_empty()
+        );
     }
 }
