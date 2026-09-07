@@ -57,6 +57,7 @@ use crate::doc::BooksDoc;
 use crate::input_controls::{
     NoteAction, NoteComposer, NoteSemanticOutcome, NumberControls, NumberField,
 };
+use crate::local_library::LocalLibrary;
 use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
@@ -553,7 +554,6 @@ pub struct BooksApp {
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
-    resource_open_path: Option<PathBuf>,
     resource_invocation: Option<qos_actions::InvocationId>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
     /// The sole background parser. It owns no document state; completed books
@@ -711,6 +711,8 @@ pub struct BooksApp {
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
+    /// Device-local portal grants, persisted outside the collaborative doc.
+    local_library: LocalLibrary,
     /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
     /// its topmost hit stack; the app persists emitted preference actions.
     shelf_controls: ShelfControls,
@@ -815,6 +817,8 @@ impl BooksApp {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(error)),
         };
+        let local_library = LocalLibrary::load();
+        let watched_folders = local_library.watched_folders.clone();
         Self {
             library: Vec::new(),
             library_paths: HashMap::new(),
@@ -823,7 +827,6 @@ impl BooksApp {
             library_loaded: true,
             pending_open_path: None,
             portal_rx: None,
-            resource_open_path: None,
             resource_invocation: None,
             completed_resource_invocation: None,
             import_worker,
@@ -894,7 +897,8 @@ impl BooksApp {
             color_picker: ColorPicker::default(),
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
-            watched_folders: Vec::new(),
+            watched_folders,
+            local_library,
             shelf_controls: ShelfControls::default(),
             editing_scheme: None,
             font_picker: false,
@@ -1485,7 +1489,6 @@ impl BooksApp {
         }
         self.schemes = BooksDoc::read_schemes(doc);
         self.library_prefs = BooksDoc::read_library_prefs(doc);
-        self.watched_folders = BooksDoc::read_watched_folders(doc);
 
         let ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
         let cur_id = ids.get(self.book_idx).cloned().unwrap_or_default();
@@ -1585,7 +1588,7 @@ impl BooksApp {
 
         self.library.clear();
         self.library_paths.clear();
-        for lb in content::load_library(doc) {
+        for lb in content::load_library(doc, &self.watched_folders, &self.local_library.books) {
             self.library_paths.insert(lb.book.id.clone(), lb.path);
             self.library.push(lb.book);
         }
@@ -1682,6 +1685,23 @@ impl BooksApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
+                // A lifecycle operation must settle exactly once. Without
+                // this branch a failed host picker could leave an agent or
+                // palette invocation pending forever.
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.completed_resource_invocation =
+                        Some(qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "ebook.portal_disconnected".into(),
+                                message: "The book picker stopped before returning a selection."
+                                    .into(),
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                }
+                self.dirty = true;
             }
         }
     }
@@ -1771,6 +1791,8 @@ impl BooksApp {
                 Ok(book) => {
                     let book = content::record_imported_book(doc, &completed.path, book);
                     let id = book.id.clone();
+                    self.local_library.remember_book(&id, &completed.path);
+                    self.local_library.save();
                     self.library_paths.insert(id.clone(), completed.path);
                     let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
                         index
@@ -1858,6 +1880,7 @@ impl BooksApp {
         let book = content::parse_path_detailed(path).expect("test EPUB parses");
         let book = content::record_imported_book(doc, path, book);
         let id = book.id.clone();
+        self.local_library.remember_book(&id, path);
         self.library_paths.insert(id.clone(), path.to_path_buf());
         let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
             index
@@ -1870,13 +1893,13 @@ impl BooksApp {
 
     /// Queue at most one unseen watched EPUB. The work is deferred so focus
     /// events remain responsive even for a large library.
-    fn rescan_watched(&mut self, doc: &AutoCommit) {
+    fn rescan_watched(&mut self, _doc: &AutoCommit) {
         if self.import_loading.is_some() {
             return;
         }
         let known: std::collections::HashSet<PathBuf> =
             self.library_paths.values().cloned().collect();
-        if let Some(path) = content::watched_epub_paths(doc)
+        if let Some(path) = content::watched_epub_paths(&self.watched_folders)
             .into_iter()
             .find(|path| !known.contains(path))
             && let Err(error) = self.begin_import(path, ImportKind::Watch)
@@ -1942,7 +1965,7 @@ impl BooksApp {
             Action::OpenViaPortal => self.request_open_via_portal(),
             Action::ShareToWorkspace(i) => self.on_share_to_workspace(i, doc),
             Action::RemoveFromLibrary(i) => self.on_remove_from_library(i, doc),
-            Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(folder, doc),
+            Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
 
             // --- settings screen: navigation -----------------------------
             Action::OpenSettings => self.on_open_settings(),
@@ -2280,6 +2303,8 @@ impl BooksApp {
         }
         let removed = self.library.remove(i);
         self.library_paths.remove(&removed.id);
+        self.local_library.forget_book(&removed.id);
+        self.local_library.save();
         self.cover_cache.remove(&removed.id);
         BooksDoc::remove_library_entry(doc, &removed.id);
         // Keep the reader pointed at a valid book after the shelf shrinks.
@@ -2291,14 +2316,11 @@ impl BooksApp {
         self.layout = None;
     }
 
-    fn on_toggle_watch_folder(&mut self, folder: PathBuf, doc: &mut AutoCommit) {
-        let mut watched = BooksDoc::read_watched_folders(doc);
-        if let Some(pos) = watched.iter().position(|f| f == &folder) {
-            watched.remove(pos);
-        } else {
-            watched.push(folder);
-        }
-        BooksDoc::write_watched_folders(doc, &watched);
+    fn on_toggle_watch_folder(&mut self, folder: &std::path::Path, doc: &AutoCommit) {
+        self.local_library.toggle_watch(folder);
+        self.watched_folders
+            .clone_from(&self.local_library.watched_folders);
+        self.local_library.save();
         // Watching a folder pulls in any books already sitting in it.
         self.rescan_watched(doc);
     }
@@ -3841,7 +3863,7 @@ impl Widget for BooksApp {
                 self.last_persisted = None;
                 self.dirty = true;
             }
-            EbookOperation::OpenBook { .. } => {
+            EbookOperation::OpenBook => {
                 return Err("book open requires the lifecycle-capable operation host".into());
             }
         }
@@ -3867,19 +3889,15 @@ impl Widget for BooksApp {
             ));
         }
         match operation {
-            crate::actions::EbookOperation::OpenBook { path: file } => {
+            crate::actions::EbookOperation::OpenBook => {
                 if self.resource_invocation.is_some() {
                     return Err("another book open is in progress".into());
                 }
                 self.resource_invocation = Some(invocation);
-                if let Some(file) = file {
-                    self.resource_open_path = Some(file.into());
-                } else {
-                    self.request_open_via_portal();
-                    if self.portal_rx.is_none() {
-                        self.resource_invocation = None;
-                        return Err("book picker could not be started".into());
-                    }
+                self.request_open_via_portal();
+                if self.portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    return Err("book picker could not be started".into());
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
@@ -3904,7 +3922,6 @@ impl Widget for BooksApp {
     ) -> Option<qos_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
-            self.resource_open_path = None;
             self.portal_rx = None;
             // Parsing cannot be safely interrupted mid-ZIP member, but its
             // eventual result is no longer authoritative and will be rejected
@@ -3952,11 +3969,6 @@ impl Widget for BooksApp {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
-        if let Some(path) = self.resource_open_path.take()
-            && let Err(error) = self.begin_import(path, ImportKind::Open)
-        {
-            self.settle_import_failure(error, "ebook.importer_unavailable");
-        }
         self.drain_portal();
         self.drain_import_worker(doc);
         if let Some(s) = self.shot_settings.take() {
@@ -3969,7 +3981,7 @@ impl Widget for BooksApp {
             BooksDoc::write_schemes(doc, &sc);
         }
         if let Some(wf) = self.shot_watched.take() {
-            BooksDoc::write_watched_folders(doc, &wf);
+            self.watched_folders = wf;
         }
         self.seed_if_needed(doc);
         if self.shot_compose && self.composing.is_none() {
@@ -10618,10 +10630,7 @@ mod interaction_tests {
         );
         assert_eq!(std::mem::discriminant(&app.view), view_before);
 
-        let open = serde_json::to_vec(&crate::actions::EbookOperation::OpenBook {
-            path: Some("/tmp/wrong-kind.epub".into()),
-        })
-        .unwrap();
+        let open = serde_json::to_vec(&crate::actions::EbookOperation::OpenBook).unwrap();
         assert!(
             Widget::start_resource_operation(
                 &mut app,
@@ -10635,7 +10644,6 @@ mod interaction_tests {
             .is_err()
         );
         assert!(app.resource_invocation.is_none());
-        assert!(app.resource_open_path.is_none());
     }
 
     #[test]
@@ -12508,10 +12516,9 @@ mod interaction_tests {
         wait_for_import(&mut app, &mut doc);
         let book = app.open_book().expect("new request opened");
         assert_eq!(app.library_paths.get(&book.id), Some(&pb));
-        assert_eq!(
-            BooksDoc::read_library_entries(&doc)[0].path,
-            pb,
-            "stale A never rewrites the shared library entry"
+        assert!(
+            !BooksDoc::read_library_entries(&doc)[0].shared,
+            "a local import never publishes its source location"
         );
     }
 
