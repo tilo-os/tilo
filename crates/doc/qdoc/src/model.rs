@@ -127,16 +127,27 @@ struct OrderIndex {
 /// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
 pub struct IdGen {
     actor_hex: String,
-    next: u64,
+    next: Option<u64>,
     /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
     order: OrderIndex,
+}
+
+/// The finite per-actor block-id namespace has been consumed.
+///
+/// qdoc identifiers are durable collaboration keys, so reusing the final
+/// counter (or wrapping to zero) would alias existing content. Callers must
+/// create a new replica/document instead of continuing this namespace.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum IdGenError {
+    #[error("qdoc id namespace for actor {actor_hex} is exhausted")]
+    Exhausted { actor_hex: String },
 }
 
 impl IdGen {
     pub fn new(actor_hex: String) -> Self {
         Self {
             actor_hex,
-            next: 0,
+            next: Some(0),
             order: OrderIndex::default(),
         }
     }
@@ -145,29 +156,67 @@ impl IdGen {
     pub fn with_counter(actor_hex: String, next: u64) -> Self {
         Self {
             actor_hex,
-            next,
+            next: Some(next),
             order: OrderIndex::default(),
         }
     }
+    /// Mint a durable identifier, failing closed once this actor has used all
+    /// `u64` counter values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdGenError::Exhausted`] after the final counter has been
+    /// issued, so a durable identifier can never be reused.
+    pub fn try_mint(&mut self) -> Result<String, IdGenError> {
+        let counter = self.next.ok_or_else(|| IdGenError::Exhausted {
+            actor_hex: self.actor_hex.clone(),
+        })?;
+        let id = format!("{}.{}", self.actor_hex, counter);
+        self.next = counter.checked_add(1);
+        Ok(id)
+    }
+
+    /// Compatibility helper for infallible document mutators.
+    ///
+    /// New code that can surface an error should use [`Self::try_mint`]. The
+    /// legacy mutator APIs return raw identifiers, so exhaustion aborts rather
+    /// than silently colliding with a durable block id.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this actor's finite identifier namespace is exhausted.
+    #[allow(
+        clippy::expect_used,
+        reason = "the legacy API cannot return an error; panic is the explicit fail-closed behavior"
+    )]
     pub fn mint(&mut self) -> String {
-        let id = format!("{}.{}", self.actor_hex, self.next);
-        // Saturates rather than wraps at u64::MAX: an actor would need to mint 2^64 ids first,
-        // at which point holding at the max (and colliding) is preferable to wrapping back to 0.
-        self.next = self.next.saturating_add(1);
-        id
+        self.try_mint()
+            .expect("qdoc id namespace exhausted; refusing to reuse an identifier")
     }
 }
 
 /// The next free id counter for `actor_hex`, scanning the existing block ids so a
 /// generator created over an already-populated document won't collide.
-pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u64 {
+///
+/// # Errors
+///
+/// Returns [`IdGenError::Exhausted`] when the document already holds this
+/// actor's final possible identifier.
+pub fn next_counter_for(
+    doc: &AutoCommit,
+    c: &Containers,
+    actor_hex: &str,
+) -> Result<u64, IdGenError> {
     let prefix = format!("{actor_hex}.");
-    let mut next = 0u64;
+    let mut next = Some(0u64);
     let mut bump = |id: &str| {
         if let Some(rest) = id.strip_prefix(&prefix)
             && let Ok(n) = rest.parse::<u64>()
         {
-            next = next.max(n.saturating_add(1));
+            next = match (next, n.checked_add(1)) {
+                (Some(current), Some(candidate)) => Some(current.max(candidate)),
+                (_, None) | (None, _) => None,
+            };
         }
     };
     for id in blocks_in_order(doc, c) {
@@ -197,14 +246,41 @@ pub fn next_counter_for(doc: &AutoCommit, c: &Containers, actor_hex: &str) -> u6
     for chid in change_ids(doc, c) {
         bump(&chid);
     }
-    next
+    next.ok_or_else(|| IdGenError::Exhausted {
+        actor_hex: actor_hex.to_owned(),
+    })
+}
+
+/// Try to construct an [`IdGen`] for `doc`'s current actor, seeded past
+/// existing block ids.
+///
+/// # Errors
+///
+/// Returns [`IdGenError::Exhausted`] when a persisted document already
+/// contains this actor's final possible identifier.
+pub fn try_seeded_id_gen(doc: &AutoCommit, c: &Containers) -> Result<IdGen, IdGenError> {
+    let actor = doc.get_actor().to_hex_string();
+    let next = next_counter_for(doc, c, &actor)?;
+    Ok(IdGen::with_counter(actor, next))
 }
 
 /// An [`IdGen`] for `doc`'s current actor, seeded past existing block ids.
+///
+/// Compatibility helper for existing infallible host paths. New load and
+/// persistence boundaries should call [`try_seeded_id_gen`] to return the
+/// exhaustion error to their caller.
+///
+/// # Panics
+///
+/// Panics when the persisted document already used this actor's final
+/// possible identifier; continuing would otherwise reuse durable state.
+#[allow(
+    clippy::expect_used,
+    reason = "the established compatibility API cannot return an error; panic is explicit fail-closed behavior"
+)]
 pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
-    let actor = doc.get_actor().to_hex_string();
-    let next = next_counter_for(doc, c, &actor);
-    IdGen::with_counter(actor, next)
+    try_seeded_id_gen(doc, c)
+        .expect("qdoc id namespace exhausted; refusing to seed a colliding identifier")
 }
 
 /// The actor that writes every document's schema.
@@ -3679,6 +3755,35 @@ mod preserved_tests {
             preserved_part(&doc, &c, "odt/part/styles.xml"),
             preserved_part(&doc_b, &c_b, "odt/part/styles.xml"),
             "replicas converge on identical reconstructed bytes"
+        );
+    }
+
+    #[test]
+    fn id_generator_never_reuses_the_final_counter() {
+        let mut ids = IdGen::with_counter("actor".into(), u64::MAX);
+        assert_eq!(ids.try_mint(), Ok("actor.18446744073709551615".into()));
+        assert_eq!(
+            ids.try_mint(),
+            Err(IdGenError::Exhausted {
+                actor_hex: "actor".into()
+            })
+        );
+    }
+
+    #[test]
+    fn seeding_rejects_a_persisted_final_counter() {
+        use automerge::transaction::Transactable;
+
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let actor = doc.get_actor().to_hex_string();
+        let id = format!("{actor}.{max}", max = u64::MAX);
+        let block = doc.put_object(&c.blocks, id, ObjType::Map).unwrap();
+        doc.put(&block, BLOCK_ORDER, ScalarValue::Bytes(vec![0x80]))
+            .unwrap();
+        assert_eq!(
+            next_counter_for(&doc, &c, &actor),
+            Err(IdGenError::Exhausted { actor_hex: actor })
         );
     }
 }
