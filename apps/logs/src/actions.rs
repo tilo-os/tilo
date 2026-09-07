@@ -34,7 +34,31 @@ pub enum LogsAction {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LogsOperation {
     Refresh,
-    SetLiveTail { enabled: bool },
+    SetLiveTail {
+        enabled: bool,
+    },
+    /// Write only the currently filtered local cache to a host-portal
+    /// destination. The path never crosses the action boundary.
+    ExportFiltered,
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the unit-only Logs operation is statically serializable"
+)]
+fn export_filtered_spec() -> ActionSpec {
+    ActionSpec::operation(
+        "export-filtered-jsonl",
+        "Export filtered logs",
+        OperationKind::Effect,
+        LOGS_OPERATION_TYPE,
+        &LogsOperation::ExportFiltered,
+    )
+    .expect("unit Logs operation serializes")
+    // An exported log stream may expose secrets even though it does not alter
+    // the journal itself. The portal Save selection is the user's explicit
+    // authorization; this ordinary write is not a destructive operation.
+    .requiring(qos_actions::PermissionRequirement::Write)
 }
 
 /// Decode an app-owned local journal operation.
@@ -251,6 +275,20 @@ pub fn resources(
             spec.unavailable("journal_access_disabled", "Live journal access is disabled")
         });
     }
+    let export = export_filtered_spec();
+    root = root.with_action(if !allow_live {
+        export.unavailable(
+            "journal_access_disabled",
+            "Live journal export is disabled in this session",
+        )
+    } else if entries.iter().any(|entry| filter.passes(entry)) {
+        export
+    } else {
+        export.unavailable(
+            "no_matching_entries",
+            "There are no filtered entries to export",
+        )
+    });
     root = root.with_child(filters);
 
     for entry in entries
@@ -379,5 +417,37 @@ mod tests {
             live_tail.contract.availability,
             qos_actions::Availability::Unavailable { .. }
         ));
+        let export = root
+            .actions
+            .iter()
+            .find(|action| action.id == "export-filtered-jsonl")
+            .expect("filtered export is represented in the shared action surface");
+        assert_eq!(export.kind, OperationKind::Effect);
+        assert_eq!(
+            export.contract.permission,
+            qos_actions::PermissionRequirement::Write
+        );
+        assert_eq!(export.contract.risk, qos_actions::RiskLevel::Low);
+        assert_eq!(
+            export.contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        );
+        assert_eq!(export.contract.retry, qos_actions::RetryPolicy::AtMostOnce);
+    }
+
+    #[test]
+    fn export_is_a_pathless_portal_operation_without_publishing_log_content() {
+        let root = resources(&sample_entries(), &Filter::default(), false, true).remove(0);
+        let export = root
+            .actions
+            .iter()
+            .find(|action| action.id == "export-filtered-jsonl")
+            .unwrap();
+        let encoded = export.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(LogsOperation::ExportFiltered)
+        );
+        assert!(!root.label.contains("surface lost"));
     }
 }
