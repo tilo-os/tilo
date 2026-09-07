@@ -124,7 +124,8 @@ fn render_scenario(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    };
+    }
+    .with_reduce_motion(shot_motion_reduced());
     photos::strings::install();
 
     // The generated pattern is written beside the output, so a shot run
@@ -147,7 +148,7 @@ fn render_scenario(
     // necessary. A library shot gets a few more *offscreen-only* frames so
     // its real background thumbnail worker can settle; the live UI never
     // waits for a decode.
-    let settle_frames = if matches!(scenario, "library" | "album-manage") {
+    let settle_frames = if matches!(scenario, "library" | "album-manage" | "metadata-edit") {
         // A library queues one bounded thumbnail job per sync.  Give the
         // deterministic offscreen gallery enough frames to show the fully
         // materialised shelf without changing the live app's non-blocking
@@ -222,4 +223,17 @@ fn render_scenario(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("photos: wrote {scenario} shot to {}", out.display());
     Ok(())
+}
+
+/// Mirror the live application's accessibility preference in offscreen shots.
+/// The headless handler builds a theme directly, so it does not pass through
+/// `ui::App`'s startup gate where this setting is normally applied.
+fn shot_motion_reduced() -> bool {
+    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
 }
