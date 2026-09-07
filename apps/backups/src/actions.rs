@@ -20,15 +20,55 @@ use automerge::{AutoCommit, ROOT};
 
 use qos_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, Resource, ResourceProvider, RetryPolicy,
+    ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::RetentionPolicy;
+use crate::model::{Catalog, Snapshot};
 
 /// Registry `type_id` for every backups action.
 pub const BACKUPS_ACTION_TYPE: &str = "backups.action";
+/// Protocol for local, deliberately non-replicated filesystem operations.
+/// Paths and credentials never cross this boundary: operations address the
+/// already-published catalog by opaque snapshot id only.
+pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
+
+/// The safe, agent-drivable side-effect surface.  These are intentionally
+/// effects rather than document actions: a peer must never replay a backup or
+/// restore against a different machine's filesystem merely because it received
+/// a collaborative document change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BackupOperation {
+    BackupNow,
+    Verify { snapshot_id: String },
+    Restore { snapshot_id: String },
+    Setup,
+}
+
+/// # Errors
+///
+/// Returns an explanatory refusal when the payload is not a valid operation.
+pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<BackupOperation>, String> {
+    if type_id != BACKUPS_OPERATION_TYPE {
+        return Ok(None);
+    }
+    serde_json::from_slice(payload)
+        .map(Some)
+        .map_err(|error| format!("invalid Backups operation: {error}"))
+}
+
+fn operation_spec(id: &str, label: &str, operation: &BackupOperation) -> Option<ActionSpec> {
+    ActionSpec::operation(
+        id,
+        label,
+        OperationKind::Effect,
+        BACKUPS_OPERATION_TYPE,
+        operation,
+    )
+    .ok()
+}
 
 /// Every collaborative operation the Backups app exports on its stored
 /// configuration.
@@ -151,7 +191,11 @@ fn policy_contract() -> ActionContract {
 /// The resource tree Backups publishes: the retention policy, with a child per
 /// class exporting set / increase / decrease, each the same action the
 /// on-screen affordance dispatches.
-pub fn provide_resources(policy: &RetentionPolicy) -> Vec<Resource> {
+pub fn provide_resources(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+) -> Vec<Resource> {
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
     for field in PolicyField::ALL {
@@ -194,14 +238,112 @@ pub fn provide_resources(policy: &RetentionPolicy) -> Vec<Resource> {
         root = root.with_child(fr);
     }
 
-    vec![root]
+    let mut backups = Resource::new("backups", "backups.workspace", "Backups");
+    if let Some(spec) = operation_spec("backup-now", "Run backup now", &BackupOperation::BackupNow)
+    {
+        backups = backups.with_action(if configured {
+            spec
+        } else {
+            spec.unavailable(
+                "not_configured",
+                "Choose a source and destination before running a backup",
+            )
+        });
+    }
+    if let Some(spec) = operation_spec("setup", "Set up backups", &BackupOperation::Setup) {
+        backups = backups.with_action(spec);
+    }
+
+    let mut sources = Resource::new("backups.sources", "backups.source-set", "Backup sources");
+    for source in &catalog.sources {
+        sources = sources.with_child(Resource::new(
+            format!("backups.source:{}", source.id),
+            "backups.source",
+            format!("{} · {}", source.kind.label(), source.cadence.label()),
+        ));
+    }
+    backups = backups.with_child(sources);
+
+    let mut destinations = Resource::new(
+        "backups.destinations",
+        "backups.destination-set",
+        "Backup destinations",
+    );
+    for destination in &catalog.destinations {
+        destinations = destinations.with_child(Resource::new(
+            format!("backups.destination:{}", destination.id),
+            "backups.destination",
+            format!("{} · {}", destination.name, destination.kind.label()),
+        ));
+    }
+    backups = backups.with_child(destinations);
+
+    let mut snapshots = Resource::new("backups.snapshots", "backups.snapshot-set", "Snapshots");
+    for snapshot in catalog.snapshots.iter().take(128) {
+        snapshots = snapshots.with_child(snapshot_resource(snapshot, configured));
+    }
+    backups = backups.with_child(snapshots);
+
+    // Keep the long-standing policy root first: automation clients that began
+    // at the original public root retain a stable traversal order.
+    vec![root, backups]
+}
+
+fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
+    let mut resource = Resource::new(
+        format!("backups.snapshot:{}", snapshot.id),
+        "backups.snapshot",
+        format!(
+            "{} · {} · {}",
+            snapshot.time,
+            snapshot.kind.label(),
+            ui::format::bytes(snapshot.size_bytes)
+        ),
+    );
+    if let Some(spec) = operation_spec(
+        "verify",
+        "Verify snapshot",
+        &BackupOperation::Verify {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        resource = resource.with_action(if configured {
+            spec
+        } else {
+            spec.unavailable(
+                "not_configured",
+                "This local repository is not configured on this device",
+            )
+        });
+    }
+    if let Some(spec) = operation_spec(
+        "restore",
+        "Restore snapshot…",
+        &BackupOperation::Restore {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        resource = resource.with_action(if configured {
+            spec
+        } else {
+            spec.unavailable(
+                "not_configured",
+                "This local repository is not configured on this device",
+            )
+        });
+    }
+    resource
 }
 
 impl ResourceProvider for crate::app::BackupsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         // Level-triggered: recomputed each frame from the document, the source of
         // truth every action reads and writes.
-        provide_resources(&BackupsDoc::policy(doc, &ROOT))
+        provide_resources(
+            &BackupsDoc::policy(doc, &ROOT),
+            self.resource_catalog(),
+            self.is_configured(),
+        )
     }
 }
 
@@ -209,6 +351,7 @@ impl ResourceProvider for crate::app::BackupsApp {
 mod tests {
     use super::*;
     use crate::app::BackupsApp;
+    use crate::model::Catalog;
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
@@ -256,8 +399,8 @@ mod tests {
         let resources = Widget::resources(&app, &doc);
         assert_eq!(
             resources.len(),
-            1,
-            "only the real stored policy is exported"
+            2,
+            "the stored policy and the safe backup automation catalog are exported"
         );
         let root = resources
             .iter()
@@ -299,7 +442,8 @@ mod tests {
         let (_app, mut doc) = seeded();
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Monthly, 999);
-        let resources = provide_resources(&BackupsDoc::policy(&doc, &ROOT));
+        let resources =
+            provide_resources(&BackupsDoc::policy(&doc, &ROOT), &Catalog::empty(), false);
         assert!(
             resources
                 .iter()
