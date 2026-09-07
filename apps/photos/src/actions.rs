@@ -584,10 +584,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![root]
 }
 
-fn photo_resource(doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
-    let selected = PhotosDoc::image(doc)
-        .as_ref()
-        .is_some_and(|open| LibraryPhoto::from_image(open.clone()).id == photo.id);
+fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
     let mut item =
         Resource::new(&photo.id, "photos.photo", &photo.image.name).with_child(Resource::new(
             format!("{}#size", photo.id),
@@ -617,15 +614,13 @@ fn photo_resource(doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
     ) {
         item = item.with_action(spec.reversible());
     }
-    if !selected
-        && let Some(spec) = direct_spec(
-            "remove",
-            "Remove from library",
-            &PhotosAction::RemovePhoto {
-                photo_id: photo.id.clone(),
-            },
-        )
-    {
+    if let Some(spec) = direct_spec(
+        "remove",
+        "Remove from library",
+        &PhotosAction::RemovePhoto {
+            photo_id: photo.id.clone(),
+        },
+    ) {
         item = item.with_action(spec.destructive().reversible());
     }
     item
@@ -1023,6 +1018,27 @@ mod tests {
         PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
         let after = PhotosResources.resources(&doc);
         assert!(after[0].actions.iter().any(|a| a.id == "reset"));
+    }
+
+    #[test]
+    fn the_selected_photo_can_be_removed_through_its_canonical_resource() {
+        let mut doc = doc_with_image();
+        let selected = PhotosDoc::image(&doc).unwrap();
+        let id = LibraryPhoto::from_image(selected).id;
+        let resource = PhotosResources.resource(&doc, &id).unwrap();
+        let remove = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("the selected photo still offers removal");
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        let qos_actions::ActionInput::Immediate(encoded) = &remove.input else {
+            panic!("removal is immediate");
+        };
+        registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
+        assert!(PhotosDoc::image(&doc).is_none());
+        assert!(PhotosDoc::library(&doc).photos.is_empty());
     }
 
     /// Enumerating must be a pure read. If listing what is on offer could
