@@ -394,5 +394,132 @@ mod tests {
             widget.take_committed_action().is_none(),
             "no action is dispatched, so no action-host undo boundary is recorded",
         );
+        assert!(
+            terminal.actions.iter().all(|action| {
+                matches!(
+                    action.contract.confirmation,
+                    ui::qos_actions::ConfirmationPolicy::Confirm
+                ) && matches!(action.contract.risk, ui::qos_actions::RiskLevel::Privileged)
+                    && matches!(
+                        action.contract.retry,
+                        ui::qos_actions::RetryPolicy::AtMostOnce
+                    )
+            }),
+            "palette and agents must explicitly confirm every operation that can affect a live shell"
+        );
+    }
+
+    #[test]
+    fn resource_send_refuses_empty_or_unreviewably_large_payloads() {
+        let (mut widget, writes) = build_test_widget();
+        let doc = AutoCommit::new();
+        let root = ROOT;
+        let empty = serde_json::to_vec("").expect("serialize empty string");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                ui::qos_actions::OperationKind::Effect,
+                "terminal.send",
+                &empty,
+                &doc,
+                &root,
+            )
+            .is_err()
+        );
+        let too_large = serde_json::to_vec(&"x".repeat(crate::inner::MAX_RESOURCE_SEND_BYTES + 1))
+            .expect("serialize large command");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                ui::qos_actions::OperationKind::Effect,
+                "terminal.send",
+                &too_large,
+                &doc,
+                &root,
+            )
+            .is_err()
+        );
+        assert!(
+            writes.try_recv().is_err(),
+            "rejected input never reaches the PTY"
+        );
+    }
+
+    #[test]
+    fn resource_operations_fail_and_publish_disconnected_after_a_pty_write_error() {
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("injected PTY write failure"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("injected PTY flush failure"))
+            }
+        }
+
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(FailingWriter)));
+        let (_out_tx, out_rx) = crossbeam_channel::unbounded();
+        let mut widget =
+            TerminalWidget::new(writer, Arc::new(Mutex::new(Box::new(MockMaster))), out_rx);
+        let doc = AutoCommit::new();
+        let payload = serde_json::to_vec("printf should-not-run").expect("serialize command");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                ui::qos_actions::OperationKind::Effect,
+                "terminal.send",
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
+        );
+        assert!(widget.is_disconnected());
+        assert!(
+            Widget::accessibility(&widget)
+                .and_then(|node| node.description)
+                .is_some_and(|description| description.contains("Terminal input failed"))
+        );
+        assert!(
+            Widget::resources(&widget, &doc)
+                .into_iter()
+                .all(|resource| {
+                    resource.actions.iter().all(|action| {
+                        matches!(
+                            action.contract.availability,
+                            ui::qos_actions::Availability::Unavailable { .. }
+                        )
+                    })
+                })
+        );
+    }
+
+    #[test]
+    fn poisoned_pty_writer_never_reports_a_completed_control_effect() {
+        let writer: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(std::io::sink())));
+        let poison = Arc::clone(&writer);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poison.lock().expect("writer lock before injected panic");
+            panic!("inject poisoned PTY writer");
+        }));
+        let (_out_tx, out_rx) = crossbeam_channel::unbounded();
+        let mut widget =
+            TerminalWidget::new(writer, Arc::new(Mutex::new(Box::new(MockMaster))), out_rx);
+        let doc = AutoCommit::new();
+        let payload = serde_json::to_vec("interrupt").expect("serialize control");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                ui::qos_actions::OperationKind::Effect,
+                "terminal.control",
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
+        );
+        assert!(widget.is_disconnected());
     }
 }

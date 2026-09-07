@@ -518,6 +518,32 @@ fn terminal_widget_implements_app_widget() {
 }
 
 #[test]
+fn exited_pty_publishes_a_persistent_disconnected_accessibility_state() {
+    use portable_pty::CommandBuilder;
+    use ui::widget::Widget;
+
+    let mut widget = TerminalWidget::spawn_command(CommandBuilder::new("/bin/true"))
+        .expect("spawn short-lived pty command");
+    let mut doc = AutoCommit::new();
+    for _ in 0..20 {
+        widget.sync(&mut doc, &ROOT);
+        if widget.is_disconnected() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        widget.is_disconnected(),
+        "PTY EOF must settle the session state"
+    );
+    assert!(
+        Widget::accessibility(&widget)
+            .and_then(|node| node.description)
+            .is_some_and(|description| description.contains("Session ended"))
+    );
+}
+
+#[test]
 fn terminal_draw_reads_monospace_from_theme_tokens() {
     use ui::Theme;
     let theme = Theme::dark();
@@ -2333,6 +2359,17 @@ fn osc_window_title_updates_app_title() {
         "another",
         "a collaborator sees the same title"
     );
+}
+
+#[test]
+fn process_controlled_osc_metadata_is_bounded_and_single_line() {
+    assert_eq!(
+        crate::inner::safe_osc_text(b"build 42", 32).as_deref(),
+        Some("build 42")
+    );
+    assert!(crate::inner::safe_osc_text(b"line one\nline two", 32).is_none());
+    assert!(crate::inner::safe_osc_text(&[b'x'; 33], 32).is_none());
+    assert!(crate::inner::safe_osc_text(&[0xff], 32).is_none());
 }
 
 #[test]
