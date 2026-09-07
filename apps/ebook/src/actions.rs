@@ -18,9 +18,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec,
+    Action, ActionArgs, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
 };
 
 use crate::doc::BooksDoc;
@@ -46,9 +45,10 @@ pub enum EbookOperation {
         page: usize,
         block: Option<usize>,
     },
-    OpenBook {
-        path: Option<String>,
-    },
+    /// Request a user-consented import through the host portal. Deliberately
+    /// carries no path: an action can originate from search, an agent, or a
+    /// peer and must not turn that authority into arbitrary local file access.
+    OpenBook,
 }
 
 pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
@@ -59,28 +59,21 @@ pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
         | EbookOperation::ToggleNotes
         | EbookOperation::OpenSettings
         | EbookOperation::Reveal { .. } => OperationKind::View,
-        EbookOperation::OpenBook { .. } => OperationKind::Effect,
+        EbookOperation::OpenBook => OperationKind::Effect,
     }
 }
 
 #[cfg(test)]
 mod file_action_tests {
     use super::*;
+
     #[test]
-    fn path_argument_binds_into_background_open() {
+    fn open_action_is_background_portal_only() {
         let spec = open_book_operation();
-        let encoded = spec
-            .build_json(
-                serde_json::json!({"path":"/tmp/a.epub"})
-                    .as_object()
-                    .unwrap(),
-            )
-            .unwrap();
+        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(EbookOperation::OpenBook {
-                path: Some("/tmp/a.epub".into())
-            })
+            Some(EbookOperation::OpenBook)
         );
         assert!(matches!(
             spec.contract.execution,
@@ -141,20 +134,12 @@ fn open_book_operation() -> ActionSpec {
     ActionSpec::typed_operation(
         "open-book",
         "Open book",
-        "optional absolute path",
+        "choose an EPUB through the system picker",
         OperationKind::Effect,
         EBOOK_OPERATION_TYPE,
-        vec![ActionParam::optional(
-            "path",
-            ParamType::Text,
-            "EPUB path; omit to use the system picker",
-        )],
-        |args: &ActionArgs| {
-            let path = args
-                .text("path")
-                .filter(|p| !p.trim().is_empty())
-                .map(str::to_string);
-            let operation = EbookOperation::OpenBook { path };
+        Vec::new(),
+        |_args: &ActionArgs| {
+            let operation = EbookOperation::OpenBook;
             EncodedAction {
                 type_id: EBOOK_OPERATION_TYPE.into(),
                 payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),

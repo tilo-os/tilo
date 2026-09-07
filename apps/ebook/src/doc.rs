@@ -4,8 +4,7 @@
 //! ```text
 //! root
 //! ├── "settings"        (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
-//! ├── "library"         (Map keyed by book-id)  { path, title, author, subject, added }
-//! ├── "watched_folders" (List of str)  folders auto-imported into the library
+//! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added }
 //! ├── "progress"        (Map keyed by book-id)  { chapter, page, fraction }
 //! └── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
 //!                                                 start, end, excerpt, note,
@@ -14,15 +13,14 @@
 //!
 //! Library, progress and annotations are all keyed by the content-hash book
 //! id, so a book's shelf entry, reading position, and every annotation
-//! travel together across devices and to anyone it's shared with. The
-//! reader's transient view (open book, page, selection) stays per-peer,
-//! out of the document.
+//! travel together across devices and to anyone it's shared with. Raw source
+//! locations and watched folders are local capability state, never document
+//! data. The reader's transient view (open book, page, selection) stays
+//! per-peer, out of the document.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
-
-use std::path::PathBuf;
 
 use crate::model::{
     AnnoKind, Annotation, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, LibraryPrefs,
@@ -264,8 +262,9 @@ impl BooksDoc {
     // --- the library: books the reader has added, keyed by content-hash id -
 
     /// Add or update a book in the library. Re-importing the same file (same
-    /// content id) refreshes its recorded path + metadata while preserving the
-    /// original "added" time, so the shelf's add order stays stable.
+    /// content id) refreshes its public metadata while preserving the original
+    /// "added" time. Source paths are device-private capability grants and
+    /// must never be written to the shared document.
     pub fn upsert_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
         let lib = Self::root_map(doc, "library");
         let existing_added = match doc.get(&lib, e.id.as_str()) {
@@ -275,10 +274,15 @@ impl BooksDoc {
             _ => None,
         };
         let entry = Self::get_or_make_map(doc, &lib, &e.id);
-        let _ = doc.put(&entry, "path", e.path.to_string_lossy().as_ref());
+        // Earlier development snapshots stored a raw source path here. Clear
+        // it whenever this row is touched so a normal import repairs old
+        // replicated state instead of extending the disclosure indefinitely.
+        let _ = doc.delete(&entry, "path");
         let _ = doc.put(&entry, "title", e.title.as_str());
         let _ = doc.put(&entry, "author", e.author.as_str());
         let _ = doc.put(&entry, "subject", e.subject.as_str());
+        let was_shared = Self::scalar_bool(doc, &entry, "shared").unwrap_or(false);
+        let _ = doc.put(&entry, "shared", was_shared || e.shared);
         let added = existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { now_ms() });
         let _ = doc.put(&entry, "added", added as i64);
     }
@@ -297,19 +301,14 @@ impl BooksDoc {
             return Vec::new();
         };
         let mut out = Vec::new();
-        for key in doc.keys(&lib) {
+        let keys: Vec<String> = doc.keys(&lib).collect();
+        for key in keys {
             let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&lib, key.as_str()) else {
                 continue;
             };
-            let Some(path) = Self::scalar_str(doc, &e, "path") else {
-                continue;
-            };
-            if path.is_empty() {
-                continue;
-            }
             out.push(LibraryEntry {
                 id: key,
-                path: PathBuf::from(path),
+                shared: Self::scalar_bool(doc, &e, "shared").unwrap_or(false),
                 title: Self::scalar_str(doc, &e, "title").unwrap_or_default(),
                 author: Self::scalar_str(doc, &e, "author").unwrap_or_default(),
                 subject: Self::scalar_str(doc, &e, "subject").unwrap_or_default(),
@@ -320,47 +319,23 @@ impl BooksDoc {
         out
     }
 
-    // --- watched folders: explicit, user-managed auto-import roots ---------
-
-    /// The folders the reader has asked to watch: any new `.epub` found in one is
-    /// pulled into the library automatically. Empty by default — the app never
-    /// watches a hidden magic folder the reader didn't choose.
-    pub fn read_watched_folders(doc: &AutoCommit) -> Vec<PathBuf> {
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "watched_folders")
-        else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i)
-                && let ScalarValue::Str(s) = v.as_ref()
-                && !s.is_empty()
-            {
-                out.push(PathBuf::from(s.to_string()));
+    /// Remove raw path fields left by older app versions. The metadata and
+    /// content id survive, so a device can rediscover a local file through a
+    /// user-granted watched folder and peers can resolve the canonical shared
+    /// object without learning where either device stored it.
+    pub fn strip_legacy_library_paths(doc: &mut AutoCommit) {
+        if let Ok(Some((Value::Object(ObjType::Map), lib))) = doc.get(&ROOT, "library") {
+            let keys: Vec<String> = doc.keys(&lib).collect();
+            for key in keys {
+                if let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&lib, key.as_str())
+                {
+                    let _ = doc.delete(&entry, "path");
+                }
             }
         }
-        out
-    }
-
-    /// Replace the watched-folder set wholesale (the Library settings pane edits
-    /// it as a list).
-    ///
-    /// # Panics
-    ///
-    /// Panics if creating the fresh `"watched_folders"` list fails, which
-    /// only happens if the document itself is corrupt — there is no
-    /// meaningful `ObjId` to fall back to.
-    #[allow(
-        clippy::expect_used,
-        reason = "put_object on ROOT for a brand-new key cannot fail short of document corruption, which has no meaningful ObjId fallback"
-    )]
-    pub fn write_watched_folders(doc: &mut AutoCommit, folders: &[PathBuf]) {
-        let list = doc
-            .put_object(&ROOT, "watched_folders", ObjType::List)
-            .expect("put_object list never fails");
-        for (i, f) in folders.iter().enumerate() {
-            let _ = doc.insert(&list, i, f.to_string_lossy().as_ref());
-        }
+        // Folder watches are local capability grants, never collaborative
+        // preferences. Older documents held them as raw strings too.
+        let _ = doc.delete(&ROOT, "watched_folders");
     }
 
     // --- colour schemes ----------------------------------------------------
@@ -710,7 +685,7 @@ mod tests {
 
         let e = LibraryEntry {
             id: "book:abc".into(),
-            path: "/home/reader/Novel.epub".into(),
+            shared: false,
             title: "Novel".into(),
             author: "A. Writer".into(),
             subject: "Fiction".into(),
@@ -721,11 +696,10 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert_eq!(back[0], e);
 
-        // Re-importing the same book from a new path (e.g. after sharing it into
-        // the workspace) updates the path but keeps the original added time, so
-        // the shelf order doesn't jump.
+        // Re-importing the same content after it is shared advertises the
+        // canonical workspace availability, but still keeps its shelf order.
         let moved = LibraryEntry {
-            path: "/var/workspace/Books/Novel.epub".into(),
+            shared: true,
             added: 9_999,
             ..e.clone()
         };
@@ -736,13 +710,16 @@ mod tests {
             1,
             "same content id updates in place, not duplicated"
         );
-        assert_eq!(
-            back[0].path,
-            std::path::PathBuf::from("/var/workspace/Books/Novel.epub")
-        );
+        assert!(back[0].shared, "shared availability is replicated");
         assert_eq!(
             back[0].added, 1_000,
             "added time is preserved across a re-import"
+        );
+        let bytes = doc.save();
+        let stored = String::from_utf8_lossy(&bytes);
+        assert!(
+            !stored.contains("/home/reader/Novel.epub"),
+            "a source path must not enter the replicated document"
         );
 
         BooksDoc::remove_library_entry(&mut doc, "book:abc");
@@ -753,18 +730,25 @@ mod tests {
     }
 
     #[test]
-    fn watched_folders_round_trip() {
+    fn legacy_location_fields_are_removed_before_syncing() {
         let mut doc = AutoCommit::new();
-        assert!(
-            BooksDoc::read_watched_folders(&doc).is_empty(),
-            "nothing watched by default"
-        );
-        let folders = vec![
-            std::path::PathBuf::from("/home/reader/Books"),
-            std::path::PathBuf::from("/var/workspace/Books"),
-        ];
-        BooksDoc::write_watched_folders(&mut doc, &folders);
-        assert_eq!(BooksDoc::read_watched_folders(&doc), folders);
+        let library = doc.put_object(&ROOT, "library", ObjType::Map).unwrap();
+        let entry = doc
+            .put_object(&library, "book:legacy", ObjType::Map)
+            .unwrap();
+        doc.put(&entry, "path", "/private/device/novel.epub")
+            .unwrap();
+        let watches = doc
+            .put_object(&ROOT, "watched_folders", ObjType::List)
+            .unwrap();
+        doc.insert(&watches, 0, "/private/device/books").unwrap();
+
+        BooksDoc::strip_legacy_library_paths(&mut doc);
+        // Automerge preserves historical operation payloads for existing
+        // replicas, but after migration the current collaborative state has no
+        // readable location field and future changes cannot replicate one.
+        assert!(doc.get(&entry, "path").unwrap().is_none());
+        assert!(doc.get(&ROOT, "watched_folders").unwrap().is_none());
     }
 
     #[test]

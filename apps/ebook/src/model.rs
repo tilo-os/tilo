@@ -1014,14 +1014,17 @@ impl LibrarySort {
 /// One book the reader has added to their library, persisted in the CRDT.
 /// Keyed by the content-hash [`id`](Book::id): re-adding the same file
 /// updates the same entry, and a workspace-shared book keeps one identity
-/// everywhere. `path` records where the file currently lives.
+/// everywhere. Its device path is deliberately *not* part of this replicated
+/// record: a peer can resolve a shared object from its content id, while local
+/// source locations remain private to the device that granted them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryEntry {
     /// Content-hash id, shared with the book's annotations + progress.
     pub id: String,
-    /// Where the `.epub` currently lives (a `/var/workspace/...` path means it
-    /// is shared with the workspace's peers).
-    pub path: std::path::PathBuf,
+    /// Whether a content-addressed copy is available in the collaborative
+    /// workspace. Its filename is deterministically derived from [`Self::id`],
+    /// so no host-specific path needs replication.
+    pub shared: bool,
     pub title: String,
     pub author: String,
     pub subject: String,
