@@ -245,25 +245,34 @@ impl FileToolbar {
     /// open its menu right-aligned under the button (never off the right edge).
     /// The ⋯ is always the last control on the right.
     pub fn view_menu_anchor(&self) -> Point {
-        self.right.last().map_or_else(
+        self.view_menu_rect().map_or_else(
             || Point::new(self.rect.x1, self.rect.y1),
-            |b| {
-                let r = b.get_rect();
-                Point::new(r.x1, r.y1 + 2.0)
-            },
+            |r| Point::new(r.x1, r.y1 + 2.0),
         )
+    }
+
+    /// Exact rectangle of the overflow trigger. The app uses its top edge to
+    /// flip a tall menu above the trigger when a constrained viewport cannot
+    /// fit the normal below-trigger placement.
+    pub fn view_menu_rect(&self) -> Option<Rect> {
+        self.right.last().map(|button| button.get_rect())
     }
 
     /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
     /// where it is the second control on the right, before the ⋯).
     pub fn sort_menu_anchor(&self) -> Point {
-        self.right.get(1).or_else(|| self.right.last()).map_or_else(
+        self.sort_menu_rect().map_or_else(
             || Point::new(self.rect.x1, self.rect.y1),
-            |b| {
-                let r = b.get_rect();
-                Point::new(r.x1, r.y1 + 2.0)
-            },
+            |r| Point::new(r.x1, r.y1 + 2.0),
         )
+    }
+
+    /// Exact rectangle of the grid-mode Sort trigger, if it is visible.
+    pub fn sort_menu_rect(&self) -> Option<Rect> {
+        self.right
+            .get(1)
+            .or_else(|| self.right.last())
+            .map(|button| button.get_rect())
     }
 
     /// The Up nav button's on-screen rect, so a drag can be dropped on it to

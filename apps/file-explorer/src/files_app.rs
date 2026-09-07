@@ -47,6 +47,11 @@ const RENAME_QUERY_PATH: &str = "files.rename_query";
 /// (`ui/HIG.md` §1a).
 const BODY_BREAKPOINT_PX: f64 = 640.0;
 const LIVE_METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+/// The resource catalogue is shared with search, activity, automation, and
+/// assistive clients. Keep its eagerly enumerated current-folder projection
+/// deliberately small; an exact item is materialised from the live snapshot
+/// by [`FileExplorerWidget::resource`] when a caller addresses it directly.
+const MAX_EAGER_ENTRY_RESOURCES: usize = 128;
 type HistoryPreviewResult = Arc<std::sync::Mutex<Option<(String, Option<String>)>>>;
 type MergePreflightResult = Arc<
     std::sync::Mutex<
@@ -964,6 +969,33 @@ impl FileExplorerWidget {
     /// The **content** pane (the responsive body's detail): the file list or
     /// grid (plus any error affordance), scrolling under a symmetric gutter.
     fn build_content_pane(&self, theme: &ui::Theme) -> Box<dyn Widget> {
+        let sp = &theme.tokens.spacing;
+        // Loading and failure are whole-pane states, not a malformed empty
+        // table. Keep the real retry button in the widget tree, but centre the
+        // message and action so the state reads immediately at desktop and
+        // compact widths alike.
+        if self.is_loading || self.error.is_some() {
+            let message = self.error.clone().unwrap_or_else(|| t("files-loading"));
+            let mut state = Column::new().push(Box::new(Text::new(&message)));
+            if self.error.is_some() {
+                let sink = self.cmds.clone();
+                let retry = ui::widget::Button::new("files.retry", &t("files-try-again"), None)
+                    .on_effect(move || crate::command::push(&sink, FileCommand::Refresh));
+                state = state.push(Box::new(retry));
+            }
+            let centered = Row::new()
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(state))
+                .push(Box::new(Spacer::new()));
+            return Box::new(
+                Column::new()
+                    .with_vertical_padding(sp.s1)
+                    .with_horizontal_padding(sp.s3, sp.s3)
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(centered))
+                    .push(Box::new(Spacer::new())),
+            );
+        }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
         let view_child: Box<dyn Widget> = match self.view_mode {
@@ -992,7 +1024,6 @@ impl FileExplorerWidget {
                 self.thumb_ctx(),
             ),
         };
-        let sp = &theme.tokens.spacing;
         // The hamburger chip that summons the places drawer floats over this
         // pane's top-left in the narrow layout. `NavShell` reserves that band
         // itself, in the pass that positions the chip — reserving it here
@@ -1009,21 +1040,6 @@ impl FileExplorerWidget {
         let mut view_col = Column::new()
             .with_vertical_padding(sp.s1)
             .with_horizontal_padding(sp.s3, sp.s3);
-        if self.is_loading {
-            view_col = view_col.push(Box::new(Text::new(&t("files-loading"))));
-        } else if let Some(err) = self.error.as_deref() {
-            // Real error affordance: the message plus a "Try Again" button
-            // wired to re-read the directory (Refresh).
-            let sink = self.cmds.clone();
-            let retry = ui::widget::Button::new("files.retry", &t("files-try-again"), None)
-                .on_effect(move || crate::command::push(&sink, FileCommand::Refresh));
-            view_col = view_col.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(err)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(retry)),
-            ));
-        }
         // The list/grid scrolls: pin the scroll viewport to the *remaining*
         // height of the content column (grow-from-zero) rather than letting it
         // claim `percent(1.0)`. `fill_parent_height` takes exactly the space
@@ -1195,7 +1211,19 @@ impl FileExplorerWidget {
             vello::kurbo::Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
         let over = self.shots_status || zone.contains(self.last_cursor);
         self.status_bubble.set_hover(over, now);
-        let alpha = self.status_bubble.alpha(now);
+        // A status change is still useful with reduced motion; only its
+        // opacity animation is removed. The next normal paint will settle it
+        // to hidden after its linger instead of asking the host for a fade
+        // frame loop.
+        let alpha = if theme.reduce_motion {
+            if self.status_bubble.is_visible(now) {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            self.status_bubble.alpha(now)
+        };
         if alpha <= 0.0 {
             return;
         }
@@ -2988,9 +3016,21 @@ impl FileExplorerWidget {
     /// Open the context menu *and* its "New File" flyout (headless shots demo).
     #[doc(hidden)]
     pub fn debug_show_templates_menu(&mut self, at: Point) {
+        // `--scenario context-menu` uses this exact pointer location. Keeping
+        // it in the widget makes the screenshot's menu position truthful to a
+        // real right-click rather than visually competing with the toolbar ⋯.
+        self.last_cursor = at;
         self.open_context_menu(at);
         let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, at.y + 66.0);
         self.open_templates_submenu(anchor);
+    }
+
+    /// Open the toolbar's actual ⋯ menu for an offscreen visual review. This
+    /// is intentionally separate from the pointer-context fixture above: the
+    /// two surfaces have different anchors and should never be conflated.
+    #[doc(hidden)]
+    pub fn debug_show_view_menu(&mut self) {
+        self.open_view_menu();
     }
 
     /// Begin an active favourite drag from `from` toward `to`, for a mid-drag
@@ -5055,7 +5095,12 @@ impl FileExplorerWidget {
     /// by the labelled View / Sort menus, whose triggers hug the window's right
     /// edge where a left-anchored menu would spill off-screen. A `None` command
     /// with an empty label is a separator.
-    fn open_menu_right_aligned(&mut self, spec: Vec<(String, Option<FileCommand>)>, anchor: Point) {
+    fn open_menu_right_aligned(
+        &mut self,
+        spec: Vec<(String, Option<FileCommand>)>,
+        anchor: Point,
+        flip_y: f64,
+    ) {
         self.submenu.close();
         let mut menu = ContextMenu::new();
         let mut cmds = Vec::with_capacity(spec.len());
@@ -5068,13 +5113,23 @@ impl FileExplorerWidget {
                 cmds.push(cmd);
             }
         }
-        // Right-align: lay out once to learn the menu width, then re-anchor so
-        // the right edge lands on `anchor.x`, clamped to the window's left edge.
+        // Right-align: lay out once to learn the menu size, then re-anchor so
+        // the right edge lands on `anchor.x`. A tall menu flips above the
+        // trigger rather than slipping below the window; both axes clamp as a
+        // final guard for unusually tiny viewports.
         menu.open_at([anchor.x as f32, anchor.y as f32]);
         layout_menu_widget(&mut menu);
-        let w = menu.get_rect().width();
-        let x = (anchor.x - w).max(0.0);
-        menu.open_at([x as f32, anchor.y as f32]);
+        let menu_rect = menu.get_rect();
+        let w = menu_rect.width();
+        let h = menu_rect.height();
+        let max_x = (self.rect.x1 - w).max(self.rect.x0);
+        let x = (anchor.x - w).clamp(self.rect.x0, max_x);
+        let y = if anchor.y + h <= self.rect.y1 {
+            anchor.y
+        } else {
+            (flip_y - h).max(self.rect.y0)
+        };
+        menu.open_at([x as f32, y as f32]);
         self.context_menu = menu;
         self.menu_commands = cmds;
         layout_menu_widget(&mut self.context_menu);
@@ -5085,6 +5140,10 @@ impl FileExplorerWidget {
     /// Everything here is spelled out in words — no mystery symbolic controls.
     fn open_view_menu(&mut self) {
         let anchor = self.toolbar.view_menu_anchor();
+        let flip_y = self
+            .toolbar
+            .view_menu_rect()
+            .map_or(anchor.y, |rect| rect.y0 - 2.0);
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
         // At phone width the path remains useful while direct view / sort
         // controls move here. The same labelled actions remain keyboard and
@@ -5141,7 +5200,7 @@ impl FileExplorerWidget {
             t("files-menu-open-terminal"),
             Some(FileCommand::OpenTerminal),
         ));
-        self.open_menu_right_aligned(spec, anchor);
+        self.open_menu_right_aligned(spec, anchor, flip_y);
     }
 
     /// The labelled "Sort by" menu (the grid-mode Sort button): the sort key,
@@ -5149,6 +5208,10 @@ impl FileExplorerWidget {
     /// grid's equivalent of clicking a list column header.
     fn open_sort_menu(&mut self) {
         let anchor = self.toolbar.sort_menu_anchor();
+        let flip_y = self
+            .toolbar
+            .sort_menu_rect()
+            .map_or(anchor.y, |rect| rect.y0 - 2.0);
         let checked = |on: bool, label: String| {
             t_args(
                 if on {
@@ -5181,7 +5244,7 @@ impl FileExplorerWidget {
             checked(!asc, t("files-sort-descending")),
             Some(FileCommand::SetSortOrder(SortOrder::Descending)),
         ));
-        self.open_menu_right_aligned(spec, anchor);
+        self.open_menu_right_aligned(spec, anchor, flip_y);
     }
 
     /// The right-click menu for a sidebar favourite `path`: open it, plus the
@@ -5887,6 +5950,45 @@ impl FileExplorerWidget {
         }
     }
 
+    /// Route an open compact Places drawer as a modal surface. The uncovered
+    /// strip is deliberately a dismiss backdrop, never a transparent route to
+    /// the file view: right-clicks, wheel input, and selection gestures must
+    /// not reach the list behind the scrim.
+    fn handle_places_drawer_modal_event(&mut self, ctx: &mut EventCtx) -> bool {
+        if self.nav.mode() != ShellMode::Narrow || !self.nav.is_sidebar_open() {
+            return false;
+        }
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
+            return false;
+        };
+        let Some(&nav_node) = children.get(1) else {
+            return false;
+        };
+        let path_before = self.current_path.clone();
+        self.nav.handle_event(
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+            ctx.focus_target,
+            nav_node,
+            ctx.taffy,
+        );
+        if self.drain_commands() {
+            self.structure_dirty = true;
+        }
+        if self.current_path != path_before {
+            self.nav.close_sidebar();
+        }
+        // NavShell handles a left scrim press by closing; other events such as
+        // a right-click over the scrim are still swallowed here so they cannot
+        // construct a file-view context menu through the modal backdrop.
+        *ctx.handled = true;
+        true
+    }
+
     /// The open context menu (or its flyout) gets first dibs on clicks +
     /// Escape. Returns whether the event was consumed.
     fn handle_open_menu_event(&mut self, ctx: &mut EventCtx) -> bool {
@@ -6209,6 +6311,228 @@ impl FileExplorerWidget {
                 }),
         );
         folder
+    }
+
+    /// Construct the complete action contract for one already-projected row.
+    /// This is intentionally separate from `resources`: a folder can have far
+    /// more rows than an action directory should enumerate, while an exact
+    /// search/history/agent address must still resolve to the same canonical
+    /// actions as a visible context menu.
+    #[allow(
+        clippy::expect_used,
+        reason = "ActionSpec serializes only owned, validated in-memory values"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "an entry's complete canonical action contract stays together so lazy and eager resource resolution cannot diverge by dispatch route"
+    )]
+    fn entry_resource(&self, entry: &Entry) -> Resource {
+        let resource_id = Self::entry_resource_id(entry);
+        let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
+        let mut resource = Resource::new(
+            resource_id.clone(),
+            if record_id.is_some() {
+                "files.record"
+            } else {
+                "files.entry"
+            },
+            entry.name.clone(),
+        );
+        if let Some(record_id) = record_id {
+            resource.actions.push(
+                ActionSpec::operation(
+                    crate::search_provider::REVEAL_ACTION,
+                    t("files-action-reveal"),
+                    OperationKind::View,
+                    "files.reveal-record",
+                    &record_id.to_string(),
+                )
+                .expect("record id is serializable")
+                .with_contract(ActionContract::view()),
+            );
+        }
+        if let Ok(spec) = ActionSpec::operation(
+            "open",
+            t("files-menu-open"),
+            OperationKind::View,
+            "files.open",
+            &resource_id,
+        ) {
+            resource
+                .actions
+                .push(spec.with_contract(ActionContract::view()));
+        }
+        if !self.is_trash_view() {
+            let rename_resource_id = resource_id.clone();
+            resource.actions.push(
+                ActionSpec::prompted_operation(
+                    "rename",
+                    t("files-menu-rename"),
+                    t("files-action-rename-prompt"),
+                    &entry.name,
+                    OperationKind::Effect,
+                    "files.rename",
+                    move |name| {
+                        EncodedAction::encode_operation(
+                            "files.rename",
+                            &vec![rename_resource_id.as_str(), name],
+                        )
+                        .expect("rename payload is serializable")
+                    },
+                )
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    retry: RetryPolicy::AtMostOnce,
+                    // The filesystem owns durable history, so never advertise
+                    // an action-history inverse that Files cannot honour.
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        let entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
+            vec![
+                ("restore", t("files-menu-restore"), "restore", false),
+                (
+                    "delete-permanently",
+                    t("files-menu-delete-permanently"),
+                    "purge",
+                    true,
+                ),
+                (
+                    "properties",
+                    t("files-menu-properties"),
+                    "properties",
+                    false,
+                ),
+            ]
+        } else {
+            vec![
+                ("copy", t("files-menu-copy"), "copy", false),
+                ("cut", t("files-menu-cut"), "cut", false),
+                ("trash", t("files-menu-move-trash"), "trash", true),
+                (
+                    "properties",
+                    t("files-menu-properties"),
+                    "properties",
+                    false,
+                ),
+                ("sharing", t("files-sharing-access"), "sharing", false),
+                ("history", t("files-version-history"), "history", false),
+            ]
+        };
+        for (id, label, verb, destructive) in entry_commands {
+            let mut spec = ActionSpec::operation(
+                id,
+                label,
+                if matches!(verb, "properties" | "sharing" | "history") {
+                    OperationKind::View
+                } else {
+                    OperationKind::Effect
+                },
+                "files.entry-command",
+                &vec![verb.to_string(), resource_id.clone()],
+            )
+            .expect("entry command is serializable");
+            if destructive {
+                spec = spec.destructive();
+            }
+            resource.actions.push(spec);
+        }
+        if let Some(availability) = entry.availability.as_ref() {
+            resource.actions.push(
+                ActionSpec::operation(
+                    "availability",
+                    t("files-availability-title-short"),
+                    OperationKind::View,
+                    "files.entry-command",
+                    &vec!["availability".to_string(), resource_id.clone()],
+                )
+                .expect("availability payload is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            let mut availability_command =
+                |id: &str, label: String, verb: &str, destructive: bool| {
+                    let mut spec = ActionSpec::operation(
+                        id,
+                        label,
+                        OperationKind::Effect,
+                        "files.entry-command",
+                        &vec![verb.to_string(), resource_id.clone()],
+                    )
+                    .expect("availability command payload is serializable")
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    });
+                    if destructive {
+                        spec = spec.destructive();
+                    }
+                    resource.actions.push(spec);
+                };
+            if availability.policy == crate::model::AvailabilityPolicy::Automatic {
+                availability_command(
+                    "keep-offline",
+                    t("files-keep-offline"),
+                    "keep-offline",
+                    false,
+                );
+            }
+            if availability.policy == crate::model::AvailabilityPolicy::Pinned
+                && !availability.policy_inherited
+            {
+                availability_command(
+                    "automatic-storage",
+                    t("files-use-automatic-storage"),
+                    "automatic-storage",
+                    false,
+                );
+            }
+            let releasable = !entry.is_dir
+                && availability.policy == crate::model::AvailabilityPolicy::Automatic
+                && !availability.policy_inherited
+                && availability.transfer.phase == crate::model::TransferPhase::Idle
+                && matches!(
+                    availability.residency,
+                    crate::model::Residency::Partial { .. }
+                        | crate::model::Residency::Resident { .. }
+                );
+            if releasable {
+                availability_command(
+                    "free-local-space",
+                    t("files-free-local-space"),
+                    "free-local-space",
+                    false,
+                );
+            }
+            let retryable = !matches!(
+                availability.residency,
+                crate::model::Residency::Resident { .. }
+            ) && availability.transfer.phase == crate::model::TransferPhase::Idle;
+            if retryable {
+                availability_command(
+                    "retry-download",
+                    t("files-retry-download"),
+                    "retry-transfer",
+                    false,
+                );
+            }
+        }
+        if entry.record_id.is_some() {
+            resource.actions.push(
+                ActionSpec::operation(
+                    "share-link",
+                    "Create one-time share link",
+                    OperationKind::Effect,
+                    "files.share-link",
+                    &resource_id,
+                )
+                .expect("share path is serializable")
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job),
+            );
+        }
+        resource
     }
 }
 
@@ -6677,11 +7001,10 @@ impl Widget for FileExplorerWidget {
             }
             folder.children.push(resource);
         }
-        // Do not eagerly copy a whole workspace catalogue into the contextual
-        // tree. A large mount can contain hundreds of thousands of records;
-        // collaborative hits resolve their exact current row through
-        // `resource` below, while the visible folder remains truthful here.
-        for entry in &self.entries {
+        // Keep the context catalogue bounded. The visible directory can still
+        // paint every loaded row; only the cross-process resource projection is
+        // capped, and `resource(id)` below resolves any exact row lazily.
+        for entry in self.entries.iter().take(MAX_EAGER_ENTRY_RESOURCES) {
             let resource_id = Self::entry_resource_id(entry);
             let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
             let mut resource = Resource::new(
@@ -6917,6 +7240,12 @@ impl Widget for FileExplorerWidget {
     fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
         (id == crate::search_provider::folder_resource_id(&self.current_path))
             .then(|| self.action_directory_folder_root())
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .find(|entry| Self::entry_resource_id(entry) == id)
+                    .map(|entry| self.entry_resource(entry))
+            })
             .or_else(|| {
                 self.places_search
                     .resource(id)
@@ -7817,6 +8146,7 @@ impl Widget for FileExplorerWidget {
         // and an in-place rename all get first dibs on the event, in that
         // priority order; the first that consumes it stops routing.
         if self.handle_live_drag_event(&mut ctx)
+            || self.handle_places_drawer_modal_event(&mut ctx)
             || self.handle_open_menu_event(&mut ctx)
             || self.handle_right_click_open_menu(&mut ctx)
             || self.handle_zoom_wheel(&mut ctx)
@@ -8911,6 +9241,37 @@ mod command_path_tests {
         assert_eq!(payload, entry.id.as_str());
         assert_ne!(payload, file.to_string_lossy());
         assert!(!String::from_utf8_lossy(&encoded.payload).contains("private-plan.txt"));
+    }
+
+    #[test]
+    fn resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily() {
+        let d = tempfile::tempdir().unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.current_path = d.path().to_path_buf();
+        w.entries = (0..=MAX_EAGER_ENTRY_RESOURCES)
+            .map(|index| {
+                let name = format!("item-{index:03}.txt");
+                let mut entry = ent(&name, false, "text/plain");
+                entry.path = d.path().join(name);
+                entry
+            })
+            .collect();
+        let doc = automerge::AutoCommit::new();
+        let catalogue = Widget::resources(&w, &doc);
+        let eager_entries = catalogue[0]
+            .children
+            .iter()
+            .filter(|resource| resource.kind == "files.entry")
+            .count();
+        assert_eq!(eager_entries, MAX_EAGER_ENTRY_RESOURCES);
+
+        let last = w.entries.last().expect("fixture has a final entry");
+        let id = FileExplorerWidget::entry_resource_id(last);
+        let resolved = Widget::resource(&w, &doc, &id)
+            .expect("an exact current-folder entry resolves on demand");
+        assert_eq!(resolved.id.as_str(), id);
+        assert!(resolved.actions.iter().any(|action| action.id == "open"));
+        assert!(resolved.actions.iter().any(|action| action.id == "rename"));
     }
 
     #[test]
@@ -10977,6 +11338,40 @@ mod responsive_body_tests {
         );
     }
 
+    #[test]
+    fn toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport() {
+        let mut h = H::new(None, 900.0, 720.0);
+        h.w.open_view_menu();
+        let trigger =
+            h.w.toolbar
+                .view_menu_rect()
+                .expect("More trigger is laid out");
+        let menu = h.w.context_menu.get_rect();
+        assert!(
+            (menu.x1 - trigger.x1).abs() <= 1.0 && menu.y0 >= trigger.y1,
+            "toolbar menu must sit directly below and right-aligned to More: trigger={trigger:?} menu={menu:?}"
+        );
+
+        h.w.open_menu_right_aligned(
+            vec![
+                ("One".into(), None),
+                ("Two".into(), None),
+                ("Three".into(), None),
+                ("Four".into(), None),
+            ],
+            Point::new(890.0, 710.0),
+            680.0,
+        );
+        let flipped = h.w.context_menu.get_rect();
+        assert!(
+            flipped.x0 >= h.w.rect.x0
+                && flipped.x1 <= h.w.rect.x1
+                && flipped.y0 >= h.w.rect.y0
+                && flipped.y1 <= 681.0,
+            "a constrained menu must flip above its trigger and remain on-screen: {flipped:?}"
+        );
+    }
+
     /// The regression: at ~600 px the window showed the breadcrumb and the
     /// FAVOURITES / SYSTEM list and **no files at all**, while the footer
     /// underneath read "27 items". The places list had been declared a content
@@ -11062,6 +11457,40 @@ mod responsive_body_tests {
             h.w.status_bubble_is_occluded_by_places_drawer(),
             "the item/status bubble belongs behind the modal drawer scrim"
         );
+    }
+
+    #[test]
+    fn narrow_places_drawer_scrim_is_a_modal_dismiss_backdrop_not_file_input() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("behind-the-drawer.txt"), b"x").unwrap();
+        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
+        h.w.debug_open_places_drawer();
+        h.lay_out(600.0, 720.0);
+        h.w.debug_open_places_drawer();
+        let sidebar = h.w.debug_sidebar_rect();
+        let scrim_x = sidebar.x1 + 24.0;
+        let scrim_y = h.w.debug_content_rect().y0 + 180.0;
+
+        // Right-clicks over the uncovered strip used to be able to create a
+        // file-view context menu. They now remain in the modal backdrop.
+        h.cursor(scrim_x, scrim_y);
+        h.right_press();
+        assert!(h.w.debug_places_open());
+        assert!(
+            !h.w.context_menu.is_open() && h.w.selected_indices().is_empty(),
+            "the backdrop cannot select or open a menu for the file behind it"
+        );
+
+        // A primary press is the intentional dismissal affordance, and still
+        // must not reach the underlying list/scrollbar on that same event.
+        h.left_press();
+        assert!(!h.w.debug_places_open());
+        assert!(h.w.selected_indices().is_empty());
+
+        h.w.debug_open_places_drawer();
+        let semantic_children = h.w.nav.children();
+        assert_eq!(semantic_children.len(), 1);
+        assert_eq!(semantic_children[0].name(), "PlacesSidebar");
     }
 
     /// Picking a destination in the narrow drawer dismisses it, leaving the
