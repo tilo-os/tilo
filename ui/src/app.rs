@@ -1169,8 +1169,12 @@ impl App {
 
     /// Invalidate declarations derived from document or widget-local state.
     fn invalidate_widget_resource_cache(&mut self) {
-        self.resource_generation
-            .set(self.resource_generation.get().saturating_add(1));
+        // At `u64::MAX` there is no fresh key to issue. Eviction still makes
+        // each later materialisation a new snapshot, so it cannot alias a
+        // retained tree that happened to have the same terminal generation.
+        if let Some(next) = self.resource_generation.get().checked_add(1) {
+            self.resource_generation.set(next);
+        }
         self.resource_cache.get_mut().take();
         self.local_resource_cache.get_mut().take();
         self.last_control_availability = None;
@@ -3508,8 +3512,12 @@ impl App {
     }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
-        self.permission_generation
-            .set(self.permission_generation.get().saturating_add(1));
+        // See `invalidate_widget_resource_cache`: once the numeric namespace
+        // is exhausted, dropping the projection is the collision-free way to
+        // make the changed permissions visible without reusing a live cache.
+        if let Some(next) = self.permission_generation.get().checked_add(1) {
+            self.permission_generation.set(next);
+        }
         self.local_resource_cache.get_mut().take();
         self.last_control_availability = None;
         self.refresh_control_action_availability();
@@ -9967,6 +9975,48 @@ mod action_palette_tests {
         app.invalidate_widget_resource_cache();
         let _ = app.collect_resources();
         assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn exhausted_resource_generation_evicts_instead_of_reusing_a_snapshot() {
+        use std::sync::atomic::Ordering;
+
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new(
+            State::new(),
+            Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+        );
+        app.resource_generation.set(u64::MAX);
+
+        let _ = app.collect_resources();
+        app.invalidate_widget_resource_cache();
+        let _ = app.collect_resources();
+
+        assert_eq!(app.resource_generation.get(), u64::MAX);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "each invalidation at the terminal generation rematerializes"
+        );
+    }
+
+    #[test]
+    fn exhausted_permission_generation_evicts_the_old_authority_projection() {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+        assert_eq!(app.collect_local_resources().len(), 1);
+        app.permission_generation.set(u64::MAX);
+
+        app.set_permission_ctx(PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(None, "restricted"),
+            Vec::new(),
+        ));
+
+        assert_eq!(app.permission_generation.get(), u64::MAX);
+        assert!(
+            app.collect_local_resources().is_empty(),
+            "the cached write action cannot survive a permission change"
+        );
     }
 
     /// winit keeps a `KeyEvent` field `pub(crate)`, so a struct literal
