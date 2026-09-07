@@ -2844,7 +2844,7 @@ impl CameraApp {
             );
             self.draw_camera_top_controls(scene, t, tr, theme, full);
             if recording {
-                self.draw_rec_indicator(scene, t, tr, full);
+                self.draw_rec_indicator(scene, t, tr, full, theme);
             }
         } else {
             let (title, subtitle) = self.no_feed_copy();
@@ -3266,12 +3266,19 @@ impl CameraApp {
 
     /// A red "● REC m:ss" badge floating at the top-centre of the stage while
     /// a clip is recording.
-    fn draw_rec_indicator(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, full: Rect) {
+    fn draw_rec_indicator(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        full: Rect,
+        theme: &Theme,
+    ) {
         let scx = self.stage_center_x();
         let started = self.recording.as_ref().map_or(0, |s| s.started);
         let elapsed = (now_secs() - started).max(0);
         let label = format!("REC  {}", fmt_dur(elapsed * 1000));
-        let red = Color::from_rgb8(240, 60, 60);
+        let red = theme.tokens.colors.semantic.danger;
         let tw = f64::from(p::text_w(tr, &label, 12.5));
         let w = 20.0 + 12.0 + tw + 14.0;
         let pill = Rect::new(scx - w / 2.0, full.y0 + 18.0, scx + w / 2.0, full.y0 + 46.0);
