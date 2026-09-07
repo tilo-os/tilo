@@ -13,12 +13,13 @@
 //!
 //! ## What is (and is not) an action here
 //!
-//! The migrated collaborative doc mutations are the **saved places**, the active
-//! **route**'s removal, and the **offline regions** (the manageable rows of what
-//! has been downloaded). Everything else Maps persists into the same blob is
-//! per-user *presentation* and never becomes an action: the map camera (centre,
-//! zoom, pan), which place is selected, the search box, the travel-mode/panel
-//! view, the recents list, the status line, and the computed transit itineraries.
+//! The migrated collaborative doc mutations are the **saved places**, selected
+//! places, committed **searches/history**, the active **route**'s removal, and
+//! the **offline regions** (the manageable rows of what has been downloaded).
+//! Camera movement, a focused text caret, status text, and computed network
+//! responses remain presentation or external work. A committed search records
+//! its intent in the document; each client then resolves that intent through
+//! its own local/offline search and best-effort geocoder.
 //!
 //! External, non-deterministic work stays out of `apply` too. Tile downloads,
 //! geocoding, and routing computation are done by the app off the wire; only the
@@ -61,6 +62,17 @@ pub enum MapsAction {
     /// pin/bookmark" and "remove it from saved"; the target state is explicit in
     /// the payload (never a read-and-toggle) so two replicas converge.
     SetPlaceSaved { id: String, saved: bool },
+    /// Make one known place the shared selection. This gives search-result
+    /// resources a deterministic, replayable "open" action rather than
+    /// requiring an agent to reproduce a pointer click.
+    SelectPlace { id: String },
+    /// Commit a search request and add it to the shared, capped history. The
+    /// actual geocoding is intentionally not in `apply`: it is external and
+    /// nondeterministic, and each peer resolves the same query independently.
+    CommitSearch { query: String },
+    /// Clear the shared search history. Search history is workspace state, not
+    /// an unaddressable presentation cache, so this remains undoable/replayable.
+    ClearRecents,
     /// Drop the active road route. The user's discrete "clear route" gesture;
     /// setting a route is the persisted result of an external routing
     /// computation and rides the ordinary model mirror instead.
@@ -106,6 +118,24 @@ impl MapsAction {
                 if let Some(p) = model.places.iter_mut().find(|p| &p.id == id) {
                     p.saved = *saved;
                 }
+            }
+            MapsAction::SelectPlace { id } => {
+                if model.place(id).is_some() {
+                    model.selected = Some(id.clone());
+                    model.panel = crate::model::Panel::Explore;
+                }
+            }
+            MapsAction::CommitSearch { query } => {
+                let query = query.trim();
+                if !query.is_empty() {
+                    model.query = query.to_string();
+                    model.results.clear();
+                    model.panel = crate::model::Panel::Explore;
+                    model.push_recent(query);
+                }
+            }
+            MapsAction::ClearRecents => {
+                model.recents.clear();
             }
             MapsAction::ClearRoute => {
                 model.route = None;
@@ -221,6 +251,10 @@ fn region_label(r: &DownloadedRegion) -> String {
 /// `doc` (an unseeded document publishes nothing). Presentation — the selected
 /// place, the camera, the search box — is read for labelling only and never
 /// becomes an action.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the resource tree is deliberately declared in one stable, searchable hierarchy; extracting each resource kind would obscure the shared action contract"
+)]
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let Some(model) = MapsDoc::load(doc) else {
         return Vec::new();
@@ -250,6 +284,75 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             "Clear offline areas",
             &MapsAction::ClearRegions,
         ));
+    }
+
+    // Search is an addressable shared workflow. The prompted action records
+    // search intent in the CRDT (rather than attempting non-deterministic
+    // geocoding inside an action); the owning app resolves it after adoption.
+    root = root.with_action(
+        ActionSpec::prompted(
+            "search",
+            "Search maps",
+            "Place, address, or category",
+            "e.g. museum near me",
+            qos_actions::ExecutionLocus::ClientLocal,
+            |query| {
+                encode(&MapsAction::CommitSearch {
+                    query: query.trim().to_string(),
+                })
+            },
+        )
+        .with_contract(ActionContract {
+            retry: RetryPolicy::Idempotent,
+            reversible: true,
+            tags: vec!["maps".into(), "search".into(), "workspace".into()],
+            ..ActionContract::default()
+        }),
+    );
+
+    if !model.recents.is_empty() {
+        root = root.with_action(immediate(
+            "clear-search-history",
+            "Clear search history",
+            &MapsAction::ClearRecents,
+        ));
+    }
+
+    // Every committed result and history item is a separately searchable
+    // resource. The action payload holds the durable place id/query; UI order
+    // can change without changing what an automation has addressed.
+    for result in &model.results {
+        root = root.with_child(
+            Resource::new(
+                format!("maps.search-result:{}", result.id),
+                "maps.search-result",
+                result.name.clone(),
+            )
+            .with_action(immediate(
+                "open",
+                "Open search result",
+                &MapsAction::SelectPlace {
+                    id: result.id.clone(),
+                },
+            )),
+        );
+    }
+
+    for query in &model.recents {
+        root = root.with_child(
+            Resource::new(
+                format!("maps.search-history:{query}"),
+                "maps.search-history",
+                query.clone(),
+            )
+            .with_action(immediate(
+                "search-again",
+                "Search again",
+                &MapsAction::CommitSearch {
+                    query: query.clone(),
+                },
+            )),
+        );
     }
 
     // Saved places → a resource each, exporting the un-save action.
@@ -457,6 +560,82 @@ mod tests {
     fn empty_doc_publishes_nothing() {
         let doc = AutoCommit::new();
         assert!(provide_resources(&doc).is_empty());
+    }
+
+    /// Search and history are not opaque UI caches: Ctrl+K can discover a
+    /// prompted shared search, every committed result, and every replayable
+    /// history item without needing a pointer location or list index.
+    #[test]
+    fn search_results_and_history_publish_as_resources() {
+        let mut model = full_model();
+        let result = Place::new(
+            "pinakothek",
+            "Alte Pinakothek",
+            Category::Museum,
+            "Barer Straße 27",
+            LatLon::new(48.1484, 11.5707),
+        );
+        model.places.push(result.clone());
+        model.results.push(result);
+        model.push_recent("art museum");
+        let doc = seeded(&model);
+
+        let root = &provide_resources(&doc)[0];
+        let search = root
+            .actions
+            .iter()
+            .find(|action| action.id == "search")
+            .expect("prompted Search maps action");
+        assert!(matches!(search.input, ActionInput::Prompted { .. }));
+        assert!(
+            root.actions
+                .iter()
+                .any(|action| action.id == "clear-search-history")
+        );
+
+        let result = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "maps.search-result")
+            .expect("search result resource");
+        assert_eq!(result.id.as_str(), "maps.search-result:pinakothek");
+        assert!(result.actions.iter().any(|action| action.id == "open"));
+
+        let history = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "maps.search-history")
+            .expect("search history resource");
+        assert_eq!(history.label, "art museum");
+        assert!(
+            history
+                .actions
+                .iter()
+                .any(|action| action.id == "search-again")
+        );
+    }
+
+    #[test]
+    fn committed_search_and_selection_are_deterministic_model_actions() {
+        let mut model = full_model();
+        model.results = model.places.clone();
+
+        MapsAction::CommitSearch {
+            query: "  museums  ".to_string(),
+        }
+        .apply_to_model(&mut model);
+        assert_eq!(model.query, "museums");
+        assert_eq!(model.recents.first().map(String::as_str), Some("museums"));
+        assert!(model.results.is_empty());
+
+        MapsAction::SelectPlace {
+            id: "marienplatz".to_string(),
+        }
+        .apply_to_model(&mut model);
+        assert_eq!(model.selected.as_deref(), Some("marienplatz"));
+
+        MapsAction::ClearRecents.apply_to_model(&mut model);
+        assert!(model.recents.is_empty());
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
