@@ -4,17 +4,18 @@
 //!
 //! ```text
 //! root
-//! ├── "screen"    (Str)   # camera | scanner | gallery | settings
 //! ├── "mode"      (Str)   # photo | video  (camera capture sub-mode)
 //! ├── "facing"    (Str)   # back | front | wide
 //! ├── "settings"  (Map)   # scalar settings (see Settings)
 //! ├── "favorites" (Map)   # { <file name>: true } — starred library items
-//! └── "scans"     (List)  # [ { raw, ts } ] newest-first scan history
+//! ├── "scans"     (List)  # [ { raw, ts } ] newest-first scan history
+//! └── "captures"  (List)  # portable qdoc-backed gallery metadata
 //! ```
 //!
-//! The photo/video *pixels* are ordinary files on disk (see
-//! [`crate::library`]) — the CRDT only holds the collaborative metadata:
-//! which items are favorited, the scan history, and capture preferences.
+//! The photo/video *pixels* travel as verified qdoc blobs (see
+//! [`crate::media`]); a local library file is merely an optional projection.
+//! The CRDT stores collaborative metadata and its content-addressed media ID,
+//! plus favorites, scan history, and capture preferences.
 
 use std::collections::HashSet;
 
@@ -22,8 +23,23 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use crate::model::{
-    CaptureMode, Facing, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
+    CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
 };
+
+/// Portable capture metadata. Pixel bytes live under `media_id` in qdoc's
+/// verified blob transport; the document deliberately contains no path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedCapture {
+    pub id: String,
+    pub media_id: String,
+    pub kind: CaptureKind,
+    pub ts: i64,
+    pub w: u32,
+    pub h: u32,
+    pub dur_ms: i64,
+    pub label: String,
+    pub facing: Facing,
+}
 
 // ---- scalar helpers --------------------------------------------------
 
@@ -68,17 +84,7 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-// ---- screen / mode / facing -----------------------------------------
-
-pub fn read_screen(doc: &AutoCommit, root: &ObjId) -> Screen {
-    get_str(doc, root, "screen")
-        .and_then(|s| Screen::parse_str(&s))
-        .unwrap_or(Screen::Camera)
-}
-
-pub fn write_screen(doc: &mut AutoCommit, root: &ObjId, screen: Screen) {
-    let _ = doc.put(root, "screen", screen.as_str());
-}
+// ---- mode / facing --------------------------------------------------
 
 pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
     get_str(doc, root, "mode").map_or(CaptureMode::Photo, |s| CaptureMode::parse_str(&s))
@@ -249,7 +255,10 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
     let Some(list) = list_at(doc, root, "scans") else {
         return Vec::new();
     };
-    let n = doc.length(&list);
+    // A legacy or hostile document must not turn opening the Scanner into an
+    // unbounded UI-thread traversal. The durable writer below keeps normal
+    // documents at this cap; excess legacy rows are deliberately ignored.
+    let n = doc.length(&list).min(MAX_SCANS);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
@@ -269,50 +278,236 @@ pub fn read_scans(doc: &AutoCommit, root: &ObjId) -> Vec<ScanEntry> {
 
 /// Record a scanned code at the front of the history. Re-scanning the same
 /// payload moves it to the front rather than duplicating; the list is capped.
-pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) {
+///
+/// # Errors
+///
+/// Returns an explicit refusal for invalid payloads, hostile legacy lists, or
+/// an Automerge write that could not be completed.
+pub fn record_scan(doc: &mut AutoCommit, root: &ObjId, raw: &str, ts: i64) -> Result<(), String> {
+    if raw.is_empty() || raw.len() > 16 * 1024 {
+        return Err("scan payload is invalid or too large".into());
+    }
     let list = if let Some(l) = list_at(doc, root, "scans") {
         l
     } else {
-        let Ok(l) = doc.put_object(root, "scans", ObjType::List) else {
-            return;
-        };
-        l
+        doc.put_object(root, "scans", ObjType::List)
+            .map_err(|_| "couldn't create scan history")?
     };
     // Drop any existing entry with the same payload.
     let n = doc.length(&list);
+    // Do not make a local scan action perform unbounded repair of a malformed
+    // collaborative list. A later explicit migration can handle it off the
+    // interaction path; this action explicitly refuses in the meantime.
+    if n > MAX_SCANS {
+        return Err("scan history exceeds the supported safety limit".into());
+    }
     for i in (0..n).rev() {
         if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i)
             && get_str(doc, &m, "raw").as_deref() == Some(raw)
         {
-            let _ = doc.delete(&list, i);
+            doc.delete(&list, i)
+                .map_err(|_| "couldn't update scan history")?;
         }
     }
-    let Ok(m) = doc.insert_object(&list, 0, ObjType::Map) else {
-        return;
-    };
-    let _ = doc.put(&m, "raw", raw);
-    let _ = doc.put(&m, "ts", ts);
-    // Trim the tail beyond the cap.
-    while doc.length(&list) > MAX_SCANS {
-        let _ = doc.delete(&list, doc.length(&list) - 1);
+    let m = doc
+        .insert_object(&list, 0, ObjType::Map)
+        .map_err(|_| "couldn't update scan history")?;
+    doc.put(&m, "raw", raw)
+        .map_err(|_| "couldn't update scan history")?;
+    doc.put(&m, "ts", ts)
+        .map_err(|_| "couldn't update scan history")?;
+    // At most one row can now exceed the cap, so this remains bounded.
+    if doc.length(&list) > MAX_SCANS {
+        doc.delete(&list, doc.length(&list) - 1)
+            .map_err(|_| "couldn't trim scan history")?;
     }
+    Ok(())
+}
+
+// ---- shared capture index -------------------------------------------
+
+const MAX_SHARED_CAPTURES: usize = 2_000;
+
+pub fn read_shared_captures(doc: &AutoCommit, root: &ObjId) -> Vec<SharedCapture> {
+    let Some(list) = list_at(doc, root, "captures") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..doc.length(&list).min(MAX_SHARED_CAPTURES) {
+        let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&list, i) else {
+            continue;
+        };
+        let (Some(id), Some(media_id)) = (get_str(doc, &item, "id"), get_str(doc, &item, "media"))
+        else {
+            continue;
+        };
+        if id.is_empty() || id.len() > 160 || !crate::media::is_media_id(&media_id) {
+            continue;
+        }
+        let kind = match get_str(doc, &item, "kind").as_deref() {
+            Some("video") => CaptureKind::Video,
+            _ => CaptureKind::Photo,
+        };
+        let w = get_int(doc, &item, "w")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0);
+        let h = get_int(doc, &item, "h")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0);
+        if w == 0 || h == 0 || u64::from(w).saturating_mul(u64::from(h)) > 33_554_432 {
+            continue;
+        }
+        out.push(SharedCapture {
+            id,
+            media_id,
+            kind,
+            ts: get_int(doc, &item, "ts").unwrap_or(0).max(0),
+            w,
+            h,
+            dur_ms: get_int(doc, &item, "dur").unwrap_or(0).max(0),
+            label: get_str(doc, &item, "label")
+                .filter(|s| s.len() <= 256)
+                .unwrap_or_else(|| "Capture".into()),
+            facing: get_str(doc, &item, "facing").map_or(Facing::Back, |s| Facing::parse_str(&s)),
+        });
+    }
+    out
+}
+
+/// # Errors
+///
+/// Returns an explicit refusal for malformed metadata, a hostile oversized
+/// index, or a failed Automerge write.
+pub fn register_shared_capture(
+    doc: &mut AutoCommit,
+    root: &ObjId,
+    capture: &SharedCapture,
+) -> Result<(), String> {
+    if capture.id.is_empty()
+        || capture.id.len() > 160
+        || !crate::media::is_media_id(&capture.media_id)
+        || capture.w == 0
+        || capture.h == 0
+        || u64::from(capture.w).saturating_mul(u64::from(capture.h)) > 33_554_432
+        || capture.label.len() > 256
+    {
+        return Err("capture metadata is invalid".into());
+    }
+    let list = if let Some(list) = list_at(doc, root, "captures") {
+        list
+    } else {
+        doc.put_object(root, "captures", ObjType::List)
+            .map_err(|_| "couldn't create shared capture index")?
+    };
+    let length = doc.length(&list);
+    // A peer/legacy document can contain an arbitrarily long list. Do not
+    // turn a single capture into an unbounded traversal or trimming loop on
+    // the UI mutation path; fail closed until an explicit bounded migration
+    // is available.
+    if length > MAX_SHARED_CAPTURES {
+        return Err("shared capture index exceeds the supported safety limit".into());
+    }
+    for i in (0..length).rev() {
+        if let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&list, i)
+            && get_str(doc, &item, "id").as_deref() == Some(capture.id.as_str())
+        {
+            doc.delete(&list, i)
+                .map_err(|_| "couldn't replace shared capture")?;
+        }
+    }
+    let item = doc
+        .insert_object(&list, 0, ObjType::Map)
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "id", &capture.id)
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "media", &capture.media_id)
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "kind", capture.kind.as_str())
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "ts", capture.ts)
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "w", i64::from(capture.w))
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "h", i64::from(capture.h))
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "dur", capture.dur_ms)
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "label", &capture.label)
+        .map_err(|_| "couldn't register shared capture")?;
+    doc.put(&item, "facing", capture.facing.as_str())
+        .map_err(|_| "couldn't register shared capture")?;
+    // The validated precondition means insertion can exceed the cap by only
+    // one, keeping this recovery operation strictly bounded.
+    if doc.length(&list) > MAX_SHARED_CAPTURES {
+        doc.delete(&list, doc.length(&list) - 1)
+            .map_err(|_| "couldn't trim shared capture index")?;
+    }
+    Ok(())
+}
+
+/// Remove every materialized row for a shared capture identity. The qdoc blob
+/// itself is immutable/content-addressed and deliberately not deleted here:
+/// another capture can safely reference the same bytes.
+///
+/// # Errors
+///
+/// Returns an explicit refusal for malformed identities, an oversized index,
+/// or a failed Automerge write.
+pub fn remove_shared_capture(doc: &mut AutoCommit, root: &ObjId, id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 160 {
+        return Err("capture identity is invalid".into());
+    }
+    let Some(list) = list_at(doc, root, "captures") else {
+        return Ok(());
+    };
+    let length = doc.length(&list);
+    // Same fail-closed rule as registration: deletion must never scan an
+    // unbounded hostile list on the UI/canonical-action path.
+    if length > MAX_SHARED_CAPTURES {
+        return Err("shared capture index exceeds the supported safety limit".into());
+    }
+    for index in (0..length).rev() {
+        if let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&list, index)
+            && get_str(doc, &item, "id").as_deref() == Some(id)
+        {
+            doc.delete(&list, index)
+                .map_err(|_| "couldn't remove shared capture")?;
+        }
+    }
+    Ok(())
+}
+
+/// Check the bounded invariant before an external file deletion. This keeps a
+/// hostile collaborative index from turning a failed canonical removal into a
+/// locally destructive operation.
+///
+/// # Errors
+///
+/// Returns an explicit refusal if the index is over the supported cap.
+pub fn can_mutate_shared_captures(doc: &AutoCommit, root: &ObjId) -> Result<(), String> {
+    let Some(list) = list_at(doc, root, "captures") else {
+        return Ok(());
+    };
+    (doc.length(&list) <= MAX_SHARED_CAPTURES)
+        .then_some(())
+        .ok_or_else(|| "shared capture index exceeds the supported safety limit".into())
 }
 
 // ---- first-run defaults ----------------------------------------------
 
 /// True once the doc has been initialised by this app.
 pub fn is_seeded(doc: &AutoCommit, root: &ObjId) -> bool {
-    get_str(doc, root, "screen").is_some()
+    get_str(doc, root, "mode").is_some()
 }
 
-/// Write capture preferences + the initial screen on first run (empty doc).
+/// Write capture preferences on first run (empty doc). Navigation is local
+/// presentation state, deliberately excluded from collaboration/history.
 /// No sample content is fabricated — the library starts empty and reflects
 /// whatever is actually on disk. Idempotent: a no-op once initialised.
-pub fn init_defaults(doc: &mut AutoCommit, root: &ObjId, initial: Screen) {
+pub fn init_defaults(doc: &mut AutoCommit, root: &ObjId, _initial: Screen) {
     if is_seeded(doc, root) {
         return;
     }
-    write_screen(doc, root, initial);
     write_mode(doc, root, CaptureMode::Photo);
     write_facing(doc, root, Facing::Back);
     write_settings(doc, root, &Settings::default());
@@ -358,10 +553,10 @@ mod tests {
     fn scans_are_newest_first_deduped_and_capped() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
-        record_scan(&mut doc, &root, "https://a", 100);
-        record_scan(&mut doc, &root, "https://b", 200);
+        record_scan(&mut doc, &root, "https://a", 100).unwrap();
+        record_scan(&mut doc, &root, "https://b", 200).unwrap();
         // Re-scanning "a" moves it to the front, not a duplicate.
-        record_scan(&mut doc, &root, "https://a", 300);
+        record_scan(&mut doc, &root, "https://a", 300).unwrap();
         let scans = read_scans(&doc, &root);
         assert_eq!(scans.len(), 2);
         assert_eq!(scans[0].raw, "https://a");
@@ -369,9 +564,40 @@ mod tests {
         assert_eq!(scans[1].raw, "https://b");
         // Cap is enforced.
         for i in 0..(MAX_SCANS + 10) {
-            record_scan(&mut doc, &root, &format!("code-{i}"), i as i64);
+            record_scan(&mut doc, &root, &format!("code-{i}"), i as i64).unwrap();
         }
         assert!(read_scans(&doc, &root).len() <= MAX_SCANS);
+    }
+
+    #[test]
+    fn hostile_oversized_capture_list_is_inert_for_mutations() {
+        let mut doc = AutoCommit::new();
+        let root = ROOT;
+        let list = doc
+            .put_object(&root, "captures", ObjType::List)
+            .expect("capture list");
+        for index in 0..=MAX_SHARED_CAPTURES {
+            doc.insert(&list, index, "legacy row")
+                .expect("legacy list row");
+        }
+        let capture = SharedCapture {
+            id: "IMG_new.jpg".into(),
+            media_id: format!("{}{}", crate::media::MEDIA_PREFIX, "a".repeat(64)),
+            kind: CaptureKind::Photo,
+            ts: 1,
+            w: 64,
+            h: 48,
+            dur_ms: 0,
+            label: "New capture".into(),
+            facing: Facing::Back,
+        };
+
+        assert!(register_shared_capture(&mut doc, &root, &capture).is_err());
+        assert!(remove_shared_capture(&mut doc, &root, "IMG_new.jpg").is_err());
+
+        // Both canonical actions fail closed; neither traverses or modifies
+        // an unbounded legacy list from the interaction path.
+        assert_eq!(doc.length(&list), MAX_SHARED_CAPTURES + 1);
     }
 
     #[test]
@@ -381,12 +607,11 @@ mod tests {
         assert!(!is_seeded(&doc, &root));
         init_defaults(&mut doc, &root, Screen::Scanner);
         assert!(is_seeded(&doc, &root));
-        assert_eq!(read_screen(&doc, &root), Screen::Scanner);
         // No fabricated library content.
         assert!(read_favorites(&doc, &root).is_empty());
         assert!(read_scans(&doc, &root).is_empty());
-        // Second init must not change the persisted screen.
+        // Second init leaves durable preferences untouched; screens are local.
         init_defaults(&mut doc, &root, Screen::Camera);
-        assert_eq!(read_screen(&doc, &root), Screen::Scanner);
+        assert_eq!(read_mode(&doc, &root), CaptureMode::Photo);
     }
 }

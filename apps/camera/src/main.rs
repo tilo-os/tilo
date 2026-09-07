@@ -52,6 +52,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             ("--screen", "CAMERA_SCREEN"),
             ("--dir", "CAMERA_DIR"),
             ("--scroll", "CAMERA_SCROLL"),
+            ("--library-loading", "CAMERA_SHOT_LIBRARY_LOADING"),
         ] {
             if let Some(value) = args.value(option) {
                 std::env::set_var(variable, value);
@@ -62,6 +63,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         }
         if args.has("--scan-first") {
             std::env::set_var("CAMERA_SCAN_FIRST", "1");
+        }
+        if args.has("--library-loading") {
+            std::env::set_var("CAMERA_SHOT_LIBRARY_LOADING", "1");
         }
         if let Some(state) = args.value("--camera-state") {
             std::env::set_var("CAMERA_SHOT_CAMERA_STATE", state);
@@ -113,7 +117,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.camera", camera::app_root)
             .shot_handler(render_shot)
-            .allowed_flags(&["--select", "--scan-first", "--disk"])
+            .allowed_flags(&["--select", "--scan-first", "--disk", "--library-loading"])
             .allowed_options(&[
                 "--screen",
                 "--dir",

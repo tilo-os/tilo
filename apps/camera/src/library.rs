@@ -14,6 +14,7 @@
 //!   * [`delete`]        — remove a backing file.
 
 use std::collections::HashSet;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,6 +26,11 @@ use crate::video;
 /// the recorder writes Motion-JPEG AVI clips (see [`crate::video`]).
 const PHOTO_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi"];
+/// A gallery is an index, not an unbounded filesystem crawl. Keep enough for
+/// a large personal roll while preserving predictable startup memory/time.
+const MAX_LIBRARY_ITEMS: usize = 10_000;
+const MAX_IMAGE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DECODE_PIXELS: u64 = 33_554_432;
 
 /// Resolve the capture directory. Honors `CAMERA_DIR` (used by tests and to
 /// point the app at the P2P workspace), otherwise `$XDG_PICTURES_DIR/Camera`,
@@ -73,7 +79,7 @@ pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S
         return Vec::new();
     };
     let mut out = Vec::new();
-    for entry in entries.flatten() {
+    for entry in entries.flatten().take(MAX_LIBRARY_ITEMS) {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -86,12 +92,15 @@ pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S
             Some(n) => n.to_string(),
             None => continue,
         };
+        if !safe_capture_id(&id) {
+            continue;
+        }
         // Photos: read dimensions from the header. Videos: best-effort probe
         // of a recorded AVI for its real dimensions + duration.
         let (mut w, mut h, mut dur_ms) = (0u32, 0u32, 0i64);
         match kind {
             CaptureKind::Photo => {
-                if let Ok((pw, ph)) = image::image_dimensions(&path) {
+                if let Some((pw, ph)) = bounded_image_dimensions(&path) {
                     w = pw;
                     h = ph;
                 }
@@ -122,6 +131,7 @@ pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S
             facing: Facing::Back,
             scene: 0,
             path: Some(path),
+            media_id: None,
         });
     }
     // Newest first; ties broken by name for stable ordering.
@@ -154,6 +164,12 @@ fn prettify_stem(stem: &str) -> String {
 /// Returns an error if `dir` cannot be created or the file cannot be written
 /// or encoded.
 pub fn write_photo(dir: &Path, frame: &FrameBuf, format: PhotoFormat) -> std::io::Result<String> {
+    if !valid_frame(frame) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid camera frame",
+        ));
+    }
     std::fs::create_dir_all(dir)?;
     let name = format!("IMG_{}.{}", timestamp_name(), format.extension());
     let path = dir.join(&name);
@@ -196,7 +212,19 @@ fn png_io(e: &png::EncodingError) -> std::io::Error {
 /// RGBA8 plus its dimensions. Aspect ratio is preserved (the result covers
 /// the box on its shorter axis via the caller's fit mode).
 pub fn load_thumb(path: &Path, w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
+    bounded_image_dimensions(path)?;
     let img = image::open(path).ok()?;
+    let scaled = img.thumbnail(w.max(1), h.max(1)).to_rgba8();
+    let (sw, sh) = (scaled.width(), scaled.height());
+    Some((scaled.into_raw(), sw, sh))
+}
+
+/// Decode a verified shared-media blob. Callers obtain these bytes only from
+/// qdoc after hash verification; this function still applies the same file
+/// and decoded-pixel caps as the local-path route.
+pub fn load_thumb_bytes(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
+    bounded_bytes_dimensions(bytes)?;
+    let img = image::load_from_memory(bytes).ok()?;
     let scaled = img.thumbnail(w.max(1), h.max(1)).to_rgba8();
     let (sw, sh) = (scaled.width(), scaled.height());
     Some((scaled.into_raw(), sw, sh))
@@ -207,6 +235,7 @@ pub fn load_thumb(path: &Path, w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
 /// This is what the scanner feeds to the QR detector when scanning a code
 /// out of a photo that already lives in the library (no camera required).
 pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
+    bounded_image_dimensions(path)?;
     let img = image::open(path).ok()?;
     // `thumbnail` bounds the longest side to `max` while preserving aspect,
     // keeping enough resolution for the detector to resolve finder patterns.
@@ -215,18 +244,74 @@ pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
     Some((luma.into_raw(), w, h))
 }
 
+/// Decode verified shared-media bytes into a bounded luma image. This is the
+/// portable counterpart to [`load_luma`], used only after qdoc hash checks.
+pub fn load_luma_bytes(bytes: &[u8], max: u32) -> Option<(Vec<u8>, usize, usize)> {
+    bounded_bytes_dimensions(bytes)?;
+    let img = image::load_from_memory(bytes).ok()?;
+    let luma = img.thumbnail(max.max(1), max.max(1)).to_luma8();
+    let (w, h) = (luma.width() as usize, luma.height() as usize);
+    Some((luma.into_raw(), w, h))
+}
+
+/// Inspect a shared image header before decoding any pixels. `image` decoders
+/// can otherwise try to allocate from attacker-controlled dimensions even
+/// when qdoc has already verified the byte hash.
+fn bounded_bytes_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES as usize {
+        return None;
+    }
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let (w, h) = reader.into_dimensions().ok()?;
+    (u64::from(w).checked_mul(u64::from(h))? <= MAX_DECODE_PIXELS).then_some((w, h))
+}
+
 /// Remove the backing file for a capture id in `dir`.
 ///
 /// # Errors
 ///
 /// Returns an error if the file exists but could not be removed.
 pub fn delete(dir: &Path, id: &str) -> std::io::Result<()> {
+    if !safe_capture_id(id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid capture id",
+        ));
+    }
     let path = dir.join(id);
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
+}
+
+fn safe_capture_id(id: &str) -> bool {
+    !id.is_empty()
+        && Path::new(id).file_name().and_then(|name| name.to_str()) == Some(id)
+        && !id.contains(['/', '\\'])
+}
+
+fn bounded_image_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_IMAGE_FILE_BYTES {
+        return None;
+    }
+    let (w, h) = image::image_dimensions(path).ok()?;
+    let pixels = u64::from(w).checked_mul(u64::from(h))?;
+    (w > 0 && h > 0 && pixels <= MAX_DECODE_PIXELS).then_some((w, h))
+}
+
+fn valid_frame(frame: &FrameBuf) -> bool {
+    let Some(pixels) = u64::from(frame.w).checked_mul(u64::from(frame.h)) else {
+        return false;
+    };
+    let Some(bytes) = pixels.checked_mul(4).and_then(|n| usize::try_from(n).ok()) else {
+        return false;
+    };
+    frame.w > 0 && frame.h > 0 && pixels <= MAX_DECODE_PIXELS && frame.rgba.len() == bytes
 }
 
 /// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
@@ -335,6 +420,29 @@ mod tests {
         delete(&dir, &name).unwrap();
         assert!(!dir.join(&name).exists());
         delete(&dir, &name).unwrap(); // second delete is a no-op
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hostile_ids_and_malformed_frames_are_refused_before_io() {
+        let dir = tmp();
+        let outside = dir.parent().unwrap().join("camera-library-outside-marker");
+        std::fs::write(&outside, b"keep").unwrap();
+        assert!(delete(&dir, "../camera-library-outside-marker").is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+        assert!(
+            write_photo(
+                &dir,
+                &FrameBuf {
+                    rgba: vec![0; 1],
+                    w: 8,
+                    h: 8,
+                },
+                PhotoFormat::Png,
+            )
+            .is_err()
+        );
+        std::fs::remove_file(outside).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 
