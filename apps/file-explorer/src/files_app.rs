@@ -886,6 +886,37 @@ impl FileExplorerWidget {
         self.entries.clone()
     }
 
+    /// The sole bridge from a durable/agent-visible resource id to a host
+    /// path. Paths stay in the live presentation snapshot: action payloads,
+    /// history and search identities carry only opaque ids and are refused
+    /// when the row disappeared or was replaced.
+    fn entry_resource_id(entry: &Entry) -> String {
+        entry.record_id.map_or_else(
+            || crate::search_provider::entry_resource_id(&entry.path),
+            |id| crate::search_provider::record_resource_id(uuid::Uuid::from_bytes(id)),
+        )
+    }
+
+    fn visible_entry_path(&self, resource_id: &str) -> Option<PathBuf> {
+        self.entries
+            .iter()
+            .find(|entry| Self::entry_resource_id(entry) == resource_id)
+            .map(|entry| entry.path.clone())
+    }
+
+    fn visible_open_path(&self, resource_id: &str) -> Option<PathBuf> {
+        self.visible_entry_path(resource_id).or_else(|| {
+            self.favs
+                .borrow()
+                .favorites
+                .iter()
+                .find(|favorite| {
+                    crate::search_provider::place_resource_id(&favorite.path) == resource_id
+                })
+                .map(|favorite| favorite.path.clone())
+        })
+    }
+
     /// Block until every in-flight thumbnail generation has settled (or the
     /// timeout elapses). Requests are enqueued during `draw`, so a caller draws
     /// once, calls this, then draws the frame it keeps — used by the `--shots`
@@ -1209,6 +1240,30 @@ impl FileExplorerWidget {
     }
     pub fn is_loading(&self) -> bool {
         self.is_loading
+    }
+
+    /// Deterministic offscreen-shot seam for the busy state. Production
+    /// navigation owns this transition synchronously; exposing it only for the
+    /// headless renderer lets visual CI cover the semantic/loading composition
+    /// without adding a fake delayed filesystem implementation.
+    #[doc(hidden)]
+    pub fn debug_show_loading_state(&mut self) {
+        self.entries.clear();
+        self.error = None;
+        self.is_loading = true;
+        self.status = None;
+    }
+
+    /// Deterministic offscreen-shot seam for the actionable error state.
+    #[doc(hidden)]
+    pub fn debug_show_error_state(&mut self) {
+        self.entries.clear();
+        self.is_loading = false;
+        self.error = Some(t_args(
+            "files-directory-read-failed",
+            &[arg("error", "Permission denied")],
+        ));
+        self.status = None;
     }
     pub fn sort_by(&self) -> SortBy {
         self.sort_by
@@ -6077,7 +6132,7 @@ impl FileExplorerWidget {
     /// search providers rather than being copied into this root page.
     #[allow(
         clippy::expect_used,
-        reason = "ActionSpec::prompted_operation requires an infallible builder; serde serialization of a String is infallible in practice, while the shared API cannot return a Result"
+        reason = "ActionSpec's infallible builders serialize fixed, known-good action payloads"
     )]
     fn action_directory_folder_root(&self) -> Resource {
         let mut folder = Resource::new(
@@ -6106,21 +6161,6 @@ impl FileExplorerWidget {
                 ..ActionContract::default()
             }));
         }
-        folder.actions.push(
-            ActionSpec::prompted_operation(
-                "navigate",
-                "Open location",
-                "Folder path",
-                "/path/to/folder",
-                OperationKind::View,
-                "files.navigate",
-                |path| {
-                    EncodedAction::encode_operation("files.navigate", &path)
-                        .expect("string payload")
-                },
-            )
-            .with_contract(ActionContract::view()),
-        );
         let new_folder = ActionSpec::prompted_operation(
             "new-folder",
             "New folder",
@@ -6178,7 +6218,6 @@ impl Widget for FileExplorerWidget {
             "files.new-folder",
             "files.paste",
             "files.new-from-template",
-            "files.navigate",
             "files.open",
             "files.reveal-record",
             "files.folder-command",
@@ -6225,21 +6264,6 @@ impl Widget for FileExplorerWidget {
                 ..ActionContract::default()
             }));
         }
-        folder.actions.push(
-            ActionSpec::prompted_operation(
-                "navigate",
-                "Open location",
-                "Folder path",
-                "/path/to/folder",
-                OperationKind::View,
-                "files.navigate",
-                |path| {
-                    EncodedAction::encode_operation("files.navigate", &path)
-                        .expect("string payload")
-                },
-            )
-            .with_contract(ActionContract::view()),
-        );
         for (id, label, verb, kind) in [
             ("up", "Parent folder", "up", OperationKind::View),
             ("back", "Back", "back", OperationKind::View),
@@ -6410,8 +6434,9 @@ impl Widget for FileExplorerWidget {
             // into an ambient file-read capability.
             for template in templates::list_templates(&template_dir) {
                 let template_path = template.to_string_lossy().into_owned();
+                let template_id = template_resource_id(&template_path);
                 let mut template_resource = Resource::new(
-                    template_resource_id(&template_path),
+                    template_id.clone(),
                     "files.template",
                     templates::menu_label(&template),
                 );
@@ -6421,7 +6446,7 @@ impl Widget for FileExplorerWidget {
                         templates::menu_label(&template),
                         OperationKind::Effect,
                         "files.new-from-template",
-                        &template_path,
+                        &template_id,
                     )
                     .expect("template path is serializable")
                     .with_contract(ActionContract {
@@ -6465,23 +6490,20 @@ impl Widget for FileExplorerWidget {
         // address the same View operation for a place. These children are not
         // limited to the currently visible directory.
         for favorite in &self.favs.borrow().favorites {
-            let path = favorite.path.to_string_lossy().into_owned();
-            let resource = Resource::new(
-                crate::search_provider::place_resource_id(&favorite.path),
-                "files.place",
-                favorite.label.clone(),
-            )
-            .with_action(
-                ActionSpec::operation(
-                    crate::search_provider::OPEN_ACTION,
-                    "Open",
-                    OperationKind::View,
-                    "files.open",
-                    &path,
-                )
-                .expect("place path is serializable")
-                .with_contract(ActionContract::view()),
-            );
+            let resource_id = crate::search_provider::place_resource_id(&favorite.path);
+            let resource =
+                Resource::new(resource_id.clone(), "files.place", favorite.label.clone())
+                    .with_action(
+                        ActionSpec::operation(
+                            crate::search_provider::OPEN_ACTION,
+                            "Open",
+                            OperationKind::View,
+                            "files.open",
+                            &resource_id,
+                        )
+                        .expect("place path is serializable")
+                        .with_contract(ActionContract::view()),
+                    );
             folder.children.push(resource);
         }
         // External file accounts are a read-only projection of Settings'
@@ -6520,32 +6542,6 @@ impl Widget for FileExplorerWidget {
                             &vec!["create-folder", create_account_id.as_str(), name],
                         )
                         .expect("remote create-folder payload is serializable")
-                    },
-                )
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job)
-                .with_contract(ActionContract {
-                    availability: remote_dav_availability(account.health),
-                    permission: PermissionRequirement::Write,
-                    retry: RetryPolicy::AtMostOnce,
-                    ..ActionContract::default()
-                }),
-            );
-            let upload_account_id = account.id.to_string();
-            resource.actions.push(
-                ActionSpec::prompted_operation(
-                    "upload",
-                    "Upload local file",
-                    "Absolute local file path",
-                    "/home/me/Document.pdf",
-                    OperationKind::Effect,
-                    "files.remote-dav",
-                    move |path| {
-                        EncodedAction::encode_operation(
-                            "files.remote-dav",
-                            &vec!["upload", upload_account_id.as_str(), path],
-                        )
-                        .expect("remote upload payload is serializable")
                     },
                 )
                 .execution(ExecutionMode::Background { cancellable: false })
@@ -6685,13 +6681,10 @@ impl Widget for FileExplorerWidget {
         // collaborative hits resolve their exact current row through
         // `resource` below, while the visible folder remains truthful here.
         for entry in &self.entries {
-            let path = entry.path.to_string_lossy().into_owned();
+            let resource_id = Self::entry_resource_id(entry);
             let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
             let mut resource = Resource::new(
-                record_id.map_or_else(
-                    || crate::search_provider::entry_resource_id(&entry.path),
-                    crate::search_provider::record_resource_id,
-                ),
+                resource_id.clone(),
                 if record_id.is_some() {
                     "files.record"
                 } else {
@@ -6717,14 +6710,14 @@ impl Widget for FileExplorerWidget {
                 t("files-menu-open"),
                 OperationKind::View,
                 "files.open",
-                &path,
+                &resource_id,
             ) {
                 resource
                     .actions
                     .push(spec.with_contract(ActionContract::view()));
             }
             if !self.is_trash_view() {
-                let rename_path = path.clone();
+                let rename_resource_id = resource_id.clone();
                 resource.actions.push(
                     ActionSpec::prompted_operation(
                         "rename",
@@ -6736,7 +6729,7 @@ impl Widget for FileExplorerWidget {
                         move |name| {
                             EncodedAction::encode_operation(
                                 "files.rename",
-                                &vec![rename_path.as_str(), name],
+                                &vec![rename_resource_id.as_str(), name],
                             )
                             .expect("rename payload is serializable")
                         },
@@ -6792,7 +6785,7 @@ impl Widget for FileExplorerWidget {
                         OperationKind::Effect
                     },
                     "files.entry-command",
-                    &vec![verb.to_string(), path.clone()],
+                    &vec![verb.to_string(), resource_id.clone()],
                 )
                 .expect("entry command is serializable");
                 if destructive {
@@ -6807,7 +6800,7 @@ impl Widget for FileExplorerWidget {
                         t("files-availability-title-short"),
                         OperationKind::View,
                         "files.entry-command",
-                        &vec!["availability".to_string(), path.clone()],
+                        &vec!["availability".to_string(), resource_id.clone()],
                     )
                     .expect("availability payload is serializable")
                     .with_contract(ActionContract::view()),
@@ -6819,7 +6812,7 @@ impl Widget for FileExplorerWidget {
                             label,
                             OperationKind::Effect,
                             "files.entry-command",
-                            &vec![verb.to_string(), path.clone()],
+                            &vec![verb.to_string(), resource_id.clone()],
                         )
                         .expect("availability command payload is serializable")
                         .with_contract(ActionContract {
@@ -6888,7 +6881,7 @@ impl Widget for FileExplorerWidget {
                         "Create one-time share link",
                         OperationKind::Effect,
                         "files.share-link",
-                        &path,
+                        &resource_id,
                     )
                     .expect("share path is serializable")
                     .execution(ExecutionMode::Background { cancellable: false })
@@ -6951,17 +6944,18 @@ impl Widget for FileExplorerWidget {
                 self.refresh();
             }
             (OperationKind::Effect, "files.new-from-template") => {
-                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let target = PathBuf::from(value);
+                let template_id: String =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let Some(template_dir) = templates::templates_dir() else {
                     return Err("the Templates directory is unavailable".into());
                 };
-                if !templates::list_templates(&template_dir)
+                let target = templates::list_templates(&template_dir)
                     .iter()
-                    .any(|candidate| candidate == &target)
-                {
-                    return Err("the template is no longer available".into());
-                }
+                    .find(|candidate| {
+                        template_resource_id(&candidate.to_string_lossy()) == template_id
+                    })
+                    .cloned()
+                    .ok_or_else(|| "the template is no longer available".to_string())?;
                 templates::create_from_template(&target, &self.current_path)?;
                 self.refresh();
             }
@@ -6991,27 +6985,16 @@ impl Widget for FileExplorerWidget {
                     return Err(format!("paste failed: {}", failures.join("; ")));
                 }
             }
-            (OperationKind::View, "files.navigate") => {
-                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                self.open_path(PathBuf::from(value));
-            }
             (OperationKind::View, "files.open") => {
-                let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let target = PathBuf::from(value);
-                // `open` is an action on an already-published place or entry,
-                // not a general ambient-path launcher. Re-check the live
-                // catalogue at execution time so a deleted/renamed row, or a
-                // replayed action from another folder, cannot gain authority.
-                let still_exported = self.entries.iter().any(|entry| entry.path == target)
-                    || self
-                        .favs
-                        .borrow()
-                        .favorites
-                        .iter()
-                        .any(|favorite| favorite.path == target);
-                if !still_exported {
-                    return Err("file location is no longer available".into());
-                }
+                let resource_id: String =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                // `open` is an action on an already-published resource, not a
+                // general ambient-path launcher. Resolve its opaque id only
+                // against the live presentation snapshot so deleted, renamed,
+                // or replayed rows cannot regain authority or disclose paths.
+                let target = self
+                    .visible_open_path(&resource_id)
+                    .ok_or_else(|| "file location is no longer available".to_string())?;
                 self.open_path(target);
             }
             (OperationKind::View, "files.reveal-record") => {
@@ -7036,8 +7019,20 @@ impl Widget for FileExplorerWidget {
                     self.selection.select_only(index);
                 }
             }
-            (_, "files.folder-command") => {
+            (kind, "files.folder-command") => {
                 let verb: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let expected_kind = match verb.as_str() {
+                    "up" | "back" | "forward" | "list" | "grid" | "sort-name" | "sort-size"
+                    | "sort-type" | "sort-modified" | "sort-ascending" | "sort-descending"
+                    | "zoom-in" | "zoom-out" | "hidden" => OperationKind::View,
+                    "add-favorite" | "remove-favorite" | "empty-trash" | "terminal" => {
+                        OperationKind::Effect
+                    }
+                    _ => return Ok(false),
+                };
+                if kind != expected_kind {
+                    return Err("file command has an invalid operation kind".into());
+                }
                 match verb.as_str() {
                     "up" => self.go_up(),
                     "back" => self.history_back(),
@@ -7080,14 +7075,29 @@ impl Widget for FileExplorerWidget {
                     _ => return Ok(false),
                 }
             }
-            (_, "files.entry-command") => {
+            (kind, "files.entry-command") => {
                 let args: Vec<String> =
                     serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 let verb = args
                     .first()
                     .ok_or_else(|| "missing file command".to_string())?;
-                let path = args.get(1).ok_or_else(|| "missing file path".to_string())?;
-                let target = PathBuf::from(path);
+                let resource_id = args
+                    .get(1)
+                    .ok_or_else(|| "missing file resource".to_string())?;
+                let target = self
+                    .visible_entry_path(resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                let expected_kind = match verb.as_str() {
+                    "properties" | "sharing" | "history" | "availability" => OperationKind::View,
+                    "copy" | "cut" | "restore" | "purge" | "trash" | "keep-offline"
+                    | "automatic-storage" | "free-local-space" | "retry-transfer" => {
+                        OperationKind::Effect
+                    }
+                    _ => return Ok(false),
+                };
+                if kind != expected_kind {
+                    return Err("file command has an invalid operation kind".into());
+                }
                 let index = self
                     .entries
                     .iter()
@@ -7127,22 +7137,24 @@ impl Widget for FileExplorerWidget {
             (OperationKind::Effect, "files.rename") => {
                 let args: Vec<String> =
                     serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let path = args
+                let resource_id = args
                     .first()
-                    .ok_or_else(|| "missing file path".to_string())?;
+                    .ok_or_else(|| "missing file resource".to_string())?;
                 let name = args
                     .get(1)
                     .ok_or_else(|| "missing new file name".to_string())?;
-                let target = PathBuf::from(path);
-                if !self.entries.iter().any(|entry| entry.path == target) {
-                    return Err("file entry is no longer visible".into());
-                }
+                let target = self
+                    .visible_entry_path(resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 fileops::rename(&target, name)?;
                 self.refresh();
             }
             (OperationKind::Effect, "files.share-link") => {
-                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let target = PathBuf::from(path);
+                let resource_id: String =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let target = self
+                    .visible_entry_path(&resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 let index = self
                     .displayed_entries()
                     .iter()
@@ -7198,6 +7210,9 @@ impl Widget for FileExplorerWidget {
             return Err("another file operation is still running".into());
         }
         if type_id == "files.remote-dav" {
+            if kind != OperationKind::Effect {
+                return Err("remote file operations must be effect actions".into());
+            }
             let args: Vec<String> =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
             let operation = args
@@ -7207,6 +7222,14 @@ impl Widget for FileExplorerWidget {
                 .get(1)
                 .ok_or_else(|| "missing remote account id".to_string())?
                 .clone();
+            let account = crate::remote_accounts::find(&account_id)
+                .ok_or_else(|| "remote account is no longer available".to_string())?;
+            if matches!(
+                account.health,
+                crate::remote_accounts::RemoteAccountHealth::Disabled
+            ) {
+                return Err("remote account is disabled".into());
+            }
             if self.remote_browse_pending.is_some() {
                 return Err("a remote operation is already running".into());
             }
@@ -7219,6 +7242,15 @@ impl Widget for FileExplorerWidget {
             });
             if matches!(operation.as_str(), "download" | "delete" | "rename") && !known_entry {
                 return Err("remote file is no longer available".into());
+            }
+            let valid_shape = match operation.as_str() {
+                "browse" => args.len() == 2,
+                "create-folder" | "download" | "delete" => args.len() == 3,
+                "rename" => args.len() == 4,
+                _ => false,
+            };
+            if !valid_shape {
+                return Err("invalid remote file operation".into());
             }
             self.resource_invocation = Some(invocation);
             self.remote_browse_pending = Some(account_id.clone());
@@ -7235,21 +7267,6 @@ impl Widget for FileExplorerWidget {
                                     .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
                             )
                             .map(|()| RemoteDavResult::Mutated("Created remote folder".into())),
-                        Some("upload") => {
-                            let local = std::path::PathBuf::from(
-                                args.get(2)
-                                    .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?,
-                            );
-                            let name = local
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .ok_or(crate::remote_dav::DavError::InvalidConfiguration)?;
-                            let bytes = std::fs::read(&local)
-                                .map_err(|_| crate::remote_dav::DavError::RemoteFailure)?;
-                            connection
-                                .upload(name, &bytes, None)
-                                .map(|()| RemoteDavResult::Mutated("Uploaded remote file".into()))
-                        }
                         Some("download") => {
                             let href = args
                                 .get(2)
@@ -8518,7 +8535,7 @@ mod command_path_tests {
         let path = d.path().join("shared.txt");
         std::fs::write(&path, b"x").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
-        entry.path = path.clone();
+        entry.path = path;
         entry.availability = Some(crate::model::AvailabilityProjection {
             schema_version: 1,
             record_id: "record".into(),
@@ -8559,7 +8576,7 @@ mod command_path_tests {
         }
         let payload = vec![
             "availability".to_string(),
-            path.to_string_lossy().into_owned(),
+            FileExplorerWidget::entry_resource_id(&w.entries[0]),
         ];
         assert!(
             Widget::invoke_resource_operation(
@@ -8851,7 +8868,8 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
         let doc = automerge::AutoCommit::new();
-        let payload = serde_json::to_vec(file.to_string_lossy().as_ref()).unwrap();
+        let payload =
+            serde_json::to_vec(&crate::search_provider::entry_resource_id(&file)).unwrap();
 
         std::fs::remove_file(&file).unwrap();
         w.refresh();
@@ -8868,6 +8886,58 @@ mod command_path_tests {
     }
 
     #[test]
+    fn local_resource_actions_carry_only_opaque_ids_not_host_paths() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("private-plan.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let resources = Widget::resources(&w, &automerge::AutoCommit::new());
+        let entry = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.label == "private-plan.txt")
+            .expect("the entry is exported");
+        let open = entry
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("the entry exposes Open");
+        let encoded = open
+            .build_json(&serde_json::Map::new())
+            .expect("Open takes no arguments");
+        let payload: String = serde_json::from_slice(&encoded.payload).expect("string payload");
+        assert_eq!(payload, entry.id.as_str());
+        assert_ne!(payload, file.to_string_lossy());
+        assert!(!String::from_utf8_lossy(&encoded.payload).contains("private-plan.txt"));
+    }
+
+    #[test]
+    fn entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("keep.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let resource_id = crate::search_provider::entry_resource_id(&file);
+        let payload = serde_json::to_vec(&vec!["trash", &resource_id]).unwrap();
+        let error = Widget::invoke_resource_operation(
+            &mut w,
+            OperationKind::View,
+            "files.entry-command",
+            &payload,
+            &automerge::AutoCommit::new(),
+            &automerge::ROOT,
+        )
+        .expect_err("a destructive action cannot be replayed as a view");
+        assert!(error.contains("invalid operation kind"));
+        assert!(
+            file.exists(),
+            "the rejected action made no filesystem change"
+        );
+    }
+
+    #[test]
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
         let handlers = Widget::local_resource_operation_handlers(&FileExplorerWidget::new());
         for handler in [
@@ -8875,7 +8945,6 @@ mod command_path_tests {
             "files.new-folder",
             "files.paste",
             "files.new-from-template",
-            "files.navigate",
             "files.open",
             "files.reveal-record",
             "files.folder-command",
@@ -11319,6 +11388,24 @@ mod accessibility_tests {
                 .contains("permission denied")
         );
         assert!(error.value.as_deref().unwrap().contains("Try Again"));
+    }
+
+    #[test]
+    fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {
+        let (_home, mut widget) = empty_widget();
+        widget.debug_show_loading_state();
+        assert!(widget.is_loading());
+        assert!(widget.error().is_none());
+        assert!(widget.entries().is_empty());
+
+        widget.debug_show_error_state();
+        assert!(!widget.is_loading());
+        assert!(
+            widget
+                .error()
+                .is_some_and(|error| error.contains("Permission denied"))
+        );
+        assert!(widget.entries().is_empty());
     }
 
     #[test]
