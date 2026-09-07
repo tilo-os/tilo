@@ -94,7 +94,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
     active_group.insert(s_a, g_a);
     active_group.insert(s_b, g_b);
 
-    let tree = WorkspaceTree {
+    let mut tree = WorkspaceTree {
         workspaces: vec![ws],
         active: ws_id,
         active_strip,
@@ -102,6 +102,10 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
         collaborators: vec![],
         ..Default::default()
     };
+    // Production trees always carry the Automerge mirror established at
+    // creation/load. Keep the accepted-drop fixture faithful to that path;
+    // refusal against an unavailable document is covered separately.
+    tree.seed_doc_from_cache();
 
     (tree, s_a, s_b, a_tabs, b_tabs)
 }

@@ -11251,6 +11251,7 @@ dependencies = [
 name = "qos-desktop-entry"
 version = "0.1.0"
 dependencies = [
+ "serial_test",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -13171,6 +13172,7 @@ dependencies = [
  "qos-actions",
  "qos-app",
  "qos-bluez",
+ "qos-desktop-entry",
  "qos-model-gateway",
  "qos-relay",
  "qos-user-identity",
@@ -13204,6 +13206,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "tempfile",
 ]
 
 [[package]]
@@ -15738,6 +15741,7 @@ dependencies = [
  "settings-store",
  "sha2 0.10.9",
  "skrifa 0.40.0",
+ "smithay-client-toolkit 0.20.0",
  "smithay-clipboard",
  "spellcheck",
  "taffy",

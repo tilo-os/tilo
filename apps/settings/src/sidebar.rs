@@ -155,7 +155,7 @@ impl RowGeometry {
 /// [`crate::SettingsApp::sync`] consumes to change panes.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "selected, hover, press and focus are independently observable input axes; collapsing them would lose combined visual states"
+    reason = "selection, hover, press, and keyboard focus are independent interaction states"
 )]
 pub struct SidebarRow {
     category: Category,

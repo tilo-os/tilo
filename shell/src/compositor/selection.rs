@@ -261,8 +261,8 @@ pub fn mirror_text(store: &SharedSelection, target: Target) -> Option<String> {
 /// Write `text` to `target` from chrome and mark it for publishing; visible
 /// in-process immediately, becomes a Wayland selection on the next tick via
 /// [`State::pump_selection`].
-pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) {
-    let _ = set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec());
+pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> bool {
+    set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
 }
 
 /// Replace qOS's pending portal offer.  There is deliberately no publication
@@ -322,6 +322,11 @@ pub fn set_mirror_bytes(
         return Err("clipboard selection store is unavailable".into());
     };
     let slot = store.slot_mut(target);
+    if !slot.compositor_owned {
+        slot.values.clear();
+        slot.mime_types.clear();
+        slot.generation = slot.generation.wrapping_add(1).max(1);
+    }
     let previous = slot.values.insert(mime.to_owned(), bytes);
     if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
         if let Some(previous) = previous {
@@ -899,12 +904,47 @@ struct HostClipboard {
 
 impl ui::clipboard::ClipboardBackend for HostClipboard {
     fn set_text(&self, target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
-        set_mirror_text(&self.store, ui_target(target), text);
-        true
+        if text.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
+            return false;
+        }
+        set_mirror_text(&self.store, ui_target(target), text)
     }
 
     fn text(&self, target: ui::clipboard::ClipboardTarget) -> Option<String> {
         mirror_text(&self.store, ui_target(target))
+    }
+
+    fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
+        let Some(expected_len) = width
+            .checked_mul(height)
+            .and_then(|area| area.checked_mul(4))
+        else {
+            return false;
+        };
+        if width == 0 || height == 0 || rgba.len() != expected_len {
+            return false;
+        }
+        if width > u32::MAX as usize
+            || height > u32::MAX as usize
+            || rgba.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES
+        {
+            return false;
+        }
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, width as u32, height as u32);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let Ok(mut writer) = encoder.write_header() else {
+            return false;
+        };
+        if writer.write_image_data(rgba).is_err() {
+            return false;
+        }
+        drop(writer);
+        if png.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_BYTES {
+            return false;
+        }
+        set_mirror_bytes(&self.store, Target::Clipboard, "image/png", png).is_ok()
     }
 
     fn name(&self) -> &'static str {
@@ -1136,6 +1176,7 @@ impl ServerDndGrabHandler for State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::clipboard::ClipboardBackend;
 
     fn store() -> SharedSelection {
         Arc::new(Mutex::new(SelectionStore::default()))
@@ -1244,6 +1285,62 @@ mod tests {
         let mimes = mirror_mime_types(&s, Target::Clipboard);
         assert!(mimes.iter().any(|mime| mime == "image/png"));
         assert!(mimes.iter().any(|mime| mime == "UTF8_STRING"));
+    }
+
+    #[test]
+    fn chrome_image_copy_offers_png_and_preserves_text() {
+        let s = store();
+        set_mirror_text(&s, Target::Clipboard, "caption");
+        let host = HostClipboard {
+            store: Arc::clone(&s),
+        };
+        assert!(host.set_image(1, 1, &[0xff, 0x00, 0x80, 0xff]));
+        let bytes = mirror_bytes(&s, Target::Clipboard, "image/png").unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("caption")
+        );
+        let mimes = mirror_mime_types(&s, Target::Clipboard);
+        assert!(mimes.iter().any(|mime| mime == "image/png"));
+        assert!(mimes.iter().any(|mime| mime == TEXT_MIME));
+    }
+
+    #[test]
+    fn chrome_image_copy_rejects_invalid_dimensions_and_payload_size() {
+        let s = store();
+        let host = HostClipboard { store: s };
+        assert!(!host.set_image(0, 1, &[]));
+        assert!(!host.set_image(1, 1, &[]));
+        assert!(!host.set_image(usize::MAX, 1, &[0; 4]));
+        assert!(!host.set_image(
+            ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1,
+            1,
+            &[0; 4]
+        ));
+    }
+
+    #[test]
+    fn chrome_write_supersedes_stale_client_payloads() {
+        let s = store();
+        let generation = begin_client_selection(
+            &s,
+            Target::Clipboard,
+            Some(vec!["application/octet-stream".into()]),
+        );
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            "application/octet-stream",
+            vec![1, 2, 3],
+        );
+        assert!(set_mirror_text(&s, Target::Clipboard, "fresh"));
+        assert_eq!(
+            mirror_bytes(&s, Target::Clipboard, "application/octet-stream"),
+            None
+        );
+        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("fresh"));
     }
 
     #[test]

@@ -12,8 +12,11 @@ set -eu
 
 QOS_SHELL=/usr/bin/qos-shell
 SYSTEMCTL=/usr/bin/systemctl
+SYSTEMD_CAT=/usr/bin/systemd-cat
+DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
 SESSION_TARGET=qos-graphical-session.target
 target_started=0
+environment_imported=0
 shell_pid=
 
 # `DesktopNames=nirios` in the .desktop entry selects nirios-portals.conf;
@@ -33,12 +36,81 @@ if [ ! -x "$SYSTEMCTL" ]; then
     exit 1
 fi
 
+if [ ! -x "$SYSTEMD_CAT" ]; then
+    echo "qos-session: $SYSTEMD_CAT is missing or not executable" >&2
+    exit 1
+fi
+
+if [ ! -x "$DBUS_UPDATE" ]; then
+    echo "qos-session: $DBUS_UPDATE is missing or not executable" >&2
+    exit 1
+fi
+
 stop_target() {
     if [ "$target_started" = 1 ]; then
         "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
-        "$SYSTEMCTL" --user unset-environment \
-            XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null 2>&1 || true
         target_started=0
+    fi
+    if [ "$environment_imported" = 1 ]; then
+        # D-Bus has no unset operation, so empty its qOS identity before
+        # removing every imported selector from the user manager. Do this
+        # even when starting the session target failed part-way through.
+        "$DBUS_UPDATE" --systemd \
+            XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
+        "$SYSTEMCTL" --user unset-environment \
+            DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+            XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+            >/dev/null 2>&1 || true
+        environment_imported=0
+    fi
+}
+
+# Failures before the compositor starts would otherwise go only to whatever
+# transient stderr handling the display manager happens to provide.  Keep this
+# message fixed and credential-free: it is the breadcrumb needed to distinguish
+# a qOS grey screen caused by session handoff from one caused by the compositor.
+# Do not exec through systemd-cat here; the normal compositor path below owns
+# its single long-lived stdout/stderr relay.
+journal_startup_failure() {
+    phase=$1
+    status=$2
+    printf 'qos-session: startup failed during %s (exit status %s)\n' \
+        "$phase" "$status" |
+        "$SYSTEMD_CAT" --identifier=qos-session --priority=err \
+            --level-prefix=false >/dev/null 2>&1 || true
+}
+
+# The user manager is shared by every login of this Unix account.  Normally a
+# display manager has stopped the prior desktop's graphical targets before it
+# invokes us, but a killed wrapper or a failed logout can leave them active.
+# Starting qOS on top of that state changes the manager's desktop variables
+# without restarting the already-running portal frontend, which leaves the
+# old desktop backend selected.  Tear the stale lifecycle down *before*
+# publishing qOS's identity so service stop hooks still observe their own
+# previous environment.
+#
+# A same-user graphical session is necessarily exclusive here: both
+# XDG_CURRENT_DESKTOP and D-Bus activation are user-manager globals.  It was
+# never safe to run this wrapper alongside another desktop for the same user;
+# making that state explicit and deterministic is safer than silently mixing
+# their portal services.
+stop_predecessor_graphical_session() {
+    predecessor_active=0
+    for target in "$SESSION_TARGET" graphical-session.target graphical-session-pre.target; do
+        if "$SYSTEMCTL" --user is-active --quiet "$target"; then
+            predecessor_active=1
+            break
+        fi
+    done
+    if [ "$predecessor_active" = 1 ]; then
+        if "$SYSTEMCTL" --user stop \
+            "$SESSION_TARGET" graphical-session.target graphical-session-pre.target; then
+            :
+        else
+            status=$?
+            journal_startup_failure 'previous graphical session shutdown' "$status"
+            exit "$status"
+        fi
     fi
 }
 
@@ -58,17 +130,47 @@ trap 'forward_signal HUP 129' HUP
 trap 'forward_signal INT 130' INT
 trap 'forward_signal TERM 143' TERM
 
-# A systemd user manager survives desktop switches. Remove display values from
-# the session that just ended, import qOS's identity, then own the standard
+# A systemd user manager and the D-Bus activation environment survive desktop
+# switches. Remove display values from the manager that just ended, then put
+# qOS's desktop identity in both activation paths before owning the standard
 # graphical-session targets for exactly as long as this compositor lives.
 # xdg-desktop-portal refuses activation unless graphical-session.target is
 # active and otherwise may retain the previous desktop's backend selection.
+#
+# The D-Bus update is also relevant to non-systemd services such as GCR's
+# SystemPrompter. It deliberately does not publish DISPLAY/WAYLAND_DISPLAY:
+# the compositor creates its socket after this wrapper starts, and the
+# activation API cannot safely guess or remove the previous socket value.
+stop_predecessor_graphical_session
 "$SYSTEMCTL" --user unset-environment \
     DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
     XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
-"$SYSTEMCTL" --user import-environment \
-    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
-"$SYSTEMCTL" --user start "$SESSION_TARGET"
+# From here on, an unsuccessful handoff still attempts cleanup.  The D-Bus
+# update is a single request, but treating it as potentially partial makes the
+# failure path safe if a future implementation changes that detail.
+environment_imported=1
+if "$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE >/dev/null 2>&1; then
+    :
+else
+    status=$?
+    journal_startup_failure 'D-Bus activation environment update' "$status"
+    exit "$status"
+fi
+if "$SYSTEMCTL" --user import-environment \
+    XDG_CURRENT_DESKTOP XDG_SESSION_TYPE; then
+    :
+else
+    status=$?
+    journal_startup_failure 'systemd user environment import' "$status"
+    exit "$status"
+fi
+if "$SYSTEMCTL" --user start "$SESSION_TARGET"; then
+    :
+else
+    status=$?
+    journal_startup_failure 'qOS graphical session target start' "$status"
+    exit "$status"
+fi
 target_started=1
 
 # --host-desktop-session is the package-owned, distro-neutral declaration that
@@ -89,7 +191,14 @@ target_started=1
 # Keep the wrapper alive so normal logout stops the session target and a
 # display-manager termination signal reaches the compositor before cleanup.
 set +e
-"$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@" &
+# GDM does not provide a portable per-session log file.  Route both streams
+# directly to journald under one stable identifier so a grey screen or early
+# crash remains diagnosable with `journalctl --user -t qos-session` after the
+# user returns to another desktop.  systemd-cat execs the command and relays
+# its exit status/signals; disabling level-prefix parsing prevents app output
+# from forging journal priorities.
+"$SYSTEMD_CAT" --identifier=qos-session --level-prefix=false \
+    "$QOS_SHELL" --host-desktop-session --firstboot --backend drm "$@" &
 shell_pid=$!
 wait "$shell_pid"
 status=$?

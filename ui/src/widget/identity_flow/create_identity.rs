@@ -20,8 +20,10 @@
 //!
 //! Submit is disabled while the display name is empty (whitespace only
 //! counts as empty). On click: mints a fresh identity, wraps it in an
-//! `IdentityRecord`, saves it via the `IdentityStore`, then advances to
-//! screen 2 with the new record cached for the recovery-share screen.
+//! `IdentityRecord`, saves it via the `IdentityStore`, then completes the
+//! single-device ceremony. Recovery-word screens are reserved for a genuine
+//! threshold share produced by the multi-device ceremony; the production
+//! runtime backs up a single-device identity as an encrypted portable file.
 //!
 //! The form validation + submit pipeline is exposed as plain methods so
 //! tests can drive the screen without rendering; `submit_to_store` is the

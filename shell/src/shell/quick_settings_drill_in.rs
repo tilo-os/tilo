@@ -1,8 +1,8 @@
 //! Shared geometry and paint scaffolding for quick-settings drill-in lists.
 //!
 //! This deliberately stops at structure common to Wi-Fi, Bluetooth and VPN:
-//! header/back, empty state and row placement. Device-specific glyphs, state
-//! and actions stay in their owning panes.
+//! header/back, row placement and the calm list-row visual language.
+//! Device-specific glyphs, state and actions stay in their owning panes.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -42,6 +42,13 @@ pub struct DrillInList {
 
 impl DrillInList {
     pub fn layout(&mut self, panel: Rect, row_count: usize) {
+        self.layout_from(panel, row_count, LIST_TOP);
+    }
+
+    /// Layout a list below a pane-owned compact control.  Wi-Fi uses this
+    /// for the Hotspot row so a nonessential radio does not occupy the root
+    /// dashboard while remaining discoverable with the rest of Wi-Fi.
+    pub fn layout_from(&mut self, panel: Rect, row_count: usize, list_top: f64) {
         self.back = Rect::new(
             panel.x0 + 8.0,
             panel.y0 + 8.0,
@@ -50,7 +57,7 @@ impl DrillInList {
         );
         self.rows.clear();
         self.rows.extend((0..row_count).map(|index| {
-            let y = panel.y0 + LIST_TOP + usize_to_f64_lossy(index) * ROW_HEIGHT;
+            let y = panel.y0 + list_top + usize_to_f64_lossy(index) * ROW_HEIGHT;
             Rect::new(
                 panel.x0 + ROW_INSET,
                 y,
@@ -146,8 +153,10 @@ impl DrillInList {
         );
     }
 
-    /// Shared first-row/hover treatment and label placement for discovery
-    /// lists. Returns the leading glyph box for the owning pane to paint.
+    /// Shared row treatment and label placement for discovery lists. Every
+    /// real item gets the same quiet surface; the former special-cased first
+    /// item made a list of two look like one selected card plus stray text.
+    /// Returns the leading glyph box for the owning pane to paint.
     #[allow(
         clippy::too_many_arguments,
         reason = "one positional argument per painted value, shared verbatim by every \
@@ -159,32 +168,53 @@ impl DrillInList {
         text: &mut TextRenderer,
         theme: &Theme,
         row: Rect,
-        index: usize,
+        _index: usize,
         cursor: Option<Point>,
         label: &str,
     ) -> Rect {
         let hovered = cursor.is_some_and(|point| row.contains(point));
-        if index == 0 || hovered {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.neutral[2].with_alpha_factor(if hovered { 0.75 } else { 0.50 }),
-                None,
-                &RoundedRect::from_rect(row, 12.0),
-            );
-        }
+        let row_fill = if hovered {
+            theme.tokens.colors.neutral[3].with_alpha_factor(0.72)
+        } else {
+            theme.tokens.colors.neutral[2].with_alpha_factor(0.42)
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            row_fill,
+            None,
+            &RoundedRect::from_rect(row, 12.0),
+        );
         let glyph = Rect::new(
             row.x0 + 12.0,
             row.y0 + (row.height() - 20.0) / 2.0,
             row.x0 + 32.0,
             row.y0 + f64::midpoint(row.height(), 20.0),
         );
+        // Wi-Fi strength, Bluetooth battery and connection status all occupy
+        // the trailing edge of a discovery row. Never let a long SSID or
+        // device name paint underneath those truthful status indicators.
+        let label_width = (row.x1 - 72.0 - (glyph.x1 + 12.0)).max(1.0);
+        let label =
+            text.elide_to_width(label, theme.tokens.typography.scale.sm, label_width as f32);
+        let (_, label_height) = text.measure_weighted(
+            &label,
+            theme.tokens.typography.scale.sm,
+            None,
+            TextWeight::Medium,
+        );
         text.draw_text_weighted(
             scene,
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
-            transform.pre_translate((glyph.x1 + 12.0, row.y0 + (row.height() - 14.0) / 2.0).into()),
+            transform.pre_translate(
+                (
+                    glyph.x1 + 12.0,
+                    row.center().y - f64::from(label_height) / 2.0,
+                )
+                    .into(),
+            ),
             None,
             TextWeight::Medium,
         );
