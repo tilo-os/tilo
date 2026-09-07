@@ -134,18 +134,12 @@ jobs:
           bash scripts/ci-run.sh "Files live collaborative mount" --
           cargo test --locked -p file-explorer --test live_collaborative_mount -- --nocapture --test-threads=1
 
-      - name: Enforce named delivery, governed identity and Files collaboration UX
+      - name: Enforce named delivery and governed identity
         run: |
           bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p fs named_share_delivery --lib -- --nocapture
           bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p qos-user-identity projection --lib -- --nocapture
           bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell governed_name_and_root_signed_endpoint_project_human_and_device --lib -- --nocapture
-          # Test executables from the relay, filesystem, and shell acceptance
-          # stages are no longer needed. The privileged runner has a small
-          # container overlay; retaining every multi-gigabyte harness left no
-          # room for Files' temporary xattrs despite the code itself passing.
-          find target/debug/deps -maxdepth 1 -type f -perm -u+x ! -name '*.so' -delete
-          bash scripts/ci-run.sh "Files collaboration UX" -- cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
 
       - name: Enforce skew, read-only and atomic-recovery boundaries
         run: |
@@ -171,3 +165,27 @@ jobs:
         run: >-
           bash scripts/ci-run.sh "collaborative-files performance gate" --
           cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
+
+  # File Explorer's full UI/library harness links the entire toolkit. Building
+  # it after the relay, shell, and real-FUSE harnesses filled the privileged
+  # runner's container overlay, then an ordinary tempfile write failed with
+  # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
+  # of deleting an incomplete subset of Cargo artifacts in the live mount job.
+  files-ux:
+    runs-on: runner
+    timeout-minutes: 30
+    env:
+      QOS_FS_FUSE_REQUIRED: "0"
+    container:
+      image: code.podesta.ai/qos/qos-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Enforce Files collaboration UX in a fresh overlay
+        run: >-
+          bash scripts/ci-run.sh "Files collaboration UX" --
+          cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
