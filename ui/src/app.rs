@@ -584,7 +584,6 @@ pub struct App {
     /// directory. It holds provider cursors, never resource bodies, and is
     /// touched only by the main/UI thread.
     action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
-    next_action_directory_cursor: u64,
     /// Last app-owned continuation projection sent to the local shell.
     last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
     pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
@@ -601,9 +600,9 @@ pub struct App {
         (qos_actions::ActionAddress, qos_actions::OperationKind),
     >,
     /// Correlates local requests routed through the authoritative session
-    /// broker. Zero is valid; wrapping is harmless because terminal broker
-    /// state is independently keyed by its own invocation id.
-    next_broker_request_id: u64,
+    /// broker. `None` means this process has consumed the complete u64
+    /// namespace and must refuse rather than alias an earlier request.
+    next_broker_request_id: Option<u64>,
     semantic_tree: crate::a11y_tree::SemanticTree,
 
     profiler: Option<crate::profiling::FrameProfiler>,
@@ -754,13 +753,12 @@ impl App {
             last_control_availability: None,
             last_published_actions: None,
             action_directory_cursors: std::collections::HashMap::new(),
-            next_action_directory_cursor: 0,
             last_published_continuation: None,
             pending_continuation_restore: crate::collaboration::continuation_restore_env(),
             pending_continuation_view: None,
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
-            next_broker_request_id: 0,
+            next_broker_request_id: Some(0),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
             window_title: None,
@@ -1172,7 +1170,7 @@ impl App {
     /// Invalidate declarations derived from document or widget-local state.
     fn invalidate_widget_resource_cache(&mut self) {
         self.resource_generation
-            .set(self.resource_generation.get().wrapping_add(1));
+            .set(self.resource_generation.get().saturating_add(1));
         self.resource_cache.get_mut().take();
         self.local_resource_cache.get_mut().take();
         self.last_control_availability = None;
@@ -1623,10 +1621,8 @@ impl App {
     }
 
     fn action_directory_cursor_key(&mut self) -> String {
-        self.next_action_directory_cursor = self.next_action_directory_cursor.wrapping_add(1);
-        let sequence = self.next_action_directory_cursor;
         let revision = self.action_directory_revision();
-        format!("qos-dir-{sequence}-{revision}")
+        format!("qos-dir-{}-{revision}", uuid::Uuid::new_v4())
     }
 
     fn action_directory_next_cursor(&mut self, state: ActionDirectoryCursor) -> Vec<u8> {
@@ -2228,8 +2224,7 @@ impl App {
                 reason: "This operation requires the workspace action broker, but collaboration is offline".into(),
             });
         }
-        let request_id = self.next_broker_request_id;
-        self.next_broker_request_id = self.next_broker_request_id.wrapping_add(1);
+        let request_id = self.take_broker_request_id()?;
         let arguments = typed_arguments.cloned().unwrap_or_else(|| {
             let mut arguments = serde_json::Map::new();
             if let Some(value) = argument {
@@ -2252,6 +2247,17 @@ impl App {
                     .unwrap_or_else(|| serde_json::json!({})),
             });
         Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+
+    fn take_broker_request_id(&mut self) -> Result<u64, qos_actions::DoorError> {
+        let request_id = self.next_broker_request_id.take().ok_or_else(|| {
+            qos_actions::DoorError::Unavailable {
+                code: "broker_request_identity_exhausted".into(),
+                reason: "This app has exhausted its broker request identities; restart it before invoking another hosted operation".into(),
+            }
+        })?;
+        self.next_broker_request_id = request_id.checked_add(1);
+        Ok(request_id)
     }
 
     #[allow(
@@ -3503,7 +3509,7 @@ impl App {
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
         self.permission_generation
-            .set(self.permission_generation.get().wrapping_add(1));
+            .set(self.permission_generation.get().saturating_add(1));
         self.local_resource_cache.get_mut().take();
         self.last_control_availability = None;
         self.refresh_control_action_availability();
@@ -11651,6 +11657,28 @@ mod semantic_tree_app_tests {
             app.resolve_action_directory("stale", "test.counter", "inspect"),
             runtime_collab::ActionDirectoryResolution::StaleRevision
         ));
+    }
+
+    #[test]
+    fn broker_request_ids_use_the_final_value_then_fail_closed() {
+        let mut app = app();
+        app.next_broker_request_id = Some(u64::MAX);
+        assert_eq!(app.take_broker_request_id().unwrap(), u64::MAX);
+        assert!(matches!(
+            app.take_broker_request_id(),
+            Err(qos_actions::DoorError::Unavailable { code, .. })
+                if code == "broker_request_identity_exhausted"
+        ));
+    }
+
+    #[test]
+    fn action_directory_cursor_keys_do_not_reuse_a_process_counter() {
+        let mut app = app();
+        let first = app.action_directory_cursor_key();
+        let second = app.action_directory_cursor_key();
+        assert_ne!(first, second);
+        assert!(first.starts_with("qos-dir-"));
+        assert!(second.starts_with("qos-dir-"));
     }
 
     #[test]
