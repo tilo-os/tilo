@@ -163,7 +163,8 @@ pub fn reply_answers(prompt: &PairingPrompt, reply: &PairingReply) -> bool {
             matches!(reply, PairingReply::Passkey(_) | PairingReply::Reject)
         }
         PairingPrompt::RequestPinCode => {
-            matches!(reply, PairingReply::PinCode(_) | PairingReply::Reject)
+            matches!(reply, PairingReply::PinCode(pin) if !pin.is_empty() && pin.len() <= crate::agent::MAX_PIN_CODE_BYTES)
+                || matches!(reply, PairingReply::Reject)
         }
         // Every other prompt is yes/no: an accept or a reject answers it, a typed
         // passkey or PIN does not.
@@ -300,6 +301,14 @@ mod tests {
             path_for_address("/org/bluez/hci0", "AA:BB:CC:DD:EE:FF"),
             path
         );
+    }
+
+    #[test]
+    fn oversized_pin_reply_is_not_a_valid_pairing_answer() {
+        assert!(!reply_answers(
+            &PairingPrompt::RequestPinCode,
+            &PairingReply::PinCode("x".repeat(crate::agent::MAX_PIN_CODE_BYTES + 1)),
+        ));
     }
 
     #[test]
