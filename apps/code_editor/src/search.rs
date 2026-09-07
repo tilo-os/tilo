@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 
 use crate::disk;
 
@@ -25,6 +25,21 @@ use crate::disk;
 /// list has stopped being a search result and become a denial of service
 /// against the person reading it. The UI says plainly when it truncated.
 pub const MAX_HITS: usize = 5_000;
+
+/// A no-match query must not be able to turn an arbitrarily huge checkout into
+/// a forever-running background job. The result panel calls this out as a
+/// partial search through its existing `truncated` state.
+pub const MAX_FILES_SCANNED: usize = 100_000;
+
+/// Directory listings are collected so each level can be sorted deterministically.
+/// Put a ceiling on that temporary allocation too; a generated directory with
+/// millions of entries is not a useful source-project view.
+const MAX_DIRECTORY_ENTRIES: usize = 50_000;
+
+/// At most this many batches may wait for the UI. The worker uses cancellable
+/// backpressure rather than an unbounded channel, preserving complete results
+/// up to `MAX_HITS` without turning a dense search into memory growth.
+const SEARCH_CHANNEL_BATCH_CAPACITY: usize = 8;
 
 /// Hits are shipped in batches rather than one message per hit — a channel send
 /// per match dominates the actual searching on a dense query.
@@ -162,7 +177,7 @@ impl Drop for Job {
 
 /// Start searching `root` for `query` on a worker thread.
 pub fn start(root: &Path, query: Query) -> Job {
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = std::sync::mpsc::sync_channel(SEARCH_CHANNEL_BATCH_CAPACITY);
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
@@ -175,7 +190,7 @@ pub fn start(root: &Path, query: Query) -> Job {
         .name("code-editor-search".into())
         .spawn(move || {
             walk(&root, &worker_query, &worker_cancel, &mut |msg| {
-                tx.send(msg).is_ok()
+                send_cancellable(&tx, msg, &worker_cancel)
             });
         });
     Job {
@@ -183,6 +198,25 @@ pub fn start(root: &Path, query: Query) -> Job {
         cancel,
         query,
         finished: false,
+    }
+}
+
+/// Deliver one batch without allowing a busy UI to make the worker retain an
+/// unlimited result queue. Waiting is short and checks cancellation, so typing
+/// a new query or closing the editor tears an old walk down promptly.
+fn send_cancellable(tx: &SyncSender<Msg>, mut msg: Msg, cancel: &AtomicBool) -> bool {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        match tx.try_send(msg) {
+            Ok(()) => return true,
+            Err(TrySendError::Disconnected(_)) => return false,
+            Err(TrySendError::Full(returned)) => {
+                msg = returned;
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
     }
 }
 
@@ -220,6 +254,10 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
         let mut dirs = Vec::new();
         let mut paths = Vec::new();
         for entry in entries.flatten() {
+            if dirs.len().saturating_add(paths.len()) >= MAX_DIRECTORY_ENTRIES {
+                truncated = true;
+                break 'walk;
+            }
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') || disk::is_ignored_dir(&name) {
                 continue;
@@ -248,6 +286,10 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
             };
             if md.len() > disk::MAX_TEXT_BYTES {
                 continue;
+            }
+            if files >= MAX_FILES_SCANNED {
+                truncated = true;
+                break 'walk;
             }
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
