@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Once;
 
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
@@ -22,6 +23,34 @@ use crate::app::StoreApp;
 use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
+
+/// A Vello scene with a dense text/control tree can need more than its local
+/// bump-budget confirmation before every glyph atlas page is resident. The
+/// interactive app naturally receives later frames; a one-frame screenshot
+/// does not. Keep a small, explicit settle budget for visual regression
+/// captures so screenshots never bless a partial entrance frame.
+const SETTLED_CAPTURE_WARMUP_PASSES: usize = 3;
+
+/// Screenshot review is a correctness oracle, not a GPU throughput test.
+/// This driver occasionally returned alternating partial glyph/control tiles
+/// for a fresh offscreen Vulkan scene. Pin Store's hermetic capture path to
+/// Vello's deterministic CPU renderer; the interactive desktop keeps using
+/// its normal GPU renderer.
+static SHOTS_CPU_RENDERER: Once = Once::new();
+
+fn configure_settled_capture_renderer() {
+    SHOTS_CPU_RENDERER.call_once(|| {
+        // `render_widget` runs only in headless shots/tests, before the
+        // renderer is constructed. No application threads are started here.
+        #[allow(
+            unsafe_code,
+            reason = "Rust 2024 marks process-environment mutation unsafe; this one-shot headless renderer preference is installed before constructing any Store shot renderer"
+        )]
+        unsafe {
+            std::env::set_var("QUICK_UI_VELLO_CPU", "1");
+        }
+    });
+}
 
 /// A hand-rolled fixture of items that shows every card variant:
 ///
@@ -306,7 +335,11 @@ pub fn render_widget(
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+    configure_settled_capture_renderer();
     let mut renderer = OffscreenRenderer::new(w, h);
+    for _ in 0..SETTLED_CAPTURE_WARMUP_PASSES {
+        let _ = renderer.render_rgba_resilient(&scene);
+    }
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("store: wrote shot to {}", out.display());
     Ok(())
@@ -321,7 +354,27 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::BufReader;
     use tempfile::TempDir;
+
+    fn masthead_ink_pixels(path: &Path) -> usize {
+        let file = std::fs::File::open(path).unwrap();
+        let decoder = png::Decoder::new(BufReader::new(file));
+        let mut reader = decoder.read_info().unwrap();
+        let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
+        let frame = reader.next_frame(&mut bytes).unwrap();
+        assert_eq!(frame.color_type, png::ColorType::Rgba);
+        let width = usize::try_from(frame.width).unwrap();
+        let top_rows = usize::try_from(frame.height.min(180)).unwrap();
+        bytes[..frame.buffer_size()]
+            .chunks_exact(4)
+            .take(width.saturating_mul(top_rows))
+            .filter(|pixel| {
+                pixel[3] > 200
+                    && u16::from(pixel[0]) + u16::from(pixel[1]) + u16::from(pixel[2]) > 250
+            })
+            .count()
+    }
 
     #[test]
     fn fixture_catalog_covers_every_action_variant() {
@@ -383,5 +436,34 @@ mod tests {
         // if no adapter is available (CI without KVM). We still
         // exercise the compose+layout path via `seeded_app`.
         let _ = render_to_path((640, 400), &out);
+    }
+
+    #[test]
+    fn dense_detail_error_and_moderation_shots_are_settled_before_capture() {
+        let td = TempDir::new().unwrap();
+        for scenario in ["detail", "error", "moderation-case"] {
+            let first = td.path().join(format!("{scenario}-first.png"));
+            let second = td.path().join(format!("{scenario}-second.png"));
+            render_scenario_to_path((920, 720), &first, Some(scenario)).unwrap();
+            render_scenario_to_path((920, 720), &second, Some(scenario)).unwrap();
+            assert_eq!(
+                std::fs::read(first).unwrap(),
+                std::fs::read(second).unwrap(),
+                "{scenario} shot must not capture a partial entrance/recheck frame"
+            );
+        }
+    }
+
+    #[test]
+    fn catalogue_states_keep_the_complete_masthead_in_the_captured_frame() {
+        let td = TempDir::new().unwrap();
+        for scenario in ["wide", "progress", "error", "empty"] {
+            let out = td.path().join(format!("{scenario}.png"));
+            render_scenario_to_path((1200, 760), &out, Some(scenario)).unwrap();
+            assert!(
+                masthead_ink_pixels(&out) > 350,
+                "{scenario} must retain title, search, and toolbar ink in the top masthead band"
+            );
+        }
     }
 }
