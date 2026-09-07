@@ -1342,6 +1342,7 @@ impl TubeApp {
             Action::SubmitSearch => {
                 let q = self.read_search(state, root);
                 q.clone_into(&mut self.model.search_query);
+                self.model.search_error = None;
                 self.navigate_to(Route::Search(q.clone()));
                 if !q.is_empty() {
                     // Show the results skeleton while the live fetch is in flight
@@ -1426,13 +1427,50 @@ impl TubeApp {
         String::new()
     }
 
-    fn request(&mut self, req: Request) {
+    /// Start a bounded background request without ever stalling UI input.
+    /// Returns false only when the worker could not accept the newest intent;
+    /// in that case [`Self::request_rejected`] has already made the outcome
+    /// visible and cleared any misleading loading state.
+    fn request(&mut self, req: Request) -> bool {
         if self.worker.is_none() {
             self.worker = Some(Worker::spawn());
         }
-        if let Some(w) = &self.worker {
-            w.request(req);
+        if let Some(w) = &self.worker
+            && let Err(error) = w.request(req)
+        {
+            let rejected = match error {
+                std::sync::mpsc::TrySendError::Full(request)
+                | std::sync::mpsc::TrySendError::Disconnected(request) => request,
+            };
+            self.request_rejected(&rejected);
+            return false;
         }
+        true
+    }
+
+    /// Make bounded-worker saturation explicit. This is a local, retryable
+    /// condition, not an offline/network failure, so never falsify the source
+    /// provenance while reporting it.
+    fn request_rejected(&mut self, request: &Request) {
+        const BUSY: &str = "Too many requests are pending. Please try again.";
+        match request {
+            Request::Search { query } => {
+                if self.model.search_query == *query {
+                    self.model.search_loading = false;
+                    self.model.search_error = Some(BUSY.to_string());
+                }
+            }
+            Request::Feed => {
+                self.model.feed_loading = false;
+                self.model.feed_error = Some(BUSY.to_string());
+            }
+            Request::Branding(_)
+            | Request::VideoMeta(_)
+            | Request::Channel(_)
+            | Request::PlaylistPage(_)
+            | Request::PlayVideo(_) => self.model.push_notice(BUSY),
+        }
+        self.structure_dirty = true;
     }
 
     /// Request live `InnerTube` data (feed / video detail / channel), but only
@@ -1510,6 +1548,7 @@ impl TubeApp {
                 } => {
                     // A response landed (possibly empty) — drop the skeleton.
                     self.model.search_loading = false;
+                    self.model.search_error = None;
                     // Record the backend's exact ordered result set for this
                     // query (so the search screen renders it verbatim), and
                     // fold the videos + uploader stubs into the catalogue.
@@ -1612,6 +1651,7 @@ impl TubeApp {
                     // Real home/trending catalogue — replace whatever was there.
                     self.model.adopt_live_catalogue(vids, "live (rustypipe)");
                     self.model.feed_loading = false;
+                    self.model.feed_error = None;
                     changed = true;
                 }
                 Update::VideoMeta { video, related } => {
@@ -3120,6 +3160,33 @@ mod tests {
         assert!(
             app.model.feed_loading,
             "cold Home shows a loading skeleton, not a blank page"
+        );
+    }
+
+    #[test]
+    fn rejected_newest_request_clears_loading_and_explains_retry() {
+        let mut app = TubeApp::empty();
+        app.model.search_query = "rust".into();
+        app.model.search_loading = true;
+        app.request_rejected(&Request::Search {
+            query: "rust".into(),
+        });
+        assert!(!app.model.search_loading, "do not leave a stuck skeleton");
+        assert!(
+            app.model
+                .search_error
+                .as_deref()
+                .is_some_and(|message| message.contains("try again"))
+        );
+
+        app.model.feed_loading = true;
+        app.request_rejected(&Request::Feed);
+        assert!(!app.model.feed_loading, "do not leave Home loading forever");
+        assert!(
+            app.model
+                .feed_error
+                .as_deref()
+                .is_some_and(|message| message.contains("try again"))
         );
     }
 
