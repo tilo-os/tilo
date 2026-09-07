@@ -47,7 +47,11 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         app.arm_status_bubble_for_shots();
         Ok(Box::new(app))
     } else {
-        Ok(backups::app_root_demo())
+        let mut app = backups::BackupsApp::new_demo();
+        if let Some(scenario) = args.scenario.as_deref() {
+            app.stage_shot_scenario(scenario);
+        }
+        Ok(Box::new(app))
     }
 }
 
@@ -58,7 +62,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.backups", backups::app_root)
             .shot_root(shot_root)
-            .scenarios(&["status"])
+            .scenarios(&["status", "progress", "failure", "restore"])
             .allowed_flags(&["--empty"])
             .configure_app(|app| backups::actions::register(app.action_registry_mut())),
     );
