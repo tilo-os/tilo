@@ -687,6 +687,10 @@ struct PendingPlacement {
     continuity_instance: Option<u64>,
     /// The surface that claimed this note, once one has.
     claimed_by: Option<u64>,
+    /// A successful launcher parent may exit after daemonising before its
+    /// actual GUI process maps a window. Keep the destination until this
+    /// deadline; a truly windowless launch is retired once it passes.
+    retire_after: Option<Instant>,
 }
 
 impl PendingPlacement {
@@ -1948,6 +1952,7 @@ pub fn set_pending_placement_for_identities(
         placement,
         continuity_instance: None,
         claimed_by: None,
+        retire_after: None,
     });
 }
 
@@ -1970,6 +1975,14 @@ pub fn placement_and_instance_for_toplevel(
     let mut pending = lock(&PENDING_PLACEMENT);
     loop {
         let idx = pending.iter().position(|p| p.matches(app_id))?;
+        if pending
+            .get(idx)
+            .and_then(|note| note.retire_after)
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            pending.remove(idx);
+            continue;
+        }
         let claimed_by = pending.get(idx)?.claimed_by;
         let placement = pending.get(idx)?.placement;
         let instance = pending.get(idx)?.continuity_instance;
@@ -1977,6 +1990,13 @@ pub fn placement_and_instance_for_toplevel(
             None => {
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
+                    // Both compositor trees ask for the same launch note,
+                    // so keep a claimed answer briefly rather than consume
+                    // it on the first lookup. Bound that duplication window
+                    // as well: an app that never causes a second lookup must
+                    // not leave a permanent note capable of steering a much
+                    // later surface with the same identity.
+                    entry.retire_after = Some(Instant::now() + PENDING_PLACEMENT_CLAIM_GRACE);
                 }
                 return Some((placement, instance));
             }
@@ -2008,6 +2028,7 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             placement: crate::compositor::tab_binding::Placement::NewGroup,
             continuity_instance: Some(instance),
             claimed_by: None,
+            retire_after: None,
         });
     }
 }
@@ -2066,6 +2087,42 @@ pub fn clear_pending_placement(package_id: &str) {
         pending.remove(index);
     }
 }
+
+/// Allow a cleanly-exited launcher parent a bounded handoff window for a
+/// daemonised GUI child to announce its toplevel. Failure paths still call
+/// [`clear_pending_placement`] immediately.
+pub fn retire_pending_placement_after_grace(package_id: &str) {
+    retire_pending_placement_at(package_id, Instant::now() + PENDING_PLACEMENT_EXIT_GRACE);
+}
+
+fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
+    let mut pending = lock(&PENDING_PLACEMENT);
+    if let Some(note) = pending
+        .iter_mut()
+        .rev()
+        .find(|note| note.key == package_id && note.claimed_by.is_none())
+    {
+        note.retire_after = Some(deadline);
+    }
+}
+
+/// Retire windowless clean launches without waiting for another application
+/// with the same identity to map.
+pub fn expire_pending_placements() {
+    expire_pending_placements_at(Instant::now());
+}
+
+fn expire_pending_placements_at(now: Instant) {
+    lock(&PENDING_PLACEMENT).retain(|note| note.retire_after.is_none_or(|deadline| now < deadline));
+}
+
+/// Long enough for a daemonising desktop entry to hand off to its GUI child,
+/// while keeping a genuinely windowless launch from steering a later app.
+const PENDING_PLACEMENT_EXIT_GRACE: Duration = Duration::from_secs(10);
+
+/// Enough for the rendered and protocol trees to observe the same newly
+/// mapped surface, but finite so a claimed note cannot leak forever.
+const PENDING_PLACEMENT_CLAIM_GRACE: Duration = Duration::from_secs(10);
 
 /// Drop every placement note. Used by tests, which share this
 /// process-wide state.
@@ -2245,6 +2302,57 @@ mod tests {
             "clearing the failed second launch must not erase the first launch's placement"
         );
         assert_eq!(placement_for_toplevel("same-app", 202), None);
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn clean_parent_exit_keeps_delayed_window_placement_until_deadline() {
+        clear_pending_placements();
+        let package = "dev.qos.daemonised";
+        let wanted = crate::compositor::tab_binding::Placement::IntoTab(44);
+        set_pending_placement(package, wanted);
+
+        retire_pending_placement_at(package, Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            placement_for_toplevel("daemonised", 701),
+            Some(wanted),
+            "a GUI child mapping after its launcher parent exits keeps the user's destination"
+        );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn windowless_clean_launch_expires_without_sleeping() {
+        clear_pending_placements();
+        let package = "dev.qos.windowless";
+        set_pending_placement(
+            package,
+            crate::compositor::tab_binding::Placement::IntoTab(55),
+        );
+
+        let now = Instant::now();
+        retire_pending_placement_at(package, now);
+        expire_pending_placements_at(now);
+        assert_eq!(placement_for_toplevel("windowless", 702), None);
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn claimed_placement_expires_without_a_second_surface() {
+        clear_pending_placements();
+        let package = "dev.qos.claimed-once";
+        let wanted = crate::compositor::tab_binding::Placement::IntoTab(56);
+        set_pending_placement(package, wanted);
+
+        assert_eq!(placement_for_toplevel("claimed-once", 703), Some(wanted));
+        let deadline = lock(&PENDING_PLACEMENT)[0]
+            .retire_after
+            .expect("claim receives a bounded retirement deadline");
+        expire_pending_placements_at(deadline);
+        assert_eq!(placement_for_toplevel("claimed-once", 703), None);
         clear_pending_placements();
     }
 
