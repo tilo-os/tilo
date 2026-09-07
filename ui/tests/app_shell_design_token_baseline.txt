@@ -6,8 +6,8 @@ apps/calculator/src/app.rs white_or_black 3
 apps/calculator/src/graph2d.rs white_or_black 2
 apps/calculator/src/graph3d.rs white_or_black 1
 apps/calculator/src/keypad.rs white_or_black 3
-apps/calendar/src/app.rs literal_color 1
-apps/calendar/src/app.rs white_or_black 3
+apps/calendar/src/app.rs literal_color 0
+apps/calendar/src/app.rs white_or_black 0
 apps/calendar/src/mini_month.rs white_or_black 1
 apps/calendar/src/sidebar.rs literal_color 1
 apps/calendar/src/sidebar.rs white_or_black 1
@@ -69,7 +69,7 @@ apps/maps/src/canvas.rs white_or_black 7
 apps/maps/src/draw.rs literal_color 1
 apps/maps/src/livetest.rs white_or_black 1
 apps/maps/src/offline_panel.rs white_or_black 2
-apps/monitor/src/app.rs white_or_black 1
+apps/monitor/src/app.rs white_or_black 0
 apps/music/src/app/render.rs white_or_black 7
 apps/music/src/art.rs white_or_black 3
 apps/notes/src/shots.rs literal_color 1
@@ -88,7 +88,7 @@ apps/slides/src/help_overlay.rs white_or_black 1
 apps/slides/src/model.rs literal_color 1
 apps/slides/src/model.rs white_or_black 3
 apps/slides/src/overview_grid.rs white_or_black 1
-apps/slides/src/presentation.rs white_or_black 13
+apps/slides/src/presentation.rs white_or_black 6
 apps/slides/src/toolbar_tools.rs white_or_black 1
 apps/terminal/src/main_body.rs literal_color 3
 apps/themes/src/app.rs white_or_black 1
@@ -98,13 +98,13 @@ apps/totp/src/add_panel.rs white_or_black 5
 apps/totp/src/app.rs white_or_black 1
 apps/totp/src/ring.rs white_or_black 1
 apps/tube/src/contrast.rs white_or_black 3
-apps/tube/src/screens.rs literal_color 7
+apps/tube/src/screens.rs literal_color 4
 apps/tube/src/screens.rs white_or_black 5
 apps/tube/src/widgets/image_box.rs literal_color 1
 apps/tube/src/widgets/seek_bar.rs literal_color 1
 apps/tube/src/widgets/seek_bar.rs white_or_black 1
-apps/tube/src/widgets/thumbnail.rs literal_color 9
-apps/tube/src/widgets/thumbnail.rs white_or_black 4
+apps/tube/src/widgets/thumbnail.rs literal_color 8
+apps/tube/src/widgets/thumbnail.rs white_or_black 3
 apps/typst_editor/src/app.rs white_or_black 3
 apps/typst_editor/src/preview.rs literal_color 1
 apps/video-player/src/app.rs literal_color 2
@@ -115,7 +115,7 @@ apps/word-processor/src/review_overlay.rs literal_color 13
 apps/word-processor/src/style_color_picker.rs white_or_black 1
 apps/word-processor/src/widget.rs literal_color 18
 apps/word-processor/src/widget.rs white_or_black 8
-shell/src/compositor/backend/drm/paint.rs literal_color 1
+shell/src/compositor/backend/drm/paint.rs literal_color 0
 shell/src/compositor/backend/headless.rs literal_color 1
 shell/src/compositor/backend/winit.rs literal_color 1
 shell/src/compositor/capture.rs white_or_black 2

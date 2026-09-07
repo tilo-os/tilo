@@ -2009,7 +2009,7 @@ impl FirewallApp {
             t,
             "Retry connection",
             12.0,
-            Color::WHITE,
+            theme.tokens.colors.on_surface(theme.accent_primary).ink,
             l.recover_btn.x0 + 14.0,
             l.recover_btn.y0,
             l.recover_btn.height(),
