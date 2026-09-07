@@ -54,8 +54,10 @@ pub mod client;
 pub mod model;
 
 pub use agent::{
-    AGENT_CAPABILITY, AGENT_PATH, AgentEvent, AgentEvents, AgentRegistration,
-    DEFAULT_ANSWER_TIMEOUT, DeviceNames, PairingAgent,
+    AGENT_CAPABILITY, AGENT_EVENT_CAPACITY, AGENT_PATH, AgentEvent, AgentEvents, AgentRegistration,
+    DEFAULT_ANSWER_TIMEOUT, DeviceNames, MAX_DEVICE_NAME_BYTES, MAX_DEVICE_NAME_ENTRIES,
+    MAX_DEVICE_PATH_BYTES, MAX_PIN_CODE_BYTES, MAX_SERVICE_UUID_BYTES, PairingAgent,
+    PairingReplySender,
 };
 pub use client::{BluezClient, DISCOVERY_WINDOW, PairOutcome, error_text};
 pub use model::{
