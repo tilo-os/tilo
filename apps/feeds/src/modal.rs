@@ -38,11 +38,13 @@ pub enum ModalIntent {
     RenameFeed { feed_id: Id },
     /// Confirm unsubscribing (destructive) from a feed. No text input.
     Unsubscribe { feed_id: Id },
+    /// Replace the selected article's comma-separated labels.
+    EditArticleTags { article_id: Id },
 }
 
 impl ModalIntent {
-    /// Whether this intent submits the value of a text field (so an empty
-    /// field keeps the dialog open rather than submitting nothing).
+    /// Whether this intent requires a non-empty text field. Tag editing also
+    /// owns a field, but an empty value deliberately means "remove all tags".
     pub fn requires_input(self) -> bool {
         matches!(
             self,

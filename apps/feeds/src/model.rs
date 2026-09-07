@@ -138,6 +138,23 @@ pub struct Article {
     pub blocks: Vec<ContentBlock>,
     pub read: bool,
     pub starred: bool,
+    /// User-authored labels. Stored on the article itself so a concurrent tag
+    /// edit is one mergeable field and survives feed refreshes.
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Stable local key for a normalized tag. Resource addresses carry the full
+/// UTF-8 tag losslessly; this compact key only keeps [`Filter`] copyable.
+pub type TagKey = u64;
+
+pub fn tag_key(tag: &str) -> TagKey {
+    tag.trim()
+        .to_lowercase()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
 }
 
 /// Which subset of articles the list pane is showing.
@@ -148,6 +165,7 @@ pub enum Filter {
     Starred,
     Folder(Id),
     Feed(Id),
+    Tag(TagKey),
 }
 
 // ---------------------------------------------------------------------
@@ -378,7 +396,60 @@ impl Store {
             Filter::Starred => a.starred,
             Filter::Feed(id) => a.feed_id == id,
             Filter::Folder(fid) => self.feed(a.feed_id).is_some_and(|f| f.folder == Some(fid)),
+            Filter::Tag(key) => a.tags.iter().any(|tag| tag_key(tag) == key),
         }
+    }
+
+    /// Unique normalized article tags, alphabetized for navigation and
+    /// canonical resource publication.
+    pub fn tags(&self) -> Vec<String> {
+        self.tags_limited(usize::MAX)
+    }
+
+    /// Alphabetized unique tags with bounded retained allocation. The scan is
+    /// linear in cached articles, but sidebar/resource materialization never
+    /// grows with an archival tag vocabulary.
+    pub fn tags_limited(&self, limit: usize) -> Vec<String> {
+        let mut tags = self
+            .articles
+            .iter()
+            .flat_map(|article| &article.tags)
+            .map(|tag| tag.trim().to_lowercase())
+            .filter(|tag| !tag.is_empty())
+            .fold(Vec::with_capacity(limit.min(32)), |mut tags, tag| {
+                match tags.binary_search(&tag) {
+                    Err(index) if index < limit => {
+                        tags.insert(index, tag);
+                        if tags.len() > limit {
+                            tags.pop();
+                        }
+                    }
+                    Ok(_) | Err(_) => {}
+                }
+                tags
+            });
+        tags.truncate(limit);
+        tags
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.articles.iter().any(|article| {
+            article
+                .tags
+                .iter()
+                .any(|candidate| candidate.trim().to_lowercase() == tag)
+        })
+    }
+
+    pub fn set_tags(&mut self, id: Id, tags: Vec<String>) -> bool {
+        let Some(article) = self.article_mut(id) else {
+            return false;
+        };
+        if article.tags == tags {
+            return false;
+        }
+        article.tags = tags;
+        true
     }
 
     /// Articles matching `filter`, newest first.
@@ -565,6 +636,7 @@ mod tests {
             blocks: vec![],
             read,
             starred,
+            tags: Vec::new(),
         }
     }
 

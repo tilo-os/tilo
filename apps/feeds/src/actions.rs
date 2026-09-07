@@ -36,6 +36,7 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use uuid::Uuid;
 
 use qos_actions::{
@@ -50,6 +51,13 @@ use crate::model::{Feed, FeedKind, Folder, Id, ReadSettings};
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
 pub const FEEDS_OPERATION_TYPE: &str = "feeds.operation";
+/// Contextual Ctrl+K snapshots stay small even for an archival-scale reader.
+/// Search retains the complete catalogue and omitted stable ids resolve via
+/// [`resolve_resource`].
+pub const MAX_CONTEXT_FOLDER_RESOURCES: usize = 32;
+pub const MAX_CONTEXT_FEED_RESOURCES: usize = 64;
+pub const MAX_CONTEXT_ARTICLE_RESOURCES: usize = 128;
+pub const MAX_CONTEXT_TAG_RESOURCES: usize = 32;
 
 pub fn feed_resource_id(id: Id) -> String {
     format!("feeds.subscription:{id}")
@@ -57,6 +65,42 @@ pub fn feed_resource_id(id: Id) -> String {
 
 pub fn article_resource_id(id: Id) -> String {
     format!("feeds.article:{id}")
+}
+
+pub fn tag_resource_id(tag: &str) -> String {
+    let mut encoded = String::with_capacity(tag.len().saturating_mul(2));
+    for byte in tag.as_bytes() {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    format!("feeds.tag:{encoded}")
+}
+
+/// Decode a canonical tag resource id without accepting aliases or an
+/// allocation bomb. Normalized tags contain at most 48 Unicode scalar values,
+/// hence at most 192 UTF-8 bytes / 384 hexadecimal digits.
+pub fn tag_from_resource_id(id: &str) -> Option<String> {
+    let encoded = id.strip_prefix("feeds.tag:")?;
+    if encoded.is_empty() || encoded.len() > 384 || encoded.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let &[hi, lo] = pair else { return None };
+        let hi = hex_nibble(hi)?;
+        let lo = hex_nibble(lo)?;
+        bytes.push((hi << 4) | lo);
+    }
+    let decoded = String::from_utf8(bytes).ok()?;
+    let normalized = normalize_tags([decoded.as_str()]).into_iter().next()?;
+    (tag_resource_id(&normalized) == id).then_some(normalized)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
 }
 
 pub fn open_feed_address(id: Id) -> ActionAddress {
@@ -72,6 +116,7 @@ pub enum FeedsOperation {
     RefreshAll,
     RevealFeed { id: String },
     RevealArticle { id: String },
+    RevealTag { tag: String },
 }
 
 /// Decode a Feeds-local view/effect operation, declining foreign type ids.
@@ -141,6 +186,8 @@ pub enum FeedsAction {
     MarkRead { id: String, read: bool },
     /// Set one article's `starred` flag.
     SetStarred { id: String, starred: bool },
+    /// Replace an article's normalized user-authored tag set.
+    SetArticleTags { id: String, tags: Vec<String> },
     /// Mark a batch of articles read (the ids are resolved from the active
     /// filter / target feed at authoring time and carried here, so `apply`
     /// needs no lookup and two replicas land identically).
@@ -230,6 +277,11 @@ impl Action for FeedsAction {
             FeedsAction::SetStarred { id, starred } => {
                 if let Ok(uuid) = id.parse::<Id>() {
                     FeedsDoc::set_starred(doc, uuid, *starred);
+                }
+            }
+            FeedsAction::SetArticleTags { id, tags } => {
+                if let Ok(uuid) = id.parse::<Id>() {
+                    FeedsDoc::set_tags(doc, uuid, &normalize_tags(tags.iter().map(String::as_str)));
                 }
             }
             FeedsAction::MarkAllRead { ids } => {
@@ -364,6 +416,26 @@ pub fn mark_all_read_action(ids: &[Id]) -> FeedsAction {
     }
 }
 
+pub fn normalize_tags<'a>(tags: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut tags = tags
+        .into_iter()
+        .map(|tag| tag.trim().trim_start_matches('#').to_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .map(|tag| tag.chars().take(48).collect::<String>())
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    tags.truncate(24);
+    tags
+}
+
+pub fn set_article_tags_action(id: Id, tags: &[String]) -> FeedsAction {
+    FeedsAction::SetArticleTags {
+        id: id.to_string(),
+        tags: normalize_tags(tags.iter().map(String::as_str)),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -375,6 +447,7 @@ pub fn mark_all_read_action(ids: &[Id]) -> FeedsAction {
 pub struct FeedRef {
     pub id: Id,
     pub title: String,
+    pub folder: Option<Id>,
     /// Unread article ids in this feed, resolved at authoring time.
     pub unread: Vec<Id>,
     /// Searchable articles nested beneath this stable subscription resource.
@@ -388,6 +461,12 @@ pub struct ArticleRef {
     pub title: String,
     pub read: bool,
     pub starred: bool,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TagRef {
+    pub name: String,
 }
 
 /// One folder surfaced as a resource.
@@ -405,6 +484,7 @@ pub struct FolderRef {
 pub struct FeedsResourceCtx {
     pub folders: Vec<FolderRef>,
     pub feeds: Vec<FeedRef>,
+    pub tags: Vec<TagRef>,
     /// Unread articles across the whole reader, resolved before the global
     /// action is authored so replay never depends on a peer's local filter.
     pub unread: Vec<Id>,
@@ -560,15 +640,31 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
     }
     root = root.with_child(settings_resource);
 
+    for tag in ctx.tags.iter().take(MAX_CONTEXT_TAG_RESOURCES) {
+        let operation = FeedsOperation::RevealTag {
+            tag: tag.name.clone(),
+        };
+        let mut resource = Resource::new(
+            tag_resource_id(&tag.name),
+            "feeds.tag",
+            format!("#{}", tag.name),
+        );
+        if let Some(open) = view_spec("open", "Open tagged articles", &operation) {
+            resource = resource.with_action(open);
+        }
+        root = root.with_child(resource);
+    }
+
     // Known folder names → id, so a "Move to folder…" prompt can resolve a typed
-    // name to a folder (an unknown name uncategorises the feed).
+    // name. Blank explicitly uncategorises; an unknown name is a safe no-op
+    // instead of unexpectedly moving the subscription.
     let folder_lookup: Vec<(String, Id)> = ctx
         .folders
         .iter()
         .map(|f| (f.name.trim().to_lowercase(), f.id))
         .collect();
 
-    for folder in &ctx.folders {
+    for folder in ctx.folders.iter().take(MAX_CONTEXT_FOLDER_RESOURCES) {
         let id = folder.id;
         let child = Resource::new(
             format!("feeds.folder:{id}"),
@@ -600,7 +696,8 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         root = root.with_child(child);
     }
 
-    for feed in &ctx.feeds {
+    let mut remaining_articles = MAX_CONTEXT_ARTICLE_RESOURCES;
+    for feed in ctx.feeds.iter().take(MAX_CONTEXT_FEED_RESOURCES) {
         let id = feed.id;
         let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
         if let Some(open) = view_spec(
@@ -624,6 +721,7 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             &mark_all_read_action(&feed.unread),
         ));
         let lookup = folder_lookup.clone();
+        let current_folder = feed.folder;
         child = child.with_action(ActionSpec::prompted(
             "move",
             "Move to folder…",
@@ -635,7 +733,10 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                 let folder = if key.is_empty() {
                     None
                 } else {
-                    lookup.iter().find(|(n, _)| *n == key).map(|(_, fid)| *fid)
+                    lookup
+                        .iter()
+                        .find(|(n, _)| *n == key)
+                        .map_or(current_folder, |(_, fid)| Some(*fid))
                 };
                 encode(&move_feed_action(id, folder))
             },
@@ -649,7 +750,7 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             .destructive()
             .reversible(),
         );
-        for article in &feed.articles {
+        for article in feed.articles.iter().take(remaining_articles) {
             let article_id = article.id;
             let title = if article.title.trim().is_empty() {
                 "Untitled article".to_string()
@@ -681,18 +782,106 @@ pub fn provide_resources(ctx: &FeedsResourceCtx, _doc: &AutoCommit) -> Vec<Resou
                     "star",
                     if article.starred { "Unstar" } else { "Star" },
                     &set_starred_action(article_id, !article.starred),
+                ))
+                .with_action(ActionSpec::prompted(
+                    "set-tags",
+                    "Set article tags",
+                    "Tags",
+                    "design, research, later…",
+                    ExecutionLocus::ClientLocal,
+                    move |value: &str| {
+                        let tags = if value.trim().is_empty() {
+                            Vec::new()
+                        } else {
+                            normalize_tags(value.split(','))
+                        };
+                        encode(&set_article_tags_action(article_id, &tags))
+                    },
                 ));
             child = child.with_child(article_node);
         }
+        remaining_articles = remaining_articles.saturating_sub(feed.articles.len());
         root = root.with_child(child);
     }
 
     vec![root]
 }
 
+/// Resolve one current stable id without expanding the contextual snapshot.
+/// A stale id deliberately returns `None`, so a cached search row cannot
+/// resurrect a removed subscription or article.
+pub fn resolve_resource(ctx: &FeedsResourceCtx, id: &str) -> Option<Resource> {
+    let mut scoped = FeedsResourceCtx {
+        unread: ctx.unread.clone(),
+        next_feed_order: ctx.next_feed_order,
+        next_folder_order: ctx.next_folder_order,
+        settings: ctx.settings,
+        ..FeedsResourceCtx::default()
+    };
+    if id == "feeds.reader" || id == "feeds.reader-settings" {
+        return provide_resources(&scoped, &AutoCommit::new())
+            .into_iter()
+            .find_map(|root| {
+                if root.id.as_str() == id {
+                    Some(root)
+                } else {
+                    root.children
+                        .into_iter()
+                        .find(|child| child.id.as_str() == id)
+                }
+            });
+    }
+    if let Some(raw) = id.strip_prefix("feeds.folder:") {
+        let folder_id = raw.parse::<Id>().ok()?;
+        scoped.folders.push(
+            ctx.folders
+                .iter()
+                .find(|folder| folder.id == folder_id)?
+                .clone(),
+        );
+    } else if let Some(raw) = id.strip_prefix("feeds.subscription:") {
+        let feed_id = raw.parse::<Id>().ok()?;
+        let mut feed = ctx.feeds.iter().find(|feed| feed.id == feed_id)?.clone();
+        feed.articles.clear();
+        scoped.feeds.push(feed);
+    } else if id.starts_with("feeds.tag:") {
+        scoped.tags.push(
+            ctx.tags
+                .iter()
+                .find(|tag| tag_resource_id(&tag.name) == id)?
+                .clone(),
+        );
+    } else {
+        let raw = id.strip_prefix("feeds.article:")?;
+        let article_id = raw.parse::<Id>().ok()?;
+        let feed = ctx
+            .feeds
+            .iter()
+            .find(|feed| feed.articles.iter().any(|article| article.id == article_id))?;
+        let mut feed = feed.clone();
+        feed.articles.retain(|article| article.id == article_id);
+        scoped.feeds.push(feed);
+    }
+    let root = provide_resources(&scoped, &AutoCommit::new()).pop()?;
+    root.children.into_iter().find_map(|child| {
+        if child.id.as_str() == id {
+            Some(child)
+        } else {
+            child
+                .children
+                .into_iter()
+                .find(|article| article.id.as_str() == id)
+        }
+    })
+}
+
 impl ResourceProvider for crate::app::FeedsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.feeds_resource_ctx(), doc)
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resolve_resource(&self.feeds_resource_ctx_for(id)?, id)
     }
 }
 
@@ -722,6 +911,78 @@ mod tests {
             ActionInput::Prompted { build, .. } => build(arg),
             ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
         }
+    }
+
+    #[test]
+    fn contextual_resource_tree_is_bounded_and_late_articles_resolve_exactly() {
+        let mut ctx = FeedsResourceCtx::default();
+        for feed_index in 0..(MAX_CONTEXT_FEED_RESOURCES + 2) {
+            let feed_id = Uuid::from_u128(feed_index as u128 + 1);
+            let articles = (0..3)
+                .map(|article_index| ArticleRef {
+                    id: Uuid::from_u128(10_000 + (feed_index * 3 + article_index) as u128),
+                    title: format!("Article {feed_index}-{article_index}"),
+                    read: false,
+                    starred: false,
+                    tags: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            ctx.feeds.push(FeedRef {
+                id: feed_id,
+                title: format!("Feed {feed_index:03}"),
+                folder: None,
+                unread: articles.iter().map(|article| article.id).collect(),
+                articles,
+            });
+        }
+        let late = ctx
+            .feeds
+            .last()
+            .and_then(|feed| feed.articles.last())
+            .expect("fixture has a late article")
+            .id;
+
+        let page = provide_resources(&ctx, &AutoCommit::new());
+        let root = &page[0];
+        assert!(
+            root.children
+                .iter()
+                .filter(|resource| resource.kind == "feeds.subscription")
+                .count()
+                <= MAX_CONTEXT_FEED_RESOURCES
+        );
+        assert!(
+            root.children
+                .iter()
+                .flat_map(|resource| &resource.children)
+                .filter(|resource| resource.kind == "feeds.article")
+                .count()
+                <= MAX_CONTEXT_ARTICLE_RESOURCES
+        );
+        assert!(
+            qos_actions::door::resolve(&page, &open_article_address(late)).is_none(),
+            "the late article is intentionally outside the contextual page"
+        );
+        let exact = resolve_resource(&ctx, &article_resource_id(late))
+            .expect("the omitted article resolves lazily");
+        assert!(
+            qos_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
+            "lazy resolution exports the exact canonical open action"
+        );
+        assert!(
+            resolve_resource(&ctx, &article_resource_id(Uuid::new_v4())).is_none(),
+            "a stale article id is refused"
+        );
+    }
+
+    #[test]
+    fn tag_resource_ids_are_lossless_canonical_and_bounded() {
+        let tag = "design/日本語";
+        let id = tag_resource_id(tag);
+        assert_eq!(tag_from_resource_id(&id).as_deref(), Some(tag));
+        assert!(tag_from_resource_id("feeds.tag:44455349474e").is_none());
+        assert!(tag_from_resource_id("feeds.tag:0").is_none());
+        assert!(tag_from_resource_id(&format!("feeds.tag:{}", "aa".repeat(193))).is_none());
     }
 
     /// A demo reader synced into a fresh document, plus the app that owns it.
@@ -1009,6 +1270,20 @@ mod tests {
             "the star landed on both replicas"
         );
         assert!(FeedsDoc::load(&b).article(article).unwrap().starred);
+
+        let tags = vec!["design".to_string(), "later".to_string()];
+        let action = set_article_tags_action(article, &tags);
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "tag edit replayed identically"
+        );
+        assert_eq!(
+            FeedsDoc::load(&b).article(article).unwrap().tags,
+            ["design", "later"]
+        );
     }
 
     #[test]
