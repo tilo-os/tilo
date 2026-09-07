@@ -523,14 +523,14 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.set_modifiers(ModifiersState::empty());
         }
         Action::OpenPalette => {
-            // Drive Ctrl+K through the host's keyboard branch instead
+            // Drive the default Super+K binding through the host's keyboard branch instead
             // of `set_palette_visible(true)` directly — the hotkey path
             // calls `toggle_palette()` which also focuses the palette
             // input + clears the residual query (see ShellOverlayHost::
             // toggle_palette). Without that, subsequent `Type(_)`
             // actions would fall through because the palette ignores
             // characters when `!is_focused`.
-            driver.set_modifiers(ModifiersState::CONTROL);
+            driver.set_modifiers(ModifiersState::SUPER);
             driver.press_key(&Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
         }
