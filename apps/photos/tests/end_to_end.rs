@@ -841,10 +841,11 @@ fn every_toolbar_control_is_inside_the_window_at_every_size() {
 
         let window = hz.window_rect();
         let items = hz.app.toolbar_item_rects();
+        let expected_visible = if w < 600.0 { 5 } else { 8 };
         assert_eq!(
             items.len(),
-            8,
-            "{w}x{h}: the toolbar lost a control entirely"
+            expected_visible,
+            "{w}x{h}: the toolbar lost a visible control entirely"
         );
 
         for (name, r) in items {
