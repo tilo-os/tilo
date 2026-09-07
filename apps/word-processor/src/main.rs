@@ -57,6 +57,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
+use qos_actions::Action;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -116,6 +117,8 @@ fn main() {
                 "--history",
                 "--styles",
                 "--comments",
+                "--threaded-comments",
+                "--find",
                 "--error",
                 "--image-object",
             ])
@@ -157,8 +160,15 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     // review representative rather than maintaining a second mock renderer.
     let (state, mut wp) = build_concrete(file)?;
     let mut state = state;
-    if args.has("--comments") {
+    if args.has("--comments") || args.has("--threaded-comments") {
         seed_review(&mut state, &mut wp)?;
+    }
+    if args.has("--threaded-comments") {
+        seed_comment_thread(&mut state, &mut wp)?;
+    }
+    if args.has("--find") {
+        wp.sync(&mut state.doc, &state.root);
+        wp.stage_find_for_shot(&state.doc, "report");
     }
     if args.has("--image-object") {
         seed_selected_image(&mut state, &mut wp)?;
@@ -270,6 +280,45 @@ fn seed_review(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(), Bo
     );
     doc.track_insert(&block, len, " — reviewed", "Jonas Weber", "2026-09-05");
     wp.sync(&mut state.doc, &state.root);
+    Ok(())
+}
+
+/// Give the ordinary comments scenario a pair of persisted replies, then open
+/// the production thread panel. This exercises the same document model used by
+/// collaborators, rather than drawing a fixture-only discussion bubble.
+fn seed_comment_thread(
+    state: &mut State,
+    wp: &mut WordProcessorWidget,
+) -> Result<(), Box<dyn Error>> {
+    let containers = qdoc::model::open(&state.doc, &state.root)?;
+    let comment = qdoc::model::materialize(&state.doc, &containers)
+        .comments
+        .into_iter()
+        .next()
+        .map(|comment| comment.id)
+        .ok_or("thread shot did not create a comment")?;
+    word_processor::actions::reply_to_comment_action(
+        &comment,
+        "Jonas Weber",
+        "2026-09-06",
+        "I can revise the opening.",
+    )
+    .apply(&mut state.doc)?;
+    word_processor::actions::reply_to_comment_action(
+        &comment,
+        "Maya Chen",
+        "2026-09-07",
+        "Thanks — please keep the decision clear.",
+    )
+    .apply(&mut state.doc)?;
+    state.doc.commit();
+    let thread = qdoc::model::materialize(&state.doc, &containers)
+        .comments
+        .into_iter()
+        .find(|item| item.id == comment)
+        .ok_or("thread shot could not materialize replies")?;
+    wp.sync(&mut state.doc, &state.root);
+    wp.stage_comment_thread_for_shot(thread);
     Ok(())
 }
 

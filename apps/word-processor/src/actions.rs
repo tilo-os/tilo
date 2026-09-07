@@ -38,9 +38,15 @@ pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WordProcessorOperation {
-    Open { path: Option<String> },
-    Save { path: Option<String> },
-    SaveAs { path: Option<String> },
+    Open {
+        path: Option<String>,
+    },
+    Save {
+        path: Option<String>,
+    },
+    SaveAs {
+        path: Option<String>,
+    },
     Find,
     ZoomIn,
     ZoomOut,
@@ -50,6 +56,17 @@ pub enum WordProcessorOperation {
     ToggleRuler,
     ToggleOutline,
     ToggleHistory,
+    /// Focus one exact body range. Used by bounded search-hit/comment resources
+    /// instead of an index into the renderer's transient cache.
+    NavigateTo {
+        block: String,
+        start: usize,
+        end: usize,
+    },
+    /// Open history focused on a stable change-graph position.
+    ShowRevision {
+        index: usize,
+    },
 }
 
 /// Decode an application-owned word-processor operation payload.
@@ -292,6 +309,25 @@ pub enum WordProcessorAction {
     RejectChanges { id: Option<String> },
     /// Resolve a comment by removing both its anchor mark and record.
     ResolveComment { id: String },
+    /// Add a durable root comment anchored to one exact body range. The comment
+    /// and its first body block are minted inside `apply`, so replay gets the
+    /// same stable CRDT ids as the originating action.
+    AddComment {
+        block: String,
+        start: usize,
+        end: usize,
+        author: String,
+        date: String,
+        text: String,
+    },
+    /// Append a durable reply below an existing comment thread. Parent ids are
+    /// stable resources; stale/deleted parents refuse atomically.
+    ReplyToComment {
+        comment: String,
+        author: String,
+        date: String,
+        text: String,
+    },
 }
 
 // Action payloads may arrive after the document has changed (or from an
@@ -526,6 +562,32 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             .is_none_or(|id| snap.changes.iter().any(|change| &change.id == id)),
         WordProcessorAction::ResolveComment { id } => {
             !id.is_empty() && snap.comments.iter().any(|comment| comment.id == *id)
+        }
+        WordProcessorAction::AddComment {
+            block,
+            start,
+            end,
+            author,
+            date,
+            text,
+        } => {
+            block_len(RegionKind::Body, block).is_some_and(|len| *start < *end && *end <= len)
+                && !author.trim().is_empty()
+                && author.chars().count() <= 256
+                && date.chars().count() <= 128
+                && safe_text(text)
+        }
+        WordProcessorAction::ReplyToComment {
+            comment,
+            author,
+            date,
+            text,
+        } => {
+            snap.comments.iter().any(|entry| entry.id == *comment)
+                && !author.trim().is_empty()
+                && author.chars().count() <= 256
+                && date.chars().count() <= 128
+                && safe_text(text)
         }
     }
 }
@@ -950,7 +1012,31 @@ fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
         dm.remove_mark(&block, start, end, qdoc::schema::MARK_COMMENT);
     }
     if let Some(comments) = dm.c.comments.as_ref() {
+        // Thread replies are sibling records in the canonical comments map,
+        // not dangling private overlay state. Remove them deterministically
+        // before their parent so a resolved thread leaves no orphan resources.
+        let mut replies = qdoc::model::comment_reply_ids(dm.doc, dm.c, id);
+        replies.sort();
+        for reply in replies {
+            let _ = dm.doc.delete(comments, reply);
+        }
         let _ = dm.doc.delete(comments, id);
+    }
+}
+
+fn apply_add_comment(
+    dm: &mut DocMut,
+    block: &str,
+    start: usize,
+    end: usize,
+    author: &str,
+    date: &str,
+    text: &str,
+) {
+    let id = dm.insert_comment(author, date);
+    if let Some(body) = dm.insert_comment_block(&id, None, "paragraph") {
+        dm.splice_comment_text(&id, &body, 0, 0, text);
+        dm.add_comment_mark(block, start, end, &id);
     }
 }
 
@@ -1148,6 +1234,24 @@ impl Action for WordProcessorAction {
 
             WordProcessorAction::ResolveComment { id } => {
                 apply_resolve_comment(&mut dm, id);
+            }
+
+            WordProcessorAction::AddComment {
+                block,
+                start,
+                end,
+                author,
+                date,
+                text,
+            } => apply_add_comment(&mut dm, block, *start, *end, author, date, text),
+
+            WordProcessorAction::ReplyToComment {
+                comment,
+                author,
+                date,
+                text,
+            } => {
+                let _ = dm.add_comment_reply(comment, author, date, text);
             }
         }
         Ok(())
@@ -1415,6 +1519,40 @@ pub fn replace_selection_action(
     }
 }
 
+/// Add a root comment over one resolved selection range.
+pub fn add_comment_action(
+    block: &str,
+    start: usize,
+    end: usize,
+    author: &str,
+    date: &str,
+    text: &str,
+) -> WordProcessorAction {
+    WordProcessorAction::AddComment {
+        block: block.to_string(),
+        start,
+        end,
+        author: author.to_string(),
+        date: date.to_string(),
+        text: text.to_string(),
+    }
+}
+
+/// Append one durable reply to the stable parent comment resource.
+pub fn reply_to_comment_action(
+    comment: &str,
+    author: &str,
+    date: &str,
+    text: &str,
+) -> WordProcessorAction {
+    WordProcessorAction::ReplyToComment {
+        comment: comment.to_string(),
+        author: author.to_string(),
+        date: date.to_string(),
+        text: text.to_string(),
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -1441,6 +1579,10 @@ pub struct WpResourceCtx {
     /// Replace selection operation to exactly what the user has selected.
     pub selection: Option<SelectionTarget>,
     pub region: RegionKind,
+    /// Current Find results, capped before they enter the global resource tree.
+    /// Each carries CRDT block identity + exact character range, never a
+    /// renderer index that would drift under a collaborator's edit.
+    pub search_hits: Vec<SearchTarget>,
 }
 
 /// One non-empty selection expressed as stable block ids and character offsets.
@@ -1451,6 +1593,20 @@ pub struct SelectionTarget {
     pub end_block: String,
     pub end: usize,
 }
+
+/// A bounded, precisely addressable Find result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchTarget {
+    pub block: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Resource enumeration is intentionally bounded: a giant document can still
+/// search completely, but Ctrl+K/global search gets the first useful page and
+/// never allocates one resource object per occurrence forever.
+pub const MAX_RESOURCE_SEARCH_HITS: usize = 64;
+pub const MAX_RESOURCE_REVISIONS: usize = 64;
 
 fn immediate_spec(id: &str, label: &str, action: &WordProcessorAction) -> ActionSpec {
     // Built from `encode`, which is total, rather than the fallible
@@ -1479,6 +1635,26 @@ fn short(text: &str, fallback: &str) -> String {
     } else {
         t.to_string()
     }
+}
+
+/// Human label for a stable document range without retaining a separate search
+/// text cache. The caller materializes once, then each bounded result borrows
+/// from that snapshot.
+fn range_label(
+    blocks: &[qdoc::snapshot::BlockView],
+    block: &str,
+    start: usize,
+    end: usize,
+) -> Option<String> {
+    let text: String = blocks
+        .iter()
+        .find(|entry| entry.id == block)?
+        .text
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
 /// Build the resource tree the word processor currently has open: the document
@@ -1630,6 +1806,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     }
     if let Some(selection) = &ctx.selection {
         let selection = selection.clone();
+        let root_selection = selection.clone();
         let region = ctx.region;
         root = root.with_action(ActionSpec::typed(
             "replace-selection",
@@ -1650,6 +1827,45 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 };
                 encode(&replace_selection_action(
                     region,
+                    &root_selection.start_block,
+                    root_selection.start,
+                    &root_selection.end_block,
+                    root_selection.end,
+                    text,
+                ))
+            },
+        ));
+
+        // Selection is a first-class, exact-range resource as well as a root
+        // convenience action. Agents/global search can target it without
+        // reconstructing a UI-local selection from an unstable block index.
+        let selection_resource = Resource::new(
+            format!(
+                "word-processor.selection:{}:{}:{}:{}",
+                selection.start_block, selection.start, selection.end_block, selection.end
+            ),
+            "word_processor.selection",
+            "Current selection",
+        )
+        .with_action(ActionSpec::typed(
+            "replace",
+            "Replace selection",
+            "Replacement text for this exact selection",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required_owned(
+                "text",
+                ParamType::Text,
+                "Replacement text",
+            )],
+            move |args: &ActionArgs| {
+                let Some(text) = args.text("text") else {
+                    return EncodedAction {
+                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"replacement text is required".to_vec(),
+                    };
+                };
+                encode(&replace_selection_action(
+                    region,
                     &selection.start_block,
                     selection.start,
                     &selection.end_block,
@@ -1658,6 +1874,101 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 ))
             },
         ));
+        root = root.with_child(selection_resource);
+    }
+
+    // Creating a comment is a real collaborative action, not a local overlay.
+    // A multi-block selection stays available for replacement/formatting; its
+    // comment action is withheld because qdoc comment anchors intentionally
+    // address one stable block range at a time.
+    if ctx.region == RegionKind::Body
+        && let Some(selection) = &ctx.selection
+        && selection.start_block == selection.end_block
+        && selection.start < selection.end
+    {
+        let target = selection.clone();
+        root = root.with_action(ActionSpec::typed(
+            "add-comment",
+            "Add comment",
+            "Comment text and author for the selected text",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned("author", ParamType::Text, "Comment author"),
+                ActionParam::required_owned("text", ParamType::Text, "Comment text"),
+                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
+            ],
+            move |args: &ActionArgs| {
+                let author = args.text("author").unwrap_or_default().trim();
+                let text = args.text("text").unwrap_or_default();
+                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                    return EncodedAction {
+                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"comment author is required and comment text is too long"
+                            .to_vec(),
+                    };
+                }
+                encode(&add_comment_action(
+                    &target.start_block,
+                    target.start,
+                    target.end,
+                    author,
+                    args.text("date").unwrap_or_default(),
+                    text,
+                ))
+            },
+        ));
+    }
+
+    // Materialize the stable content once for all structural resources below.
+    // This intentionally sits outside the bounded per-hit loops.
+    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+        return vec![root];
+    };
+    let snap = qdoc::model::materialize(doc, &c);
+
+    if !ctx.search_hits.is_empty() {
+        let mut search = Resource::new(
+            "word-processor.search-results",
+            "word_processor.search-results",
+            "Search results",
+        );
+        let mut seen = HashSet::new();
+        let mut result_index = 0usize;
+        for hit in &ctx.search_hits {
+            if !seen.insert((hit.block.as_str(), hit.start, hit.end)) {
+                continue;
+            }
+            if result_index >= MAX_RESOURCE_SEARCH_HITS {
+                break;
+            }
+            result_index += 1;
+            let label = range_label(&snap.blocks, &hit.block, hit.start, hit.end)
+                .unwrap_or_else(|| format!("Result {result_index}"));
+            let view_operation = WordProcessorOperation::NavigateTo {
+                block: hit.block.clone(),
+                start: hit.start,
+                end: hit.end,
+            };
+            if let Some(spec) = operation(
+                "go-to",
+                "Go to result",
+                OperationKind::View,
+                &view_operation,
+            ) {
+                search = search.with_child(
+                    Resource::new(
+                        format!(
+                            "word-processor.search-hit:{}:{}:{}",
+                            hit.block, hit.start, hit.end
+                        ),
+                        "word_processor.search-hit",
+                        label,
+                    )
+                    .with_action(spec),
+                );
+            }
+        }
+        root = root.with_child(search);
     }
     let image_anchor = ctx.caret_block.clone();
     let image_offset = ctx.caret_offset;
@@ -1711,12 +2022,6 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         ));
     }
 
-    // Structural children enumerated from the shared document.
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
-        return vec![root];
-    };
-    let snap = qdoc::model::materialize(doc, &c);
-
     // Review is document state, not an overlay-only island: comments and
     // tracked changes are navigable resources, and every resolution decision
     // is the same typed, replayable action used by the margin cards.
@@ -1747,20 +2052,79 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 short(&comment.author, "Unknown author"),
                 short(&text, "Empty comment")
             );
-            review = review.with_child(
-                Resource::new(
-                    format!("word-processor.comment:{}", comment.id),
-                    "word_processor.comment",
-                    label,
-                )
-                .with_action(immediate_spec(
-                    "resolve",
-                    "Resolve comment",
-                    &WordProcessorAction::ResolveComment {
-                        id: comment.id.clone(),
+            let mut comment_resource = Resource::new(
+                format!("word-processor.comment:{}", comment.id),
+                "word_processor.comment",
+                label,
+            )
+            .with_action(immediate_spec(
+                "resolve",
+                "Resolve comment",
+                &WordProcessorAction::ResolveComment {
+                    id: comment.id.clone(),
+                },
+            ));
+            if let Some((block, start, end)) = &comment.range
+                && let Some(spec) = operation(
+                    "go-to-anchor",
+                    "Go to commented text",
+                    OperationKind::View,
+                    &WordProcessorOperation::NavigateTo {
+                        block: block.clone(),
+                        start: *start,
+                        end: *end,
                     },
-                )),
-            );
+                )
+            {
+                comment_resource = comment_resource.with_action(spec);
+            }
+            for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
+                let reply_text = reply
+                    .blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                comment_resource = comment_resource.with_child(Resource::new(
+                    format!("word-processor.comment-reply:{}:{}", comment.id, reply.id),
+                    "word_processor.comment-reply",
+                    format!(
+                        "Reply by {}: {}",
+                        short(&reply.author, "Unknown author"),
+                        short(&reply_text, "Empty reply")
+                    ),
+                ));
+            }
+            let parent = comment.id.clone();
+            comment_resource = comment_resource.with_action(ActionSpec::typed(
+                "reply",
+                "Reply to comment",
+                "Reply text and author, stored in the shared comment thread",
+                ExecutionLocus::ClientLocal,
+                vec![
+                    ActionParam::required_owned("author", ParamType::Text, "Reply author"),
+                    ActionParam::required_owned("text", ParamType::Text, "Reply text"),
+                    ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
+                ],
+                move |args: &ActionArgs| {
+                    let author = args.text("author").unwrap_or_default().trim();
+                    let text = args.text("text").unwrap_or_default();
+                    if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
+                        return EncodedAction {
+                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            payload: b"reply author is required and reply text is too long"
+                                .to_vec(),
+                        };
+                    }
+                    encode(&reply_to_comment_action(
+                        &parent,
+                        author,
+                        args.text("date").unwrap_or_default(),
+                        text,
+                    ))
+                },
+            ));
+            review = review.with_child(comment_resource);
         }
         for change in &snap.changes {
             let kind = match change.kind {
@@ -1790,6 +2154,46 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             );
         }
         root = root.with_child(review);
+    }
+
+    // The change graph is also searchable: expose a bounded tail as stable
+    // hash-addressed revision resources. The action is view-only and opens the
+    // existing history strip at the exact graph position.
+    // Automerge exposes causal history through a mutable reader API even
+    // though enumeration itself is read-only. Clone the lightweight document
+    // handle so the resource-provider contract remains immutable.
+    let mut history_doc = doc.clone();
+    let changes = history_doc.get_changes(&[]);
+    if !changes.is_empty() {
+        let mut history = Resource::new(
+            "word-processor.revisions",
+            "word_processor.revisions",
+            "Revision history",
+        );
+        let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
+        for (index, change) in changes.iter().enumerate().skip(start) {
+            let label = change.message().map_or_else(
+                || format!("Revision {}", index + 1),
+                |message| short(message, "Revision"),
+            );
+            let view_operation = WordProcessorOperation::ShowRevision { index };
+            if let Some(spec) = operation(
+                "show",
+                "Show revision",
+                OperationKind::View,
+                &view_operation,
+            ) {
+                history = history.with_child(
+                    Resource::new(
+                        format!("word-processor.revision:{}", change.hash()),
+                        "word_processor.revision",
+                        label,
+                    )
+                    .with_action(spec),
+                );
+            }
+        }
+        root = root.with_child(history);
     }
 
     if !snap.notes.is_empty() {
@@ -2286,6 +2690,7 @@ mod tests {
             format_spans: Vec::new(),
             selection: None,
             region: RegionKind::Body,
+            search_hits: Vec::new(),
         };
         let resources = provide_resources(&ctx, &state.doc);
         let doc_res = &resources[0];
@@ -2339,6 +2744,7 @@ mod tests {
             caret_block: block.clone(),
             caret_offset: 4,
             target_blocks: vec![block.clone()],
+            search_hits: Vec::new(),
         };
         let root = provide_resources(&ctx, &state.doc).pop().unwrap();
         let replace = root
@@ -2397,6 +2803,7 @@ mod tests {
             format_spans: Vec::new(),
             selection: None,
             region: RegionKind::Body,
+            search_hits: Vec::new(),
         };
         let resources = provide_resources(&ctx, &state.doc);
         for id in ["open", "save", "save-as"] {
@@ -2428,6 +2835,7 @@ mod tests {
             format_spans: Vec::new(),
             selection: None,
             region: RegionKind::Body,
+            search_hits: Vec::new(),
         };
         let bytes = b"content supplied by a preceding action";
         let hash = qdoc::blobstore::put(bytes).expect("test fixture fits blob quota");
@@ -2485,6 +2893,7 @@ mod tests {
             format_spans: Vec::new(),
             selection: None,
             region: RegionKind::Body,
+            search_hits: Vec::new(),
         };
         let resources = provide_resources(&ctx, &state.doc);
         assert_eq!(resources.len(), 1, "one document root");
@@ -2609,6 +3018,7 @@ mod tests {
             format_spans: Vec::new(),
             selection: None,
             region: RegionKind::Body,
+            search_hits: Vec::new(),
         };
         let resources = provide_resources(&ctx, &a.doc);
         let review = resources[0]
@@ -2651,6 +3061,105 @@ mod tests {
         );
         assert!(snap.changes.is_empty(), "accepted change left review state");
         assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
+    }
+
+    #[test]
+    fn durable_comment_reply_action_replays_and_resolve_cleans_the_thread() {
+        let (mut a, ids) = seeded("Review this paragraph\n");
+        let block = ids[0].clone();
+        let containers = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let comment = {
+            let mut ids = qdoc::model::seeded_id_gen(&a.doc, &containers);
+            let mut dm = DocMut {
+                doc: &mut a.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
+            dm.add_comment(&block, 0, 6, "Maya", "Please clarify")
+        };
+        a.doc.commit();
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+
+        let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
+        let envelope = qos_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
+        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "reply replays exactly"
+        );
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let comments = qdoc::model::materialize_comments(&a.doc, &c);
+        assert_eq!(comments[0].replies.len(), 1);
+        assert_eq!(comments[0].replies[0].author, "Jonas");
+        assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
+
+        let resolve = WordProcessorAction::ResolveComment { id: comment };
+        let envelope = qos_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        assert_eq!(
+            a.doc.get_heads(),
+            b.doc.get_heads(),
+            "resolution replays exactly"
+        );
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        assert!(qdoc::model::materialize_comments(&a.doc, &c).is_empty());
+    }
+
+    #[test]
+    fn resource_results_and_revisions_are_bounded_and_precisely_addressable() {
+        let (state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
+        let block = ids[0].clone();
+        let ctx = WpResourceCtx {
+            caret_block: block.clone(),
+            caret_offset: 0,
+            target_blocks: vec![block.clone()],
+            format_spans: Vec::new(),
+            selection: Some(SelectionTarget {
+                start_block: block.clone(),
+                start: 0,
+                end_block: block.clone(),
+                end: 4,
+            }),
+            region: RegionKind::Body,
+            search_hits: (0..MAX_RESOURCE_SEARCH_HITS + 8)
+                .map(|start| SearchTarget {
+                    block: block.clone(),
+                    start,
+                    end: start + 1,
+                })
+                .collect(),
+        };
+        let resources = provide_resources(&ctx, &state.doc);
+        let root = &resources[0];
+        assert!(
+            root.children
+                .iter()
+                .any(|resource| resource.kind == "word_processor.selection")
+        );
+        let results = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "word-processor.search-results")
+            .expect("bounded search result group");
+        assert_eq!(results.children.len(), MAX_RESOURCE_SEARCH_HITS);
+        assert!(results.children.iter().all(|hit| {
+            hit.actions.iter().any(|action| action.id == "go-to")
+                && hit.id.as_str().contains(&block)
+        }));
+        let revisions = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "word-processor.revisions")
+            .expect("history resource group");
+        assert!(revisions.children.len() <= MAX_RESOURCE_REVISIONS);
+        assert!(
+            revisions
+                .children
+                .iter()
+                .all(|revision| revision.actions.iter().any(|action| action.id == "show"))
+        );
     }
 
     #[test]
