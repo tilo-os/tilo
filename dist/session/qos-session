@@ -18,6 +18,7 @@ SESSION_TARGET=qos-graphical-session.target
 target_started=0
 environment_imported=0
 shell_pid=
+logout_request=
 
 # `DesktopNames=nirios` in the .desktop entry selects nirios-portals.conf;
 # display managers export it as XDG_CURRENT_DESKTOP, but not every one does,
@@ -47,6 +48,10 @@ if [ ! -x "$DBUS_UPDATE" ]; then
 fi
 
 stop_target() {
+    if [ -n "$logout_request" ]; then
+        rm -f -- "$logout_request"
+        logout_request=
+    fi
     if [ "$target_started" = 1 ]; then
         "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
         target_started=0
@@ -173,6 +178,20 @@ else
 fi
 target_started=1
 
+# The compositor must not terminate its own logind session: that kills this
+# cleanup-owning wrapper in the same cgroup and leaves qOS's user targets active
+# for the next desktop. Give it a private, unpredictable request path instead.
+# On logout the shell creates this file and exits; the wrapper's normal EXIT
+# trap then tears down the target and activation environment before GDM starts
+# another session.
+session_runtime=${XDG_RUNTIME_DIR:?}/qos-session
+mkdir -p -- "$session_runtime"
+chmod 0700 "$session_runtime"
+logout_request=$session_runtime/logout-request-$$
+rm -f -- "$logout_request"
+QOS_SESSION_LOGOUT_REQUEST=$logout_request
+export QOS_SESSION_LOGOUT_REQUEST
+
 # --host-desktop-session is the package-owned, distro-neutral declaration that
 # this is a session added to an existing Linux installation. It keeps device
 # identity material in this login's XDG data tree and selects the reduced
@@ -204,4 +223,7 @@ wait "$shell_pid"
 status=$?
 set -e
 shell_pid=
+if [ -e "$logout_request" ]; then
+    status=0
+fi
 exit "$status"
