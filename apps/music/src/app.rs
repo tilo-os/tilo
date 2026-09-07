@@ -890,6 +890,25 @@ impl MusicApp {
         (v, String::new())
     }
 
+    /// Convert a published top-level destination id back to its concrete view.
+    /// The resource layer only admits ids from `NAVIGATION_VIEWS`; this router
+    /// keeps the final local navigation step equally explicit.
+    fn top_level_view(id: &str) -> Option<View> {
+        match id {
+            "home" => Some(View::Home),
+            "songs" => Some(View::Songs),
+            "albums" => Some(View::Albums),
+            "artists" => Some(View::Artists),
+            "playlists" => Some(View::Playlists),
+            "downloads" => Some(View::Downloads),
+            "liked" => Some(View::Liked),
+            "search" => Some(View::Search),
+            "queue" => Some(View::Queue),
+            "lyrics" => Some(View::Lyrics),
+            _ => None,
+        }
+    }
+
     // ---- state plumbing ---------------------------------------------------
 
     fn ensure_seeded(&mut self, state: &mut AutoCommit) {
@@ -1136,12 +1155,19 @@ impl MusicApp {
                     .collect(),
             })
             .collect();
+        // HashMap iteration is deliberately unspecified. Sort before applying
+        // the contextual page cap so the palette's initial resource set is
+        // stable across process runs and peers.
+        let mut tracks = self.lib.tracks.values().collect::<Vec<_>>();
+        tracks.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut albums = self.lib.albums.values().collect::<Vec<_>>();
+        albums.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut artists = self.lib.artists.values().collect::<Vec<_>>();
+        artists.sort_by(|a, b| a.id.cmp(&b.id));
         crate::actions::MusicResourceCtx {
             playlists,
-            tracks: self
-                .lib
-                .tracks
-                .values()
+            tracks: tracks
+                .into_iter()
                 .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
                 .map(|track| crate::actions::CatalogTrackResource {
                     id: track.id.clone(),
@@ -1152,10 +1178,8 @@ impl MusicApp {
                     liked: self.lib.is_liked(&track.id),
                 })
                 .collect(),
-            albums: self
-                .lib
-                .albums
-                .values()
+            albums: albums
+                .into_iter()
                 .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
                 .map(|album| crate::actions::CatalogAlbumResource {
                     id: album.id.clone(),
@@ -1163,10 +1187,8 @@ impl MusicApp {
                     saved: self.lib.is_album_saved(&album.id),
                 })
                 .collect(),
-            artists: self
-                .lib
-                .artists
-                .values()
+            artists: artists
+                .into_iter()
                 .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
                 .map(|artist| crate::actions::CatalogArtistResource {
                     id: artist.id.clone(),
@@ -1189,6 +1211,12 @@ impl MusicApp {
     ) -> Option<crate::actions::MusicResourceCtx> {
         if id == "music.library" {
             return Some(self.music_resource_ctx());
+        }
+        if crate::actions::parse_view_resource_id(id).is_some() {
+            return Some(crate::actions::MusicResourceCtx {
+                playback: self.pb.clone(),
+                ..Default::default()
+            });
         }
         let mut ctx = crate::actions::MusicResourceCtx {
             playback: self.pb.clone(),
@@ -3243,11 +3271,13 @@ impl MusicApp {
         }
     }
 
-    /// Stage the header search pill focused with an empty query for a `--shots`
-    /// frame — captures the caret at the field start (it must not sit at the end
-    /// of the placeholder hint). `search_focused` is plain widget state, so no
-    /// deferral is needed.
+    /// Stage the Search page's field focused with an empty query for a
+    /// `--shots` frame — captures the caret at the field start (it must not sit
+    /// at the end of the placeholder hint). This deliberately opens Search:
+    /// compact non-search headers replace their field with a button, so leaving
+    /// the view on Home would produce a misleading `search-focus` screenshot.
     pub fn snap_search_focus(&mut self) {
+        self.view = View::Search;
         self.search_input.set_focus(true);
         self.search_input.set_text("");
     }
@@ -5749,6 +5779,72 @@ mod tests {
             )
             .expect_err("stale membership must refuse to open");
         assert!(error.contains("membership is no longer present"));
+    }
+
+    #[test]
+    fn canonical_top_level_view_operation_routes_without_mutating_the_document() {
+        let (mut app, mut doc) = app_with_doc();
+        let resource_id = crate::actions::view_resource_id("downloads");
+        let resource =
+            <MusicApp as qos_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
+                .expect("published destination resolves at the authority door");
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("view resource exposes open");
+        let operation = match &open.input {
+            qos_actions::ActionInput::Immediate(operation) => operation,
+            qos_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
+        };
+        let heads = doc.get_heads();
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                &operation.type_id,
+                &operation.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("known canonical destination routes")
+        );
+        assert_eq!(app.view, View::Downloads);
+        assert_eq!(doc.get_heads(), heads, "view navigation remains local");
+
+        let forged = serde_json::to_vec(&crate::actions::MusicOperation::OpenView {
+            id: "../../unsafe-local-path".into(),
+        })
+        .expect("operation encodes");
+        assert!(
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &forged,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn search_focus_shot_opens_the_search_destination() {
+        let mut app = MusicApp::new();
+        app.snap_search_focus();
+        assert_eq!(app.view, View::Search);
+        assert!(app.search_input.is_focused());
+        assert!(app.search_input.value().is_empty());
+    }
+
+    #[test]
+    fn every_published_top_level_destination_has_a_local_router_target() {
+        for &(id, _) in crate::actions::NAVIGATION_VIEWS {
+            assert!(
+                MusicApp::top_level_view(id).is_some(),
+                "published destination {id:?} must route locally"
+            );
+        }
+        assert!(MusicApp::top_level_view("not-a-view").is_none());
     }
 
     #[test]
