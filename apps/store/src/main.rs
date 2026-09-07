@@ -153,26 +153,6 @@ impl LiveStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_store_uri;
-
-    #[test]
-    fn store_deep_link_accepts_only_a_stable_app_identity() {
-        assert_eq!(
-            parse_store_uri("qos-store:app/dev.qos.notes").unwrap(),
-            "dev.qos.notes"
-        );
-        for invalid in [
-            "qos-store:app/",
-            "qos-store:app/dev.qos.notes?install=true",
-            "qos-store:remote/dev.qos.notes",
-        ] {
-            assert!(parse_store_uri(invalid).is_err(), "{invalid}");
-        }
-    }
-}
-
 impl ui::widget::Widget for LiveStore {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         self.inner.local_resource_operation_handlers()
@@ -457,5 +437,25 @@ impl ui::widget::Widget for LiveStore {
     }
     fn needs_animation_frame(&self) -> bool {
         self.worker.has_pending() || self.inner.needs_animation_frame()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_store_uri;
+
+    #[test]
+    fn store_deep_link_accepts_only_a_stable_app_identity() {
+        assert_eq!(
+            parse_store_uri("qos-store:app/dev.qos.notes").unwrap(),
+            "dev.qos.notes"
+        );
+        for invalid in [
+            "qos-store:app/",
+            "qos-store:app/dev.qos.notes?install=true",
+            "qos-store:remote/dev.qos.notes",
+        ] {
+            assert!(parse_store_uri(invalid).is_err(), "{invalid}");
+        }
     }
 }
