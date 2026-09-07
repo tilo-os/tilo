@@ -536,11 +536,18 @@ fn exited_pty_publishes_a_persistent_disconnected_accessibility_state() {
         widget.is_disconnected(),
         "PTY EOF must settle the session state"
     );
+    let node = Widget::accessibility(&widget).expect("terminal semantics");
     assert!(
-        Widget::accessibility(&widget)
-            .and_then(|node| node.description)
+        node.description
             .is_some_and(|description| description.contains("Session ended"))
     );
+    assert!(node.children.iter().any(|child| {
+        child
+            .name
+            .as_deref()
+            .is_some_and(|name| name.contains("Session ended"))
+            && child.live == Some(ui::a11y::Politeness::Assertive)
+    }));
 }
 
 #[test]
@@ -1458,6 +1465,194 @@ fn terminal_resource_uses_the_shared_pane_identity() {
         Widget::control_action_bindings(&w).len(),
         0,
         "resource actions are command-palette/agent operations, not phantom controls"
+    );
+}
+
+#[test]
+fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
+    use ui::widget::Widget;
+
+    let (mut widget, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 120.0), 10.0, 20.0);
+    widget.init_crdt(&mut doc, &ROOT);
+    widget.feed(
+        &mut doc,
+        &ROOT,
+        b"\x1b]2;build session\x07\x1b]8;;https://qos.example/docs\x1b\\docs\x1b]8;;\x1b\\",
+    );
+    widget.sync(&mut doc, &ROOT);
+
+    let root = Widget::resources(&widget, &doc)
+        .into_iter()
+        .next()
+        .expect("session root");
+    assert_eq!(root.label, "Terminal — build session");
+    let transcript = root
+        .children
+        .iter()
+        .find(|resource| resource.kind == "terminal.transcript")
+        .expect("transcript child");
+    let link = transcript
+        .children
+        .iter()
+        .find(|resource| resource.kind == "terminal.link")
+        .expect("visible OSC link child");
+    assert_eq!(link.label, "https://qos.example/docs");
+    assert!(Widget::resource(&widget, &doc, link.id.as_str()).is_some());
+    let semantics = Widget::accessibility(&widget).expect("terminal semantics");
+    assert!(semantics.children.iter().any(|child| {
+        child.role == ui::a11y::Role::Link
+            && child.name.as_deref() == Some("https://qos.example/docs")
+            && child.action_target.as_deref() == Some(link.id.as_str())
+            && child.state.focusable
+    }));
+    let initial_revision =
+        Widget::action_directory_revision(&widget, &doc).expect("terminal directory revision");
+
+    let mut link_burst = Vec::new();
+    for index in 0..40 {
+        link_burst.extend_from_slice(
+            format!("\x1b]8;;https://qos.example/{index}\x1b\\x\x1b]8;;\x1b\\").as_bytes(),
+        );
+    }
+    widget.feed(&mut doc, &ROOT, &link_burst);
+    widget.sync(&mut doc, &ROOT);
+    assert_ne!(
+        Widget::action_directory_revision(&widget, &doc).as_deref(),
+        Some(initial_revision.as_str()),
+        "new visible link resources invalidate the directory snapshot"
+    );
+    let bounded = Widget::resources(&widget, &doc)
+        .into_iter()
+        .next()
+        .and_then(|root| {
+            root.children
+                .into_iter()
+                .find(|resource| resource.kind == "terminal.transcript")
+        })
+        .expect("bounded transcript");
+    assert_eq!(
+        bounded.children.len(),
+        32,
+        "visible link projection is capped"
+    );
+    let prefix = bounded.children[0]
+        .id
+        .as_str()
+        .rsplit_once(':')
+        .map(|(prefix, _)| prefix)
+        .expect("link id suffix");
+    assert!(
+        Widget::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
+        "a link omitted from the contextual cap resolves lazily"
+    );
+
+    let page = Widget::action_directory_resource_page(&widget, &doc, b"", 1)
+        .expect("bounded directory page");
+    assert_eq!(page.resources.len(), 1);
+    assert!(page.exhausted && page.next_cursor.is_empty());
+    let exhausted = Widget::action_directory_resource_page(&widget, &doc, b"done", 1)
+        .expect("terminal owns its empty tail page");
+    assert!(exhausted.resources.is_empty() && exhausted.exhausted);
+}
+
+#[test]
+fn only_shift_page_keys_control_local_scrollback() {
+    use winit::keyboard::{Key, NamedKey};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 80.0), 10.0, 20.0);
+    widget.force_grid((0..30).map(|i| format!("line {i}")).collect());
+    widget.scroll_to_top();
+    let before = widget.scroll_offset();
+
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::PageDown),
+        false,
+        false,
+    );
+    assert_eq!(drain_writes(&writes), b"\x1b[6~".to_vec());
+    assert_eq!(
+        widget.scroll_offset(),
+        0,
+        "PTY input returns to live output"
+    );
+
+    widget.scroll_to_top();
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::PageDown),
+        false,
+        true,
+    );
+    assert!(widget.scroll_offset() < before);
+    assert!(drain_writes(&writes).is_empty(), "Shift paging stays local");
+}
+
+#[test]
+fn context_menu_is_keyboard_navigable_and_semantically_complete() {
+    use winit::event::{ElementState, MouseButton};
+    use winit::keyboard::{Key, NamedKey};
+
+    let (mut widget, _writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 120.0), 10.0, 20.0);
+    widget.force_grid(vec!["one".into(), "two".into()]);
+    send_cursor_move(&mut widget, &mut doc, 40.0, 40.0);
+    send_mouse_button_mods(
+        &mut widget,
+        &mut doc,
+        MouseButton::Right,
+        ElementState::Pressed,
+        false,
+    );
+
+    let semantics = ui::widget::Widget::accessibility(&widget).expect("terminal semantics");
+    let menu = semantics
+        .children
+        .iter()
+        .find(|child| child.role == ui::a11y::Role::Menu)
+        .expect("open context menu is exposed");
+    assert!(menu.state.modal && menu.state.expanded == Some(true));
+    assert!(menu.children.iter().any(|item| {
+        item.name.as_deref() == Some("Select all output")
+            && item.action_target.is_some()
+            && item.state.focusable
+    }));
+
+    // First Down selects Paste; second skips the separator to Select all.
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::ArrowDown),
+        false,
+        false,
+    );
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::ArrowDown),
+        false,
+        false,
+    );
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::Enter),
+        false,
+        false,
+    );
+    assert_eq!(
+        widget.selection(),
+        Some(Selection {
+            anchor: GridPos { row: 0, col: 0 },
+            cursor: GridPos { row: 1, col: 3 },
+        })
     );
 }
 
