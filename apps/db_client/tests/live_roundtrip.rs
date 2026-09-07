@@ -26,7 +26,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use db_client::model::{ConnectionProfile, Engine};
+use db_client::engine::MAX_QUERY_ROWS;
+use db_client::model::{Cell, ConnectionProfile, Engine};
 use db_client::session::Session;
 
 fn env_or(key: &str, default: &str) -> String {
@@ -39,6 +40,10 @@ fn unique_table() -> String {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the live fixture intentionally keeps setup, value assertions, bounds, and cleanup in one transaction-shaped proof"
+)]
 fn postgres_real_round_trip() {
     if std::env::var("QOS_DB_TEST_PG").is_err() {
         eprintln!(
@@ -60,7 +65,10 @@ fn postgres_real_round_trip() {
 
     let table = unique_table();
     s.run_query(&format!(
-        "CREATE TABLE {table} (id integer PRIMARY KEY, name text NOT NULL)"
+        "CREATE TABLE {table} (\
+            id integer PRIMARY KEY, name text NOT NULL, amount numeric, uid uuid, day date, \
+            ts timestamp, tz timestamptz, doc jsonb, nullable text\
+        )"
     ));
     s.block_until_idle();
     let create = s.query_result.as_ref();
@@ -73,22 +81,56 @@ fn postgres_real_round_trip() {
     assert!(create.is_none_or(|r| !r.is_select));
 
     s.run_query(&format!(
-        "INSERT INTO {table} (id, name) VALUES (1, 'alice'), (2, 'bob')"
+        "INSERT INTO {table} (id, name, amount, uid, day, ts, tz, doc, nullable) VALUES (\
+            1, 'alice', 1.23, '550e8400-e29b-41d4-a716-446655440000', DATE '2024-01-02', \
+            TIMESTAMP '2024-01-02 03:04:05', TIMESTAMPTZ '2024-01-02 03:04:05+00', \
+            '{{\"n\":7,\"ok\":true}}'::jsonb, NULL\
+        )"
     ));
     s.block_until_idle();
     let ins = s.query_result.as_ref().expect("insert result");
     assert!(!ins.is_select, "INSERT should be DML");
-    assert_eq!(ins.rows_affected, Some(2), "two rows inserted");
+    assert_eq!(ins.rows_affected, Some(1), "one row inserted");
 
-    s.run_query(&format!("SELECT id, name FROM {table} ORDER BY id"));
+    s.run_query(&format!(
+        "SELECT id, name, amount, uid, day, ts, tz, doc, nullable FROM {table} ORDER BY id"
+    ));
     s.block_until_idle();
     let sel = s.query_result.as_ref().expect("select result");
     assert!(sel.is_select);
-    assert_eq!(sel.columns, vec!["id".to_string(), "name".to_string()]);
-    assert_eq!(sel.rows.len(), 2, "two real rows returned");
+    assert_eq!(sel.rows.len(), 1, "one real row returned");
     assert_eq!(sel.rows[0][0].display(), "1");
     assert_eq!(sel.rows[0][1].display(), "alice");
-    assert_eq!(sel.rows[1][1].display(), "bob");
+    assert_eq!(sel.rows[0][2].display(), "1.23");
+    assert_eq!(
+        sel.rows[0][3].display(),
+        "550e8400-e29b-41d4-a716-446655440000"
+    );
+    assert_eq!(sel.rows[0][4].display(), "2024-01-02");
+    assert_eq!(sel.rows[0][5].display(), "2024-01-02 03:04:05");
+    assert_eq!(sel.rows[0][6].display(), "2024-01-02T03:04:05+00:00");
+    assert_eq!(sel.rows[0][7].display(), r#"{"n":7,"ok":true}"#);
+    assert_eq!(sel.rows[0][8], Cell::Null);
+
+    s.run_query(
+        "SELECT \
+            ARRAY[1, NULL, -2]::int4[] AS ints, \
+            ARRAY['alpha', NULL, 'two words']::text[] AS labels, \
+            ARRAY[DATE '2024-01-02', NULL]::date[] AS days, \
+            ARRAY['{\"x\":1}'::jsonb, NULL]::jsonb[] AS docs, \
+            ARRAY[]::uuid[] AS empty_ids",
+    );
+    s.block_until_idle();
+    let arrays = s.query_result.as_ref().expect("array select result");
+    assert_eq!(arrays.rows.len(), 1);
+    assert_eq!(arrays.rows[0][0].display(), "[1, NULL, -2]");
+    assert_eq!(
+        arrays.rows[0][1].display(),
+        r#"["alpha", NULL, "two words"]"#
+    );
+    assert_eq!(arrays.rows[0][2].display(), r#"["2024-01-02", NULL]"#);
+    assert_eq!(arrays.rows[0][3].display(), r#"[{"x":1}, NULL]"#);
+    assert_eq!(arrays.rows[0][4].display(), "[]");
 
     // The re-introspected live catalog now carries the new table with its PK
     // and a real row count.
@@ -104,12 +146,65 @@ fn postgres_real_round_trip() {
         t.columns.iter().any(|c| c.name == "name"),
         "name column must be discovered"
     );
-    assert_eq!(t.row_count, Some(2), "row count from the live catalog");
+    assert_eq!(t.row_count, Some(1), "row count from the live catalog");
+
+    // The streaming PostgreSQL path must retain at most the visible result
+    // limit, while consuming one sentinel row to honestly mark truncation.
+    s.run_query(&format!(
+        "SELECT generate_series(1, {}) AS n",
+        MAX_QUERY_ROWS + 2
+    ));
+    s.block_until_idle();
+    let bounded = s.query_result.as_ref().expect("bounded select result");
+    assert_eq!(bounded.rows.len(), MAX_QUERY_ROWS);
+    assert!(bounded.truncated, "the sentinel row must mark truncation");
+    assert_eq!(bounded.rows[0][0].display(), "1");
+    assert_eq!(
+        bounded.rows[MAX_QUERY_ROWS - 1][0].display(),
+        MAX_QUERY_ROWS.to_string()
+    );
 
     // Clean up so repeat runs against a persistent server stay green.
     s.run_query(&format!("DROP TABLE {table}"));
     s.block_until_idle();
     assert!(matches!(&s.status, db_client::session::RunStatus::Ok(_)));
+}
+
+#[test]
+fn postgres_real_cancellation_stops_the_active_generation() {
+    if std::env::var("QOS_DB_TEST_PG").is_err() {
+        eprintln!(
+            "skipping postgres_real_cancellation_stops_the_active_generation: set QOS_DB_TEST_PG"
+        );
+        return;
+    }
+    let mut profile = ConnectionProfile::new("live-pg-cancel", Engine::Postgres);
+    profile.host = env_or("QOS_DB_TEST_PG_HOST", "127.0.0.1");
+    profile.port = env_or("QOS_DB_TEST_PG_PORT", "5432").parse().unwrap();
+    profile.user = env_or("QOS_DB_TEST_PG_USER", "postgres");
+    profile.password = env_or("QOS_DB_TEST_PG_PASS", "");
+    profile.database = env_or("QOS_DB_TEST_PG_DB", "postgres");
+    let mut s = Session::new();
+    s.add_connection_blocking(profile);
+    assert!(s.connected, "postgres connect failed: {:?}", s.status);
+    let started = std::time::Instant::now();
+    s.run_query("SELECT pg_sleep(30)");
+    let mut requested = false;
+    for _ in 0..200 {
+        if s.cancel_in_flight_query() {
+            requested = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        requested,
+        "the worker must publish the active PostgreSQL query"
+    );
+    s.block_until_idle();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(!s.busy());
+    assert!(matches!(s.status, db_client::session::RunStatus::Idle));
 }
 
 #[test]
@@ -176,4 +271,38 @@ fn mysql_real_round_trip() {
     s.run_query(&format!("DROP TABLE {table}"));
     s.block_until_idle();
     assert!(matches!(&s.status, db_client::session::RunStatus::Ok(_)));
+}
+
+#[test]
+fn mysql_real_cancellation_stops_the_active_generation() {
+    if std::env::var("QOS_DB_TEST_MYSQL").is_err() {
+        eprintln!(
+            "skipping mysql_real_cancellation_stops_the_active_generation: set QOS_DB_TEST_MYSQL"
+        );
+        return;
+    }
+    let mut profile = ConnectionProfile::new("live-mysql-cancel", Engine::MySql);
+    profile.host = env_or("QOS_DB_TEST_MYSQL_HOST", "127.0.0.1");
+    profile.port = env_or("QOS_DB_TEST_MYSQL_PORT", "3306").parse().unwrap();
+    profile.user = env_or("QOS_DB_TEST_MYSQL_USER", "root");
+    profile.password = env_or("QOS_DB_TEST_MYSQL_PASS", "");
+    profile.database = env_or("QOS_DB_TEST_MYSQL_DB", "mysql");
+    let mut s = Session::new();
+    s.add_connection_blocking(profile);
+    assert!(s.connected, "mysql connect failed: {:?}", s.status);
+    let started = std::time::Instant::now();
+    s.run_query("SELECT SLEEP(30)");
+    let mut requested = false;
+    for _ in 0..200 {
+        if s.cancel_in_flight_query() {
+            requested = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(requested, "the worker must publish the active MySQL query");
+    s.block_until_idle();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(!s.busy());
+    assert!(matches!(s.status, db_client::session::RunStatus::Idle));
 }
