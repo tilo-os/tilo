@@ -3528,6 +3528,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "settings-store",
  "taffy",
  "tempfile",
  "tracing",

@@ -49,6 +49,9 @@ roxmltree = "0.20"
 # compilation beyond feature unification.
 image = { workspace = true, features = ["jpeg", "png"] }
 unicode-bidi = "0.3.18"
+# Device-local file capabilities (opened book paths and watched roots) must
+# survive restart without entering the shared Automerge document.
+settings-store = { path = "../../crates/system/settings-store" }
 
 [dev-dependencies]
 # Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`
