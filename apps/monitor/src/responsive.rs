@@ -97,7 +97,11 @@ impl ProcPush {
 
     /// Advance the slide toward its target. Returns `true` while still
     /// animating, so the host can request another frame.
-    pub fn tick(&mut self) -> bool {
+    pub fn tick(&mut self, reduce_motion: bool) -> bool {
+        if reduce_motion {
+            self.snap(self.pane);
+            return false;
+        }
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
