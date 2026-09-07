@@ -209,6 +209,28 @@ fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {
 /// applied to the brush at draw time, so one pair serves every intensity.
 type ShadowSpriteCache = Mutex<HashMap<(u8, u8, u8), Arc<ShadowSprites>>>;
 
+/// Each tint owns a 256² corner plus a small edge image (~260 KiB total).
+/// Theme surfaces normally use only a handful of tints; 32 keeps those hot
+/// while bounding a dynamic-colour caller to roughly 8.1 MiB of cached pixels.
+const SHADOW_SPRITE_CACHE_LIMIT: usize = 32;
+
+fn cached_sprites(
+    map: &mut HashMap<(u8, u8, u8), Arc<ShadowSprites>>,
+    key: (u8, u8, u8),
+) -> Arc<ShadowSprites> {
+    if let Some(cached) = map.get(&key) {
+        return Arc::clone(cached);
+    }
+    if map.len() >= SHADOW_SPRITE_CACHE_LIMIT
+        && let Some(victim) = map.keys().next().copied()
+    {
+        map.remove(&victim);
+    }
+    let sprites = Arc::new(build_shadow_sprites(key.0, key.1, key.2));
+    map.insert(key, Arc::clone(&sprites));
+    sprites
+}
+
 fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     static CACHE: OnceLock<ShadowSpriteCache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -218,9 +240,7 @@ fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     let mut map = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.entry((r, g, b))
-        .or_insert_with(|| Arc::new(build_shadow_sprites(r, g, b)))
-        .clone()
+    cached_sprites(&mut map, (r, g, b))
 }
 
 /// Map a sprite's `sw × sh` pixel rect onto `dest`, optionally mirroring
@@ -494,6 +514,19 @@ mod tests {
             !Arc::ptr_eq(&a, &c),
             "different tint must bake a new sprite"
         );
+    }
+
+    #[test]
+    fn sprite_cache_is_bounded_and_evicted_sprites_remain_alive() {
+        let mut cache = HashMap::new();
+        let retained = cached_sprites(&mut cache, (0, 0, 0));
+        for tint in 1..=SHADOW_SPRITE_CACHE_LIMIT {
+            let channel = u8::try_from(tint).unwrap_or(u8::MAX);
+            let _ = cached_sprites(&mut cache, (channel, channel, channel));
+        }
+        assert_eq!(cache.len(), SHADOW_SPRITE_CACHE_LIMIT);
+        assert_eq!(retained.corner.width, SHADOW_SPRITE_SIZE);
+        assert_eq!(retained.corner.height, SHADOW_SPRITE_SIZE);
     }
 
     fn alpha_at(img: &Image, x: u32, y: u32) -> u8 {

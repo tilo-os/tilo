@@ -222,8 +222,16 @@ impl Widget for Card {
         vec![self.inner.as_ref()]
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(self.inner.as_ref());
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![self.inner.as_mut() as &mut (dyn Widget + '_)]
+    }
+
+    fn mark_drawn(&mut self) {
+        self.inner.mark_drawn();
     }
 
     fn get_rect(&self) -> Rect {
@@ -520,11 +528,23 @@ impl Widget for CardGrid {
         self.cards.iter().map(std::convert::AsRef::as_ref).collect()
     }
 
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for card in &self.cards {
+            visitor(card.as_ref());
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.cards
             .iter_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
+    }
+
+    fn mark_drawn(&mut self) {
+        for card in &mut self.cards {
+            card.mark_drawn();
+        }
     }
 
     fn get_rect(&self) -> Rect {

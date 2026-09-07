@@ -25,6 +25,19 @@ pub struct UndoEntry {
     pub author: Option<UserId>,
 }
 
+/// Per-document undo and redo depth. Entries retain two Automerge head sets
+/// plus optional widget metadata, so an unbounded editing session otherwise
+/// retains memory forever. Five hundred and twelve actions is deep enough for
+/// interactive use while giving the framework a strict upper bound.
+const UNDO_HISTORY_LIMIT: usize = 512;
+
+fn push_history(stack: &mut Vec<UndoEntry>, entry: UndoEntry) {
+    if stack.len() >= UNDO_HISTORY_LIMIT {
+        stack.remove(0);
+    }
+    stack.push(entry);
+}
+
 /// Separated from [`State`] because a history belongs to a *document*, not a
 /// process — a stack shared between two documents would revert against the
 /// wrong one, as a second tab sharing the first tab's undo stack would.
@@ -177,13 +190,16 @@ impl UndoLog {
         // *when* — and why a date-range filter over it matches nothing.
         if qdoc::history::commit_stamped_with_message(doc, message).is_some() {
             let after = doc.get_heads();
-            self.undo_stack.push(UndoEntry {
-                before,
-                after,
-                focused_node_idx,
-                widget_metadata: metadata,
-                author,
-            });
+            push_history(
+                &mut self.undo_stack,
+                UndoEntry {
+                    before,
+                    after,
+                    focused_node_idx,
+                    widget_metadata: metadata,
+                    author,
+                },
+            );
             self.redo_stack.clear();
             self.last_heads = doc.get_heads();
             self.bump();
@@ -240,13 +256,16 @@ impl UndoLog {
             self.last_heads = after;
             return;
         }
-        self.undo_stack.push(UndoEntry {
-            before,
-            after: after.clone(),
-            focused_node_idx,
-            widget_metadata: metadata,
-            author,
-        });
+        push_history(
+            &mut self.undo_stack,
+            UndoEntry {
+                before,
+                after: after.clone(),
+                focused_node_idx,
+                widget_metadata: metadata,
+                author,
+            },
+        );
         self.redo_stack.clear();
         self.last_heads = after;
         self.bump();
@@ -279,13 +298,16 @@ impl UndoLog {
         let entry = self.undo_stack.pop()?;
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
-        self.redo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
+        push_history(
+            &mut self.redo_stack,
+            UndoEntry {
+                before: inv_before,
+                after: inv_after,
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
+                author: entry.author.clone(),
+            },
+        );
         Some(entry)
     }
 
@@ -318,13 +340,16 @@ impl UndoLog {
         let entry = self.undo_stack.remove(idx);
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
-        self.redo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
+        push_history(
+            &mut self.redo_stack,
+            UndoEntry {
+                before: inv_before,
+                after: inv_after,
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
+                author: entry.author.clone(),
+            },
+        );
         Some(entry)
     }
 
@@ -350,13 +375,16 @@ impl UndoLog {
         let entry = self.redo_stack.pop()?;
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
-        self.undo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
+        push_history(
+            &mut self.undo_stack,
+            UndoEntry {
+                before: inv_before,
+                after: inv_after,
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
+                author: entry.author.clone(),
+            },
+        );
         Some(entry)
     }
 
@@ -374,13 +402,16 @@ impl UndoLog {
         let entry = self.redo_stack.remove(idx);
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
-        self.undo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
+        push_history(
+            &mut self.undo_stack,
+            UndoEntry {
+                before: inv_before,
+                after: inv_after,
+                focused_node_idx: current_focused_idx,
+                widget_metadata: current_metadata,
+                author: entry.author.clone(),
+            },
+        );
         Some(entry)
     }
 
@@ -412,13 +443,16 @@ impl UndoLog {
         if inv_before == inv_after {
             return false;
         }
-        self.undo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx,
-            widget_metadata: metadata,
-            author,
-        });
+        push_history(
+            &mut self.undo_stack,
+            UndoEntry {
+                before: inv_before,
+                after: inv_after,
+                focused_node_idx,
+                widget_metadata: metadata,
+                author,
+            },
+        );
         self.redo_stack.clear();
         self.bump();
         true
@@ -959,6 +993,35 @@ fn live_insert_boundary(
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
+
+    #[test]
+    fn history_stack_keeps_only_the_newest_bounded_window() {
+        let mut stack = Vec::new();
+        let extra = 7usize;
+        for index in 0..UNDO_HISTORY_LIMIT.saturating_add(extra) {
+            push_history(
+                &mut stack,
+                UndoEntry {
+                    before: Vec::new(),
+                    after: Vec::new(),
+                    focused_node_idx: Some(index),
+                    widget_metadata: None,
+                    author: None,
+                },
+            );
+        }
+        assert_eq!(stack.len(), UNDO_HISTORY_LIMIT);
+        assert_eq!(
+            stack.first().and_then(|entry| entry.focused_node_idx),
+            Some(extra),
+            "the oldest entries should be evicted first"
+        );
+        assert_eq!(
+            stack.last().and_then(|entry| entry.focused_node_idx),
+            UNDO_HISTORY_LIMIT.saturating_add(extra).checked_sub(1),
+            "the newest action must remain undoable"
+        );
+    }
 
     /// A single `commit_action` → undo → redo round-trip must preserve the
     /// focus index and widget metadata captured on the stacks — that's

@@ -63,6 +63,9 @@ pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "dev.qos.shell-float.";
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
+/// Backpressure bound for a non-reading shell peer. Frames are normally
+/// flushed immediately; this only limits the exceptional `WouldBlock` queue.
+const MAX_OUTGOING_QUEUE_BYTES: usize = 4 * MAX_PROTOCOL_FRAME_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -230,6 +233,7 @@ pub struct FloatingSurfaceServiceClient {
     incoming: Vec<u8>,
     outgoing: VecDeque<Vec<u8>>,
     outgoing_offset: usize,
+    outgoing_bytes: usize,
 }
 
 #[cfg(unix)]
@@ -251,7 +255,21 @@ impl FloatingSurfaceServiceClient {
             incoming: Vec::new(),
             outgoing: VecDeque::new(),
             outgoing_offset: 0,
+            outgoing_bytes: 0,
         })
+    }
+
+    fn enqueue_frame(&mut self, frame: Vec<u8>) -> Result<(), String> {
+        let queued = self
+            .outgoing_bytes
+            .checked_add(frame.len())
+            .ok_or_else(|| "floating-surface outgoing queue size overflow".to_string())?;
+        if queued > MAX_OUTGOING_QUEUE_BYTES {
+            return Err("floating-surface outgoing queue exceeds 4 MiB".into());
+        }
+        self.outgoing_bytes = queued;
+        self.outgoing.push_back(frame);
+        Ok(())
     }
 
     /// Queue and flush one client message.
@@ -267,7 +285,7 @@ impl FloatingSurfaceServiceClient {
             return Err("floating-surface message exceeds 1 MiB".into());
         }
         frame.push(b'\n');
-        self.outgoing.push_back(frame);
+        self.enqueue_frame(frame)?;
         self.flush_outgoing()
             .map_err(|error| format!("send floating-surface message: {error}"))
     }
@@ -328,6 +346,7 @@ impl FloatingSurfaceServiceClient {
                 Ok(count) => {
                     self.outgoing_offset = self.outgoing_offset.saturating_add(count);
                     if self.outgoing_offset >= frame.len() {
+                        self.outgoing_bytes = self.outgoing_bytes.saturating_sub(frame.len());
                         self.outgoing.pop_front();
                         self.outgoing_offset = 0;
                     }
@@ -1649,6 +1668,23 @@ mod tests {
                 rect: [100.0, 100.0, 460.0, 320.0],
             },
             FloatingSurfaceHostMessage::Reattach { id: "call".into() }
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn nonblocking_service_client_bounds_queued_output() {
+        let (app_side, _shell_side) = UnixStream::pair().unwrap();
+        let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
+        let chunk = MAX_PROTOCOL_FRAME_BYTES / 2;
+        for _ in 0..8 {
+            client.enqueue_frame(vec![0; chunk]).unwrap();
+        }
+        assert_eq!(client.outgoing_bytes, MAX_OUTGOING_QUEUE_BYTES);
+        assert_eq!(client.outgoing.len(), 8);
+        assert!(
+            client.enqueue_frame(vec![0]).is_err(),
+            "a stalled peer must exert bounded backpressure"
         );
     }
 
