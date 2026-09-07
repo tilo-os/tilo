@@ -414,7 +414,20 @@ pub fn continuation_file_reference_for_surface(
     let record_id = xattr::get(path, "user.qos.record-id")
         .ok()
         .flatten()
-        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())?;
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .or_else(|| {
+            // Older/local mounts may expose the bounded root catalogue before
+            // the per-file identity xattr. Preserve continuation there without
+            // walking the tree: the legacy catalogue is capped and validated
+            // by Files, while current large catalogues use the exact file xattr.
+            file_explorer::model::read_workspace_record_index(
+                &file_explorer::model::workspace_record_authority_roots(),
+            )
+            .records
+            .into_iter()
+            .find(|record| record.path == *path)
+            .map(|record| *record.record_id.as_bytes())
+        })?;
     let content_hash = xattr::get(path, "user.qos.content-hash")
         .ok()
         .flatten()
@@ -1319,19 +1332,23 @@ mod tests {
         xattr::set(&path, "user.qos.content-hash", &content).unwrap();
         xattr::set(&path, "user.qos.thumb", thumbnail).unwrap();
         let uuid = uuid::Uuid::from_bytes(record);
-        let index = serde_json::json!({
-            "schema_version": 1,
-            "truncated": false,
-            "records": [{
+        let exact = serde_json::json!({
+            "schema_version": 2,
+            "revision": "a".repeat(64),
+            "record": {
                 "record_id": uuid,
                 "path": "/hydrated-on-read.md",
                 "is_dir": false,
-            }],
+            },
         });
         xattr::set(
             root.path(),
-            "user.qos.record-index",
-            &serde_json::to_vec(&index).unwrap(),
+            format!(
+                "{}{}",
+                file_explorer::model::RECORD_INDEX_BY_ID_XATTR_PREFIX,
+                uuid
+            ),
+            &serde_json::to_vec(&exact).unwrap(),
         )
         .unwrap();
         let reference = crate::shell::personal_continuity::LaunchIntent::file_reference(
