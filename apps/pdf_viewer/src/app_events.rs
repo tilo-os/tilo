@@ -362,7 +362,7 @@ impl PdfApp {
                         self.clear_selection();
                         self.selected_anno = Some(id.clone());
                         self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
-                    } else if self.shift_down && self.raster.is_some() {
+                    } else if self.shift_down && self.raster_active() {
                         // Shift + Select drags a rubber-band image-region marquee
                         // to copy; it never pans or selects text.
                         self.clear_selection();
@@ -371,7 +371,7 @@ impl PdfApp {
                             start: pt,
                             cur: pt,
                         });
-                    } else if self.raster.is_some() && self.begin_selection(page, pt, p) {
+                    } else if self.raster_active() && self.begin_selection(page, pt, p) {
                         // Text selection armed; motion extends it, release ends it.
                     } else {
                         self.clear_selection();
