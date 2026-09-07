@@ -492,7 +492,10 @@ fn apply_text_edit(
 ) -> Result<(), ActionError> {
     let record = EditorDoc::file(doc, file_id)
         .ok_or_else(|| ActionError::Refused("file does not exist".to_string()))?;
-    if record.deleted || record.kind != "file" || insert.len() > 8 * 1024 * 1024 {
+    if record.deleted
+        || record.kind != "file"
+        || insert.len() > crate::disk::MAX_TEXT_BYTES as usize
+    {
         return Err(ActionError::Refused(
             "invalid text edit target or payload".to_string(),
         ));
@@ -507,10 +510,42 @@ fn apply_text_edit(
         rebase_text_edit(&text, before_context, deleted_text, after_context)
             .ok_or_else(|| ActionError::Refused("stale text edit".to_string()))?
     };
+    let start_byte = byte_index(&text, start).ok_or_else(|| {
+        ActionError::Refused("text edit position is outside the buffer".to_string())
+    })?;
+    let end_byte = byte_index(
+        &text,
+        start.checked_add(delete).ok_or_else(|| {
+            ActionError::Refused("text edit range overflows the buffer".to_string())
+        })?,
+    )
+    .ok_or_else(|| ActionError::Refused("text edit range is outside the buffer".to_string()))?;
+    let final_bytes = text
+        .len()
+        .checked_sub(end_byte.saturating_sub(start_byte))
+        .and_then(|remaining| remaining.checked_add(insert.len()))
+        .ok_or_else(|| ActionError::Refused("text edit size overflows".to_string()))?;
+    if final_bytes > crate::disk::MAX_TEXT_BYTES as usize {
+        return Err(ActionError::Refused(format!(
+            "text edit would exceed the {} byte buffer limit",
+            crate::disk::MAX_TEXT_BYTES
+        )));
+    }
     let object = EditorDoc::buffer_text_key(doc, file_id)
         .ok_or_else(|| ActionError::Refused("file body is unavailable".to_string()))?;
     EditorDoc::splice(doc, &object, start, delete, insert);
     Ok(())
+}
+
+/// Convert a character-addressed Automerge position to a byte boundary without
+/// slicing through UTF-8. The document stores text in character coordinates,
+/// while the resource budget is necessarily measured in bytes.
+fn byte_index(text: &str, character: usize) -> Option<usize> {
+    if character == text.chars().count() {
+        Some(text.len())
+    } else {
+        text.char_indices().nth(character).map(|(byte, _)| byte)
+    }
 }
 
 /// Rebase one edit only when its bounded surrounding context identifies one
@@ -1856,6 +1891,23 @@ mod tests {
         );
         assert!(before_context.chars().count() <= 32);
         assert!(after_context.chars().count() <= 32);
+    }
+
+    #[test]
+    fn edit_refuses_to_grow_a_collaborative_buffer_past_the_text_limit() {
+        let id = test_file_id(700);
+        let mut doc = AutoCommit::new();
+        let seed = "a".repeat(crate::disk::MAX_TEXT_BYTES as usize);
+        dispatch(
+            &mut doc,
+            &create_file_action(id.clone(), "limit.rs".into(), None, 0, seed.clone()),
+        );
+        let action = text_edit_action(id.clone(), &seed, &(seed.clone() + "x"));
+        assert!(action.apply(&mut doc).is_err());
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, &id).as_deref(),
+            Some(seed.as_str())
+        );
     }
 
     #[test]
