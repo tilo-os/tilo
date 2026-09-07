@@ -22,13 +22,16 @@ pub(super) struct HelpOverlay {
 }
 
 impl HelpOverlay {
-    #[cfg(test)]
     pub(super) fn is_visible(&self) -> bool {
         self.visible
     }
 
     pub(super) fn show(&mut self) {
         self.visible = true;
+    }
+
+    pub(super) fn hide(&mut self) {
+        self.visible = false;
     }
 
     /// Route a key through the modal overlay.
