@@ -6,7 +6,6 @@
     reason = "test harness failures are assertions"
 )]
 
-use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
@@ -484,14 +483,15 @@ fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab(
             (1920, 1080),
             1.0,
         )]);
-    let parent_rect = vello::kurbo::Rect::new(100.0, 100.0, 400.0, 300.0);
-    let visible = h
-        .state
-        .layout_xdg_popups(&HashMap::from([(parent_id, parent_rect)]));
+    shell::compositor::foreign::store().note_placement(
+        parent_id,
+        vello::kurbo::Rect::new(100.0, 100.0, 400.0, 300.0),
+    );
+    let visible = h.state.popup_surfaces_for_tests();
     h.pump();
-    let (_, _, rect) = visible.first().expect("popup receives a desktop rect");
+    let (_, rect) = visible.first().expect("popup receives a desktop rect");
     assert!(
-        rect.x1 > parent_rect.x1,
+        rect.x1 > 400.0,
         "menu may extend beyond parent within output"
     );
     assert!(
@@ -504,9 +504,7 @@ fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab(
     repositioner.set_anchor_rect(0, 0, 10, 10);
     popup.reposition(&repositioner, 77);
     h.pump();
-    let _ = h
-        .state
-        .layout_xdg_popups(&HashMap::from([(parent_id, parent_rect)]));
+    let _ = h.state.popup_surfaces_for_tests();
     h.pump();
     assert_eq!(h.client.repositioned, vec![77]);
 
@@ -521,7 +519,11 @@ fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab(
     h.pump();
     child_popup.grab(&seat, serial);
     h.pump();
-    assert_eq!(h.state.xdg_popup_count(), 2, "nested popup is tracked");
+    assert_eq!(
+        h.state.popup_surfaces_for_tests().len(),
+        2,
+        "nested popup is tracked"
+    );
 
     h.state.forward_client_pointer_motion((900.0, 700.0), None);
     assert!(h.state.forward_client_pointer_button(272, true));
