@@ -85,13 +85,14 @@ threads-required = "num-cpus"
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
 threads-required = "num-cpus"
 
-# These integration binaries each run a production Cap'n Proto broker, two or
-# more SDK shovel runtimes, and (except for the presence-only case) an agent
-# session. Their 3-20 second bounds deliberately detect a stuck collaboration
-# pipeline. When the full shard fills every CPU with thousands of other test
-# processes, all four binaries can instead spend that entire bound waiting to
-# be scheduled. Give only this native-broker set an exclusive CI slot so the
-# deadlines continue to measure the pipeline rather than runner saturation.
+# Native-4K retained-scene oracles render and read back full 3840×2160 frames.
+# They compare the same assertions and timeouts under a controlled CPU budget,
+# rather than competing with the rest of the large shell suite for software/GPU
+# renderer time. The workspace-root boundary test shares that renderer path.
+[[profile.default.overrides]]
+filter = 'package(shell) and (test(compositor::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(compositor::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(compositor::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
+threads-required = "num-cpus"
+
 [[profile.ci.overrides]]
-filter = 'package(agent) and (binary(presence_semantics) or binary(relay_roundtrip) or binary(discovered_operations) or binary(concurrent_edit))'
+filter = 'package(shell) and (test(compositor::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(compositor::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(compositor::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
 threads-required = "num-cpus"

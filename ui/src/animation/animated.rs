@@ -252,6 +252,17 @@ impl Transition {
         Self::at(1.0, true)
     }
 
+    /// Builds a settled, visibly-open transition at a fixed fractional
+    /// openness for deterministic visual capture.
+    ///
+    /// Normal UI code must continue to use [`Self::set_open`]. This only
+    /// exists for capture diagnostics that need to replay an in-flight pose
+    /// without consulting the wall clock.
+    #[doc(hidden)]
+    pub fn capture_open_at(permille: u16) -> Self {
+        Self::at(f32::from(permille.min(1_000)) / 1_000.0, true)
+    }
+
     fn at(value: f32, open: bool) -> Self {
         let now = Instant::now();
         Self {
@@ -539,5 +550,45 @@ mod tests {
         let after = t.value(Instant::now());
         assert!((before - after).abs() < 1e-6);
         assert!(t.is_open());
+    }
+
+    #[test]
+    fn capture_open_at_keeps_fractional_pose_at_future_times() {
+        let now = Instant::now();
+        let t = Transition::capture_open_at(375);
+        assert!((t.value(now + Duration::from_secs(1)) - 0.375).abs() < f32::EPSILON);
+        assert!(t.is_visible(now + Duration::from_secs(1)));
+        assert!(!t.is_animating(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn capture_open_at_same_open_intent_does_not_advance_pose() {
+        let now = Instant::now();
+        let mut t = Transition::capture_open_at(625);
+        t.set_open_at(
+            true,
+            Duration::from_millis(180),
+            Curve::EaseOut,
+            now + Duration::from_secs(1),
+        );
+        assert!((t.value(now + Duration::from_secs(2)) - 0.625).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn capture_open_at_clamps_boundaries() {
+        let now = Instant::now();
+        assert_eq!(Transition::capture_open_at(0).value(now), 0.0);
+        assert_eq!(Transition::capture_open_at(1_000).value(now), 1.0);
+        assert_eq!(Transition::capture_open_at(u16::MAX).value(now), 1.0);
+    }
+
+    #[test]
+    fn capture_open_at_closes_from_frozen_value() {
+        let now = Instant::now();
+        let mut t = Transition::capture_open_at(500);
+        t.set_open_at(false, Duration::from_millis(100), Curve::Linear, now);
+        assert!((t.value(now) - 0.5).abs() < f32::EPSILON);
+        assert!((t.value(now + Duration::from_millis(25)) - 0.25).abs() < 0.01);
+        assert_eq!(t.value(now + Duration::from_millis(60)), 0.0);
     }
 }
