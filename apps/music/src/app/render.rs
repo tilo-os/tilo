@@ -666,11 +666,24 @@ impl Widget for MusicApp {
                 .with_action_target("music.toggle-mute")
                 .with_state(AccessState::new().checked(self.pb.volume == 0)),
         ];
+        let player_status = if let Some(error) = &self.playback_error {
+            error.clone()
+        } else if self.active_resolve_request.is_some() {
+            "Loading audio source".to_string()
+        } else if self.pb.playing && !self.audio.is_playing_real() {
+            "Waiting for audio output".to_string()
+        } else {
+            "Playback controls".to_string()
+        };
         let player = AccessNode::new(Role::Group)
             .with_name("Music player")
             .with_value(format!("{current}; volume {}%", self.pb.volume))
-            .with_description("Playback controls")
-            .with_state(AccessState::new().focusable(true).busy(self.pb.playing))
+            .with_description(player_status)
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .busy(self.active_resolve_request.is_some()),
+            )
             .with_children(controls);
         let mut page_content = Vec::new();
         // The custom-painted empty-state button is page content, not a
@@ -691,6 +704,18 @@ impl Widget for MusicApp {
                             .with_name("Search for music")
                             .with_description("Search for a song, album, or artist")
                             .with_action_target("music.empty-search"),
+                    ]),
+            );
+        }
+        if let Some((query, error)) = &self.search_error {
+            page_content.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Live search unavailable")
+                    .with_description(format!("Could not search for {query}: {error}"))
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Try live search again")
+                            .with_action_target("music.retry-search"),
                     ]),
             );
         }
@@ -723,6 +748,7 @@ impl Widget for MusicApp {
             "music.next" => Action::Next,
             "music.toggle-mute" => Action::ToggleMute,
             "music.empty-search" => Action::Nav(View::Search),
+            "music.retry-search" => Action::RetrySearch,
             _ => return false,
         };
         self.dispatch(action, state);
@@ -5195,6 +5221,53 @@ impl MusicApp {
         let searching = self.live_search_pending.as_deref() == Some(q.trim());
         let results = self.gather_search_results(q.trim());
 
+        if let Some((failed_query, error)) = &self.search_error
+            && failed_query == q.trim()
+        {
+            let message = elide(tr, error, 12.0, TextWeight::Regular, body.width() - 210.0);
+            let banner = Rect::new(body.x0 + 28.0, y + 8.0, body.x1 - 28.0, y + 48.0);
+            fill_rrect(scene, t, banner, 10.0, c.accent.multiply_alpha(0.13));
+            draw_text(
+                tr,
+                scene,
+                t,
+                &format!("Couldn’t search live music: {message}"),
+                banner.x0 + 12.0,
+                vy(banner.y0, 40.0, 12.0),
+                12.0,
+                c.text,
+                TextWeight::Regular,
+                Some((banner.width() - 118.0) as f32),
+            );
+            let retry = Rect::new(
+                banner.x1 - 92.0,
+                banner.y0 + 5.0,
+                banner.x1 - 6.0,
+                banner.y1 - 5.0,
+            );
+            let hover = self.push_hit(retry, Action::RetrySearch);
+            fill_rrect(
+                scene,
+                t,
+                retry,
+                15.0,
+                if hover { c.accent_hover } else { c.accent },
+            );
+            draw_text(
+                tr,
+                scene,
+                t,
+                "Try again",
+                retry.x0 + 12.0,
+                vy(retry.y0, retry.height(), 12.0),
+                12.0,
+                c.bg,
+                TextWeight::Semibold,
+                None,
+            );
+            y += 56.0;
+        }
+
         if results.is_empty() {
             return self.draw_search_no_results(scene, t, tr, c, body, y, q.trim(), searching);
         }
@@ -6084,7 +6157,8 @@ impl MusicApp {
                 TextWeight::Semibold,
                 None,
             );
-            let artist = elide(tr, &tk.artist, 12.0, TextWeight::Regular, maxw);
+            let secondary = self.playback_error.as_deref().unwrap_or(&tk.artist);
+            let artist = elide(tr, secondary, 12.0, TextWeight::Regular, maxw);
             draw_text(
                 tr,
                 scene,
@@ -6093,7 +6167,11 @@ impl MusicApp {
                 tx,
                 r.y0 + 48.0,
                 12.0,
-                c.dim,
+                if self.playback_error.is_some() {
+                    c.accent
+                } else {
+                    c.dim
+                },
                 TextWeight::Regular,
                 None,
             );
