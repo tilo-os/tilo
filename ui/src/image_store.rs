@@ -49,8 +49,33 @@ struct CacheState {
 
 impl CacheState {
     fn next_tick(&mut self) -> u64 {
-        self.clock = self.clock.wrapping_add(1);
-        self.clock
+        if self.clock == u64::MAX {
+            self.rebase_lru_clock();
+        }
+        if let Some(next) = self.clock.checked_add(1) {
+            self.clock = next;
+            return next;
+        }
+        // A defensive retry keeps this total even if the cache bound changes
+        // in the future: LRU eviction quality may reset, but timestamps never
+        // wrap into a value belonging to a live entry.
+        self.rebase_lru_clock();
+        self.next_tick()
+    }
+
+    fn rebase_lru_clock(&mut self) {
+        // This is a process-local LRU clock, not a persisted identity.
+        // Rebase the (at most 64) live timestamps in their existing order
+        // before issuing another tick, so no two cache entries become
+        // indistinguishable through counter wraparound.
+        let mut order: Vec<_> = self.slots.keys().cloned().collect();
+        order.sort_by_key(|url| self.slots.get(url).map_or(0, |entry| entry.last_used));
+        for (tick, url) in (1_u64..).zip(order) {
+            if let Some(entry) = self.slots.get_mut(&url) {
+                entry.last_used = tick;
+            }
+        }
+        self.clock = u64::try_from(self.slots.len()).unwrap_or(u64::MAX);
     }
 }
 
@@ -457,6 +482,31 @@ mod tests {
         assert!(cache.slots.contains_key("image-0"));
         assert!(!cache.slots.contains_key("image-1"));
         assert!(cache.slots.contains_key("new-image"));
+    }
+
+    #[test]
+    fn lru_clock_rebases_before_exhaustion_without_aliasing_live_entries() {
+        let mut cache = CacheState::default();
+        cache.slots.insert(
+            "old".into(),
+            SlotEntry {
+                slot: Slot::Failed,
+                last_used: 7,
+            },
+        );
+        cache.slots.insert(
+            "new".into(),
+            SlotEntry {
+                slot: Slot::Failed,
+                last_used: u64::MAX,
+            },
+        );
+        cache.clock = u64::MAX;
+        let tick = cache.next_tick();
+        let old = cache.slots["old"].last_used;
+        let new = cache.slots["new"].last_used;
+        assert!(old < new && new < tick);
+        assert_ne!(tick, 0);
     }
 
     #[test]
