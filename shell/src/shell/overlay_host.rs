@@ -8718,8 +8718,23 @@ impl ShellOverlayHost {
             return true;
         }
         if st.overlays.quick_settings {
-            st.overlays.quick_settings = false;
-            st.bump();
+            // A drill-in is a nested page, so Escape follows its visible Back
+            // affordance before it dismisses the whole popover. This keeps
+            // keyboard navigation consistent with pointer navigation and
+            // prevents a single mistaken key from losing the user's place in
+            // Quick Settings.
+            if st.quick_settings.wifi_password.take().is_some() {
+                st.bump();
+            } else if !matches!(
+                st.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ) {
+                st.quick_settings.pop_level();
+                st.bump();
+            } else {
+                st.overlays.quick_settings = false;
+                st.bump();
+            }
             *handled = true;
             return true;
         }
@@ -16951,6 +16966,67 @@ mod palette_dispatch_tests {
             WorkspaceTree::bootstrap_demo().workspaces.len(),
             "dismissing a notification must not mutate the desktop layout"
         );
+    }
+
+    #[test]
+    fn escape_returns_from_quick_settings_drill_in_before_closing_popover() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+        }
+
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        {
+            let state = chrome.borrow();
+            assert!(
+                state.overlays.quick_settings,
+                "Back must keep the popover open"
+            );
+            assert!(matches!(
+                state.quick_settings.current_level(),
+                crate::shell::quick_settings::QsLevel::Root
+            ));
+        }
+
+        handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        assert!(
+            !chrome.borrow().overlays.quick_settings,
+            "Escape on the root page closes Quick Settings"
+        );
+    }
+
+    #[test]
+    fn escape_cancels_wifi_password_before_leaving_wifi_page() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+            state.quick_settings.wifi_password = Some(
+                crate::shell::quick_settings::WifiPasswordPrompt::new("Secure network"),
+            );
+        }
+
+        let mut handled = false;
+        assert!(host.handle_shell_escape_chord(&mut handled));
+        assert!(handled);
+        let state = chrome.borrow();
+        assert!(state.overlays.quick_settings);
+        assert!(state.quick_settings.wifi_password.is_none());
+        assert!(matches!(
+            state.quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Wifi
+        ));
     }
 
     #[test]
