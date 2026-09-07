@@ -532,11 +532,32 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    if let Some(scale) = args.text_scale {
+    let theme = if let Some(scale) = args.text_scale {
         theme.with_text_scale(scale)
     } else {
         theme
-    }
+    };
+    // Screenshot review must use the same motion policy as a real app.  The
+    // headless harness does not construct `ui::App`, where this environment
+    // preference is normally read, so thread it onto the shot theme here.
+    theme.with_reduce_motion(shot_motion_reduced())
+}
+
+/// Read the user motion preference for the headless screenshot path.
+///
+/// Keep this deliberately in lockstep with `ui::App`'s startup gate: a test
+/// image should not claim reduced-motion support while a launched app animates
+/// (or vice versa).
+fn shot_motion_reduced() -> bool {
+    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| motion_env_value_enabled(&value))
+}
+
+fn motion_env_value_enabled(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
 }
 
 /// Product acceptance sizes in logical pixels. They exercise the supported
@@ -1101,5 +1122,21 @@ mod tests {
     fn operational_failures_are_not_reported_as_cli_usage_errors() {
         assert_eq!(LaunchError::Operation("failed".into()).exit_code(), 1);
         assert_eq!(LaunchError::UnknownArgument("--bad".into()).exit_code(), 2);
+    }
+
+    #[test]
+    fn screenshot_motion_preference_matches_live_app_truthy_values() {
+        for value in ["", "  ", "0", " false ", "FALSE"] {
+            assert!(
+                !motion_env_value_enabled(value),
+                "{value:?} disables reduced motion"
+            );
+        }
+        for value in ["1", "true", "yes"] {
+            assert!(
+                motion_env_value_enabled(value),
+                "{value:?} enables reduced motion"
+            );
+        }
     }
 }
