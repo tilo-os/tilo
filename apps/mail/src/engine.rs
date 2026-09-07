@@ -33,24 +33,42 @@ use crate::model::{AccountConfig, Draft, Folder, Message};
 use crate::oauth::OAuthProvider;
 use crate::transport::build_mime;
 
+/// Identity assigned when a request is authored. It follows every worker event
+/// back to the UI, so concurrent connect/fetch/write/send results cannot
+/// settle one another by accident.
+pub type EngineRequestId = uuid::Uuid;
+
+fn next_request_id() -> EngineRequestId {
+    // Unlike a wrapping integer counter, a freshly-minted UUID cannot alias a
+    // previous in-flight request after a counter exhaustion boundary. The
+    // request id carries no account or message data.
+    uuid::Uuid::new_v4()
+}
+
 /// A request from the UI to the engine worker.
 #[derive(Clone, Debug)]
 pub enum EngineRequest {
     /// Connect and list the folders for an account.
-    Connect { account: AccountConfig },
+    Connect {
+        request_id: EngineRequestId,
+        account: AccountConfig,
+    },
     /// Fetch the messages of a folder (`UID FETCH` in the live backend).
     Fetch {
+        request_id: EngineRequestId,
         account: AccountConfig,
         folder: Folder,
     },
     /// Persist a flag change to the server (`UID STORE \Seen`/`\Flagged`).
     StoreFlag {
+        request_id: EngineRequestId,
         account: AccountConfig,
         message: Box<Message>,
     },
     /// Move a message to another folder (`UID MOVE`). Carries the full message
     /// so the live backend can locate it on the server by its `Message-ID`.
     Move {
+        request_id: EngineRequestId,
         account: AccountConfig,
         message: Box<Message>,
         to: Folder,
@@ -59,17 +77,20 @@ pub enum EngineRequest {
     /// backend uses UID STORE + UID EXPUNGE so unrelated `\\Deleted` messages
     /// are never swept up by a broad mailbox expunge.
     Purge {
+        request_id: EngineRequestId,
         account: AccountConfig,
         message: Box<Message>,
     },
     /// Submit a draft via SMTP.
     Send {
+        request_id: EngineRequestId,
         account: AccountConfig,
         draft: Box<Draft>,
     },
     /// Run the OAuth authorization-code + PKCE browser flow for an account and
     /// seal the resulting tokens in the vault under `account_id`.
     OAuthAuthorize {
+        request_id: EngineRequestId,
         account_id: String,
         provider: OAuthProvider,
         login_hint: String,
@@ -77,12 +98,95 @@ pub enum EngineRequest {
 }
 
 impl EngineRequest {
+    pub fn connect(account: AccountConfig) -> Self {
+        Self::Connect {
+            request_id: next_request_id(),
+            account,
+        }
+    }
+    pub fn fetch(account: AccountConfig, folder: Folder) -> Self {
+        Self::Fetch {
+            request_id: next_request_id(),
+            account,
+            folder,
+        }
+    }
+    pub fn store_flag(account: AccountConfig, message: Box<Message>) -> Self {
+        Self::StoreFlag {
+            request_id: next_request_id(),
+            account,
+            message,
+        }
+    }
+    pub fn move_message(account: AccountConfig, message: Box<Message>, to: Folder) -> Self {
+        Self::Move {
+            request_id: next_request_id(),
+            account,
+            message,
+            to,
+        }
+    }
+    pub fn purge(account: AccountConfig, message: Box<Message>) -> Self {
+        Self::Purge {
+            request_id: next_request_id(),
+            account,
+            message,
+        }
+    }
+    pub fn send(account: AccountConfig, draft: Box<Draft>) -> Self {
+        Self::Send {
+            request_id: next_request_id(),
+            account,
+            draft,
+        }
+    }
+    pub fn oauth_authorize(
+        account_id: String,
+        provider: OAuthProvider,
+        login_hint: String,
+    ) -> Self {
+        Self::OAuthAuthorize {
+            request_id: next_request_id(),
+            account_id,
+            provider,
+            login_hint,
+        }
+    }
+
+    pub const fn request_id(&self) -> EngineRequestId {
+        match self {
+            Self::Connect { request_id, .. }
+            | Self::Fetch { request_id, .. }
+            | Self::StoreFlag { request_id, .. }
+            | Self::Move { request_id, .. }
+            | Self::Purge { request_id, .. }
+            | Self::Send { request_id, .. }
+            | Self::OAuthAuthorize { request_id, .. } => *request_id,
+        }
+    }
+    /// A small, non-sensitive description used to settle UI request accounting
+    /// after the worker has handled this request.  The UI must not infer
+    /// completion from a successful data event: flag and move writes have no
+    /// payload to display, and a connection can legitimately emit more than
+    /// one event.
+    pub const fn kind(&self) -> EngineRequestKind {
+        match self {
+            Self::Connect { .. } => EngineRequestKind::Connect,
+            Self::Fetch { .. } => EngineRequestKind::Fetch,
+            Self::StoreFlag { .. } => EngineRequestKind::StoreFlag,
+            Self::Move { .. } => EngineRequestKind::Move,
+            Self::Purge { .. } => EngineRequestKind::Purge,
+            Self::Send { .. } => EngineRequestKind::Send,
+            Self::OAuthAuthorize { .. } => EngineRequestKind::OAuthAuthorize,
+        }
+    }
+
     /// The account this request targets, for the connect/fetch dedupe + error
     /// context. Empty for requests without a single account (OAuth carries its
     /// own id).
     pub fn account_email(&self) -> String {
         match self {
-            EngineRequest::Connect { account }
+            EngineRequest::Connect { account, .. }
             | EngineRequest::Fetch { account, .. }
             | EngineRequest::StoreFlag { account, .. }
             | EngineRequest::Move { account, .. }
@@ -93,28 +197,81 @@ impl EngineRequest {
     }
 }
 
+/// The operation class of a completed engine request.  Kept deliberately
+/// compact so no credentials, mail bodies, or attachment paths cross the
+/// worker boundary merely to settle a spinner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EngineRequestKind {
+    Connect,
+    Fetch,
+    StoreFlag,
+    Move,
+    Purge,
+    Send,
+    OAuthAuthorize,
+}
+
 /// An event from the engine worker back to the UI.
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
     /// Connection + authentication established.
-    Connected { account_id: String },
+    Connected {
+        request_id: EngineRequestId,
+        account_id: String,
+    },
     /// The mailbox folders the server advertised (`LIST`).
     Folders {
+        request_id: EngineRequestId,
         account_id: String,
         folders: Vec<String>,
     },
     /// A batch of fetched messages for a folder.
     Fetched {
+        request_id: EngineRequestId,
         account_id: String,
         folder: Folder,
         messages: Vec<Message>,
     },
     /// A send completed; carries the wire byte count.
-    Sent { wire_bytes: usize },
+    Sent {
+        request_id: EngineRequestId,
+        wire_bytes: usize,
+    },
     /// An OAuth sign-in completed and the tokens were sealed in the vault.
-    Authorized { account_id: String },
+    Authorized {
+        request_id: EngineRequestId,
+        account_id: String,
+    },
     /// Any operation failed; carries a human-readable reason.
-    Error { context: String, message: String },
+    Error {
+        request_id: EngineRequestId,
+        kind: EngineRequestKind,
+        context: String,
+        message: String,
+    },
+    /// The worker has finished handling exactly one queued request. This is
+    /// emitted after that request's result/error events, including successful
+    /// writes which otherwise have no UI payload of their own.
+    Completed {
+        request_id: EngineRequestId,
+        kind: EngineRequestKind,
+    },
+}
+
+impl EngineEvent {
+    /// The request that produced this event. Every event, including a terminal
+    /// completion and a failure, is tagged at the worker boundary.
+    pub const fn request_id(&self) -> EngineRequestId {
+        match self {
+            Self::Connected { request_id, .. }
+            | Self::Folders { request_id, .. }
+            | Self::Fetched { request_id, .. }
+            | Self::Sent { request_id, .. }
+            | Self::Authorized { request_id, .. }
+            | Self::Error { request_id, .. }
+            | Self::Completed { request_id, .. } => *request_id,
+        }
+    }
 }
 
 /// The backend abstraction. The stub and the live IMAP/SMTP backend both
@@ -124,62 +281,99 @@ pub trait MailEngine: Send {
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>);
 }
 
-fn report_engine_error(out: &Sender<EngineEvent>, context: &str, result: Result<(), String>) {
+fn report_engine_error(
+    out: &Sender<EngineEvent>,
+    request_id: EngineRequestId,
+    kind: EngineRequestKind,
+    context: &str,
+    result: Result<(), String>,
+) {
     if let Err(message) = result {
         let _ = out.send(EngineEvent::Error {
+            request_id,
+            kind,
             context: context.into(),
             message,
         });
     }
 }
 
-/// The default, offline backend. It validates sends by building real MIME and
-/// reports the wire size, and acknowledges connect/fetch without touching the
-/// network. Live IMAP/SMTP is the `live`-feature backend below.
+/// The offline backend. It validates outgoing MIME locally, but never claims a
+/// connection, sync, or delivery that did not happen. Live IMAP/SMTP is the
+/// `live`-feature backend below.
 pub struct StubEngine;
 
 impl MailEngine for StubEngine {
     fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>) {
+        let request_id = req.request_id();
+        let kind = req.kind();
         match req {
-            EngineRequest::Connect { account } => {
-                let _ = out.send(EngineEvent::Connected {
-                    account_id: account.email,
+            EngineRequest::Connect { account, .. } => {
+                let _ = out.send(EngineEvent::Error {
+                    request_id,
+                    kind,
+                    context: "offline".into(),
+                    message: format!(
+                        "IMAP is unavailable for {}; rebuild with the live mail backend to connect",
+                        account.email
+                    ),
                 });
             }
-            EngineRequest::Fetch { account, folder } => {
-                // The offline backend has no server to fetch from; the app shows
-                // its bundled corpus. Acknowledge with an empty batch so the
-                // caller's state machine still advances.
-                let _ = out.send(EngineEvent::Fetched {
-                    account_id: account.email,
-                    folder,
-                    messages: Vec::new(),
+            EngineRequest::Fetch {
+                account, folder, ..
+            } => {
+                let _ = out.send(EngineEvent::Error {
+                    request_id,
+                    kind,
+                    context: "offline".into(),
+                    message: format!(
+                        "Cannot refresh {} for {} while IMAP is offline",
+                        folder.title(),
+                        account.email
+                    ),
                 });
             }
             EngineRequest::StoreFlag { .. }
             | EngineRequest::Move { .. }
             | EngineRequest::Purge { .. } => {
-                // No-op offline; flags persist in the local CRDT.
+                // Local CRDT changes remain available offline, but the user
+                // must be told that the remote IMAP write was not performed.
+                let _ = out.send(EngineEvent::Error {
+                    request_id,
+                    kind,
+                    context: "offline".into(),
+                    message: "Local change saved; it was not synchronized to IMAP".into(),
+                });
             }
             EngineRequest::OAuthAuthorize { account_id, .. } => {
                 // Sign-in needs the live network stack; the offline build can't
                 // complete it. Surface a clear reason instead of silently
                 // pretending to have authorized.
                 let _ = out.send(EngineEvent::Error {
+                    request_id,
+                    kind,
                     context: "oauth".into(),
                     message: format!("OAuth sign-in for {account_id} requires the live build"),
                 });
             }
-            EngineRequest::Send { account, draft } => {
+            EngineRequest::Send { account, draft, .. } => {
                 let from = crate::model::Addr::new(account.display_name.clone(), account.email);
                 match build_mime(&from, &draft) {
                     Ok(bytes) => {
-                        let _ = out.send(EngineEvent::Sent {
-                            wire_bytes: bytes.len(),
+                        let _ = out.send(EngineEvent::Error {
+                            request_id,
+                            kind,
+                            context: "send".into(),
+                            message: format!(
+                                "SMTP is offline; validated {} MIME bytes locally but did not send",
+                                bytes.len()
+                            ),
                         });
                     }
                     Err(e) => {
                         let _ = out.send(EngineEvent::Error {
+                            request_id,
+                            kind,
                             context: "send".into(),
                             message: e.to_string(),
                         });
@@ -233,7 +427,13 @@ pub fn spawn_with(
         .name("mail-engine".into())
         .spawn(move || {
             while let Ok(req) = req_rx.recv() {
+                let kind = req.kind();
+                let request_id = req.request_id();
                 backend.handle(req, &evt_tx);
+                // `MailEngine::handle` is synchronous from the worker's point
+                // of view (the live backend blocks on its owned runtime), so
+                // this terminal acknowledgement cannot overtake its result.
+                let _ = evt_tx.send(EngineEvent::Completed { request_id, kind });
             }
         })
         .expect("spawn mail engine worker");
@@ -338,9 +538,15 @@ pub mod live {
     }
 
     impl MailEngine for LiveEngine {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one match keeps each correlated request/result pair adjacent; splitting it would obscure the worker protocol boundary"
+        )]
         fn handle(&mut self, req: EngineRequest, out: &Sender<EngineEvent>) {
+            let request_id = req.request_id();
+            let kind = req.kind();
             match req {
-                EngineRequest::Connect { account } => {
+                EngineRequest::Connect { account, .. } => {
                     // A connect verifies auth by opening a session and listing
                     // folders, so a bad credential surfaces immediately rather
                     // than as a silently-empty inbox.
@@ -348,6 +554,8 @@ pub mod live {
                         Ok(c) => c,
                         Err(e) => {
                             let _ = out.send(EngineEvent::Error {
+                                request_id,
+                                kind,
                                 context: "connect".into(),
                                 message: e,
                             });
@@ -358,41 +566,52 @@ pub mod live {
                     match self.rt.block_on(list_folders(&account, &creds, tls)) {
                         Ok(folders) => {
                             let _ = out.send(EngineEvent::Connected {
+                                request_id,
                                 account_id: account.email.clone(),
                             });
                             let _ = out.send(EngineEvent::Folders {
+                                request_id,
                                 account_id: account.email,
                                 folders,
                             });
                         }
                         Err(e) => {
                             let _ = out.send(EngineEvent::Error {
+                                request_id,
+                                kind,
                                 context: "connect".into(),
                                 message: e,
                             });
                         }
                     }
                 }
-                EngineRequest::Fetch { account, folder } => {
-                    match self.handle_fetch(&account, folder) {
-                        Ok(messages) => {
-                            let _ = out.send(EngineEvent::Fetched {
-                                account_id: account.email,
-                                folder,
-                                messages,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = out.send(EngineEvent::Error {
-                                context: "fetch".into(),
-                                message: e,
-                            });
-                        }
+                EngineRequest::Fetch {
+                    account, folder, ..
+                } => match self.handle_fetch(&account, folder) {
+                    Ok(messages) => {
+                        let _ = out.send(EngineEvent::Fetched {
+                            request_id,
+                            account_id: account.email,
+                            folder,
+                            messages,
+                        });
                     }
-                }
-                EngineRequest::StoreFlag { account, message } => {
+                    Err(e) => {
+                        let _ = out.send(EngineEvent::Error {
+                            request_id,
+                            kind,
+                            context: "fetch".into(),
+                            message: e,
+                        });
+                    }
+                },
+                EngineRequest::StoreFlag {
+                    account, message, ..
+                } => {
                     if let Err(e) = self.handle_store(&account, &message) {
                         let _ = out.send(EngineEvent::Error {
+                            request_id,
+                            kind,
                             context: "flag".into(),
                             message: e,
                         });
@@ -402,24 +621,40 @@ pub mod live {
                     account,
                     message,
                     to,
+                    ..
                 } => {
                     if let Err(e) = self.handle_move(&account, &message, to) {
                         let _ = out.send(EngineEvent::Error {
+                            request_id,
+                            kind,
                             context: "move".into(),
                             message: e,
                         });
                     }
                 }
-                EngineRequest::Purge { account, message } => {
-                    super::report_engine_error(out, "purge", self.handle_purge(&account, &message));
+                EngineRequest::Purge {
+                    account, message, ..
+                } => {
+                    super::report_engine_error(
+                        out,
+                        request_id,
+                        kind,
+                        "purge",
+                        self.handle_purge(&account, &message),
+                    );
                 }
-                EngineRequest::Send { account, draft } => {
+                EngineRequest::Send { account, draft, .. } => {
                     match self.handle_send(&account, &draft) {
                         Ok(wire_bytes) => {
-                            let _ = out.send(EngineEvent::Sent { wire_bytes });
+                            let _ = out.send(EngineEvent::Sent {
+                                request_id,
+                                wire_bytes,
+                            });
                         }
                         Err(e) => {
                             let _ = out.send(EngineEvent::Error {
+                                request_id,
+                                kind,
                                 context: "smtp".into(),
                                 message: e,
                             });
@@ -430,12 +665,18 @@ pub mod live {
                     account_id,
                     provider,
                     login_hint,
+                    ..
                 } => match authorize_oauth(&account_id, provider, &login_hint) {
                     Ok(()) => {
-                        let _ = out.send(EngineEvent::Authorized { account_id });
+                        let _ = out.send(EngineEvent::Authorized {
+                            request_id,
+                            account_id,
+                        });
                     }
                     Err(e) => {
                         let _ = out.send(EngineEvent::Error {
+                            request_id,
+                            kind,
                             context: "oauth".into(),
                             message: e,
                         });
@@ -1348,7 +1589,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stub_send_reports_wire_bytes() {
+    fn stub_send_never_claims_delivery() {
         let (tx, rx) = spawn_with(Box::new(StubEngine));
         let account = AccountConfig {
             display_name: "Me".into(),
@@ -1361,29 +1602,36 @@ mod tests {
             body: "Body".into(),
             ..Default::default()
         };
-        tx.send(EngineRequest::Send {
-            account,
-            draft: Box::new(draft),
-        })
-        .unwrap();
+        tx.send(EngineRequest::send(account, Box::new(draft)))
+            .unwrap();
         let evt = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-        match evt {
-            EngineEvent::Sent { wire_bytes } => assert!(wire_bytes > 0),
-            other => panic!("expected Sent, got {other:?}"),
-        }
+        assert!(matches!(evt, EngineEvent::Error { context, message, .. }
+            if context == "send" && message.contains("validated") && message.contains("did not send")));
+        assert!(matches!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+            EngineEvent::Completed {
+                kind: EngineRequestKind::Send,
+                ..
+            }
+        ));
     }
 
     #[test]
-    fn stub_connect_acks() {
+    fn stub_connect_reports_offline_honestly() {
         let (tx, rx) = spawn_with(Box::new(StubEngine));
-        tx.send(EngineRequest::Connect {
-            account: AccountConfig {
-                email: "a@b.example".into(),
-                ..Default::default()
-            },
-        })
+        tx.send(EngineRequest::connect(AccountConfig {
+            email: "a@b.example".into(),
+            ..Default::default()
+        }))
         .unwrap();
         let evt = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-        assert!(matches!(evt, EngineEvent::Connected { .. }));
+        assert!(matches!(evt, EngineEvent::Error { context, .. } if context == "offline"));
+        assert!(matches!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+            EngineEvent::Completed {
+                kind: EngineRequestKind::Connect,
+                ..
+            }
+        ));
     }
 }
