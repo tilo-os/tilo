@@ -98,7 +98,7 @@ Forgejo-generated endpoint, retained for diagnostics and private-server
 fallbacks only.
 
 ```bash
-QOS_DESKTOP_VERSION=0.1.5
+QOS_DESKTOP_VERSION=0.1.6
 sudo install -d -m 0755 /etc/pki/rpm-gpg
 sudo curl --fail --location \
   --output /etc/pki/rpm-gpg/qos-rpm-signing-key.asc \
@@ -177,7 +177,7 @@ trap 'rm -f -- "$QOS_NETRC" "$QOS_REPO" "$QOS_KEY"' EXIT
 chmod 600 "$QOS_NETRC"
 printf 'machine code.sandbox.example login %s password %s\n' \
   "$QOS_FORGEJO_USER" "$QOS_FORGEJO_TOKEN" > "$QOS_NETRC"
-QOS_DESKTOP_VERSION=0.1.5
+QOS_DESKTOP_VERSION=0.1.6
 curl --fail --location --netrc-file "$QOS_NETRC" \
   --output "$QOS_REPO" \
   "https://code.sandbox.example/qos/qos/releases/download/desktop-v${QOS_DESKTOP_VERSION}/qos-fedora-44.repo"
