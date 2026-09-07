@@ -193,6 +193,11 @@ pub fn encode(action: &MapsAction) -> EncodedAction {
 // Resource tree
 // ===========================================================================
 
+/// Per-collection ceiling for the contextual Ctrl+K snapshot. Exact canonical
+/// ids still resolve through [`ResourceProvider::resource`], so a large map
+/// library remains agent-addressable without rebuilding every row each frame.
+const EAGER_PER_KIND_LIMIT: usize = 12;
+
 fn immediate(id: &str, label: impl Into<String>, action: &MapsAction) -> ActionSpec {
     let label = label.into();
     ActionSpec::immediate(id, label.clone(), MAPS_ACTION_TYPE, action)
@@ -240,6 +245,75 @@ fn route_label(model: &MapModel) -> String {
 /// range, so the palette row is self-describing.
 fn region_label(r: &DownloadedRegion) -> String {
     format!("{} · z{}–{}", r.name, r.z0, r.z1)
+}
+
+fn search_result_resource(result: &crate::model::Place) -> Resource {
+    Resource::new(
+        format!("maps.search-result:{}", result.id),
+        "maps.search-result",
+        result.name.clone(),
+    )
+    .with_action(immediate(
+        "open",
+        "Open search result",
+        &MapsAction::SelectPlace {
+            id: result.id.clone(),
+        },
+    ))
+}
+
+fn history_resource(query: &str) -> Resource {
+    Resource::new(
+        format!("maps.search-history:{query}"),
+        "maps.search-history",
+        query,
+    )
+    .with_action(immediate(
+        "search-again",
+        "Search again",
+        &MapsAction::CommitSearch {
+            query: query.to_string(),
+        },
+    ))
+}
+
+fn saved_place_resource(place: &crate::model::Place) -> Resource {
+    Resource::new(
+        format!("maps.place:{}", place.id),
+        "maps.place",
+        place.name.clone(),
+    )
+    .with_action(immediate(
+        "unsave",
+        "Remove from saved",
+        &MapsAction::SetPlaceSaved {
+            id: place.id.clone(),
+            saved: false,
+        },
+    ))
+}
+
+fn route_resource(model: &MapModel) -> Resource {
+    Resource::new("maps.route:active", "maps.route", route_label(model)).with_action(immediate(
+        "clear",
+        "Clear route",
+        &MapsAction::ClearRoute,
+    ))
+}
+
+fn region_resource(region: &DownloadedRegion) -> Resource {
+    Resource::new(
+        format!("maps.region:{}", region.id),
+        "maps.region",
+        region_label(region),
+    )
+    .with_action(immediate(
+        "delete",
+        "Delete region",
+        &MapsAction::DeleteRegion {
+            id: region.id.clone(),
+        },
+    ))
 }
 
 /// Build the resource tree Maps currently has open: the workspace, its saved
@@ -321,77 +395,32 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     // Every committed result and history item is a separately searchable
     // resource. The action payload holds the durable place id/query; UI order
     // can change without changing what an automation has addressed.
-    for result in &model.results {
-        root = root.with_child(
-            Resource::new(
-                format!("maps.search-result:{}", result.id),
-                "maps.search-result",
-                result.name.clone(),
-            )
-            .with_action(immediate(
-                "open",
-                "Open search result",
-                &MapsAction::SelectPlace {
-                    id: result.id.clone(),
-                },
-            )),
-        );
+    for result in model.results.iter().take(EAGER_PER_KIND_LIMIT) {
+        root = root.with_child(search_result_resource(result));
     }
 
-    for query in &model.recents {
-        root = root.with_child(
-            Resource::new(
-                format!("maps.search-history:{query}"),
-                "maps.search-history",
-                query.clone(),
-            )
-            .with_action(immediate(
-                "search-again",
-                "Search again",
-                &MapsAction::CommitSearch {
-                    query: query.clone(),
-                },
-            )),
-        );
+    for query in model.recents.iter().take(EAGER_PER_KIND_LIMIT) {
+        root = root.with_child(history_resource(query));
     }
 
     // Saved places → a resource each, exporting the un-save action.
-    for p in model.places.iter().filter(|p| p.saved) {
-        root = root.with_child(
-            Resource::new(format!("maps.place:{}", p.id), "maps.place", p.name.clone())
-                .with_action(immediate(
-                    "unsave",
-                    "Remove from saved",
-                    &MapsAction::SetPlaceSaved {
-                        id: p.id.clone(),
-                        saved: false,
-                    },
-                )),
-        );
+    for place in model
+        .places
+        .iter()
+        .filter(|place| place.saved)
+        .take(EAGER_PER_KIND_LIMIT)
+    {
+        root = root.with_child(saved_place_resource(place));
     }
 
     // Active route → a resource exporting the clear action.
     if model.route.is_some() {
-        root = root.with_child(
-            Resource::new("maps.route:active", "maps.route", route_label(&model))
-                .with_action(immediate("clear", "Clear route", &MapsAction::ClearRoute)),
-        );
+        root = root.with_child(route_resource(&model));
     }
 
     // Offline regions → a resource each, exporting the delete action.
-    for r in &model.regions {
-        root = root.with_child(
-            Resource::new(
-                format!("maps.region:{}", r.id),
-                "maps.region",
-                region_label(r),
-            )
-            .with_action(immediate(
-                "delete",
-                "Delete region",
-                &MapsAction::DeleteRegion { id: r.id.clone() },
-            )),
-        );
+    for region in model.regions.iter().take(EAGER_PER_KIND_LIMIT) {
+        root = root.with_child(region_resource(region));
     }
 
     vec![root]
@@ -400,6 +429,45 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 impl ResourceProvider for crate::app::MapsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let model = MapsDoc::load(doc)?;
+        if id == "maps.workspace" {
+            return provide_resources(doc).into_iter().next();
+        }
+        if id == "maps.route:active" {
+            return model.route.is_some().then(|| route_resource(&model));
+        }
+        if let Some(place_id) = id.strip_prefix("maps.search-result:") {
+            return model
+                .results
+                .iter()
+                .find(|place| place.id == place_id)
+                .map(search_result_resource);
+        }
+        if let Some(query) = id.strip_prefix("maps.search-history:") {
+            return model
+                .recents
+                .iter()
+                .find(|candidate| candidate.as_str() == query)
+                .map(|candidate| history_resource(candidate));
+        }
+        if let Some(place_id) = id.strip_prefix("maps.place:") {
+            return model
+                .places
+                .iter()
+                .find(|place| place.saved && place.id == place_id)
+                .map(saved_place_resource);
+        }
+        if let Some(region_id) = id.strip_prefix("maps.region:") {
+            return model
+                .regions
+                .iter()
+                .find(|region| region.id == region_id)
+                .map(region_resource);
+        }
+        None
     }
 }
 
@@ -612,6 +680,66 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| action.id == "search-again")
+        );
+    }
+
+    #[test]
+    fn large_collections_are_bounded_eagerly_and_resolve_exactly() {
+        let mut model = full_model();
+        model.results.clear();
+        model.places.clear();
+        model.regions.clear();
+        model.recents = (0..20).map(|index| format!("query-{index}")).collect();
+        for index in 0..20 {
+            let mut place = Place::new(
+                &format!("place-{index}"),
+                &format!("Place {index}"),
+                Category::Landmark,
+                "",
+                LatLon::new(48.0, 11.0),
+            );
+            place.saved = true;
+            model.results.push(place.clone());
+            model.places.push(place);
+            model.regions.push(region(
+                &format!("region-{index}"),
+                &format!("Region {index}"),
+            ));
+        }
+        let doc = seeded(&model);
+        let root = &provide_resources(&doc)[0];
+        for kind in [
+            "maps.search-result",
+            "maps.search-history",
+            "maps.place",
+            "maps.region",
+        ] {
+            assert_eq!(
+                root.children
+                    .iter()
+                    .filter(|resource| resource.kind == kind)
+                    .count(),
+                EAGER_PER_KIND_LIMIT,
+                "{kind} must stay bounded in the contextual snapshot"
+            );
+        }
+
+        let app = crate::app::MapsApp::offline();
+        assert!(
+            ResourceProvider::resource(&app, &doc, "maps.place:place-19").is_some(),
+            "an omitted saved place remains exactly addressable"
+        );
+        assert!(
+            ResourceProvider::resource(&app, &doc, "maps.region:region-19").is_some(),
+            "an omitted offline region remains exactly addressable"
+        );
+        assert!(
+            ResourceProvider::resource(&app, &doc, "maps.search-result:place-19").is_some(),
+            "an omitted search result remains exactly addressable"
+        );
+        assert!(
+            ResourceProvider::resource(&app, &doc, "maps.search-history:query-19").is_some(),
+            "an omitted history item remains exactly addressable"
         );
     }
 
