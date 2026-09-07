@@ -86,6 +86,7 @@ enum Hit {
     Policy(PolicyField, i64),
     FileRow(usize),
     // Used by the optional per-file restore sheet.
+    RestoreOpen,
     RestoreConfirm,
     RestoreCancel,
     Setup,
@@ -110,6 +111,11 @@ enum JobEvent {
     Verified(crate::engine::Verification),
     Restored(crate::engine::Verification),
     Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShotScenario {
+    Restore,
 }
 
 /// Cached copy of the CRDT UI state, refreshed on every `sync` and kept in
@@ -150,7 +156,7 @@ pub struct BackupsApp {
     timeline_content_h: f64,
     policy_focus: usize,
     file_sel: usize,
-    toast: Option<(String, Instant)>,
+    toast: Option<(String, ToastKind, Instant)>,
     seeded: bool,
     /// The Timeline source rail as the shared adaptive drawer: docked beside the
     /// snapshot list on wide windows, a summoned overlay drawer when narrow.
@@ -173,6 +179,9 @@ pub struct BackupsApp {
     /// `--shots` / `--scenario status` forces the bubble fully visible so a still
     /// frame captures the floating pill.
     shots_status: bool,
+    /// One-shot visual-regression state. Never persisted or sent to the
+    /// backup worker; it only lets CI exercise recovery/progress framing.
+    shot_scenario: Option<ShotScenario>,
     source_path: Option<PathBuf>,
     destination_path: Option<PathBuf>,
     picker: Option<(PickPurpose, ui::portal::PortalChannel)>,
@@ -188,6 +197,14 @@ impl Default for BackupsApp {
 
 #[allow(dead_code, reason = "the optional per-file restore sheet is retained")]
 impl BackupsApp {
+    pub(crate) fn resource_catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
+    pub(crate) fn is_configured(&self) -> bool {
+        self.source_path.is_some() && self.destination_path.is_some()
+    }
+
     /// The live app: starts on an empty catalog (real first-run state) and
     /// shows onboarding until the user configures a source + destination.
     pub fn new() -> Self {
@@ -235,6 +252,7 @@ impl BackupsApp {
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
             shots_status: false,
+            shot_scenario: None,
             source_path: None,
             destination_path: None,
             picker: None,
@@ -284,7 +302,13 @@ impl BackupsApp {
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((msg.into(), ToastKind::Success, Instant::now()));
+    }
+
+    /// Errors must read as errors — a green success toast after a rejected
+    /// restore is actively misleading and can make recovery unsafe.
+    fn toast_error(&mut self, msg: impl Into<String>) {
+        self.toast = Some((msg.into(), ToastKind::Error, Instant::now()));
     }
 
     fn config_path() -> Option<PathBuf> {
@@ -455,14 +479,14 @@ impl BackupsApp {
                                     self.save_config();
                                     self.start_backup();
                                 }
-                                Err(error) => self.toast_now(error.to_string()),
+                                Err(error) => self.toast_error(error.to_string()),
                             }
                         }
                     }
                     PickPurpose::Restore => self.start_restore(path),
                 },
                 ui::portal::PortalOutcome::Cancelled => {}
-                ui::portal::PortalOutcome::Failed(error) => self.toast_now(error),
+                ui::portal::PortalOutcome::Failed(error) => self.toast_error(error),
             }
         }
     }
@@ -529,7 +553,7 @@ impl BackupsApp {
                 JobEvent::Failed(error) => {
                     self.job = None;
                     self.job_status = None;
-                    self.toast_now(error);
+                    self.toast_error(error);
                     break;
                 }
             }
@@ -583,9 +607,10 @@ impl BackupsApp {
 
         // Content spans to the window bottom; the tally lives in the floating
         // status bubble, not a permanent bottom strip.
+        let progress_h = if self.job_status.is_some() { 42.0 } else { 0.0 };
         let content = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + BAR_H + 14.0,
+            self.rect.y0 + BAR_H + 14.0 + progress_h,
             self.rect.x1 - PAD,
             self.rect.y1 - 12.0,
         );
@@ -604,6 +629,7 @@ impl BackupsApp {
         }
 
         self.draw_top_bar(scene, t, tr, theme);
+        self.draw_job_progress(scene, t, tr, theme);
 
         if self.is_empty() {
             // Fresh install: nothing to back up yet. Show onboarding instead of
@@ -636,7 +662,69 @@ impl BackupsApp {
         // restore modal + toast so those still overlay it.
         self.draw_status_bubble(scene, t, tr, theme);
 
+        // The confirmation sheet is deliberately above the dashboard and its
+        // controls. It is the last non-transient surface before notifications.
+        if self.ui.restore_open {
+            self.draw_restore_modal(scene, t, tr, theme);
+        }
+
         self.draw_toast(scene, t, tr, theme);
+    }
+
+    fn draw_job_progress(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(status) = self.job_status.as_deref() else {
+            return;
+        };
+        let c = &theme.tokens.colors;
+        let rect = Rect::new(
+            self.rect.x0 + PAD,
+            self.rect.y0 + BAR_H + 8.0,
+            self.rect.x1 - PAD,
+            self.rect.y0 + BAR_H + 42.0,
+        );
+        paint::fill_rrect(scene, t, rect, 8.0, c.surfaces.raised);
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Backup in progress",
+            12.0,
+            c.text_primary,
+            rect.x0 + 12.0,
+            rect.y0 + 10.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            status,
+            12.0,
+            c.text_dim,
+            rect.x0 + 132.0,
+            rect.y0 + 10.0,
+        );
+        let track = Rect::new(rect.x0 + 12.0, rect.y1 - 7.0, rect.x1 - 12.0, rect.y1 - 4.0);
+        paint::fill_rrect(scene, t, track, 2.0, c.neutral[4]);
+        // Indeterminate progress is honest: traversal totals are not known before
+        // walking the tree, so this communicates work without inventing a percent.
+        paint::fill_rrect(
+            scene,
+            t,
+            Rect::new(
+                track.x0,
+                track.y0,
+                track.x0 + track.width() * 0.38,
+                track.y1,
+            ),
+            2.0,
+            theme.accent_primary,
+        );
     }
 
     fn draw_top_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -681,7 +769,7 @@ impl BackupsApp {
                 theme,
                 &ButtonFace::new(
                     rect,
-                    if self.job.is_some() {
+                    if self.job.is_some() || self.job_status.is_some() {
                         "Backing up…"
                     } else {
                         "Back up now"
@@ -689,10 +777,10 @@ impl BackupsApp {
                 )
                 .primary()
                 .radius(9.0)
-                .disabled(self.job.is_some())
+                .disabled(self.job.is_some() || self.job_status.is_some())
                 .hovered(self.hover == Some(Hit::BackupNow)),
             );
-            if self.job.is_none() {
+            if self.job.is_none() && self.job_status.is_none() {
                 self.hits.push((rect, Hit::BackupNow));
             }
         }
@@ -910,6 +998,18 @@ impl BackupsApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
         self.status_bubble.poke(Instant::now());
+    }
+
+    /// Stage deterministic non-destructive states for screenshot coverage.
+    pub fn stage_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "progress" => self.job_status = Some("642 files · 3.8 GB verified so far".into()),
+            "failure" => self.toast_error(
+                "Backup paused: the destination is unavailable. Reconnect it, then retry.",
+            ),
+            "restore" => self.shot_scenario = Some(ShotScenario::Restore),
+            _ => {}
+        }
     }
 
     // ---- EMPTY onboarding -----------------------------------------------
@@ -1751,7 +1851,7 @@ impl BackupsApp {
                 .hovered(self.hover == Some(Hit::RestoreConfirm)),
         );
         self.hits.push((verify, Hit::Verify));
-        self.hits.push((restore, Hit::RestoreConfirm));
+        self.hits.push((restore, Hit::RestoreOpen));
     }
 
     // ---- SOURCES view ---------------------------------------------------
@@ -3651,7 +3751,7 @@ impl BackupsApp {
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some((msg, when)) = self.toast.as_ref() else {
+        let Some((msg, kind, when)) = self.toast.as_ref() else {
             return;
         };
         let age = when.elapsed().as_secs_f64();
@@ -3671,7 +3771,7 @@ impl BackupsApp {
             theme,
             self.rect,
             ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, ToastKind::Success).alpha(alpha),
+            &ToastCard::new(msg, *kind).alpha(alpha),
         );
     }
 
@@ -3879,6 +3979,7 @@ impl BackupsApp {
             }
             Hit::BackupNow => self.start_backup(),
             Hit::Verify => self.start_verify(),
+            Hit::RestoreOpen => BackupsDoc::set_restore_open(doc, root, true),
             Hit::RestoreConfirm => self.pick_folder(PickPurpose::Restore),
             Hit::RestoreCancel => BackupsDoc::set_restore_open(doc, root, false),
             // The Timeline source-rail collapse / summon toggle.
@@ -3936,7 +4037,7 @@ impl BackupsApp {
 
 impl Widget for BackupsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[]
+        &[crate::actions::BACKUPS_OPERATION_TYPE]
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -3978,6 +4079,10 @@ impl Widget for BackupsApp {
                 }
                 _ => {}
             }
+        }
+        if self.shot_scenario == Some(ShotScenario::Restore) {
+            BackupsDoc::set_restore_open(state, path, true);
+            self.ui.restore_open = true;
         }
     }
 
@@ -4117,6 +4222,53 @@ impl Widget for BackupsApp {
         self.actions.take_committed()
     }
 
+    fn invoke_resource_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != qos_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if self.job.is_some() {
+            return Err("A backup operation is already running; wait for it to finish.".into());
+        }
+        match operation {
+            crate::actions::BackupOperation::Setup => self.pick_folder(PickPurpose::Source),
+            crate::actions::BackupOperation::BackupNow => {
+                if self.source_path.is_none() || self.destination_path.is_none() {
+                    return Err("Backups are not configured on this device.".into());
+                }
+                self.start_backup();
+            }
+            crate::actions::BackupOperation::Verify { snapshot_id } => {
+                if self.destination_path.is_none()
+                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.start_verify();
+            }
+            crate::actions::BackupOperation::Restore { snapshot_id } => {
+                if self.destination_path.is_none()
+                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.pick_folder(PickPurpose::Restore);
+            }
+        }
+        Ok(true)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -4191,6 +4343,11 @@ impl Widget for BackupsApp {
                     ),
                     Hit::Verify => (
                         "Verify latest backup".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::RestoreOpen => (
+                        "Choose files to restore".into(),
                         Role::Button,
                         AccessState::new().focusable(true),
                     ),
@@ -4398,7 +4555,7 @@ mod tests {
         let outer = Rect::new(20.0, 66.0, 370.0, 832.0);
         drawer.resolve(outer);
         let rail = drawer.sidebar_rect();
-        assert_eq!(drawer.reveal(), 0.0);
+        assert!(drawer.reveal().abs() < f64::EPSILON);
         assert!(rail.x1 <= outer.x0);
         assert!(!should_paint_rail(&drawer, rail));
     }
@@ -4560,14 +4717,23 @@ mod tests {
         );
         assert!(f.has_hit(|hit| matches!(hit, Hit::BackupNow)));
         assert!(f.has_hit(|hit| matches!(hit, Hit::Verify)));
-        assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreConfirm)));
+        assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreOpen)));
         let resources = Widget::resources(&f.app, &f.state.doc);
-        assert_eq!(resources.len(), 1, "only retention policy is driveable");
-        assert_eq!(resources[0].kind, "backups.policy");
+        assert_eq!(resources.len(), 2, "policy and catalog are driveable");
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.kind == "backups.policy")
+        );
+        assert!(
+            resources
+                .iter()
+                .any(|resource| resource.kind == "backups.workspace")
+        );
         assert!(
             qos_actions::flatten(&resources)
                 .iter()
-                .all(|entry| { entry.action.kind == qos_actions::OperationKind::Document })
+                .any(|entry| entry.action.kind == qos_actions::OperationKind::Effect)
         );
     }
 
