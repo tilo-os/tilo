@@ -36,6 +36,12 @@ const QUALITY: u8 = 82;
 /// Hard cap on buffered frames (~30 s at [`FPS`]) so a forgotten recording
 /// can't grow without bound. Frames past the cap are dropped.
 const MAX_FRAMES: usize = FPS as usize * 30;
+/// JPEG entropy varies enormously. The frame-count ceiling alone can still
+/// retain hundreds of MiB for noisy 4K input, so cap the actual compressed
+/// working set as well. The AVI assembly is done only after recording stops.
+/// Leave a full MiB for the AVI header/index so every admitted clip remains
+/// below qdoc's 64 MiB portable-blob limit after worker-side muxing.
+const MAX_BUFFERED_BYTES: usize = 63 * 1024 * 1024;
 
 /// Accumulates JPEG-encoded frames and muxes them into an AVI on [`finish`].
 ///
@@ -45,6 +51,7 @@ pub struct Recorder {
     w: u32,
     h: u32,
     fps: u32,
+    buffered_bytes: usize,
 }
 
 impl Recorder {
@@ -55,6 +62,7 @@ impl Recorder {
             w: 0,
             h: 0,
             fps: fps.max(1),
+            buffered_bytes: 0,
         }
     }
 
@@ -75,6 +83,13 @@ impl Recorder {
         let rgb = frame::rgba_to_rgb(&fb.rgba);
         match encode_jpeg(&rgb, fb.w, fb.h) {
             Some(jpeg) => {
+                let Some(next) = self.buffered_bytes.checked_add(jpeg.len()) else {
+                    return false;
+                };
+                if next > MAX_BUFFERED_BYTES {
+                    return false;
+                }
+                self.buffered_bytes = next;
                 self.frames.push(jpeg);
                 true
             }
@@ -88,6 +103,10 @@ impl Recorder {
 
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.w, self.h)
     }
 
     /// Clip duration in milliseconds implied by the frame count and fps.

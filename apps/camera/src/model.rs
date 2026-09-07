@@ -308,10 +308,9 @@ impl CaptureKind {
 
 /// One item in the library.
 ///
-/// A capture is backed by a real file on disk (`path` is `Some`) whose
-/// pixels are decoded for the thumbnail/preview. The hermetic screenshot
-/// and test path uses `path = None`, in which case the thumbnail is
-/// synthesized procedurally from `scene` so no binary assets are bundled.
+/// A capture may have a local projection (`path`) and/or a verified portable
+/// media identity (`media_id`). Peers materialize the latter via qdoc's blob
+/// transport; they never receive a filesystem path from the document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capture {
     /// Stable identity — the file name for disk-backed items.
@@ -330,6 +329,8 @@ pub struct Capture {
     pub scene: u8,
     /// Absolute path to the backing file, when disk-backed.
     pub path: Option<PathBuf>,
+    /// `media:blake3:<hash>` for shared capture bytes, if published.
+    pub media_id: Option<String>,
 }
 
 impl Capture {
@@ -667,6 +668,7 @@ mod tests {
             facing: Facing::Back,
             scene: 0,
             path: None,
+            media_id: None,
         };
         assert!(GalleryFilter::All.matches(&photo));
         assert!(GalleryFilter::Photos.matches(&photo));
