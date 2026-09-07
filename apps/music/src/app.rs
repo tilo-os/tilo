@@ -50,7 +50,6 @@ use crate::model::{
 };
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 use crate::seed;
-use crate::source::Source;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 
 const SIDEBAR_W: f64 = 236.0;
@@ -233,6 +232,8 @@ enum Action {
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
     FocusSearch,
+    /// Retry the current live search after a terminal source failure.
+    RetrySearch,
     /// Toggle the queue view from the now-playing bar: open it (remembering the
     /// current view), or, when already on it, hide it and return to where the
     /// user was before.
@@ -287,7 +288,6 @@ pub struct MusicApp {
     /// The search pill's full rect, captured during draw so a press inside it
     /// routes to `search_input` (caret placement / drag-select).
     search_pill_rect: Rect,
-    source: Source,
     #[allow(dead_code)]
     audio: AudioEngine,
 
@@ -323,6 +323,21 @@ pub struct MusicApp {
     /// Count of in-flight stream resolutions (keeps redraws flowing until the
     /// resolved URL lands and can be handed to the audio engine).
     resolve_in_flight: usize,
+    /// Monotonic identity for worker-bound requests. Worker replies are allowed
+    /// to arrive after newer user intent; each response must prove it still
+    /// belongs to the latest request before it can change UI or audio state.
+    next_request_id: u64,
+    active_resolve_request: Option<u64>,
+    active_search_request: Option<u64>,
+    active_search_more: HashMap<String, u64>,
+    /// `(query, reason)` for the current live-search failure. Kept separate
+    /// from a toast so it can be rendered with a retry control and announced
+    /// through the app's accessibility tree.
+    search_error: Option<(String, String)>,
+    /// Most recent user-visible source failure. Unlike a transient log note,
+    /// this is rendered and exposed through accessibility until another source
+    /// is requested or succeeds.
+    playback_error: Option<String>,
 
     /// MPRIS media-control service (media keys + the desktop media controls).
     /// A no-op stub until [`Self::enable_mpris`] brings it up on the live
@@ -625,7 +640,6 @@ impl MusicApp {
             nav_back: Vec::new(),
             search_input,
             search_pill_rect: Rect::ZERO,
-            source: Source::default(),
             audio: AudioEngine::new(),
             worker: None,
             backend_name: "offline (bundled library)".to_string(),
@@ -637,6 +651,12 @@ impl MusicApp {
             search_tab: SearchTab::All,
             search_more_sent: HashSet::new(),
             resolve_in_flight: 0,
+            next_request_id: 0,
+            active_resolve_request: None,
+            active_search_request: None,
+            active_search_more: HashMap::new(),
+            search_error: None,
+            playback_error: None,
             mpris: MprisHandle::disabled(),
             mpris_last: None,
             cover_pick: None,
@@ -1126,6 +1146,8 @@ impl MusicApp {
                 .map(|track| crate::actions::CatalogTrackResource {
                     id: track.id.clone(),
                     label: self.track_label(&track.id),
+                    album_id: track.album_id.clone(),
+                    artist_id: track.artist_id.clone(),
                     offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
                     liked: self.lib.is_liked(&track.id),
                 })
@@ -1180,6 +1202,8 @@ impl MusicApp {
                 .map(|track| crate::actions::CatalogTrackResource {
                     id: track.id.clone(),
                     label: self.track_label(&track.id),
+                    album_id: track.album_id.clone(),
+                    artist_id: track.artist_id.clone(),
                     offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
                     liked: self.lib.is_liked(&track.id),
                 })
@@ -1191,6 +1215,8 @@ impl MusicApp {
             ctx.tracks.push(crate::actions::CatalogTrackResource {
                 id: track.id.clone(),
                 label: self.track_label(&track.id),
+                album_id: track.album_id.clone(),
+                artist_id: track.artist_id.clone(),
                 offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
                 liked: self.lib.is_liked(&track.id),
             });
@@ -1245,6 +1271,8 @@ impl MusicApp {
             .map(|track| crate::actions::CatalogTrackResource {
                 id: track.id.clone(),
                 label: self.track_label(&track.id),
+                album_id: track.album_id.clone(),
+                artist_id: track.artist_id.clone(),
                 offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
                 liked: self.lib.is_liked(&track.id),
             })
@@ -1486,18 +1514,15 @@ impl MusicApp {
     /// updated position persists to the document on the next user event.
     fn tick(&mut self) {
         let now = Instant::now();
-        let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
         if !self.pb.playing || self.pb.current.is_none() {
             return;
         }
-        // When the live GStreamer backend is actually decoding a stream, drive
-        // the playhead off the *real* pipeline position rather than simulating
-        // it, so the counter reflects genuine playback. Before the pipeline has
-        // prerolled (no position yet) we only advance if it has really reached
-        // PLAYING — otherwise the counter holds instead of running a fake timer
-        // while the stream is still resolving/buffering. Offline / no-audio
-        // builds fall back to the local clock so the transport still advances.
+        // Drive the playhead exclusively from a real pipeline. Before the
+        // pipeline has prerolled (no position yet), it holds at its last known
+        // position instead of running a decorative timer while a stream is
+        // resolving/buffering. In particular, a build without an audio backend
+        // must never claim a sample or unavailable source is progressing.
         if self.audio.has_stream() {
             // Service the pipeline bus so a failed fetch/decode is detected (and
             // the message backlog drained) before we trust the transport state.
@@ -1512,7 +1537,9 @@ impl MusicApp {
                     .audio
                     .take_error()
                     .unwrap_or_else(|| "this track could not be played".to_string());
-                self.toast = Some((format!("Can\u{2019}t play: {msg}"), Instant::now()));
+                let message = format!("Can\u{2019}t play: {msg}");
+                self.playback_error = Some(message.clone());
+                self.toast = Some((message, Instant::now()));
                 self.pb.playing = false;
                 self.audio.stop();
                 return;
@@ -1529,11 +1556,7 @@ impl MusicApp {
             }
             if let Some(pos) = self.audio.position_ms() {
                 self.playhead_ms = pos as f64;
-            } else if self.audio.is_playing_real() {
-                self.playhead_ms += dt * 1000.0;
             }
-        } else {
-            self.playhead_ms += dt * 1000.0;
         }
         let dur = self.current_duration_ms();
         if dur > 0 && self.playhead_ms >= dur as f64 {
@@ -1974,6 +1997,7 @@ impl MusicApp {
             } => self.open_track_menu(track, in_playlist.as_deref(), queue_index),
             Action::OpenAddToPlaylist(track) => self.open_add_to_playlist_menu(&track),
             Action::FocusSearch => self.on_focus_search(),
+            Action::RetrySearch => self.request_live_search(),
             Action::ToggleQueue => self.on_toggle_queue(),
             Action::ToggleSidebar => self.toggle_sidebar(),
             Action::CloseSidebar => self.drawer.close(),
@@ -2455,44 +2479,70 @@ impl MusicApp {
 
     /// Resolve a track's stream URL and hand it to the audio engine.
     ///
-    /// **Live tracks** (real YouTube-Music results, keyed `yt:<videoId>`) are
-    /// resolved on the [`crate::stream`] worker thread — the UI never blocks on
-    /// the network. The resolved googlevideo URL is handed to the audio engine
-    /// when it lands, in [`Self::drain_worker`]. Non-live sample tracks (and
-    /// builds without the `live` feature) fall back to the legacy Piped
-    /// resolver, or stay silent with the local playhead advancing offline.
+    /// Every source is resolved on the [`crate::stream`] worker thread — the UI
+    /// never performs a synchronous network request while handling a click. The
+    /// resolved URL is handed to the audio engine when it lands, in
+    /// [`Self::drain_worker`]. If the configured backend cannot serve the
+    /// selected id (for example an old bundled/demo entry), it reports a clear
+    /// failure and stops transport rather than simulating playback.
     fn start_stream(&mut self, track_id: &str) {
         let Some(t) = self.lib.track(track_id) else {
             return;
         };
         let yt_id = t.yt_id.clone();
 
-        if is_live_track(track_id) {
-            self.ensure_worker();
-            if let Some(w) = &self.worker {
-                // Stop the previous stream while the next one resolves so two
-                // tracks never overlap on a fast skip.
-                self.audio.pause();
-                w.request(StreamRequest::Resolve {
-                    track_id: track_id.to_string(),
-                    video_id: yt_id,
-                });
-                self.resolve_in_flight += 1;
-                return;
+        self.ensure_worker();
+        let Some(request_id) = self.next_worker_request_id() else {
+            self.active_resolve_request = None;
+            self.resolve_in_flight = 0;
+            let message = "Can’t start audio: request identity space is exhausted".to_string();
+            self.playback_error = Some(message.clone());
+            self.toast = Some((message, Instant::now()));
+            self.pb.playing = false;
+            self.audio.stop();
+            return;
+        };
+        let queued = if let Some(w) = &self.worker {
+            // Stop the previous stream while the next one resolves so two
+            // tracks never overlap on a fast skip.
+            self.audio.pause();
+            w.request(StreamRequest::Resolve {
+                track_id: track_id.to_string(),
+                video_id: yt_id,
+                request_id,
+            })
+        } else {
+            Err("music worker is unavailable".to_string())
+        };
+        match queued {
+            Ok(()) => {
+                self.active_resolve_request = Some(request_id);
+                self.playback_error = None;
+                // Only the newest intent keeps the UI awake. Older queued work may
+                // still finish on the serial backend, but it cannot affect this
+                // transport or create an idle redraw loop.
+                self.resolve_in_flight = 1;
+            }
+            Err(error) => {
+                self.active_resolve_request = None;
+                self.resolve_in_flight = 0;
+                let message = format!("Can\u{2019}t start audio: {error}");
+                self.playback_error = Some(message.clone());
+                self.toast = Some((message, Instant::now()));
+                self.pb.playing = false;
+                self.audio.stop();
             }
         }
+    }
 
-        // Fallback path (legacy Piped/Invidious `streaming` feature; offline it
-        // returns an error and we stay silent, advancing the local playhead).
-        match self.source.resolve_best(&yt_id) {
-            Ok(stream) => {
-                self.audio.load(&stream.url);
-                if self.pb.playing {
-                    self.audio.play();
-                }
-            }
-            Err(_offline) => {}
-        }
+    fn next_worker_request_id(&mut self) -> Option<u64> {
+        // Zero is the "not requested" sentinel. Wrapping is forbidden because
+        // a wrapped id could alias an old queued response. At
+        // exhaustion, callers fail closed and surface a retryable error rather
+        // than granting an old response authority under a reused identity.
+        let next = self.next_request_id.checked_add(1)?;
+        self.next_request_id = next;
+        Some(next)
     }
 
     /// Ensure the background streaming worker exists. Spawned lazily on the
@@ -2521,11 +2571,32 @@ impl MusicApp {
             return;
         }
         self.ensure_worker();
+        let Some(request_id) = self.next_worker_request_id() else {
+            self.live_search_pending = None;
+            self.active_search_request = None;
+            self.search_error = Some((
+                q,
+                "request identity space is exhausted; restart Music to search again".to_string(),
+            ));
+            return;
+        };
         if let Some(w) = &self.worker {
-            w.request(StreamRequest::Search(q.clone()));
+            if let Err(error) = w.request(StreamRequest::Search {
+                query: q.clone(),
+                request_id,
+            }) {
+                self.live_search_pending = None;
+                self.active_search_request = None;
+                self.search_error = Some((q, error));
+                return;
+            }
+            self.active_search_request = Some(request_id);
+            self.search_error = None;
             self.live_query_sent = Some(q.clone());
             self.live_search_pending = Some(q);
             self.search_edit_at = None;
+        } else {
+            self.search_error = Some((q, "music worker is unavailable".to_string()));
         }
     }
 
@@ -2557,15 +2628,45 @@ impl MusicApp {
                     self.backend_live = live;
                     self.backend_name = name;
                 }
-                StreamUpdate::SearchResults { query, bundle } => {
-                    self.ingest_search_results(&query, *bundle);
-                }
+                StreamUpdate::SearchResults {
+                    query,
+                    request_id,
+                    bundle,
+                } => self.apply_search_results(&query, request_id, &bundle),
+                StreamUpdate::SearchUnavailable {
+                    query,
+                    request_id,
+                    error,
+                } => self.apply_search_failure(&query, request_id, &error),
                 StreamUpdate::SearchMore {
                     query,
                     kind,
+                    request_id,
                     bundle,
                 } => {
-                    self.merge_search_more(&query, kind, *bundle);
+                    let key = format!("{query}|{kind:?}");
+                    if self.active_search_more.get(&key) == Some(&request_id)
+                        && self.search_input.value().trim() == query
+                    {
+                        self.merge_search_more(&query, kind, *bundle);
+                    }
+                }
+                StreamUpdate::SearchMoreUnavailable {
+                    query,
+                    kind,
+                    request_id,
+                    error,
+                } => {
+                    let key = format!("{query}|{kind:?}");
+                    if self.active_search_more.get(&key) == Some(&request_id)
+                        && self.search_input.value().trim() == query
+                    {
+                        self.active_search_more.remove(&key);
+                        self.toast = Some((
+                            format!("Couldn\u{2019}t load more results: {error}"),
+                            Instant::now(),
+                        ));
+                    }
                 }
                 StreamUpdate::Home { content } => {
                     self.absorb_home(&content);
@@ -2594,35 +2695,82 @@ impl MusicApp {
                     self.absorb_playlist(&page);
                     self.playlist_pages.insert(page.id.clone(), *page);
                 }
-                StreamUpdate::Resolved { track_id, stream } => {
-                    self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
-                    // Only adopt it if it's still the current track (the user
-                    // may have skipped while it resolved).
-                    if self.pb.current.as_deref() == Some(track_id.as_str()) {
-                        // Prefer the rangeable proxy URL; the engine falls back
-                        // to the direct googlevideo URL if the proxy yields no
-                        // bytes, so playback always starts.
-                        self.audio
-                            .load_with_fallback(&stream.url, stream.fallback_url.as_deref());
-                        if self.pb.playing {
-                            self.audio.play();
-                        }
-                    }
-                }
-                StreamUpdate::ResolveFailed { track_id, error } => {
-                    self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
-                    if self.pb.current.as_deref() == Some(track_id.as_str()) {
-                        // Resolution failed outright (offline, geo-blocked, no
-                        // playable stream). Don't leave the transport stuck on a
-                        // frozen "playing" state — stop and tell the user why.
-                        self.toast =
-                            Some((format!("Can\u{2019}t stream: {error}"), Instant::now()));
-                        self.pb.playing = false;
-                        self.audio.stop();
-                    }
-                }
+                StreamUpdate::Resolved {
+                    track_id,
+                    request_id,
+                    stream,
+                } => self.apply_resolved_stream(&track_id, request_id, &stream),
+                StreamUpdate::ResolveFailed {
+                    track_id,
+                    request_id,
+                    error,
+                } => self.apply_resolve_failure(&track_id, request_id, &error),
                 StreamUpdate::Note(_) => {}
             }
+        }
+    }
+
+    fn apply_search_results(&mut self, query: &str, request_id: u64, bundle: &SearchBundle) {
+        if self.active_search_request == Some(request_id)
+            && self.search_input.value().trim() == query
+        {
+            self.active_search_request = None;
+            self.search_error = None;
+            self.ingest_search_results(query, bundle.clone());
+        }
+    }
+
+    fn apply_search_failure(&mut self, query: &str, request_id: u64, error: &str) {
+        if self.active_search_request == Some(request_id)
+            && self.search_input.value().trim() == query
+        {
+            self.active_search_request = None;
+            self.live_search_pending = None;
+            self.search_error = Some((query.to_string(), error.to_string()));
+        }
+    }
+
+    /// Adopt a resolved stream only if it answers the currently active intent.
+    /// The id check is deliberately stronger than a track-id check: returning
+    /// to the same track after visiting another one creates a new request, so
+    /// an older A cannot overwrite the newer A source.
+    fn apply_resolved_stream(
+        &mut self,
+        track_id: &str,
+        request_id: u64,
+        stream: &crate::backend::ResolvedStream,
+    ) {
+        if self.active_resolve_request != Some(request_id) {
+            return;
+        }
+        self.resolve_in_flight = 0;
+        self.active_resolve_request = None;
+        if self.pb.current.as_deref() == Some(track_id) {
+            self.playback_error = None;
+            // Prefer the rangeable proxy URL; the engine falls back to the
+            // direct googlevideo URL if the proxy yields no bytes.
+            self.audio
+                .load_with_fallback(&stream.url, stream.fallback_url.as_deref());
+            if self.pb.playing {
+                self.audio.play();
+            }
+        }
+    }
+
+    /// Settle the *current* resolution failure visibly. Stale failures are
+    /// intentionally ignored — a failed earlier A must not stop a newer A.
+    fn apply_resolve_failure(&mut self, track_id: &str, request_id: u64, error: &str) {
+        if self.active_resolve_request != Some(request_id) {
+            return;
+        }
+        self.resolve_in_flight = 0;
+        self.active_resolve_request = None;
+        if self.pb.current.as_deref() == Some(track_id) {
+            let message = format!("Can\u{2019}t stream: {error}");
+            self.playback_error = Some(message.clone());
+            self.toast = Some((message, Instant::now()));
+            self.pb.playing = false;
+            self.audio.stop();
         }
     }
 
@@ -2875,8 +3023,26 @@ impl MusicApp {
             return;
         }
         self.ensure_worker();
+        let Some(request_id) = self.next_worker_request_id() else {
+            self.toast = Some((
+                "Couldn’t load more results: request identity space is exhausted".to_string(),
+                Instant::now(),
+            ));
+            return;
+        };
         if let Some(w) = &self.worker {
-            w.request(StreamRequest::SearchMore { query, kind });
+            if let Err(error) = w.request(StreamRequest::SearchMore {
+                query,
+                kind,
+                request_id,
+            }) {
+                self.toast = Some((
+                    format!("Couldn\u{2019}t load more results: {error}"),
+                    Instant::now(),
+                ));
+                return;
+            }
+            self.active_search_more.insert(key.clone(), request_id);
             self.search_more_sent.insert(key);
         }
     }
@@ -2903,8 +3069,16 @@ impl MusicApp {
         }
         self.ensure_worker();
         if let Some(w) = &self.worker {
-            w.request(StreamRequest::Home);
-            self.home_requested = true;
+            match w.request(StreamRequest::Home) {
+                Ok(()) => self.home_requested = true,
+                Err(error) => {
+                    self.home_failed = true;
+                    self.toast = Some((
+                        format!("Couldn\u{2019}t load Home: {error}"),
+                        Instant::now(),
+                    ));
+                }
+            }
         }
     }
 
@@ -2915,8 +3089,18 @@ impl MusicApp {
         }
         self.ensure_worker();
         if let Some(w) = &self.worker {
-            w.request(StreamRequest::Artist(id.to_string()));
-            self.artist_requested.insert(id.to_string());
+            match w.request(StreamRequest::Artist(id.to_string())) {
+                Ok(()) => {
+                    self.artist_requested.insert(id.to_string());
+                }
+                Err(error) => {
+                    self.failed_pages.insert(id.to_string());
+                    self.toast = Some((
+                        format!("Couldn\u{2019}t load artist: {error}"),
+                        Instant::now(),
+                    ));
+                }
+            }
         }
     }
 
@@ -2927,8 +3111,18 @@ impl MusicApp {
         }
         self.ensure_worker();
         if let Some(w) = &self.worker {
-            w.request(StreamRequest::Album(id.to_string()));
-            self.album_requested.insert(id.to_string());
+            match w.request(StreamRequest::Album(id.to_string())) {
+                Ok(()) => {
+                    self.album_requested.insert(id.to_string());
+                }
+                Err(error) => {
+                    self.failed_pages.insert(id.to_string());
+                    self.toast = Some((
+                        format!("Couldn\u{2019}t load album: {error}"),
+                        Instant::now(),
+                    ));
+                }
+            }
         }
     }
 
@@ -2939,8 +3133,18 @@ impl MusicApp {
         }
         self.ensure_worker();
         if let Some(w) = &self.worker {
-            w.request(StreamRequest::Playlist(id.to_string()));
-            self.playlist_requested.insert(id.to_string());
+            match w.request(StreamRequest::Playlist(id.to_string())) {
+                Ok(()) => {
+                    self.playlist_requested.insert(id.to_string());
+                }
+                Err(error) => {
+                    self.failed_pages.insert(id.to_string());
+                    self.toast = Some((
+                        format!("Couldn\u{2019}t load playlist: {error}"),
+                        Instant::now(),
+                    ));
+                }
+            }
         }
     }
 
@@ -4511,6 +4715,118 @@ mod tests {
         assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
         assert_eq!(app.pb.queue, queue);
         assert!(app.pb.playing);
+    }
+
+    #[test]
+    fn stale_resolve_failure_cannot_stop_a_newer_a_to_b_to_a_intent() {
+        let (mut app, _doc) = app_with_doc();
+        // The second A has a distinct request id from the first A. This is the
+        // race a plain track-id comparison gets wrong.
+        app.pb.current = Some("tk_g1".into());
+        app.pb.playing = true;
+        app.active_resolve_request = Some(3);
+        app.resolve_in_flight = 1;
+
+        app.apply_resolve_failure("tk_g1", 1, "old A failed");
+        assert!(app.pb.playing, "the obsolete A failure is ignored");
+        assert_eq!(app.active_resolve_request, Some(3));
+        assert_eq!(app.resolve_in_flight, 1);
+
+        app.apply_resolve_failure("tk_g1", 3, "new A failed");
+        assert!(!app.pb.playing, "the active failure settles transport");
+        assert_eq!(app.resolve_in_flight, 0);
+        assert!(
+            app.playback_error
+                .as_deref()
+                .is_some_and(|message| message.contains("new A failed")),
+            "the current failure remains visible beyond a transient worker note"
+        );
+    }
+
+    #[test]
+    fn exhausted_request_identity_space_fails_closed_without_aliasing_max() {
+        let (mut app, _doc) = app_with_doc();
+        app.next_request_id = u64::MAX;
+        assert_eq!(
+            app.next_worker_request_id(),
+            None,
+            "MAX is never reused as a new request identity"
+        );
+        assert_eq!(app.next_request_id, u64::MAX, "allocator never wraps");
+
+        // Search has a visible settled failure rather than a pending spinner
+        // when no fresh identity can be allocated.
+        app.search_input.set_text("anything");
+        app.request_live_search();
+        assert!(app.live_search_pending.is_none());
+        assert_eq!(app.active_search_request, None);
+        assert!(app.search_error.is_some());
+    }
+
+    #[test]
+    fn stale_search_response_cannot_replace_the_current_query() {
+        let (mut app, _doc) = app_with_doc();
+        app.search_input.set_text("new query");
+        app.active_search_request = Some(8);
+        let old = SearchBundle {
+            tracks: vec![TrackHit {
+                video_id: "old-result".into(),
+                title: "Old result".into(),
+                artist: "Artist".into(),
+                artist_id: Some("artist".into()),
+                album: Some("Album".into()),
+                album_id: Some("album".into()),
+                duration_s: 1,
+                cover_url: String::new(),
+            }],
+            ..SearchBundle::default()
+        };
+        app.apply_search_results("old query", 7, &old);
+        assert!(
+            app.live_bundle.is_none(),
+            "old query cannot populate results"
+        );
+
+        app.apply_search_results("new query", 8, &old);
+        assert_eq!(
+            app.live_bundle.as_ref().map(|(query, _)| query.as_str()),
+            Some("new query"),
+            "only the current query and request identity may update the view"
+        );
+    }
+
+    #[test]
+    fn current_search_failure_settles_loading_and_exposes_retry_state() {
+        let (mut app, _doc) = app_with_doc();
+        app.search_input.set_text("unavailable query");
+        app.active_search_request = Some(4);
+        app.live_search_pending = Some("unavailable query".into());
+        app.apply_search_failure("unavailable query", 4, "network unavailable");
+
+        assert!(app.live_search_pending.is_none(), "failure ends busy state");
+        assert!(app.active_search_request.is_none());
+        assert_eq!(
+            app.search_error.as_ref().map(|(query, _)| query.as_str()),
+            Some("unavailable query")
+        );
+        app.mark_drawn();
+        assert!(
+            !app.needs_animation_frame(),
+            "a settled search error never leaves an idle redraw loop"
+        );
+    }
+
+    #[test]
+    fn absent_audio_source_does_not_advance_a_decorative_playhead() {
+        let (mut app, _doc) = app_with_doc();
+        app.pb.current = Some("tk_g1".into());
+        app.pb.playing = true;
+        app.playhead_ms = 42_000.0;
+        app.tick();
+        assert_eq!(
+            app.playhead_ms, 42_000.0,
+            "no source means no fake progress"
+        );
     }
 
     #[test]
