@@ -6,7 +6,9 @@
 //! against the current index, which refuses an address that went stale after
 //! the result was rendered.
 
-use qos_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use qos_actions::{
+    ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, RetryPolicy,
+};
 use ui::icons::Icon;
 use ui::search::{SearchCatalog, SearchPage, SearchProvider, SearchResult};
 
@@ -17,7 +19,11 @@ struct Row {
     resource_id: String,
     title: String,
     url: String,
-    kind: &'static str,
+    /// The exact resource kind published in Browser's hierarchy, not a
+    /// search-only proxy type.  A search result must be interchangeable with
+    /// opening the same row from Library.
+    resource_kind: &'static str,
+    search_kind: &'static str,
     icon: Icon,
     score: i32,
 }
@@ -76,10 +82,11 @@ impl BrowserSearchIndex {
         let mut rows = std::collections::BTreeMap::new();
         for entry in bookmarks.entries() {
             let row = Row {
-                resource_id: id("bookmark", &entry.url),
+                resource_id: crate::actions::bookmark_resource_id(&entry.url),
                 title: entry.title.clone(),
                 url: entry.url.clone(),
-                kind: "Bookmarks",
+                resource_kind: "browser.bookmark",
+                search_kind: "Bookmarks",
                 icon: Icon::Star,
                 score: 40,
             };
@@ -87,14 +94,15 @@ impl BrowserSearchIndex {
         }
         for entry in history.entries() {
             let row = Row {
-                resource_id: id("history", &entry.url),
+                resource_id: crate::actions::history_resource_id(&entry.url),
                 title: if entry.title.trim().is_empty() {
                     entry.url.clone()
                 } else {
                     entry.title.clone()
                 },
                 url: entry.url.clone(),
-                kind: "History",
+                resource_kind: "browser.history-entry",
+                search_kind: "History",
                 icon: Icon::History,
                 score: i32::try_from(entry.visit_count.min(20)).unwrap_or(20),
             };
@@ -117,7 +125,7 @@ impl BrowserSearchIndex {
         row: Row,
     ) {
         let result = SearchResult::for_action(
-            row.kind,
+            row.search_kind,
             &row.title,
             ActionAddress::new(&row.resource_id, "open"),
         )
@@ -147,7 +155,7 @@ pub struct BrowserSearchProvider {
 
 impl BrowserSearchProvider {
     fn row_resource(row: &Row) -> Resource {
-        let mut resource = Resource::new(&row.resource_id, "browser.page-reference", &row.title);
+        let mut resource = Resource::new(&row.resource_id, row.resource_kind, &row.title);
         let payload = serde_json::json!({ "operation": "navigate", "url": row.url });
         if let Ok(spec) = ActionSpec::operation(
             "open",
@@ -156,14 +164,24 @@ impl BrowserSearchProvider {
             "browser.operation",
             &payload,
         ) {
-            resource.actions.push(spec);
+            resource
+                .actions
+                .push(spec.with_contract(navigation_contract()));
         }
         resource
     }
 }
 
-fn id(kind: &str, url: &str) -> String {
-    format!("browser.{kind}.{}", blake3::hash(url.as_bytes()).to_hex())
+/// This mirrors `BrowserWidget`'s navigation contract.  Search resolution can
+/// happen without materialising the whole widget tree, so it owns a value
+/// copy rather than a second, weaker action shape.
+fn navigation_contract() -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::Idempotent,
+        execution: ExecutionMode::Background { cancellable: false },
+        tags: vec!["network".into(), "navigation".into()],
+        ..ActionContract::view()
+    }
 }
 
 impl SearchProvider for BrowserSearchProvider {
@@ -279,5 +297,29 @@ mod tests {
         assert!(bookmarks.remove("https://stale.example.test"));
         index.sync(&crate::history::History::new(), &bookmarks);
         assert!(provider.resolve_action_resource(&address).is_none());
+    }
+
+    #[test]
+    fn search_uses_the_library_resource_identity_and_contract() {
+        let mut bookmarks = crate::library::Bookmarks::default();
+        // Legacy profile rows may omit the trailing slash.  The library uses
+        // a normalized resource id, and search must resolve that exact same
+        // object rather than a second raw-URL identity.
+        assert!(bookmarks.add("https://canonical.example.test", "Canonical"));
+        let index = BrowserSearchIndex::default();
+        index.sync(&crate::history::History::new(), &bookmarks);
+        let provider = index.provider();
+        let hit = provider.search_limited("canonical", 1).pop().unwrap();
+        let address = hit.action_address().unwrap();
+        assert_eq!(
+            address.resource,
+            crate::actions::bookmark_resource_id("https://canonical.example.test")
+        );
+        let resource = provider.resolve_action_resource(&address).unwrap();
+        assert_eq!(resource.kind, "browser.bookmark");
+        assert!(matches!(
+            resource.actions[0].contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        ));
     }
 }
