@@ -114,12 +114,25 @@ impl ScanState {
             || self.locations != found.locations
             || self.ambiguous != found.ambiguous
             || !self.done;
+        if changed && self.revision == u64::MAX {
+            // Keep every field, including `done`, exactly as it was. A
+            // caller must never mistake a rejected replacement for a newer
+            // completed scan with the same revision.
+            tracing::error!(
+                target: "shell::room_records",
+                "record-scan revision namespace exhausted; refusing an ambiguous corpus update"
+            );
+            return;
+        }
         self.records = found.records;
         self.locations = found.locations;
         self.ambiguous = found.ambiguous;
         self.done = true;
         if changed {
-            self.revision = self.revision.wrapping_add(1);
+            // Checked above, before any retained search state is replaced.
+            if let Some(next) = self.revision.checked_add(1) {
+                self.revision = next;
+            }
         }
     }
 }
@@ -218,8 +231,23 @@ impl RoomRecords {
     }
 
     /// Something changed that [`Self::known`] would answer differently.
+    fn can_change(&self) -> bool {
+        if self.generation == u64::MAX {
+            tracing::error!(
+                target: "shell::room_records",
+                "room-record generation namespace exhausted; refusing an ambiguous index mutation"
+            );
+            return false;
+        }
+        true
+    }
+
     fn changed(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        // Every caller proves capacity with `can_change` before touching
+        // retained state, so this cannot wrap or reuse a cache generation.
+        if let Some(next) = self.generation.checked_add(1) {
+            self.generation = next;
+        }
     }
 
     /// Make this index durable and start looking for the records apps
@@ -227,6 +255,9 @@ impl RoomRecords {
     /// something is referenced into it.
     pub fn attach_store(&mut self) {
         if self.persistent {
+            return;
+        }
+        if !self.can_change() {
             return;
         }
         self.persistent = true;
@@ -248,6 +279,10 @@ impl RoomRecords {
 
     /// Add records to the known corpus without a scan.
     pub fn seed_observed(&mut self, records: impl IntoIterator<Item = ObservedRecord>) {
+        let mut records = records.into_iter().peekable();
+        if records.peek().is_none() || !self.can_change() {
+            return;
+        }
         self.seeded.extend(records);
         self.changed();
     }
@@ -255,6 +290,10 @@ impl RoomRecords {
     /// Bring a record into `room` by reference: the room gains the id, the
     /// document is untouched. Returns whether this added something.
     pub fn reference(&mut self, room: RoomId, id: &RecordId, kind: &RecordKind) -> bool {
+        let label_changed = self.labelled.get(id) != Some(kind);
+        if (self.holds(room, id) && !label_changed) || !self.can_change() {
+            return false;
+        }
         let slot = self.index_mut(room);
         let added = room::reference(&mut slot.doc, id, kind);
         if added && let Some(saver) = slot.autosave.as_mut() {
@@ -268,6 +307,9 @@ impl RoomRecords {
     /// Drop a room's reference to a record. Stops future changes flowing
     /// to the room's members but cannot un-share bytes a peer already synced.
     pub fn unreference(&mut self, room: RoomId, id: &RecordId) -> bool {
+        if !self.holds(room, id) || !self.can_change() {
+            return false;
+        }
         let Some(slot) = self.held.get_mut(&room) else {
             return false;
         };
@@ -908,6 +950,46 @@ mod tests {
             "an in-memory index has no scan to wait for"
         );
         assert!(rr.known().is_empty());
+    }
+
+    #[test]
+    fn exhausted_generations_refuse_mutations_and_scan_replacements() {
+        let mut rr = RoomRecords::in_memory();
+        let room = room();
+        let old = RecordId::for_file("old.odt");
+        let new = RecordId::for_file("new.odt");
+        let kind = RecordKind::new("document");
+        rr.generation = u64::MAX;
+        let generation = rr.search_generation();
+        assert!(!rr.reference(room, &old, &kind));
+        rr.seed_observed([ObservedRecord {
+            id: old.clone(),
+            kind: kind.clone(),
+            home: Some(room),
+            package_id: "dev.qos.word-processor".into(),
+        }]);
+        assert!(rr.known().is_empty());
+        assert_eq!(rr.search_generation(), generation);
+
+        rr.generation = 0;
+        rr.replace_scanned_records_for_test(vec![ObservedRecord {
+            id: old.clone(),
+            kind: kind.clone(),
+            home: Some(room),
+            package_id: "dev.qos.word-processor".into(),
+        }]);
+        let scan = Arc::clone(rr.scan.as_ref().unwrap());
+        scan.lock().unwrap().revision = u64::MAX;
+        rr.replace_scanned_records_for_test(vec![ObservedRecord {
+            id: new,
+            kind,
+            home: Some(room),
+            package_id: "dev.qos.word-processor".into(),
+        }]);
+        let scan = scan.lock().unwrap();
+        assert_eq!(scan.records.len(), 1);
+        assert_eq!(scan.records[0].id, old);
+        assert_eq!(scan.revision, u64::MAX);
     }
 
     #[test]

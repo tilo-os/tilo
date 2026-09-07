@@ -338,7 +338,7 @@ impl Workbook {
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = open(&doc, &ROOT)?;
-        let ids = seeded_sheet_id_gen(&doc, &c);
+        let ids = seeded_sheet_id_gen(&doc, &c)?;
         Ok(Self {
             doc,
             root: ROOT,
@@ -599,9 +599,13 @@ impl Workbook {
             let _ = a.merge(&mut b);
             a.save()
         };
-        self.doc = AutoCommit::load(&merged).expect("merge: reload");
-        self.c = open(&self.doc, &ROOT).expect("merge: open");
-        self.ids = seeded_sheet_id_gen(&self.doc, &self.c);
+        let candidate_doc = AutoCommit::load(&merged).expect("merge: reload");
+        let candidate_containers = open(&candidate_doc, &ROOT).expect("merge: open");
+        let candidate_ids = seeded_sheet_id_gen(&candidate_doc, &candidate_containers)
+            .expect("merged workbook exhausted its id namespace; refusing to reuse an identifier");
+        self.doc = candidate_doc;
+        self.c = candidate_containers;
+        self.ids = candidate_ids;
     }
 }
 
@@ -613,18 +617,27 @@ impl Default for Workbook {
 
 /// An [`crate::model::IdGen`] for `doc`'s actor, seeded past existing sheet ids so
 /// a generator over a reloaded workbook won't re-mint (and overwrite) a sheet.
-fn seeded_sheet_id_gen(doc: &AutoCommit, c: &SheetContainers) -> crate::model::IdGen {
+fn seeded_sheet_id_gen(
+    doc: &AutoCommit,
+    c: &SheetContainers,
+) -> Result<crate::model::IdGen, crate::model::IdGenError> {
     let actor = doc.get_actor().to_hex_string();
     let prefix = format!("{actor}.");
-    let mut next = 0u64;
+    let mut next = Some(0u64);
     for id in doc.keys(&c.sheets) {
         if let Some(rest) = id.strip_prefix(&prefix)
             && let Ok(n) = rest.parse::<u64>()
         {
-            next = next.max(n.saturating_add(1));
+            next = match (next, n.checked_add(1)) {
+                (Some(current), Some(candidate)) => Some(current.max(candidate)),
+                (_, None) | (None, _) => None,
+            };
         }
     }
-    crate::model::IdGen::with_counter(actor, next)
+    let next = next.ok_or_else(|| crate::model::IdGenError::Exhausted {
+        actor_hex: actor.clone(),
+    })?;
+    Ok(crate::model::IdGen::with_counter(actor, next))
 }
 
 /// Write a string field only when it differs from the stored value (avoids a

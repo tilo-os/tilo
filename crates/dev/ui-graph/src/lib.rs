@@ -683,6 +683,8 @@ fn validate_non_negative(value: Option<f32>, id: &str, property: &str) -> Result
 
 #[derive(Debug, thiserror::Error)]
 pub enum UiGraphError {
+    #[error("UI graph revision space is exhausted; refusing to reuse a prior live state")]
+    RevisionExhausted,
     #[error("invalid UI graph JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("UI graph version {found} is unsupported; this toolkit supports {supported}")]
