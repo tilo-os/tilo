@@ -36,6 +36,12 @@ use std::path::PathBuf;
 /// address-bar query, resource snapshot, or persisted JSON write into an
 /// unbounded operation.
 pub const MAX_HISTORY_ENTRIES: usize = 10_000;
+/// A profile is user-controlled input.  Refuse a corrupt or hostile history
+/// file before handing it to JSON parsing, which otherwise has to allocate a
+/// complete value tree first.
+pub const MAX_HISTORY_FILE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_HISTORY_URL_BYTES: usize = 8 * 1024;
+pub const MAX_HISTORY_TITLE_BYTES: usize = 4 * 1024;
 
 /// One visited page. De-duplicated by [`HistoryEntry::url`] in the store.
 #[derive(Clone, Debug, PartialEq)]
@@ -135,19 +141,20 @@ impl History {
     /// Blank/whitespace URLs are ignored.
     pub fn record_at(&mut self, url: &str, title: &str, now: u64) {
         let url = url.trim();
-        if url.is_empty() {
+        if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
             return;
         }
+        let title = bounded_text(title, MAX_HISTORY_TITLE_BYTES);
         if let Some(existing) = self.entries.iter_mut().find(|e| e.url == url) {
             existing.visit_count = existing.visit_count.saturating_add(1);
             existing.last_visit = now;
             if !title.trim().is_empty() {
-                existing.title = title.to_string();
+                existing.title = title;
             }
         } else {
             self.entries.push(HistoryEntry {
                 url: url.to_string(),
-                title: title.to_string(),
+                title,
                 last_visit: now,
                 visit_count: 1,
             });
@@ -224,9 +231,13 @@ impl History {
         let Some(path) = history_path() else {
             return History::new();
         };
-        match std::fs::read_to_string(&path) {
-            Ok(text) => History::from_json_str(&text),
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.len() > MAX_HISTORY_FILE_BYTES as u64 => History::new(),
             Err(_) => History::new(),
+            Ok(_) => match std::fs::read_to_string(&path) {
+                Ok(text) => History::from_json_str(&text),
+                Err(_) => History::new(),
+            },
         }
     }
 
@@ -274,6 +285,9 @@ impl History {
     /// and any parse failure yields an empty history.
     pub fn from_json_str(text: &str) -> History {
         let mut entries = Vec::new();
+        if text.len() > MAX_HISTORY_FILE_BYTES {
+            return History::new();
+        }
         if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(text)
         {
             for item in items {
@@ -281,15 +295,16 @@ impl History {
                     .get("url")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
-                    .to_string();
-                if url.is_empty() {
+                    .trim();
+                if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
                     continue;
                 }
                 let title = item
                     .get("title")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                    .map_or_else(String::new, |title| {
+                        bounded_text(title, MAX_HISTORY_TITLE_BYTES)
+                    });
                 let last_visit = item
                     .get("last_visit")
                     .and_then(serde_json::Value::as_u64)
@@ -299,7 +314,7 @@ impl History {
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0) as u32;
                 entries.push(HistoryEntry {
-                    url,
+                    url: url.to_string(),
                     title,
                     last_visit,
                     visit_count,
@@ -328,6 +343,20 @@ impl History {
         });
         self.entries.truncate(MAX_HISTORY_ENTRIES);
     }
+}
+
+/// Copy at most `limit` bytes without splitting a UTF-8 code point.  Labels
+/// cross the accessibility and global-search boundaries, so this protects
+/// more than the on-disk representation.
+fn bounded_text(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_string();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    value.get(..end).unwrap_or_default().to_string()
 }
 
 /// Absolute path to the history file:
@@ -682,6 +711,22 @@ mod tests {
     fn from_json_garbage_is_empty() {
         assert!(History::from_json_str("not json at all").is_empty());
         assert!(History::from_json_str("{\"not\":\"an array\"}").is_empty());
+    }
+
+    #[test]
+    fn hostile_history_rows_are_bounded_before_search_can_materialize_them() {
+        let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
+        let json = serde_json::json!([
+            { "url": too_long_url, "title": "ignored" },
+            {
+                "url": "https://kept.example.test",
+                "title": "t".repeat(MAX_HISTORY_TITLE_BYTES + 64),
+            }
+        ]);
+        let history = History::from_json_str(&json.to_string());
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.entries()[0].title.len(), MAX_HISTORY_TITLE_BYTES);
+        assert!(History::from_json_str(&" ".repeat(MAX_HISTORY_FILE_BYTES + 1)).is_empty());
     }
 
     #[test]
