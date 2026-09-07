@@ -2534,11 +2534,14 @@ impl DocMut<'_> {
 
     /// Store `bytes` in the content-addressed blob store and write a descriptor under their blake3 hex hash
     /// (the key an `image` block's `blob` attr references). Creates the blobs map lazily for older documents.
+    /// Returns `None` if the store rejects the content (for example, because of
+    /// its quota); in that case this method makes no CRDT change, so a local
+    /// edit cannot create a reference to bytes this replica does not retain.
     ///
     /// # Panics
     /// Panics if `self.c.root` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
-    pub fn put_blob(&mut self, bytes: &[u8]) -> String {
-        let hash = crate::blobstore::put(bytes);
+    pub fn put_blob(&mut self, bytes: &[u8]) -> Option<String> {
+        let hash = crate::blobstore::put(bytes)?;
         let blobs = match blobs_obj(self.doc, self.c) {
             Some(b) => b,
             None => self
@@ -2552,7 +2555,7 @@ impl DocMut<'_> {
             self.doc.get(&blobs, hash.as_str()),
             Ok(Some((Value::Object(ObjType::Map), _)))
         ) {
-            return hash;
+            return Some(hash);
         }
         let meta = crate::blobstore::sniff(bytes);
         if let Ok(d) = self.doc.put_object(&blobs, hash.as_str(), ObjType::Map) {
@@ -2571,7 +2574,7 @@ impl DocMut<'_> {
                 .doc
                 .put(&d, BLOB_H, ScalarValue::Int(i64::from(meta.h)));
         }
-        hash
+        Some(hash)
     }
 }
 

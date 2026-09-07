@@ -1614,7 +1614,7 @@ mod tests {
         let img = d.insert_block(Some(&p1), "image");
         let p3 = d.insert_block(Some(&img), "paragraph");
         d.splice_text(&p3, 0, 0, "after");
-        let hash = d.put_blob(&TINY_PNG);
+        let hash = d.put_blob(&TINY_PNG).expect("test fixture fits blob quota");
         {
             let mut dm = d.as_mut();
             dm.set_attr(&img, "blob", hash.as_str());
@@ -1695,7 +1695,7 @@ mod tests {
         let p1 = d.insert_block(None, "paragraph");
         d.splice_text(&p1, 0, 0, "text");
         let img = d.insert_block(Some(&p1), "image");
-        let hash = d.put_blob(&TINY_PNG);
+        let hash = d.put_blob(&TINY_PNG).expect("test fixture fits blob quota");
         {
             let mut dm = d.as_mut();
             dm.set_attr(&img, "blob", hash.as_str());
