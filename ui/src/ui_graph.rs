@@ -484,11 +484,11 @@ impl UiGraphHandle {
         if state.document == document {
             return Ok(());
         }
+        advance_graph_revision(&mut state.revision)?;
         let previous = std::mem::replace(&mut state.document, document);
         push_graph_history(&mut state.undo, previous);
         state.redo.clear();
         state.active_edit_group = None;
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         Ok(())
     }
@@ -519,13 +519,16 @@ impl UiGraphHandle {
     /// holding the graph lock.
     pub fn undo(&self) -> Result<bool, UiGraphError> {
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
+        if state.undo.is_empty() {
+            return Ok(false);
+        }
+        advance_graph_revision(&mut state.revision)?;
         let Some(previous) = state.undo.pop() else {
             return Ok(false);
         };
         let current = std::mem::replace(&mut state.document, previous);
         push_graph_history(&mut state.redo, current);
         state.active_edit_group = None;
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         Ok(true)
     }
@@ -540,13 +543,16 @@ impl UiGraphHandle {
     /// holding the graph lock.
     pub fn redo(&self) -> Result<bool, UiGraphError> {
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
+        if state.redo.is_empty() {
+            return Ok(false);
+        }
+        advance_graph_revision(&mut state.revision)?;
         let Some(next) = state.redo.pop() else {
             return Ok(false);
         };
         let current = std::mem::replace(&mut state.document, next);
         push_graph_history(&mut state.undo, current);
         state.active_edit_group = None;
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         Ok(true)
     }
@@ -737,6 +743,7 @@ impl UiGraphHandle {
         if state.document == candidate {
             return Ok(output);
         }
+        advance_graph_revision(&mut state.revision)?;
         let previous = std::mem::replace(&mut state.document, candidate);
         let continues_group = group.is_some() && state.active_edit_group.as_deref() == group;
         if !continues_group {
@@ -744,7 +751,6 @@ impl UiGraphHandle {
         }
         state.redo.clear();
         state.active_edit_group = group.map(str::to_owned);
-        state.revision = state.revision.wrapping_add(1);
         drop(state);
         Ok(output)
     }
@@ -752,6 +758,13 @@ impl UiGraphHandle {
     fn revision(&self) -> Option<u64> {
         self.inner.read().ok().map(|state| state.revision)
     }
+}
+
+fn advance_graph_revision(revision: &mut u64) -> Result<(), UiGraphError> {
+    *revision = revision
+        .checked_add(1)
+        .ok_or(UiGraphError::RevisionExhausted)?;
+    Ok(())
 }
 
 fn push_graph_history(history: &mut Vec<UiDocument>, document: UiDocument) {
@@ -969,7 +982,7 @@ type SaveGraph = Box<dyn FnMut(&str) -> Result<(), String>>;
 
 struct UiGraphEditorState {
     selected: String,
-    chrome_revision: u64,
+    chrome_dirty: bool,
     suppress_graph_revision: Option<u64>,
     status: LocalState<String>,
     save: Option<SaveGraph>,
@@ -981,7 +994,6 @@ pub struct UiGraphEditor {
     handle: UiGraphHandle,
     theme: Theme,
     shared: Rc<RefCell<UiGraphEditorState>>,
-    seen_chrome_revision: u64,
     seen_graph_revision: u64,
     child: Element,
     rect: Rect,
@@ -999,7 +1011,7 @@ impl UiGraphEditor {
         let graph_revision = handle.revision().unwrap_or_default();
         let shared = Rc::new(RefCell::new(UiGraphEditorState {
             selected: document.root.id().to_owned(),
-            chrome_revision: 0,
+            chrome_dirty: false,
             suppress_graph_revision: None,
             status: LocalState::new("Ready".to_owned()),
             save: None,
@@ -1009,7 +1021,6 @@ impl UiGraphEditor {
             handle,
             theme,
             shared,
-            seen_chrome_revision: 0,
             seen_graph_revision: graph_revision,
             child,
             rect: Rect::ZERO,
@@ -1031,16 +1042,16 @@ impl UiGraphEditor {
 
     fn rebuild_if_changed(&mut self) {
         let graph_revision = self.handle.revision().unwrap_or(self.seen_graph_revision);
-        let (chrome_revision, suppressed) = {
+        let (chrome_dirty, suppressed) = {
             let state = self.shared.borrow();
-            (state.chrome_revision, state.suppress_graph_revision)
+            (state.chrome_dirty, state.suppress_graph_revision)
         };
         if graph_revision != self.seen_graph_revision && suppressed == Some(graph_revision) {
             self.seen_graph_revision = graph_revision;
             self.shared.borrow_mut().suppress_graph_revision = None;
         }
         let graph_changed = graph_revision != self.seen_graph_revision;
-        if !graph_changed && chrome_revision == self.seen_chrome_revision {
+        if !graph_changed && !chrome_dirty {
             return;
         }
         let focused = focused_widget_snapshot(self.child.as_ref());
@@ -1051,7 +1062,7 @@ impl UiGraphEditor {
                 }
                 self.child = child;
                 self.seen_graph_revision = graph_revision;
-                self.seen_chrome_revision = chrome_revision;
+                self.shared.borrow_mut().chrome_dirty = false;
                 self.structure_dirty = true;
             }
             Err(error) => self
@@ -1204,7 +1215,7 @@ fn build_editor_child(
                     }
                     let mut state = state.borrow_mut();
                     state.selected.clone_from(&id_for_click);
-                    state.chrome_revision = state.chrome_revision.wrapping_add(1);
+                    state.chrome_dirty = true;
                 }),
         ));
     }
@@ -1308,7 +1319,7 @@ fn build_editor_child(
                             let mut editor = state.borrow_mut();
                             if property == EditableProperty::NodeId {
                                 value.trim().clone_into(&mut editor.selected);
-                                editor.chrome_revision = editor.chrome_revision.wrapping_add(1);
+                                editor.chrome_dirty = true;
                             } else {
                                 editor.suppress_graph_revision = graph.revision();
                             }
@@ -2014,7 +2025,7 @@ fn boolean_property_button(
         match result {
             Ok(()) => {
                 let mut editor = state.borrow_mut();
-                editor.chrome_revision = editor.chrome_revision.wrapping_add(1);
+                editor.chrome_dirty = true;
                 status.set("Preview updated".to_owned());
             }
             Err(error) => status.set(format!("Edit rejected: {error}")),
@@ -2083,7 +2094,7 @@ fn choice_property_button(
             match result {
                 Ok(()) => {
                     let mut editor = state.borrow_mut();
-                    editor.chrome_revision = editor.chrome_revision.wrapping_add(1);
+                    editor.chrome_dirty = true;
                     status.set("Preview updated".to_owned());
                 }
                 Err(error) => status.set(format!("Edit rejected: {error}")),
@@ -2277,7 +2288,7 @@ fn add_button(
                 Ok(id) => {
                     let mut editor = state.borrow_mut();
                     editor.selected = id;
-                    editor.chrome_revision = editor.chrome_revision.wrapping_add(1);
+                    editor.chrome_dirty = true;
                     status.set("Node added".to_owned());
                 }
                 Err(error) => status.set(format!("Add rejected: {error}")),
@@ -2423,7 +2434,7 @@ fn move_button(
             match result {
                 Ok(()) => {
                     let mut editor = state.borrow_mut();
-                    editor.chrome_revision = editor.chrome_revision.wrapping_add(1);
+                    editor.chrome_dirty = true;
                     status.set("Node moved".to_owned());
                 }
                 Err(error) => status.set(format!("Move rejected: {error}")),
@@ -2457,7 +2468,7 @@ fn delete_button(
                 Ok(parent) => {
                     let mut editor = state.borrow_mut();
                     editor.selected = parent;
-                    editor.chrome_revision = editor.chrome_revision.wrapping_add(1);
+                    editor.chrome_dirty = true;
                     status.set("Node deleted".to_owned());
                 }
                 Err(error) => status.set(format!("Delete rejected: {error}")),
@@ -2594,7 +2605,7 @@ impl Widget for UiGraphEditor {
 
     fn needs_idle_sync(&self) -> bool {
         let state = self.shared.borrow();
-        state.chrome_revision != self.seen_chrome_revision
+        state.chrome_dirty
             || self.handle.revision() != Some(self.seen_graph_revision)
             || self.child.needs_idle_sync()
     }
@@ -2811,6 +2822,26 @@ mod tests {
             .perform_named("save", &Action::Activate)
             .expect("serialized button is a real button");
         assert!(driver.dump_json().contains("save-requested"));
+    }
+
+    #[test]
+    fn exhausted_graph_revision_rejects_a_mutation_without_reusing_live_state() {
+        let handle = UiGraphHandle::new(sample()).unwrap();
+        let before = handle.document().unwrap();
+        handle.inner.write().unwrap().revision = u64::MAX;
+        let replacement = UiDocument::new(UiNode::Text {
+            id: "replacement".into(),
+            text: UiTextSource::Static {
+                value: "Replacement".into(),
+            },
+            role: UiTextRole::Body,
+            size: None,
+        });
+        assert!(matches!(
+            handle.replace(replacement),
+            Err(UiGraphError::RevisionExhausted)
+        ));
+        assert_eq!(handle.document().unwrap(), before);
     }
 
     #[test]
