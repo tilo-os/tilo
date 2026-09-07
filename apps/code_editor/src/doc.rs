@@ -252,6 +252,18 @@ impl EditorDoc {
         let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&files, id) else {
             return None;
         };
+        // A revision is an optimistic-concurrency identity, not a decorative
+        // counter. Saturating here would let two different mutations carry the
+        // same expected revision after exhaustion, so refuse before changing
+        // any field instead.
+        let next_revision = match patch.revision_field {
+            Some(field) => Some(
+                Self::number(doc, &item, field)
+                    .checked_add(1)
+                    .filter(|next| *next >= 0)?,
+            ),
+            None => None,
+        };
         if let Some(value) = patch.name {
             let _ = doc.put(&item, "name", value);
         }
@@ -273,8 +285,7 @@ impl EditorDoc {
         if let Some(value) = patch.deleted {
             let _ = doc.put(&item, "deleted", value);
         }
-        if let Some(field) = patch.revision_field {
-            let next = Self::number(doc, &item, field).saturating_add(1);
+        if let (Some(field), Some(next)) = (patch.revision_field, next_revision) {
             let _ = doc.put(&item, field, next);
         }
         Self::file(doc, id)
@@ -418,6 +429,41 @@ mod tests {
         // Delete "cd" (chars 2..4) and insert "XY".
         EditorDoc::splice(&mut doc, &t, 2, 2, "XY");
         assert_eq!(doc.text(&t).unwrap(), "abXYef");
+    }
+
+    #[test]
+    fn exhausted_field_revision_refuses_without_partially_mutating_metadata() {
+        let mut doc = AutoCommit::new();
+        let file = CollaborativeFile {
+            id: "00000000-0000-4000-8000-000000000101".into(),
+            kind: "file".into(),
+            path: "before.rs".into(),
+            name: "before.rs".into(),
+            parent: None,
+            language: "Rust".into(),
+            order: 0,
+            deleted: false,
+            name_revision: i64::MAX,
+            structure_revision: 0,
+            language_revision: 0,
+            deletion_revision: 0,
+        };
+        assert!(EditorDoc::create_file(&mut doc, &file, "fn main() {}"));
+        assert!(
+            EditorDoc::update_file(
+                &mut doc,
+                &file.id,
+                FilePatch {
+                    name: Some("after.rs"),
+                    revision_field: Some("name_revision"),
+                    ..FilePatch::default()
+                },
+            )
+            .is_none()
+        );
+        let current = EditorDoc::file(&doc, &file.id).expect("file survives refusal");
+        assert_eq!(current.name, "before.rs");
+        assert_eq!(current.name_revision, i64::MAX);
     }
 
     #[test]
