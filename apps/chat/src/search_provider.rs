@@ -230,7 +230,84 @@ impl SearchProvider for ChatSearchProvider {
             .query_page(query, cursor, work_budget, result_limit)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive resource-kind dispatcher keeps canonical search addresses and their matching open operations adjacent"
+    )]
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+        if let Some(id) = address.resource.strip_prefix("chat.workspace:") {
+            let workspace = self
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == id)?;
+            return (address == &Self::workspace_address(id)).then(|| {
+                qos_actions::Resource::new(
+                    address.resource.clone(),
+                    "chat.workspace",
+                    workspace.name.clone(),
+                )
+                .with_action(crate::actions::view_operation(
+                    "open",
+                    "Open workspace",
+                    &crate::actions::ChatOperation::OpenWorkspace {
+                        workspace: id.to_string(),
+                    },
+                ))
+            });
+        }
+        if let Some(id) = address.resource.strip_prefix("chat.channel:") {
+            let channel = self.channels.iter().find(|channel| channel.id == id)?;
+            return (address == &Self::channel_address(id)).then(|| {
+                qos_actions::Resource::new(
+                    address.resource.clone(),
+                    "chat.channel",
+                    format!("{} {}", channel.kind.glyph(), channel.name),
+                )
+                .with_action(crate::actions::view_operation(
+                    "open",
+                    "Open conversation",
+                    &crate::actions::ChatOperation::OpenChannel {
+                        workspace: channel.workspace.clone(),
+                        channel: id.to_string(),
+                    },
+                ))
+            });
+        }
+        if let Some(id) = address.resource.strip_prefix("chat.category:") {
+            let category = self.categories.iter().find(|category| category.id == id)?;
+            return (address == &Self::category_address(id)).then(|| {
+                qos_actions::Resource::new(
+                    address.resource.clone(),
+                    "chat.category",
+                    category.name.clone(),
+                )
+                .with_action(crate::actions::view_operation(
+                    "open",
+                    "Open category",
+                    &crate::actions::ChatOperation::OpenCategory {
+                        workspace: category.workspace.clone(),
+                        category: id.to_string(),
+                    },
+                ))
+            });
+        }
+        if let Some(id) = address.resource.strip_prefix("chat.person:") {
+            let user = self.users.iter().find(|user| user.id == id)?;
+            return (address == &Self::person_address(id)).then(|| {
+                qos_actions::Resource::new(
+                    address.resource.clone(),
+                    "chat.person",
+                    user.name.clone(),
+                )
+                .with_action(crate::actions::view_operation(
+                    "open",
+                    "Open person",
+                    &crate::actions::ChatOperation::OpenPerson {
+                        user: id.to_string(),
+                    },
+                ))
+            });
+        }
         let message_id = address.resource.strip_prefix("chat.message:")?;
         let message = self
             .messages
@@ -241,28 +318,30 @@ impl SearchProvider for ChatSearchProvider {
             .workspaces
             .iter()
             .find(|ws| ws.id == channel.workspace)?;
+        if address != &Self::message_address(message_id) {
+            return None;
+        }
+        let open = qos_actions::ActionSpec::operation(
+            "open",
+            "Reveal message",
+            qos_actions::OperationKind::View,
+            crate::actions::CHAT_OPERATION_TYPE,
+            &crate::actions::ChatOperation::RevealMessage {
+                workspace: workspace.id.clone(),
+                channel: channel.id.clone(),
+                message: message.id.clone(),
+                parent: message.parent.clone(),
+            },
+        )
+        .ok()?
+        .retry_policy(qos_actions::RetryPolicy::Idempotent);
         Some(
             qos_actions::Resource::new(
                 address.resource.clone(),
                 "chat.message",
                 message.text.clone(),
             )
-            .with_action(
-                qos_actions::ActionSpec::operation(
-                    "open",
-                    "Reveal message",
-                    qos_actions::OperationKind::View,
-                    crate::actions::CHAT_OPERATION_TYPE,
-                    &crate::actions::ChatOperation::RevealMessage {
-                        workspace: workspace.id.clone(),
-                        channel: channel.id.clone(),
-                        message: message.id.clone(),
-                        parent: message.parent.clone(),
-                    },
-                )
-                .ok()?
-                .retry_policy(qos_actions::RetryPolicy::Idempotent),
-            ),
+            .with_action(open),
         )
     }
 }
@@ -364,6 +443,32 @@ mod tests {
                 .iter()
                 .any(|hit| hit.kind == PERSON_KIND && hit.action_address().is_some())
         );
+    }
+
+    #[test]
+    fn every_search_kind_resolves_its_canonical_open_resource() {
+        let (app, _) = seeded();
+        let providers = app.search_providers();
+        let provider = &providers[0];
+        for kind in [
+            WORKSPACE_KIND,
+            CHANNEL_KIND,
+            CATEGORY_KIND,
+            PERSON_KIND,
+            MESSAGE_KIND,
+        ] {
+            let hit = provider
+                .search("")
+                .into_iter()
+                .find(|hit| hit.kind == kind)
+                .unwrap_or_else(|| panic!("missing search result kind {kind}"));
+            let address = hit.action_address().expect("canonical action address");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .unwrap_or_else(|| panic!("{kind} did not resolve lazily"));
+            assert_eq!(resource.id.as_str(), address.resource);
+            assert!(resource.actions.iter().any(|action| action.id == "open"));
+        }
     }
 
     #[test]

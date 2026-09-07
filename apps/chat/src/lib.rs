@@ -104,10 +104,15 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"thread-narrow"` — a thread as a phone-width pushed detail view.
 /// * `"collaboration"` — the desktop thread plus active huddle state.
 /// * `"context"` — open a channel context menu.
+/// * `"msgmenu"` — open an owned-message action menu.
 /// * `"attach"` — open the workspace file picker over the composer.
 /// * `"attach-loading"` / `"attach-error"` — bounded attachment lifecycle
 ///   feedback in the same picker.
 /// * `"edit"` — show the shared inline editor on a sent message.
+/// * `"composer"` — stage a multiline draft in the main composer.
+/// * `"call"` / `"share"` — expanded call and screen-share states.
+/// * `"floating-call"` and its ownership-transition variants — the compact
+///   call surface before, during, and after compositor handoff.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ChatApp::new_ephemeral();
     app.seed_shot_scenario(scenario);
