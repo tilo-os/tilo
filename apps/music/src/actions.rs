@@ -670,6 +670,11 @@ pub struct PlaylistResource {
 pub struct CatalogTrackResource {
     pub id: String,
     pub label: String,
+    /// Canonical parent targets retained on the track resource, so an agent
+    /// can navigate from a song to its exact album or artist without parsing a
+    /// display label or guessing an id.
+    pub album_id: String,
+    pub artist_id: String,
     pub offline: bool,
     pub liked: bool,
 }
@@ -1157,7 +1162,7 @@ pub(crate) fn catalog_track_resource(
     next.current = Some(track.id.clone());
     next.position_ms = 0;
     next.playing = true;
-    Resource::new(
+    let mut resource = Resource::new(
         track_resource_id(&track.id),
         "music.track",
         track.label.clone(),
@@ -1211,7 +1216,28 @@ pub(crate) fn catalog_track_resource(
             next.queue.insert(at, track.id.clone());
         }
         immediate_spec("play-next", "Play next", &MusicAction::SetPlayback(next))
-    })
+    });
+    if !track.album_id.is_empty() {
+        resource = resource.with_action(operation_spec(
+            "open-album",
+            "Open album",
+            OperationKind::View,
+            &MusicOperation::OpenAlbum {
+                id: track.album_id.clone(),
+            },
+        ));
+    }
+    if !track.artist_id.is_empty() {
+        resource = resource.with_action(operation_spec(
+            "open-artist",
+            "Open artist",
+            OperationKind::View,
+            &MusicOperation::OpenArtist {
+                id: track.artist_id.clone(),
+            },
+        ));
+    }
+    resource
 }
 
 fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
@@ -1961,6 +1987,8 @@ mod tests {
             ctx.tracks.push(CatalogTrackResource {
                 label: format!("Track {number}"),
                 id,
+                album_id: String::new(),
+                artist_id: String::new(),
                 offline: false,
                 liked: false,
             });
@@ -1991,6 +2019,41 @@ mod tests {
             resource_by_id(&ctx, "music.track:deleted").is_none(),
             "a stale address never resolves into new authority"
         );
+    }
+
+    #[test]
+    fn track_resource_exposes_exact_parent_navigation_targets() {
+        let track = CatalogTrackResource {
+            id: "track-1".into(),
+            label: "Song — Artist".into(),
+            album_id: "album-9".into(),
+            artist_id: "artist-2".into(),
+            offline: false,
+            liked: false,
+        };
+        let resource = catalog_track_resource(&track, &crate::model::Playback::default());
+        let album = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open-album")
+            .expect("track has an exact album action");
+        let artist = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open-artist")
+            .expect("track has an exact artist action");
+        for (action, wanted) in [(album, "album-9"), (artist, "artist-2")] {
+            let encoded = immediate_encode(action);
+            let operation = decode_operation(&encoded.type_id, &encoded.payload)
+                .expect("operation decodes")
+                .expect("music operation");
+            match operation {
+                MusicOperation::OpenAlbum { id } | MusicOperation::OpenArtist { id } => {
+                    assert_eq!(id, wanted);
+                }
+                other => panic!("unexpected parent action: {other:?}"),
+            }
+        }
     }
 
     #[test]
