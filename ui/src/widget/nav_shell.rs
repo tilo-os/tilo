@@ -568,6 +568,12 @@ impl NavShell {
         self.has_sidebar() && self.sidebar_flap.reveal() > 0.001
     }
 
+    /// An overlay drawer is modal: the painted detail pane is retained only as
+    /// backdrop continuity, never as an input or accessibility target.
+    fn overlay_sidebar_is_modal(&self) -> bool {
+        self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay
+    }
+
     /// [`Self::sidebar_rect`] with the affordance chip's band reserved so
     /// the chip doesn't clip the sidebar's first row. The panel fill still
     /// uses the full rect, so the band reads as sidebar-coloured, not a notch.
@@ -1060,6 +1066,13 @@ impl Widget for NavShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.overlay_sidebar_is_modal() {
+            return self
+                .sidebar
+                .as_deref()
+                .into_iter()
+                .collect::<Vec<&dyn Widget>>();
+        }
         let mut v: Vec<&dyn Widget> = vec![self.overview.as_ref()];
         if let Some(d) = self.detail.as_ref() {
             v.push(d.as_ref());
@@ -1071,6 +1084,12 @@ impl Widget for NavShell {
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.overlay_sidebar_is_modal() {
+            if let Some(sidebar) = &self.sidebar {
+                visitor(sidebar.as_ref());
+            }
+            return;
+        }
         visitor(self.overview.as_ref());
         if let Some(detail) = &self.detail {
             visitor(detail.as_ref());
@@ -1081,6 +1100,13 @@ impl Widget for NavShell {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.overlay_sidebar_is_modal() {
+            let mut modal_children: Vec<&mut (dyn Widget + '_)> = Vec::new();
+            if let Some(sidebar) = self.sidebar.as_mut() {
+                modal_children.push(sidebar.as_mut());
+            }
+            return modal_children;
+        }
         let mut v: Vec<&mut (dyn Widget + '_)> = vec![self.overview.as_mut()];
         if let Some(d) = self.detail.as_mut() {
             v.push(d.as_mut());
@@ -1165,27 +1191,28 @@ impl NavShell {
             return;
         };
         let d_node = self.detail_node;
-        let sidebar_first =
-            self.is_sidebar_open() && self.sidebar_split_layout() == SplitLayout::Overlay;
+        let sidebar_first = self.overlay_sidebar_is_modal();
 
         let mut order: Vec<(Which, NodeId)> = Vec::new();
         if sidebar_first && let Some(sn) = self.sidebar_node {
             order.push((Which::Sidebar, sn));
         }
-        // Front content pane first for narrow push; harmless order in wide.
-        match (self.pane, d_node) {
-            (NavPane::Detail, Some(dn)) => {
-                order.push((Which::Detail, dn));
-                order.push((Which::Overview, o_node));
+        if !sidebar_first {
+            // Front content pane first for narrow push; harmless order in wide.
+            match (self.pane, d_node) {
+                (NavPane::Detail, Some(dn)) => {
+                    order.push((Which::Detail, dn));
+                    order.push((Which::Overview, o_node));
+                }
+                (_, Some(dn)) => {
+                    order.push((Which::Overview, o_node));
+                    order.push((Which::Detail, dn));
+                }
+                (_, None) => order.push((Which::Overview, o_node)),
             }
-            (_, Some(dn)) => {
-                order.push((Which::Overview, o_node));
-                order.push((Which::Detail, dn));
+            if let Some(sn) = self.sidebar_node {
+                order.push((Which::Sidebar, sn));
             }
-            (_, None) => order.push((Which::Overview, o_node)),
-        }
-        if !sidebar_first && let Some(sn) = self.sidebar_node {
-            order.push((Which::Sidebar, sn));
         }
 
         for (which, child_node) in order {
@@ -1256,6 +1283,93 @@ mod tests {
     use super::*;
     use crate::widget::Text;
     use vello_encoding::DrawTag;
+
+    /// A leaf pane that proves which retained pane received an input event.
+    /// The shell's overlay drawer is modal, so it is important this is a
+    /// routing assertion rather than only a geometry assertion.
+    struct EventProbe {
+        id: &'static str,
+        events: std::rc::Rc<std::cell::Cell<usize>>,
+        rect: Rect,
+    }
+
+    impl EventProbe {
+        fn new(id: &'static str, events: std::rc::Rc<std::cell::Cell<usize>>) -> Self {
+            Self {
+                id,
+                events,
+                rect: Rect::ZERO,
+            }
+        }
+    }
+
+    impl Widget for EventProbe {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).copied().unwrap_or_default();
+            self.rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + f64::from(layout.size.width),
+                origin.y + f64::from(layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            self.events.set(self.events.get().saturating_add(1));
+        }
+
+        fn name(&self) -> &'static str {
+            "EventProbe"
+        }
+
+        fn test_id(&self) -> Option<&str> {
+            Some(self.id)
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
 
     fn shell(w: f64, with_sidebar: bool) -> NavShell {
         let mut ns = if with_sidebar {
@@ -1431,6 +1545,41 @@ mod tests {
         assert!(
             ns.scrim_rect().width() > 0.0,
             "an open drawer dims the content behind a scrim",
+        );
+    }
+
+    #[test]
+    fn open_overlay_drawer_exposes_and_routes_only_its_sidebar() {
+        let sidebar_events = std::rc::Rc::new(std::cell::Cell::new(0));
+        let content_events = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut ns = NavShell::sidebar_over_content(
+            Box::new(EventProbe::new(
+                "sidebar",
+                std::rc::Rc::clone(&sidebar_events),
+            )),
+            Box::new(EventProbe::new(
+                "content",
+                std::rc::Rc::clone(&content_events),
+            )),
+        );
+        lay_out(&mut ns, 600.0, 640.0);
+        ns.open_sidebar();
+        ns.snap();
+
+        let visible_children: Vec<&str> = Widget::children(&ns)
+            .into_iter()
+            .filter_map(Widget::test_id)
+            .collect();
+        assert_eq!(visible_children, vec!["sidebar"]);
+
+        let mut handled = false;
+        let drawer_center = ns.sidebar_rect().center();
+        dispatch(&mut ns, &cursor_at(drawer_center), &mut handled);
+        assert!(sidebar_events.get() > 0, "drawer child receives its input");
+        assert_eq!(
+            content_events.get(),
+            0,
+            "the covered content must not receive pointer or assistive traversal input"
         );
     }
 
