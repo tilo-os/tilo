@@ -108,6 +108,7 @@ impl qos_actions::Action for FirewallAction {
             return Ok(());
         };
         if apply_to_config(self, &mut cfg) {
+            cfg.validate().map_err(ActionError::Refused)?;
             FirewallDoc::store(doc, &cfg);
         }
         Ok(())
@@ -404,6 +405,11 @@ fn config_contract() -> ActionContract {
 /// (start/stop + panic), each zone (make-active, set-policy, add-rule), and each
 /// rule (toggle, edit, delete, move). Every document-mutating operation is
 /// exported as the same action the on-screen affordance dispatches.
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the only expects encode fixed primitive payloads; ActionSpec cannot fail for them"
+)]
 pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
     let mut root = Resource::new("firewall.config", "firewall.config", "Firewall");
 
@@ -778,13 +784,17 @@ mod tests {
         );
     }
 
-    /// The unavailable firewall publishes nothing to Ctrl+K — there is no real
-    /// ruleset to act on.
+    /// The unavailable firewall publishes only its read-only recovery action;
+    /// it never exposes rule mutations against an unknown host state.
     #[test]
-    fn unavailable_firewall_publishes_no_resources() {
+    fn unavailable_firewall_publishes_only_recovery() {
         let app = FirewallApp::new(); // no firewalld on the test host → unavailable
         let doc = AutoCommit::new();
-        assert!(Widget::resources(&app, &doc).is_empty());
+        let resources = Widget::resources(&app, &doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].kind, "firewall.recovery");
+        assert_eq!(resources[0].actions.len(), 1);
+        assert_eq!(resources[0].actions[0].id, "retry");
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
