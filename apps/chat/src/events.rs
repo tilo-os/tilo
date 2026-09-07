@@ -15,7 +15,8 @@ use ui::widget::TextInput;
 
 use crate::actions;
 use crate::app::{
-    ChatApp, ContextMenu, Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
+    AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, ContextMenu,
+    Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
 use crate::call::CallAction;
 use crate::doc::{ChatDoc, NOW};
@@ -627,7 +628,6 @@ impl ChatApp {
             }
             Hit::Attach if self.can_participate() => self.open_attach_picker(),
             Hit::AttachPick(path) => {
-                self.attach_open = false;
                 self.attach_file(doc, std::path::Path::new(&path));
             }
             Hit::StartCall if self.can_participate() => self.on_hit_start_call(doc),
@@ -918,7 +918,7 @@ impl ChatApp {
     }
 
     /// Mirror this peer's screen-share state into the shared voice membership.
-    fn sync_local_sharing(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn sync_local_sharing(&mut self, doc: &mut AutoCommit) {
         if !self.call.active {
             return;
         }
@@ -1388,7 +1388,7 @@ impl ChatApp {
     }
 
     /// Open the workspace file picker (the composer "+"). Lists the real
-    /// image files in the shared workspace so the user shares an actual file —
+    /// files in the shared workspace so the user shares an actual file —
     /// nothing is fabricated. In a headless environment with no workspace the
     /// list is empty and the picker says so.
     fn open_attach_picker(&mut self) {
@@ -1396,59 +1396,194 @@ impl ChatApp {
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
-        self.attach_entries = crate::picker::list_media(&crate::picker::attach_dir());
+        // A dismissed picker may still have one bounded enumeration worker.
+        // Reopen its pending request instead of spawning another reader; this
+        // keeps the reply channel backpressured and prevents a click storm
+        // from creating unbounded directory scans.
+        if self.attachment_picker_pending.is_some() {
+            self.attachment_status = Some("Loading attachments…".into());
+            self.attach_open = true;
+            return;
+        }
+        let generation = self.attachment_picker_generation;
+        let Some(next) = generation.checked_add(1) else {
+            self.attachment_status =
+                Some("Attachment picker unavailable: request counter exhausted".into());
+            return;
+        };
+        self.attachment_picker_generation = next;
+        self.attachment_picker_pending = Some(generation);
+        self.attachment_status = Some("Loading attachments…".into());
+        self.attach_entries.clear();
         self.attach_open = true;
+        let sender = self.attachment_picker_result_tx.clone();
+        let dir = crate::picker::attach_dir();
+        std::thread::spawn(move || {
+            let result = if std::fs::read_dir(&dir).is_ok() {
+                AttachmentPickerResult::Ready {
+                    generation,
+                    entries: crate::picker::list_attachments(&dir),
+                }
+            } else {
+                AttachmentPickerResult::Failed {
+                    generation,
+                    reason: "workspace is unavailable".into(),
+                }
+            };
+            let _ = sender.send(result);
+        });
     }
 
-    /// Share the real file at `path` into the active channel by reference —
-    /// its actual filesystem path is embedded, never its bytes, so the content
-    /// hydrates from the FUSE workspace on demand (an image decodes through the
-    /// shared [`ui::ImageStore`]; a video renders as an inline play card). An
-    /// image reads its true header dimensions; a video posts with its size. No
-    /// caption is invented — the media stands on its own. Returns whether a
-    /// message was posted (a missing / unshareable file posts nothing).
-    pub(crate) fn attach_file(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> bool {
-        use crate::model::Attachment;
-        // Sharing is a write; a peer that can't participate can't attach.
-        if !self.can_participate() {
+    /// Apply one bounded directory enumeration result during sync. Generation
+    /// checks make dismissed/reopened pickers fail closed against late workers.
+    pub(crate) fn settle_attachment_picker(&mut self) {
+        let Ok(result) = self.attachment_picker_result_rx.try_recv() else {
+            return;
+        };
+        let generation = match &result {
+            AttachmentPickerResult::Ready { generation, .. }
+            | AttachmentPickerResult::Failed { generation, .. } => *generation,
+        };
+        if self.attachment_picker_pending != Some(generation) {
+            return;
+        }
+        if !self.attach_open {
+            // The worker completed after the user dismissed the popover. It
+            // has a definite cancelled terminal outcome and frees the single
+            // bounded slot; its entries must never flash on a later picker.
+            self.attachment_picker_pending = None;
+            self.attachment_status = Some("Attachment picker cancelled".into());
+            return;
+        }
+        self.attachment_picker_pending = None;
+        match result {
+            AttachmentPickerResult::Ready { entries, .. } => {
+                self.attach_entries = entries;
+                self.attachment_status = None;
+            }
+            AttachmentPickerResult::Failed { reason, .. } => {
+                self.attachment_status = Some(format!("Attachment picker failed: {reason}"));
+            }
+        }
+    }
+
+    /// Accept one attachment import. The path is consumed by a single bounded
+    /// worker and never enters the document/action payload. Its result settles
+    /// in [`ChatApp::settle_attachment_import`] during `sync`, which is the
+    /// only place the canonical `SendMessage` action may be dispatched.
+    pub(crate) fn attach_file(&mut self, _doc: &mut AutoCommit, path: &std::path::Path) -> bool {
+        self.begin_attachment_import(path)
+    }
+
+    /// Accept an import without touching the document. This is shared by the
+    /// pointer picker and the local resource-operation handler.
+    pub(crate) fn begin_attachment_import(&mut self, path: &std::path::Path) -> bool {
+        let channel = self.active_channel.clone();
+        self.begin_attachment_import_into(&channel, path)
+    }
+
+    /// Start an import for an explicitly addressed channel resource.
+    pub(crate) fn begin_attachment_import_into(
+        &mut self,
+        channel: &str,
+        path: &std::path::Path,
+    ) -> bool {
+        if !self.can_participate() || self.attachment_pending.is_some() {
             return false;
         }
-        let path_str = path.to_string_lossy().into_owned();
-        let name = path
-            .file_name()
-            .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
-        let attachment = if crate::picker::is_video_name(&name) {
-            let size = std::fs::metadata(path).map_or(0, |m| m.len());
-            // A video's pixel dimensions need a container probe (unavailable in
-            // the default build); post 0×0 and let the card use a 16:9 poster.
-            Attachment::Video {
+        let token = self.attachment_next_token;
+        let Some(next) = token.checked_add(1) else {
+            self.attachment_status =
+                Some("Attachment import unavailable: request counter exhausted".into());
+            return false;
+        };
+        self.attachment_next_token = next;
+        self.attachment_pending = Some(AttachmentImportPending {
+            token,
+            channel: channel.into(),
+            author: self.me.id.clone(),
+        });
+        self.attachment_status = Some("Preparing attachment…".into());
+        let sender = self.attachment_result_tx.clone();
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            let result = prepare_attachment_import(token, &path);
+            // One worker may be active and the reply channel holds one result,
+            // so this can never accumulate unbounded buffers. If the app has
+            // gone away, dropping the result is cancellation.
+            let _ = sender.send(result);
+        });
+        true
+    }
+
+    /// Drain at most one bounded worker result and settle it exactly once. A
+    /// stale result, permission downgrade, I/O failure, or qdoc-store failure
+    /// becomes a visible terminal outcome; only `Ready` creates the message.
+    pub(crate) fn settle_attachment_import(&mut self, doc: &mut AutoCommit) {
+        let Ok(result) = self.attachment_result_rx.try_recv() else {
+            return;
+        };
+        let token = match &result {
+            AttachmentImportResult::Ready { token, .. }
+            | AttachmentImportResult::Failed { token, .. } => *token,
+        };
+        let Some(pending) = self.attachment_pending.as_ref() else {
+            self.attachment_status = Some("Attachment import discarded: stale result".into());
+            return;
+        };
+        if pending.token != token {
+            self.attachment_status = Some("Attachment import discarded: stale result".into());
+            return;
+        }
+        // Only the matching result may consume the accepted request. A stale
+        // reply must never cancel a newer in-flight operation.
+        let Some(pending) = self.attachment_pending.take() else {
+            return;
+        };
+        let AttachmentImportResult::Ready {
+            name,
+            blob,
+            size,
+            width,
+            height,
+            video,
+            ..
+        } = result
+        else {
+            let AttachmentImportResult::Failed { reason, .. } = result else {
+                return;
+            };
+            self.attachment_status = Some(format!("Attachment import failed: {reason}"));
+            return;
+        };
+        if !self.can_participate() {
+            self.attachment_status = Some("Attachment import cancelled: permission changed".into());
+            return;
+        }
+        let attachment = if video {
+            crate::model::Attachment::Video {
                 name,
-                path: path_str,
+                blob,
                 w: 0,
                 h: 0,
                 size,
             }
-        } else if let Some((w, h)) = crate::picker::image_dimensions(path) {
-            Attachment::Image {
+        } else if width > 0 && height > 0 {
+            crate::model::Attachment::Image {
                 name,
-                path: path_str,
-                w,
-                h,
+                blob,
+                w: width,
+                h: height,
             }
         } else {
-            return false;
+            crate::model::Attachment::File { name, blob, size }
         };
-        // Sharing a file is the message ROW insert (the action) carrying the
-        // attachment by reference; the file's bytes + transport are external and
-        // hydrate on demand. Same authored-id + executor path as a text send.
-        let channel = self.active_channel.clone();
-        let author = self.me.id.clone();
         self.perform_action(
             doc,
             &actions::send_message_action(
-                &channel,
+                &pending.channel,
                 &new_message_id(),
-                &author,
+                &pending.author,
                 now_secs(),
                 "",
                 None,
@@ -1457,8 +1592,49 @@ impl ChatApp {
             ),
         );
         self.scroll = 0.0;
-        self.reload(doc);
-        true
+        self.attachment_status = Some("Attachment shared".into());
+    }
+}
+
+fn prepare_attachment_import(token: u64, path: &std::path::Path) -> AttachmentImportResult {
+    let fail = |reason: &str| AttachmentImportResult::Failed {
+        token,
+        reason: reason.into(),
+    };
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return fail("file is unavailable");
+    };
+    if !metadata.is_file() || metadata.len() > crate::doc::MAX_ATTACHMENT_BYTES {
+        return fail("file is not shareable or exceeds 32 MiB");
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return fail("could not read file");
+    };
+    if bytes.is_empty() {
+        return fail("file is empty");
+    }
+    if u64::try_from(bytes.len())
+        .ok()
+        .is_none_or(|size| size > crate::doc::MAX_ATTACHMENT_BYTES)
+    {
+        return fail("file exceeds 32 MiB");
+    }
+    let name = path
+        .file_name()
+        .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
+    let meta = qdoc::blobstore::sniff(&bytes);
+    let blob = qdoc::blobstore::put(&bytes);
+    if qdoc::blobstore::get(&blob).as_deref() != Some(bytes.as_slice()) {
+        return fail("shared byte verification failed");
+    }
+    AttachmentImportResult::Ready {
+        token,
+        name: name.clone(),
+        blob,
+        size: u64::try_from(bytes.len()).unwrap_or(crate::doc::MAX_ATTACHMENT_BYTES),
+        width: meta.w,
+        height: meta.h,
+        video: crate::picker::is_video_name(&name),
     }
 }
 
@@ -1657,7 +1833,7 @@ mod tests {
         assert!(
             app.messages.iter().any(|m| matches!(
                 &m.attachment,
-                Some(crate::model::Attachment::Image { path, .. }) if path == crate::images::DEMO_CALL_GRID
+                Some(crate::model::Attachment::Image { blob, .. }) if blob == crate::images::DEMO_CALL_GRID
             )),
             "seeded conversation has an image attachment"
         );
@@ -1931,11 +2107,37 @@ mod tests {
         std::fs::write(path, bytes.into_inner()).unwrap();
     }
 
+    fn settle_attachment_until(
+        app: &mut ChatApp,
+        doc: &mut AutoCommit,
+        channel: &str,
+        expected_count: usize,
+    ) {
+        for _ in 0..100 {
+            app.settle_attachment_import(doc);
+            if ChatDoc::list_messages(doc, channel).len() == expected_count {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("attachment worker did not settle within 500ms");
+    }
+
+    fn settle_picker_until(app: &mut ChatApp) {
+        for _ in 0..100 {
+            app.settle_attachment_picker();
+            if app.attachment_picker_pending.is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("attachment picker worker did not settle within 500ms");
+    }
+
     #[test]
     fn attach_shares_a_real_file_with_true_dimensions_and_no_caption() {
-        // The real attach path: picking a file posts *that* file (its real
-        // path + true header dimensions) with no invented caption — the exact
-        // opposite of fabricating content into the conversation.
+        // The picker imports the selected file as a portable qdoc blob, with
+        // true header dimensions and no invented caption.
         let (mut app, mut doc) = app_with_doc();
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("diagram.png");
@@ -1946,17 +2148,20 @@ mod tests {
             Hit::AttachPick(png.to_string_lossy().into_owned()),
             &mut doc,
         );
+        assert_eq!(
+            ChatDoc::list_messages(&doc, "c_crit").len(),
+            before,
+            "selecting only accepts a bounded local import; sync authors the message"
+        );
+        settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(msgs.len(), before + 1, "one real attachment posted");
         let last = msgs.last().unwrap();
         assert_eq!(last.text, "", "no invented caption");
         match &last.attachment {
-            Some(model::Attachment::Image { path, w, h, .. }) => {
-                assert_eq!(
-                    path,
-                    &png.to_string_lossy(),
-                    "posts the real filesystem path"
-                );
+            Some(model::Attachment::Image { blob, w, h, .. }) => {
+                assert_eq!(blob.len(), 64, "posts a qdoc content hash");
+                assert!(ChatDoc::attachment_blob(blob).is_some());
                 assert_eq!(
                     (*w, *h),
                     (240, 160),
@@ -1979,9 +2184,55 @@ mod tests {
         unsafe { std::env::remove_var("QOS_CHAT_ATTACH_DIR") };
         assert!(app.attach_open, "the picker opens");
         assert!(
+            app.attachment_picker_pending.is_some(),
+            "directory work is off-thread"
+        );
+        settle_picker_until(&mut app);
+        assert!(
             app.attach_entries.iter().any(|e| e.name == "shot.png"),
             "a real workspace image is listed, not a synthesized stand-in"
         );
+    }
+
+    #[test]
+    fn picker_result_settlement_is_generation_checked_and_cancelled_when_dismissed() {
+        let (mut app, doc) = app_with_doc();
+        app.attach_open = true;
+        app.attachment_picker_pending = Some(7);
+        app.attachment_picker_result_tx
+            .try_send(AttachmentPickerResult::Failed {
+                generation: 6,
+                reason: "old worker".into(),
+            })
+            .unwrap();
+        app.settle_attachment_picker();
+        assert_eq!(app.attachment_picker_pending, Some(7));
+
+        // Reopening while a result is pending does not create a second scan.
+        app.attachment_picker_generation = 12;
+        app.open_attach_picker();
+        assert_eq!(app.attachment_picker_generation, 12);
+        assert_eq!(app.attachment_picker_pending, Some(7));
+
+        // A dismissed picker consumes its matching worker answer as a
+        // cancellation, rather than leaking the bounded worker slot.
+        app.attach_open = false;
+        app.attachment_picker_result_tx
+            .try_send(AttachmentPickerResult::Failed {
+                generation: 7,
+                reason: "workspace is unavailable".into(),
+            })
+            .unwrap();
+        app.settle_attachment_picker();
+        assert!(app.attachment_picker_pending.is_none());
+        assert_eq!(
+            app.attachment_status.as_deref(),
+            Some("Attachment picker cancelled")
+        );
+
+        // Keep the test on the same real event/sync surface as other picker
+        // tests: a cancellation never authors a document operation.
+        assert!(!ChatDoc::list_messages(&doc, "c_crit").is_empty());
     }
 
     #[test]
@@ -2816,6 +3067,8 @@ mod tests {
             ("thread-narrow", 390.0, 844.0),
             ("context", 1280.0, 720.0),
             ("attach", 1280.0, 720.0),
+            ("attach-loading", 1280.0, 720.0),
+            ("attach-error", 1280.0, 720.0),
             ("edit", 1280.0, 720.0),
             ("composer", 1280.0, 720.0),
             ("collaboration", 1280.0, 720.0),
@@ -3096,8 +3349,10 @@ mod tests {
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
         assert!(app.call.active);
 
-        // Honest gating: the default system portal grants nothing headless, so
-        // hitting the control starts no share and records nothing.
+        // Honest gating: a declined portal grant starts no share and records
+        // nothing. Keep this a fake declining portal: under live-media a test
+        // must not synchronously open the host's real portal UI.
+        app.portal = Box::new(crate::call::FakePortal(None));
         app.on_hit(Hit::CallShareScreen, &mut doc);
         assert!(
             !app.sharing_screen(),
@@ -3803,22 +4058,74 @@ mod tests {
             Hit::AttachPick(mp4.to_string_lossy().into_owned()),
             &mut doc,
         );
+        settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
         let msgs = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(msgs.len(), before + 1, "the video posted as one message");
         match &msgs.last().unwrap().attachment {
             Some(model::Attachment::Video {
-                name, path, size, ..
+                name, blob, size, ..
             }) => {
                 assert_eq!(name, "clip.mp4");
-                assert_eq!(
-                    path,
-                    &mp4.to_string_lossy(),
-                    "references the real FUSE path, not copied bytes"
-                );
+                assert_eq!(blob.len(), 64, "references a qdoc content hash");
+                assert!(ChatDoc::attachment_blob(blob).is_some());
                 assert!(*size > 0, "reads the real file size");
             }
             other => panic!("expected a Video attachment, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn attaching_a_generic_file_posts_a_portable_file_card() {
+        let (mut app, mut doc) = app_with_doc();
+        let dir = tempfile::tempdir().unwrap();
+        let note = dir.path().join("notes.md");
+        std::fs::write(&note, b"this is an ordinary attachment").unwrap();
+        let before = ChatDoc::list_messages(&doc, "c_crit").len();
+
+        app.on_hit(
+            Hit::AttachPick(note.to_string_lossy().into_owned()),
+            &mut doc,
+        );
+        settle_attachment_until(&mut app, &mut doc, "c_crit", before + 1);
+        match &ChatDoc::list_messages(&doc, "c_crit")
+            .last()
+            .unwrap()
+            .attachment
+        {
+            Some(model::Attachment::File { name, blob, size }) => {
+                assert_eq!(name, "notes.md");
+                assert_eq!(*size, 30);
+                assert!(ChatDoc::attachment_blob(blob).is_some());
+            }
+            other => panic!("expected a generic File attachment, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stale_import_result_does_not_consume_the_accepted_request() {
+        let (mut app, mut doc) = app_with_doc();
+        app.attachment_pending = Some(AttachmentImportPending {
+            token: 7,
+            channel: app.active_channel.clone(),
+            author: app.me.id.clone(),
+        });
+        app.attachment_result_tx
+            .try_send(AttachmentImportResult::Failed {
+                token: 6,
+                reason: "old worker".into(),
+            })
+            .unwrap();
+
+        app.settle_attachment_import(&mut doc);
+        assert_eq!(
+            app.attachment_pending.as_ref().map(|pending| pending.token),
+            Some(7)
+        );
+        assert!(
+            app.attachment_status
+                .as_deref()
+                .is_some_and(|status| status.contains("stale"))
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use crate::decoder::{DecodedFrame, H264Decoder};
 use crate::encoder::{EncodeError, H264Encoder};
-use crate::stream::{ReceiverEvent, SurfaceFrame, SurfaceStreamReceiver};
+use crate::stream::{FrameError, ReceiverEvent, SurfaceFrame, SurfaceStreamReceiver};
 use crate::throttle::StreamingThrottle;
 
 /// Scans `nalus` for an H.264 IDR NAL unit (`nal_unit_type == 5`) by
@@ -101,24 +101,47 @@ impl VideoStreamSender {
     /// Offers a captured RGBA frame (`width * height * 4` bytes) at wall clock
     /// `now`. Returns `Some(bytes)` — the [`SurfaceFrame`]-framed encoded
     /// access unit — when the throttle admits it and the encoder produced a
-    /// non-empty NALU; `None` if throttled, size-mismatched, or empty output.
-    pub fn offer_frame(&mut self, rgba: &[u8], now: Instant) -> Option<Vec<u8>> {
+    /// non-empty NALU; `Ok(None)` if throttled, size-mismatched, or empty
+    /// output. A sequence-space or framing limit failure is returned visibly
+    /// and leaves the sender's throttle and sequence unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::SequenceExhausted`] when this stream must be
+    /// restarted instead of wrapping, or [`FrameError::PayloadTooLarge`] if
+    /// the encoder output cannot be represented by the realtime wire budget.
+    pub fn offer_frame(
+        &mut self,
+        rgba: &[u8],
+        now: Instant,
+    ) -> Result<Option<Vec<u8>>, FrameError> {
+        if self.sequence == u64::MAX {
+            return Err(FrameError::SequenceExhausted);
+        }
         if !self.throttle.should_encode(now) {
-            return None;
+            return Ok(None);
         }
-        let nalus = self.encoder.encode(rgba).ok()?;
+        let Ok(nalus) = self.encoder.encode(rgba) else {
+            return Ok(None);
+        };
         if nalus.is_empty() {
-            return None;
+            return Ok(None);
         }
-        self.throttle.mark_encoded(now);
         let keyframe = is_h264_keyframe(&nalus);
         let frame = SurfaceFrame {
             sequence: self.sequence,
             keyframe,
             payload: nalus,
         };
-        self.sequence = self.sequence.wrapping_add(1);
-        Some(frame.encode())
+        let bytes = frame.encode()?;
+        // Only consume the throttle slot after framing succeeded. A local
+        // payload-limit failure must not suppress the next captured frame.
+        self.throttle.mark_encoded(now);
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(FrameError::SequenceExhausted)?;
+        Ok(Some(bytes))
     }
 
     /// The next sequence number this sender will mint. Diagnostic.
@@ -148,8 +171,11 @@ impl VideoStreamReceiver {
     /// possibly split across calls) and returns every decoded RGBA frame that
     /// became available; a not-yet-decodable NALU simply yields no output.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<DecodedFrame> {
-        self.framer.push_bytes(bytes);
-        // A corrupt length header can't be recovered mid-stream; yield nothing and let the next bytes reframe.
+        // Malformed or oversize wire input is explicitly rejected by the
+        // framer, which clears its partial state before this returns no frame.
+        if self.framer.push_bytes(bytes).is_err() {
+            return Vec::new();
+        }
         let Ok(events) = self.framer.drain() else {
             return Vec::new();
         };
@@ -214,6 +240,7 @@ mod tests {
         let now = Instant::now();
         let wire = sender
             .offer_frame(&gradient(W, H), now)
+            .expect("sequence available")
             .expect("throttle admits first frame + encoder emits a NALU");
         assert!(wire.len() > crate::stream::FRAME_HEADER_LEN, "framed bytes");
 
@@ -230,17 +257,24 @@ mod tests {
         const H: u32 = 32;
         let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
         let now = Instant::now();
-        assert!(sender.offer_frame(&gradient(W, H), now).is_some());
+        assert!(
+            sender
+                .offer_frame(&gradient(W, H), now)
+                .expect("sequence available")
+                .is_some()
+        );
         // 1 ms later — inside the ~33 ms interval — must be throttled.
         assert!(
             sender
                 .offer_frame(&gradient(W, H), now + Duration::from_millis(1))
+                .expect("sequence available")
                 .is_none()
         );
         // Past the interval, accepts again.
         assert!(
             sender
                 .offer_frame(&gradient(W, H), now + Duration::from_millis(40))
+                .expect("sequence available")
                 .is_some()
         );
     }
@@ -252,6 +286,7 @@ mod tests {
         let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
+            .expect("sequence available")
             .expect("frame");
         let (frame, _) = SurfaceFrame::decode(&wire).expect("decode").expect("whole");
         assert!(
@@ -268,6 +303,7 @@ mod tests {
         assert!(
             sender
                 .offer_frame(&vec![0u8; 32 * 32 * 3], Instant::now())
+                .expect("sequence available")
                 .is_none()
         );
     }
@@ -280,5 +316,25 @@ mod tests {
         assert!(!is_h264_keyframe(&[0, 0, 1, 0x41]));
         // No start code.
         assert!(!is_h264_keyframe(&[0xAA, 0xBB, 0xCC]));
+    }
+
+    #[test]
+    fn video_sender_sequence_exhaustion_is_a_visible_non_wrapping_error() {
+        let mut sender = VideoStreamSender::new(32, 32, 30).expect("sender");
+        sender.sequence = u64::MAX;
+        let now = Instant::now();
+        assert_eq!(
+            sender.offer_frame(&gradient(32, 32), now),
+            Err(FrameError::SequenceExhausted)
+        );
+        assert_eq!(sender.next_sequence(), u64::MAX);
+        // The rejected call did not consume a throttle slot.
+        sender.sequence = 0;
+        assert!(
+            sender
+                .offer_frame(&gradient(32, 32), now)
+                .expect("sequence reset for test")
+                .is_some()
+        );
     }
 }

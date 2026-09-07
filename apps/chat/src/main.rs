@@ -41,6 +41,7 @@
 )]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
@@ -87,6 +88,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
+    // qdoc blobs are content-addressed attachments. Their durable cache keeps
+    // a restarted chat able to serve the same portable hash, while qdoc's
+    // transport layer handles sharing it with collaborators.
+    qdoc::blobstore::set_store(Arc::new(qdoc::blobstore::FsBlobStore::new(
+        qdoc::blobstore::FsBlobStore::default_root(),
+    )));
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.chat", chat::app_root)
             .shot_handler(shot_handler)
@@ -99,6 +106,8 @@ pub fn main() {
                 "collaboration",
                 "context",
                 "attach",
+                "attach-loading",
+                "attach-error",
                 "edit",
                 "composer",
             ])
