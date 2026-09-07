@@ -10,6 +10,7 @@ photos-crop = Crop to view
 photos-reset = Reset
 photos-copy = Copy
 photos-save = Save
+photos-more = More
 photos-edited = edited
 photos-copied = Copied to the clipboard
 photos-copy-failed = Could not reach the clipboard
