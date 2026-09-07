@@ -241,7 +241,7 @@ fn a_photograph_asked_for_by_content_is_addressed_by_the_content_asked_for() {
     let bytes = photograph();
     // What the participant names. It has no filesystem of its own and says
     // nothing about anybody else's.
-    let asked_for = qdoc::blobstore::put(&bytes);
+    let asked_for = qdoc::blobstore::put(&bytes).expect("test fixture fits blob quota");
 
     let staging = ["qlva-", "qlvq-", "qlvx-"];
     let sessions: Vec<Session> = staging
