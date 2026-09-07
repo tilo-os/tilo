@@ -3042,6 +3042,33 @@ fn data_control_is_privileged_socket_only() {
     }
 }
 
+/// Session-lock is an authentication boundary, just like clipboard-manager
+/// access: ordinary applications must not be able to acquire a compositor
+/// lock and later release it without passing qOS authentication.
+#[test]
+fn session_lock_is_privileged_socket_only() {
+    let compositor = Compositor::start();
+
+    let mut public = TestClient::new(compositor.connect(), "org.qos.test.untrusted-locker");
+    public.assert_is_qos_compositor();
+    assert!(
+        !public.has_global("ext_session_lock_manager_v1"),
+        "session-lock is visible on the public socket; any app could acquire and release the desktop lock. Globals: {:?}",
+        public.global_names(),
+    );
+
+    let mut trusted = TestClient::new(
+        compositor.connect_privileged(),
+        "org.qos.test.session-locker",
+    );
+    trusted.assert_is_qos_compositor();
+    assert!(
+        trusted.has_global("ext_session_lock_manager_v1"),
+        "session-lock is missing from the privileged session socket. Globals: {:?}",
+        trusted.global_names(),
+    );
+}
+
 /// Drag a piece of text out of one client and drop it on another. The
 /// pointer is driven through the compositor's real input path (test-control
 /// socket synthesises the same events the backend would), so `start_drag`
