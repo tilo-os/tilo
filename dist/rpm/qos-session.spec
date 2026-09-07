@@ -71,6 +71,10 @@ Requires:       upower
 # Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
 # preserving applications the user installed before adding qOS.
 Requires:       xwayland-satellite
+# Xwayland compiles an independent server-side XKB map. Settings changes use
+# the standard authenticated X11 utility to update that map in place, so
+# Electron/X11 windows keep working without logout or bridge restart.
+Requires:       setxkbmap
 # wgpu reaches Vulkan through ash, which dlopens libvulkan.so.1.
 Requires:       vulkan-loader
 # libEGL.so.1, for the DRM backend's buffer path. Require the ABI capability,
