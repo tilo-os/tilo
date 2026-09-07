@@ -24,16 +24,36 @@
 //! hermetic build and `--shots` from ever launching rust-analyzer.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
 use crate::bottom_panel::{Diagnostic, Severity};
 use crate::model::Language;
+
+/// A language server is an external process. Never let a malformed or runaway
+/// server turn one advertised frame into an unbounded allocation in the IDE.
+/// This still comfortably fits the largest text buffer Code supports (8 MiB),
+/// plus JSON-RPC framing and diagnostics.
+pub const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_LSP_HEADER_LINE_BYTES: usize = 8 * 1024;
+/// The UI folds reader events every frame. A fixed queue keeps a server that
+/// floods progress notifications from accumulating memory while preserving a
+/// responsive editor; a later diagnostics publication supersedes an earlier
+/// one, so dropped backpressure events are safe to recover from.
+const LSP_EVENT_QUEUE_CAPACITY: usize = 64;
+/// Completion / hover / definition requests are ephemeral. Capping their
+/// response table prevents key-repeat from retaining an unlimited number of
+/// request identities when a server is slow or wedged.
+const MAX_PENDING_REQUESTS: usize = 64;
+const MAX_LSP_DIAGNOSTICS: usize = 10_000;
+const MAX_LSP_COMPLETIONS: usize = 256;
+const MAX_LSP_DEFINITIONS: usize = 128;
+const MAX_LSP_DISPLAY_TEXT_CHARS: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Model types (LSP → editor)
@@ -129,12 +149,13 @@ fn parse_range(v: &Value) -> LspRange {
 /// or a bare `params` object.
 pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnostic>)> {
     let params = msg.get("params").unwrap_or(msg);
-    let uri = params.get("uri").and_then(Value::as_str)?.to_string();
+    let uri = clip_display_text(params.get("uri").and_then(Value::as_str)?);
     let diags = params
         .get("diagnostics")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
+                .take(MAX_LSP_DIAGNOSTICS)
                 .map(|d| LspDiagnostic {
                     range: d.get("range").map(parse_range).unwrap_or_default(),
                     // Per spec, absent severity defaults to Error(1).
@@ -142,9 +163,11 @@ pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnost
                     message: d
                         .get("message")
                         .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                    source: d.get("source").and_then(Value::as_str).map(str::to_string),
+                        .map_or_else(String::new, clip_display_text),
+                    source: d
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .map(clip_display_text),
                 })
                 .collect()
         })
@@ -165,7 +188,7 @@ pub fn parse_progress(msg: &Value) -> Option<Progress> {
     // The token may be a string or an integer; normalise to a string so it can
     // key a map either way.
     let token = match params.get("token")? {
-        Value::String(s) => s.clone(),
+        Value::String(s) => clip_display_text(s),
         Value::Number(n) => n.to_string(),
         _ => return None,
     };
@@ -173,15 +196,11 @@ pub fn parse_progress(msg: &Value) -> Option<Progress> {
     let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
     Some(Progress {
         token,
-        title: value
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        title: clip_display_text(value.get("title").and_then(Value::as_str).unwrap_or("")),
         message: value
             .get("message")
             .and_then(Value::as_str)
-            .map(str::to_string),
+            .map(clip_display_text),
         percentage: value
             .get("percentage")
             .and_then(Value::as_u64)
@@ -205,24 +224,28 @@ pub fn parse_completion(msg: &Value) -> Vec<CompletionItem> {
     };
     items
         .iter()
+        .take(MAX_LSP_COMPLETIONS)
         .filter_map(|it| {
-            let label = it.get("label").and_then(Value::as_str)?.to_string();
+            let label = clip_display_text(it.get("label").and_then(Value::as_str)?);
             let insert_text = it
                 .get("insertText")
                 .and_then(Value::as_str)
-                .map(str::to_string)
+                .map(clip_display_text)
                 // `textEdit.newText` is the modern insert payload; fall back to it.
                 .or_else(|| {
                     it.get("textEdit")
                         .and_then(|e| e.get("newText"))
                         .and_then(Value::as_str)
-                        .map(str::to_string)
+                        .map(clip_display_text)
                 })
                 .unwrap_or_else(|| label.clone());
             Some(CompletionItem {
                 label,
                 kind: it.get("kind").and_then(Value::as_u64).map(|k| k as u8),
-                detail: it.get("detail").and_then(Value::as_str).map(str::to_string),
+                detail: it
+                    .get("detail")
+                    .and_then(Value::as_str)
+                    .map(clip_display_text),
                 insert_text,
             })
         })
@@ -239,8 +262,18 @@ pub fn parse_hover(msg: &Value) -> Option<String> {
     }
     let contents = result.get("contents").unwrap_or(result);
     let text = marked_to_string(contents);
-    let text = text.trim().to_string();
+    let text = clip_display_text(&text);
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Bound user-visible LSP strings after parsing. UTF-8 is preserved because
+/// truncation happens in character coordinates, just like the editor buffer.
+fn clip_display_text(text: &str) -> String {
+    let end = text
+        .char_indices()
+        .nth(MAX_LSP_DISPLAY_TEXT_CHARS)
+        .map_or(text.len(), |(byte, _)| byte);
+    text.get(..end).unwrap_or_default().trim().to_string()
 }
 
 fn marked_to_string(v: &Value) -> String {
@@ -267,7 +300,11 @@ pub fn parse_definition(msg: &Value) -> Vec<Location> {
     let result = msg.get("result").unwrap_or(msg);
     match result {
         Value::Null => Vec::new(),
-        Value::Array(arr) => arr.iter().filter_map(parse_location).collect(),
+        Value::Array(arr) => arr
+            .iter()
+            .take(MAX_LSP_DEFINITIONS)
+            .filter_map(parse_location)
+            .collect(),
         obj => parse_location(obj).into_iter().collect(),
     }
 }
@@ -276,7 +313,7 @@ fn parse_location(v: &Value) -> Option<Location> {
     // Plain Location.
     if let (Some(uri), Some(range)) = (v.get("uri").and_then(Value::as_str), v.get("range")) {
         return Some(Location {
-            uri: uri.to_string(),
+            uri: clip_display_text(uri),
             range: parse_range(range),
         });
     }
@@ -287,7 +324,7 @@ fn parse_location(v: &Value) -> Option<Location> {
             .or_else(|| v.get("targetRange")),
     ) {
         return Some(Location {
-            uri: uri.to_string(),
+            uri: clip_display_text(uri),
             range: parse_range(range),
         });
     }
@@ -332,11 +369,24 @@ impl<R: BufRead> MessageReader<R> {
         let mut content_length: Option<usize> = None;
         // Parse headers up to the blank line.
         loop {
-            let mut line = String::new();
-            let n = self.reader.read_line(&mut line)?;
+            let mut raw = Vec::new();
+            let n = self
+                .reader
+                .by_ref()
+                .take((MAX_LSP_HEADER_LINE_BYTES + 1) as u64)
+                .read_until(b'\n', &mut raw)?;
             if n == 0 {
                 return Ok(None); // EOF
             }
+            if raw.len() > MAX_LSP_HEADER_LINE_BYTES || !raw.ends_with(b"\n") {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "LSP header line is too large",
+                ));
+            }
+            let line = std::str::from_utf8(&raw).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "LSP header is not UTF-8")
+            })?;
             let trimmed = line.trim_end_matches(['\r', '\n']);
             if trimmed.is_empty() {
                 break; // end of headers
@@ -354,6 +404,12 @@ impl<R: BufRead> MessageReader<R> {
                 "LSP message missing Content-Length header",
             ));
         };
+        if len > MAX_LSP_MESSAGE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("LSP message exceeds {MAX_LSP_MESSAGE_BYTES} byte limit"),
+            ));
+        }
         let mut body = vec![0u8; len];
         self.reader.read_exact(&mut body)?;
         let value = serde_json::from_slice(&body)
@@ -420,7 +476,10 @@ pub struct LspClient {
     stdin: Arc<Mutex<ChildStdin>>,
     events: Receiver<LspEvent>,
     pending: Arc<Mutex<HashMap<i64, Pending>>>,
-    next_id: i64,
+    /// `None` once the JSON-RPC identity space is exhausted. It is better to
+    /// drop an ephemeral IDE request than to reuse a response id and route a
+    /// stale completion or definition into the current document.
+    next_id: Option<i64>,
     server_name: String,
     /// The directory the server was rooted at.
     root: PathBuf,
@@ -528,7 +587,7 @@ impl LspClient {
             stdin,
             events,
             pending,
-            next_id: 1,
+            next_id: Some(1),
             server_name: prog,
             root: root.to_path_buf(),
             progress: HashMap::new(),
@@ -586,8 +645,21 @@ impl LspClient {
     /// Drain any events the reader thread produced since the last call.
     pub fn poll(&mut self) -> Vec<LspEvent> {
         let mut out = Vec::new();
-        while let Ok(ev) = self.events.try_recv() {
-            out.push(ev);
+        loop {
+            match self.events.try_recv() {
+                Ok(event) => out.push(event),
+                Err(TryRecvError::Empty) => break,
+                // The bounded reader may have dropped a final `Exited` event
+                // under backpressure. Disconnection itself is the authoritative
+                // lifecycle signal, so never leave the status bar claiming a
+                // dead server is still indexing.
+                Err(TryRecvError::Disconnected) => {
+                    if !out.iter().any(|event| matches!(event, LspEvent::Exited)) {
+                        out.push(LspEvent::Exited);
+                    }
+                    break;
+                }
+            }
         }
         out
     }
@@ -667,20 +739,28 @@ impl LspClient {
     }
 
     fn send_request(&mut self, method: &str, params: &Value, kind: Pending) {
-        let id = self.next_id;
-        self.next_id += 1;
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(id, kind);
+        let has_capacity = self
+            .pending
+            .lock()
+            .is_ok_and(|pending| pending.len() < MAX_PENDING_REQUESTS);
+        if !has_capacity {
+            return;
         }
+        let Some(id) = self.take_request_id() else {
+            return;
+        };
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        pending.insert(id, kind);
+        drop(pending);
         self.send_request_raw(method, params, Some(id));
     }
 
     fn send_request_raw(&mut self, method: &str, params: &Value, id: Option<i64>) {
-        let id = id.unwrap_or_else(|| {
-            let i = self.next_id;
-            self.next_id += 1;
-            i
-        });
+        let Some(id) = id.or_else(|| self.take_request_id()) else {
+            return;
+        };
         let payload = json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -688,6 +768,12 @@ impl LspClient {
             "params": params,
         });
         self.write(&payload);
+    }
+
+    fn take_request_id(&mut self) -> Option<i64> {
+        let id = self.next_id?;
+        self.next_id = id.checked_add(1);
+        Some(id)
     }
 
     fn send_notification(&self, method: &str, params: &Value) {
@@ -719,7 +805,7 @@ fn spawn_reader_thread(
     reader_stdin: Arc<Mutex<ChildStdin>>,
     reader_pending: Arc<Mutex<HashMap<i64, Pending>>>,
 ) -> Result<Receiver<LspEvent>, String> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(LSP_EVENT_QUEUE_CAPACITY);
     std::thread::Builder::new()
         .name("code-editor-lsp".into())
         .spawn(move || {
@@ -735,18 +821,28 @@ fn spawn_reader_thread(
                         }
                     }
                     if let Some(ev) = routed.event
-                        && tx.send(ev).is_err()
+                        && !try_send_event(&tx, ev)
                     {
                         break;
                     }
                 } else {
-                    let _ = tx.send(LspEvent::Exited);
+                    let _ = try_send_event(&tx, LspEvent::Exited);
                     break;
                 }
             }
         })
         .map_err(|e| format!("failed to start the {prog} reader thread: {e}"))?;
     Ok(rx)
+}
+
+/// Best-effort, non-blocking delivery from the LSP reader. Blocking here would
+/// strand the reader after the UI/client is dropped; dropping a full-queue
+/// update is preferable because LSP diagnostics and progress are snapshots.
+fn try_send_event(tx: &SyncSender<LspEvent>, event: LspEvent) -> bool {
+    match tx.try_send(event) {
+        Ok(()) | Err(TrySendError::Full(_)) => true,
+        Err(TrySendError::Disconnected(_)) => false,
+    }
 }
 
 /// Kick the `initialize`/`initialized` handshake. `initialize` is a request;
@@ -1070,7 +1166,7 @@ mod tests {
             stdin: Arc::new(Mutex::new(stdin)),
             events: rx,
             pending: no_pending(),
-            next_id: 1,
+            next_id: Some(1),
             server_name: "test".into(),
             root: PathBuf::from("/"),
             progress: HashMap::new(),
@@ -1100,6 +1196,34 @@ mod tests {
         assert_eq!(reader.next_message().unwrap().unwrap(), json!({ "a": 1 }));
         assert_eq!(reader.next_message().unwrap().unwrap(), json!({ "b": 2 }));
         assert!(reader.next_message().unwrap().is_none());
+    }
+
+    #[test]
+    fn framing_refuses_an_oversized_advertised_body_before_allocating_it() {
+        let bytes = format!("Content-Length: {}\r\n\r\n", MAX_LSP_MESSAGE_BYTES + 1);
+        let mut reader = MessageReader::new(Cursor::new(bytes));
+        let error = reader
+            .next_message()
+            .expect_err("oversized body is refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("exceeds"));
+    }
+
+    #[test]
+    fn request_identity_exhaustion_never_reuses_an_old_response_id() {
+        let mut client = fake_client();
+        client.next_id = Some(i64::MAX);
+        assert_eq!(client.take_request_id(), Some(i64::MAX));
+        assert_eq!(client.take_request_id(), None);
+    }
+
+    #[test]
+    fn a_disconnected_bounded_reader_still_reports_server_exit() {
+        let mut client = fake_client();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(sender);
+        client.events = receiver;
+        assert!(matches!(client.poll().as_slice(), [LspEvent::Exited]));
     }
 
     #[test]
