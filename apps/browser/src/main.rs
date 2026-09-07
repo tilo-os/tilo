@@ -351,12 +351,18 @@ fn render_suggestions_shot(out: &std::path::Path) {
 
 /// `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
 /// theme-driven chrome can be proven across palettes; defaults to dark.
+/// `QOS_SHOTS_REDUCE_MOTION=1` drives the same settled-motion policy as the
+/// live accessibility preference without relying on a host-global setting.
 fn shot_theme() -> Theme {
     match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     }
+    .with_reduce_motion(matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ))
 }
 
 /// The resource dispatcher forwards a claimed URI as one opaque positional
