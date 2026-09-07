@@ -58,6 +58,11 @@ pub(crate) struct XwaylandSupervisor {
     unavailable_announced: bool,
     keyboard: super::backend::drm::input_config::KeyboardSettings,
     keyboard_update: Option<KeyboardUpdate>,
+    /// The newest settings observed while `setxkbmap` is still applying an
+    /// earlier snapshot. Only one helper may touch the private X server at a
+    /// time, but the final state must still converge without another settings
+    /// file write to wake the watcher.
+    pending_keyboard: Option<super::backend::drm::input_config::KeyboardSettings>,
 }
 
 struct KeyboardUpdate {
@@ -78,6 +83,7 @@ impl XwaylandSupervisor {
             unavailable_announced: false,
             keyboard,
             keyboard_update: None,
+            pending_keyboard: None,
         };
         supervisor.start_async(wayland_socket, "starting");
         supervisor
@@ -90,10 +96,15 @@ impl XwaylandSupervisor {
     /// open and subsequent key events use the same map as native clients.
     pub(crate) fn reload_keyboard_settings(&mut self) {
         let keyboard = super::backend::drm::input_config::KeyboardSettings::load();
-        if keyboard == self.keyboard {
+        if self.keyboard_update.is_some() {
+            // The desired layout may change back to the last successfully
+            // applied one while a different update is running. Preserve that
+            // request too: after the child succeeds, `self.keyboard` will no
+            // longer describe the X server and we must actively restore it.
+            self.pending_keyboard = Some(keyboard);
             return;
         }
-        if self.keyboard_update.is_some() {
+        if keyboard == self.keyboard {
             return;
         }
         let Some(bridge) = self.bridge.as_ref() else {
@@ -218,6 +229,33 @@ impl XwaylandSupervisor {
                 );
             }
         }
+        self.start_pending_keyboard_update();
+    }
+
+    /// Start the latest coalesced request after the previous helper reached a
+    /// terminal state. Intermediate layouts are deliberately skipped; the X
+    /// server only needs to converge to the most recent saved preference.
+    fn start_pending_keyboard_update(&mut self) {
+        let Some(keyboard) = self.pending_keyboard.take() else {
+            return;
+        };
+        if keyboard == self.keyboard {
+            return;
+        }
+        let Some(bridge) = self.bridge.as_ref() else {
+            self.pending_keyboard = Some(keyboard);
+            return;
+        };
+        match start_keyboard_update(bridge, keyboard.clone()) {
+            Ok(update) => self.keyboard_update = Some(update),
+            Err(error) => {
+                self.pending_keyboard = Some(keyboard);
+                tracing::warn!(
+                    %error,
+                    "Xwayland: could not start coalesced keyboard settings update; will retry"
+                );
+            }
+        }
     }
 
     /// Launch the potentially five-second readiness probe off the compositor
@@ -308,11 +346,12 @@ fn setxkbmap_args(keyboard: &super::backend::drm::input_config::KeyboardSettings
     args
 }
 
-fn start_keyboard_update(
+fn start_keyboard_update_with_binary(
     bridge: &SessionXwayland,
     keyboard: super::backend::drm::input_config::KeyboardSettings,
+    binary: &Path,
 ) -> Result<KeyboardUpdate, String> {
-    let child = Command::new("/usr/bin/setxkbmap")
+    let child = Command::new(binary)
         .args(setxkbmap_args(&keyboard))
         .env("DISPLAY", &bridge.display)
         .env("XAUTHORITY", &bridge.authority)
@@ -326,6 +365,13 @@ fn start_keyboard_update(
         requested: keyboard,
         started: Instant::now(),
     })
+}
+
+fn start_keyboard_update(
+    bridge: &SessionXwayland,
+    keyboard: super::backend::drm::input_config::KeyboardSettings,
+) -> Result<KeyboardUpdate, String> {
+    start_keyboard_update_with_binary(bridge, keyboard, Path::new("/usr/bin/setxkbmap"))
 }
 
 fn retry_delay(consecutive_failures: u8) -> Duration {
@@ -728,6 +774,7 @@ mod tests {
             unavailable_announced: false,
             keyboard: KeyboardSettings::default(),
             keyboard_update: None,
+            pending_keyboard: None,
         };
         let chrome = crate::shell::chrome_state::ChromeState::new(
             crate::shell::state::WorkspaceTree::default(),
@@ -763,6 +810,7 @@ mod tests {
                 requested: requested.clone(),
                 started: Instant::now(),
             }),
+            pending_keyboard: None,
         };
         for _ in 0..100 {
             supervisor.poll_keyboard_update();
@@ -773,6 +821,95 @@ mod tests {
         }
         assert!(supervisor.keyboard_update.is_none());
         assert_eq!(supervisor.keyboard, requested);
+    }
+
+    #[test]
+    fn keyboard_update_coalesces_to_the_latest_request() {
+        let applied = KeyboardSettings {
+            source_ids: vec!["de:nodeadkeys".into()],
+            layouts: "de".into(),
+            variants: "nodeadkeys".into(),
+            options: None,
+            active_index: 0,
+        };
+        let latest = KeyboardSettings {
+            source_ids: vec!["fr".into()],
+            layouts: "fr".into(),
+            variants: String::new(),
+            options: None,
+            active_index: 0,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let fake_setxkbmap = temp.path().join("setxkbmap");
+        std::fs::write(&fake_setxkbmap, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
+        let mut permissions = std::fs::metadata(&fake_setxkbmap).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&fake_setxkbmap, permissions).unwrap();
+        let bridge_child = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
+        let bridge = SessionXwayland {
+            child: bridge_child,
+            runtime: temp.path().to_path_buf(),
+            display: ":999999".into(),
+            authority: temp.path().join("authority"),
+            reservation: temp.path().join("reservation"),
+            published: false,
+        };
+        let mut completed = Command::new("/usr/bin/true").spawn().unwrap();
+        let status = completed.wait().unwrap();
+        assert!(status.success());
+        let mut supervisor = XwaylandSupervisor {
+            bridge: Some(bridge),
+            starting: None,
+            consecutive_failures: 0,
+            retry_at: None,
+            ready_since: None,
+            unavailable_announced: false,
+            keyboard: KeyboardSettings::default(),
+            keyboard_update: Some(KeyboardUpdate {
+                child: completed,
+                requested: applied.clone(),
+                started: Instant::now(),
+            }),
+            pending_keyboard: Some(latest.clone()),
+        };
+
+        for _ in 0..100 {
+            let Some(update) = supervisor.keyboard_update.as_mut() else {
+                break;
+            };
+            if update.child.try_wait().unwrap().is_some() {
+                let update = supervisor.keyboard_update.take().unwrap();
+                supervisor.keyboard = update.requested;
+                let pending = supervisor.pending_keyboard.take().unwrap();
+                supervisor.keyboard_update = Some(
+                    start_keyboard_update_with_binary(
+                        supervisor.bridge.as_ref().unwrap(),
+                        pending,
+                        &fake_setxkbmap,
+                    )
+                    .unwrap(),
+                );
+            }
+            if supervisor
+                .keyboard_update
+                .as_ref()
+                .is_some_and(|update| update.requested == latest)
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+
+        assert_eq!(supervisor.keyboard, applied);
+        assert!(supervisor.pending_keyboard.is_none());
+        assert_eq!(
+            supervisor
+                .keyboard_update
+                .as_ref()
+                .map(|update| &update.requested),
+            Some(&latest),
+            "finishing the older helper must immediately schedule the newest saved layout"
+        );
     }
 
     #[test]
@@ -790,6 +927,7 @@ mod tests {
             unavailable_announced: false,
             keyboard: KeyboardSettings::default(),
             keyboard_update: None,
+            pending_keyboard: None,
         };
         supervisor.record_failure(now, &chrome);
         assert_eq!(supervisor.consecutive_failures, 1);

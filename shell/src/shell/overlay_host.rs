@@ -1482,13 +1482,6 @@ impl ShellOverlayHost {
             flags,
         );
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
-        self.draw_strip_chrome(
-            &mut workspace,
-            transform,
-            theme,
-            flags,
-            quick_settings_transition_visible,
-        );
         let quick_settings_bounds = self.draw_quick_settings_dropdown(
             &mut quick_settings,
             transform,
@@ -1496,6 +1489,23 @@ impl ShellOverlayHost {
             theme,
             flags,
         );
+        if flags.quick_settings || quick_settings_transition_visible {
+            self.draw_strip_chrome(
+                &mut quick_settings,
+                transform,
+                theme,
+                flags,
+                quick_settings_transition_visible,
+            );
+        } else {
+            self.draw_strip_chrome(
+                &mut workspace,
+                transform,
+                theme,
+                flags,
+                quick_settings_transition_visible,
+            );
+        }
         self.power_menu.draw(
             self.rect,
             &mut above_quick_settings,
@@ -4207,6 +4217,9 @@ impl ShellOverlayHost {
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
+        // Expiry is independent of new launcher events: a daemonising parent
+        // can exit and never produce another event or window.
+        crate::shell::launcher::expire_pending_placements();
         let events = crate::shell::launcher::drain_events();
         if events.is_empty() {
             return false;
@@ -4228,14 +4241,26 @@ impl ShellOverlayHost {
             // falsely claim that launch is still in flight.
             if matches!(
                 event.kind,
-                LaunchEventKind::SpawnFailed { .. }
-                    | LaunchEventKind::Failed { .. }
-                    | LaunchEventKind::Exited
+                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
             ) {
-                // A placement is a one-shot promise to a future toplevel. A
-                // process that has ended can never claim it, so clear it at
-                // the same transaction boundary as the opening notice.
+                // A failed process can never claim its promised toplevel, so
+                // clear it at the same boundary as the opening notice.
                 crate::shell::launcher::clear_pending_placement(&event.package_id);
+                if let Some(notice) =
+                    crate::shell::catalogue::take_pending_notice(&event.package_id)
+                {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.dismiss_notification(notice);
+                    st.bump();
+                    posted = true;
+                }
+            }
+            if matches!(event.kind, LaunchEventKind::Exited) {
+                // A successful launcher parent may have daemonised. Its GUI
+                // child still owns this launch for a short bounded interval,
+                // so dismiss the loading card now but keep placement until a
+                // matching toplevel claims it or the grace expires.
+                crate::shell::launcher::retire_pending_placement_after_grace(&event.package_id);
                 if let Some(notice) =
                     crate::shell::catalogue::take_pending_notice(&event.package_id)
                 {
@@ -4822,6 +4847,9 @@ impl ShellOverlayHost {
             if tree.active_group_for(strip) != Some(group) {
                 tree.set_active_group(strip, group);
                 changed = true;
+            }
+            if changed {
+                tree.flush_to_disk();
             }
         }
         if changed {
@@ -5631,6 +5659,7 @@ impl ShellOverlayHost {
         }
         tree.active_strip.insert(ws_id, strip_id);
         tree.active_group.insert(strip_id, group_id);
+        tree.flush_to_disk();
         drop(tree);
         drop(st);
         // Marks this strip at rest so a click doesn't also pan: the
@@ -9545,10 +9574,25 @@ impl ShellOverlayHost {
             RootAction::LayoutChanged => {
                 chrome.borrow_mut().bump();
             }
-            RootAction::OpenSettings | RootAction::Privacy | RootAction::OpenPowerMenu => {
+            RootAction::OpenSettings => {
+                // This is the device settings affordance, not workspace
+                // sharing settings. Use the same launcher path as the app
+                // palette so placement, duplicate focusing, sandbox grants,
+                // loading feedback and failures all behave consistently.
+                {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.quick_settings = false;
+                    st.bump();
+                }
+                let _ = crate::shell::search::providers::applications::launch_installed_app(
+                    chrome,
+                    "dev.qos.settings",
+                    "Settings",
+                );
+            }
+            RootAction::Privacy | RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
                 match action {
-                    RootAction::OpenSettings => st.overlays.ws_settings = true,
                     RootAction::Privacy => {
                         let active = st.quick_settings.privacy.active_media.clone();
                         if active.is_empty() {
@@ -16662,6 +16706,29 @@ mod palette_dispatch_tests {
         (host, chrome)
     }
 
+    fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest_path.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn configurable_shortcut_matcher_handles_named_keys_and_exact_modifiers() {
         let chord = settings_store::hardware::KeyChord::parse("Super+Shift+Left").unwrap();
@@ -16782,10 +16849,9 @@ mod palette_dispatch_tests {
         assert_eq!(chord.display(), "Super+Shift+Down");
     }
 
-    /// A GUI process is allowed to exit before it ever maps a toplevel. The
-    /// opening acknowledgement must be retired on that terminal event;
-    /// otherwise the desktop reports "Loading…" for the full two-minute
-    /// timeout after the launch has already ended.
+    /// A launcher parent may exit after daemonising but before its GUI child
+    /// maps a toplevel. The opening acknowledgement retires immediately while
+    /// the placement promise remains available for the bounded handoff grace.
     #[test]
     #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
@@ -16821,10 +16887,12 @@ mod palette_dispatch_tests {
             crate::shell::catalogue::pending_notice(package_id).is_none(),
             "the pending id must be consumed along with the card"
         );
-        assert!(
-            crate::shell::launcher::placement_for_toplevel(package_id, 99_001).is_none(),
-            "a dead launch must not leave a placement for a later toplevel"
+        assert_eq!(
+            crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
+            Some(crate::compositor::tab_binding::Placement::NewGroup),
+            "a daemonised GUI child must still inherit the requested placement"
         );
+        crate::shell::launcher::clear_pending_placements();
     }
 
     /// The application callback has already put the short recovery card on
@@ -17185,6 +17253,66 @@ mod palette_dispatch_tests {
         assert!(h.dispatch_palette_command("quick-settings.open"));
         assert!(chrome.borrow().overlays.quick_settings);
         assert!(!h.palette_visible);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn quick_settings_settings_opens_personal_settings_app_not_workspace_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_gui_fixture(tmp.path(), "dev.qos.settings", "Settings");
+        let launcher = tmp.path().join("record-launch.sh");
+        let launch_log = tmp.path().join("launch.log");
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+                launch_log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&launcher).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&launcher, permissions).unwrap();
+
+        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
+        unsafe {
+            std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
+            std::env::set_var("QOS_LAUNCHER_BIN", &launcher);
+        }
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
+
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !launch_log.is_file() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let state = chrome.borrow();
+        assert!(!state.overlays.quick_settings, "the source popover closes");
+        assert!(
+            !state.overlays.ws_settings,
+            "device Settings must not be confused with workspace-sharing settings"
+        );
+        drop(state);
+        let log = std::fs::read_to_string(&launch_log).expect("Settings launch was recorded");
+        assert!(
+            log.contains("dev.qos.settings"),
+            "the ordinary app launcher must receive Personal Settings: {log:?}"
+        );
+
+        // SAFETY: restore process-wide overrides before releasing the serial test lock.
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+            std::env::remove_var("QOS_LAUNCHER_BIN");
+        }
+        crate::shell::launcher::set_wayland_socket_path(None);
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
     }
 
     #[test]
@@ -19305,7 +19433,7 @@ mod tests {
         );
     }
     use std::collections::HashMap as StdHashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::dpi::PhysicalPosition;
@@ -19595,8 +19723,8 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 Size {
-                    width: AvailableSpace::Definite(1600.0),
-                    height: AvailableSpace::Definite(900.0),
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(900.0),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -21920,6 +22048,84 @@ mod resync_strips_tests {
             None,
             "a missing group remains unselected until the resync drops its widget"
         );
+    }
+
+    #[test]
+    fn rail_or_keyboard_focus_is_flushed_before_restart() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let second_group = 202;
+        let second_tab = 1_202;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(second_group, "Second"));
+        tree.persist_path = Some(state_path.clone());
+        tree.flush_to_disk();
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert!(host.focus_window_on_strip(strip_id, second_group, second_tab));
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("focused window is restartable");
+        assert_eq!(restarted.active_group_for(strip_id), Some(second_group));
+        let group = restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == second_group)
+            .expect("second group");
+        assert_eq!(group.active_tab, second_tab);
+        assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
+    }
+
+    #[test]
+    fn pointer_group_focus_is_flushed_before_restart() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        let state_dir = tempfile::tempdir().expect("state directory");
+        let state_path = state_dir.path().join("state.json");
+        let second_group = 202;
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(make_stub_group(second_group, "Second"));
+        tree.persist_path = Some(state_path.clone());
+        tree.flush_to_disk();
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = StdHashMap::new();
+        let child = host.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(900.0),
+                },
+            )
+            .unwrap();
+        host.apply_layout(&taffy, child, Point::ORIGIN);
+        let point = host
+            .group_at_for_tests(strip_id, 1)
+            .expect("second group")
+            .get_rect()
+            .center();
+
+        host.stamp_active_group_from_click(point);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("pointer focus is restartable");
+        assert_eq!(restarted.active_group_for(strip_id), Some(second_group));
+        assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
     }
 
     #[test]
