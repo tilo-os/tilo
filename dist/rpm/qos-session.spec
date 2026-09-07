@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not just build.
 
 %global qos_summary qOS compositor as a Wayland session
-%{!?qos_version:%global qos_version 0.1.5}
+%{!?qos_version:%global qos_version 0.1.6}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would just fail the
@@ -213,6 +213,9 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %{_datadir}/wayland-sessions/qos-dev.desktop
 
 %changelog
+* Mon Sep 07 2026 qOS <qos@code.podesta.ai> - 0.1.6-1
+- Restore host-session Xwayland, ordered logout, and desktop UX.
+
 * Sat Sep 05 2026 qOS <qos@code.podesta.ai> - 0.1.5-1
 - Keep ARM64 packaging available behind a native-runner capability switch.
 
