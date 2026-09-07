@@ -49,7 +49,7 @@ use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeWindow};
 use crate::doc::MailDoc;
 use crate::draw::{fill_rect, fill_round, stroke_round};
-use crate::engine::{EngineEvent, EngineRequest};
+use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
@@ -101,6 +101,16 @@ enum OverlayHit {
 struct EngineHandle {
     tx: std::sync::mpsc::Sender<EngineRequest>,
     rx: std::sync::mpsc::Receiver<EngineEvent>,
+}
+
+/// A locally-authored message waiting for a real SMTP acknowledgement.  It is
+/// deliberately kept out of Sent until the server accepts it: treating MIME
+/// serialization as delivery makes an offline fallback (and a rejected SMTP
+/// send) look like mail was sent.
+struct PendingSend {
+    request_id: EngineRequestId,
+    message: Message,
+    edited_draft: Option<MessageId>,
 }
 
 /// Where account add / edit / remove is persisted.
@@ -185,6 +195,7 @@ pub struct MailApp {
     setup_error: Option<String>,
 
     engine: Option<EngineHandle>,
+    pending_send: Option<PendingSend>,
     /// Where account changes persist. The live app targets the real user config
     /// root; the sample / shots / test constructors target a throwaway sandbox
     /// so they can never write into the real account store.
@@ -192,9 +203,13 @@ pub struct MailApp {
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
-    /// idles otherwise instead of busy-looping).
+    /// idles otherwise instead of busy-looping). `pending_engine_requests`
+    /// rather than an event-derived boolean is the source of truth: a connect
+    /// can emit several events, while successful IMAP writes emit none besides
+    /// their terminal worker acknowledgement.
     awaiting_engine: bool,
-    resource_refresh_invocation: Option<qos_actions::InvocationId>,
+    pending_engine_requests: HashMap<EngineRequestId, EngineRequestKind>,
+    resource_refresh_invocation: Option<(EngineRequestId, qos_actions::InvocationId)>,
     resource_refresh_result: Option<qos_actions::InvocationUpdate>,
     /// A normal resource/action open first changes the local view through the
     /// view operation door, then the next mutable sync records the same read
@@ -294,9 +309,11 @@ impl MailApp {
             setup_provider: None,
             setup_error: None,
             engine,
+            pending_send: None,
             accounts_persist,
             connect_requested: false,
             awaiting_engine: false,
+            pending_engine_requests: HashMap::new(),
             resource_refresh_invocation: None,
             resource_refresh_result: None,
             pending_reveal_read: None,
@@ -407,6 +424,33 @@ impl MailApp {
         self.awaiting_engine = true;
         self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
         self.dirty = true;
+    }
+
+    /// Queue one worker request and account for it exactly once.  Every engine
+    /// backend emits a matching `EngineEvent::Completed` after handling the
+    /// request, including successful flag/move/purge writes.
+    fn post_engine(&mut self, request: EngineRequest) -> Option<EngineRequestId> {
+        let Some(engine) = &self.engine else {
+            return None;
+        };
+        let request_id = request.request_id();
+        let request_kind = request.kind();
+        if engine.tx.send(request).is_err() {
+            self.shared.borrow_mut().status = Some("Mail worker is unavailable".into());
+            self.dirty = true;
+            return None;
+        }
+        self.pending_engine_requests
+            .insert(request_id, request_kind);
+        self.awaiting_engine = true;
+        Some(request_id)
+    }
+
+    /// Accept only events that match a request still pending in this app. A
+    /// worker event is untrusted transport input: a malformed, delayed, or
+    /// out-of-order result must not update a different operation's UI state.
+    fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
+        self.pending_engine_requests.get(&request_id) == Some(&kind)
     }
 
     /// Cached mail remains usable while connectivity is unavailable.
@@ -535,10 +579,7 @@ impl MailApp {
                 }
                 Intent::Settings(idx) => self.open_setup_edit(idx),
                 Intent::Engine(req) => {
-                    if let Some(h) = &self.engine {
-                        let _ = h.tx.send(req);
-                        self.awaiting_engine = true;
-                    }
+                    self.post_engine(req);
                 }
                 Intent::Toast(msg) => self.shared.borrow_mut().status = Some(msg),
             }
@@ -638,12 +679,28 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn send_compose(&mut self, doc: &mut AutoCommit) {
+    fn send_compose(&mut self, _doc: &mut AutoCommit) {
+        if self.pending_send.is_some() {
+            self.shared.borrow_mut().status = Some("Message is still sending…".into());
+            return;
+        }
         let draft = self.compose.to_draft();
         let acct = self.shared.borrow().accounts.active_config();
+        if acct.email.trim().is_empty() {
+            self.shared.borrow_mut().status =
+                Some("Add a sending account before sending this message".into());
+            self.dirty = true;
+            return;
+        }
+        if self.engine.is_none() {
+            self.shared.borrow_mut().status =
+                Some("Sending is unavailable in this offline preview; save a draft instead".into());
+            self.dirty = true;
+            return;
+        }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
         match crate::transport::build_mime(&from, &draft) {
-            Ok(bytes) => {
+            Ok(_) => {
                 let to = crate::transport::parse_addr_list(&draft.to);
                 let now = self.shared.borrow().now_min;
                 let msg = Message {
@@ -667,37 +724,19 @@ impl MailApp {
                     folder: Folder::Sent,
                     labels: Vec::new(),
                 };
-                let id = msg.id;
-                let edited_draft = self.editing_draft.take();
-                {
-                    let mut st = self.shared.borrow_mut();
-                    // Sending a draft removes it from the Drafts folder.
-                    if let Some(draft_id) = edited_draft {
-                        st.mailbox.messages.remove(&draft_id);
-                        st.mailbox.order.retain(|x| *x != draft_id);
-                    }
-                    st.mailbox.insert(msg);
-                    st.persist_flags(doc, id);
-                    let kind = if draft.html_body.is_some() {
-                        "HTML"
-                    } else {
-                        "text"
-                    };
-                    st.status = Some(format!("Sent ({} bytes, {kind})", bytes.len()));
-                }
-                // Hand off to the engine worker for real submission (a no-op
-                // ack under the stub backend).
-                if let Some(h) = &self.engine {
-                    let _ = h.tx.send(EngineRequest::Send {
-                        account: acct,
-                        draft: Box::new(draft),
-                    });
-                }
+                let Some(request_id) = self.post_engine(EngineRequest::send(acct, Box::new(draft)))
+                else {
+                    return;
+                };
+                self.pending_send = Some(PendingSend {
+                    request_id,
+                    message: msg,
+                    edited_draft: self.editing_draft,
+                });
+                self.shared.borrow_mut().status = Some("Sending…".into());
             }
             Err(e) => self.shared.borrow_mut().status = Some(format!("Send failed: {e}")),
         }
-        self.compose.close();
-        self.persist_compose_format(doc);
         self.dirty = true;
     }
 
@@ -1118,16 +1157,8 @@ impl MailApp {
             }
         }
         // Connect + fetch the freshly-saved account through the engine.
-        if let Some(h) = &self.engine {
-            let _ = h.tx.send(EngineRequest::Connect {
-                account: cfg.clone(),
-            });
-            let _ = h.tx.send(EngineRequest::Fetch {
-                account: cfg.clone(),
-                folder: Folder::Inbox,
-            });
-            self.awaiting_engine = true;
-        }
+        self.post_engine(EngineRequest::connect(cfg.clone()));
+        self.post_engine(EngineRequest::fetch(cfg.clone(), Folder::Inbox));
         self.close_setup();
     }
 
@@ -1190,14 +1221,13 @@ impl MailApp {
             self.dirty = true;
             return;
         }
-        match &self.engine {
-            Some(h) => {
-                let _ = h.tx.send(EngineRequest::OAuthAuthorize {
-                    account_id: email.clone(),
+        match self.engine.as_ref() {
+            Some(_) => {
+                self.post_engine(EngineRequest::oauth_authorize(
+                    email.clone(),
                     provider,
-                    login_hint: email,
-                });
-                self.awaiting_engine = true;
+                    email,
+                ));
                 self.setup_error = None;
                 self.shared.borrow_mut().status = Some(format!(
                     "Opening {} sign-in in your browser…",
@@ -1300,28 +1330,29 @@ impl MailApp {
     /// Post a fetch of the currently-viewed folder for the active account, and
     /// show a syncing indicator. Used by the manual-refresh shortcut and the
     /// periodic auto-refresh. A no-op with no account or no engine.
-    fn refresh_active_folder(&mut self) {
+    fn refresh_active_folder(&mut self) -> Option<EngineRequestId> {
         let (account, folder) = {
             let st = self.shared.borrow();
             (st.accounts.active_config(), st.folder)
         };
         if account.email.is_empty() {
-            return;
+            return None;
         }
-        if let Some(h) = &self.engine {
+        if self.engine.is_some() {
             let account_id = account.email.clone();
-            let _ = h.tx.send(EngineRequest::Fetch { account, folder });
+            let request_id = self.post_engine(EngineRequest::fetch(account, folder))?;
             report_account_sync(
                 &account_id,
                 accounts::AccountSyncHealth::Syncing,
                 false,
                 Some("Checking mail"),
             );
-            self.awaiting_engine = true;
             self.last_auto_refresh_min = self.shared.borrow().now_min;
             self.shared.borrow_mut().status = Some("Syncing…".into());
             self.dirty = true;
+            return Some(request_id);
         }
+        None
     }
 
     /// Fire a periodic refresh if enough wall-clock time has elapsed since the
@@ -1346,7 +1377,7 @@ impl MailApp {
             return;
         }
         if now - self.last_auto_refresh_min >= AUTO_REFRESH_MIN {
-            self.refresh_active_folder();
+            let _ = self.refresh_active_folder();
         }
     }
 
@@ -1394,12 +1425,14 @@ impl MailApp {
         if events.is_empty() {
             return;
         }
-        let mut settled = false;
         {
             let mut st = self.shared.borrow_mut();
             for ev in events {
                 match ev {
-                    EngineEvent::Connected { account_id } => {
+                    EngineEvent::Connected {
+                        request_id,
+                        account_id,
+                    } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
                         st.status = Some(format!("Connected {account_id}"));
                         report_account_sync(
                             &account_id,
@@ -1408,16 +1441,21 @@ impl MailApp {
                             Some("Connected; fetching mail"),
                         );
                     }
-                    EngineEvent::Folders { folders, .. } => {
+                    EngineEvent::Folders {
+                        request_id,
+                        folders,
+                        ..
+                    } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
                         // The fixed system-folder set drives the sidebar; log the
                         // server's advertised set for visibility.
                         tracing::info!(count = folders.len(), "mail: server folders listed");
                     }
                     EngineEvent::Fetched {
+                        request_id,
                         account_id,
                         folder,
                         messages,
-                    } => {
+                    } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
                         let count = messages.len();
                         for m in messages {
                             let id = m.id;
@@ -1441,8 +1479,11 @@ impl MailApp {
                             true,
                             Some("Mail is up to date"),
                         );
-                        settled = true;
-                        if let Some(invocation) = self.resource_refresh_invocation.take() {
+                        if self
+                            .resource_refresh_invocation
+                            .is_some_and(|(pending, _)| pending == request_id)
+                            && let Some((_, invocation)) = self.resource_refresh_invocation.take()
+                        {
                             self.resource_refresh_result =
                                 Some(qos_actions::InvocationUpdate::Succeeded {
                                     invocation,
@@ -1450,10 +1491,41 @@ impl MailApp {
                                 });
                         }
                     }
-                    EngineEvent::Sent { wire_bytes } => {
-                        st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
+                    EngineEvent::Sent {
+                        request_id,
+                        wire_bytes,
+                    } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
+                        if self
+                            .pending_send
+                            .as_ref()
+                            .is_some_and(|pending| pending.request_id == request_id)
+                            && let Some(pending) = self.pending_send.take()
+                        {
+                            let id = pending.message.id;
+                            // A message joins Sent only after SMTP has
+                            // accepted its bytes. If this was an edited draft,
+                            // remove that draft at the same point; failures
+                            // leave the composer and draft intact for retry.
+                            if let Some(draft_id) = pending.edited_draft {
+                                st.mailbox.messages.remove(&draft_id);
+                                st.mailbox
+                                    .order
+                                    .retain(|message_id| *message_id != draft_id);
+                            }
+                            st.mailbox.insert(pending.message);
+                            st.persist_flags(doc, id);
+                            self.editing_draft = None;
+                            self.compose.close();
+                            self.persist_compose_format(doc);
+                            st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
+                        }
                     }
-                    EngineEvent::Authorized { account_id } => {
+                    EngineEvent::Authorized {
+                        request_id,
+                        account_id,
+                    } if self
+                        .expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) =>
+                    {
                         // Tokens are sealed in the vault under the email; the
                         // account (saved with that email as its id) reads them
                         // at connect time.
@@ -1464,9 +1536,13 @@ impl MailApp {
                             true,
                             Some("Signed in"),
                         );
-                        settled = true;
                     }
-                    EngineEvent::Error { context, message } => {
+                    EngineEvent::Error {
+                        request_id,
+                        kind,
+                        context,
+                        message,
+                    } if self.expects_engine_event(request_id, kind) => {
                         // Surface the specific failure so a fetch never fails
                         // silently into an empty inbox.
                         st.status = Some(format!("{context}: {message}"));
@@ -1486,8 +1562,21 @@ impl MailApp {
                             false,
                             Some(&format!("{context}: {message}")),
                         );
-                        settled = true;
-                        if let Some(invocation) = self.resource_refresh_invocation.take() {
+                        if self
+                            .pending_send
+                            .as_ref()
+                            .is_some_and(|pending| pending.request_id == request_id)
+                        {
+                            // Keep the compose surface open and its contents
+                            // untouched. A failed SMTP round trip is not a
+                            // sent message and must remain recoverable.
+                            self.pending_send = None;
+                        }
+                        if self
+                            .resource_refresh_invocation
+                            .is_some_and(|(pending, _)| pending == request_id)
+                            && let Some((_, invocation)) = self.resource_refresh_invocation.take()
+                        {
                             self.resource_refresh_result =
                                 Some(qos_actions::InvocationUpdate::Failed {
                                     invocation,
@@ -1500,13 +1589,24 @@ impl MailApp {
                                 });
                         }
                     }
+                    EngineEvent::Completed { request_id, kind }
+                        if self.expects_engine_event(request_id, kind) =>
+                    {
+                        // Completion is independent from the preceding UI
+                        // event. Successful IMAP writes have no payload event
+                        // at all, while Connect emits both Connected and
+                        // Folders, so only this acknowledgement may settle a
+                        // queued request.
+                        self.pending_engine_requests.remove(&request_id);
+                    }
+                    ignored => {
+                        tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
+                    }
                 }
             }
             st.dirty = true;
         }
-        if settled {
-            self.awaiting_engine = false;
-        }
+        self.awaiting_engine = !self.pending_engine_requests.is_empty();
     }
 
     fn seed_doc(&self, doc: &mut AutoCommit) {
@@ -2586,15 +2686,9 @@ impl Widget for MailApp {
             let has_accounts = !self.shared.borrow().accounts.is_empty();
             if self.engine.is_some() && has_accounts && !self.connect_requested {
                 let cfg = self.shared.borrow().accounts.active_config();
-                if let Some(h) = &self.engine {
-                    let _ = h.tx.send(EngineRequest::Connect {
-                        account: cfg.clone(),
-                    });
-                    let _ = h.tx.send(EngineRequest::Fetch {
-                        account: cfg,
-                        folder: Folder::Inbox,
-                    });
-                    self.awaiting_engine = true;
+                if self.engine.is_some() {
+                    self.post_engine(EngineRequest::connect(cfg.clone()));
+                    self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
                     self.shared.borrow_mut().status = Some("Syncing…".into());
                 }
                 self.connect_requested = true;
@@ -2672,7 +2766,7 @@ impl Widget for MailApp {
                 if self.engine.is_none() {
                     return Err("no connected mail account is available".into());
                 }
-                self.refresh_active_folder();
+                let _ = self.refresh_active_folder();
             }
             (
                 qos_actions::OperationKind::View,
@@ -2791,14 +2885,23 @@ impl Widget for MailApp {
         if self.resource_refresh_invocation.is_some() || self.awaiting_engine {
             return Err("a mail operation is already running".into());
         }
+        if matches!(
+            operation,
+            Some(crate::actions::MailOperation::RefreshCurrentFolder)
+        ) {
+            let request_id = self
+                .refresh_active_folder()
+                .ok_or_else(|| "mail refresh could not be queued".to_string())?;
+            self.resource_refresh_invocation = Some((request_id, invocation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
         if !self.awaiting_engine {
             return Err("mail refresh could not be queued".into());
         }
-        self.resource_refresh_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(None)
     }
 
     fn poll_resource_operation(
@@ -3857,7 +3960,7 @@ impl MailApp {
                 *handled = true;
             }
             Key::Named(NamedKey::F5) => {
-                self.refresh_active_folder();
+                let _ = self.refresh_active_folder();
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {
@@ -4434,7 +4537,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_send_lands_in_sent() {
+    fn offline_preview_send_keeps_the_message_in_the_composer() {
         let (mut app, mut doc) = app();
         let before = app.shared.borrow().mailbox.count(Folder::Sent);
         app.compose.open_blank();
@@ -4448,8 +4551,139 @@ mod tests {
         };
         app.compose.reattach(&draft);
         app.send_compose(&mut doc);
-        assert!(!app.compose.open);
-        assert_eq!(app.shared.borrow().mailbox.count(Folder::Sent), before + 1);
+        assert!(app.compose.open, "offline preview must preserve the draft");
+        assert_eq!(
+            app.shared.borrow().mailbox.count(Folder::Sent),
+            before,
+            "validating a MIME message locally is not delivery"
+        );
+        assert!(
+            app.shared
+                .borrow()
+                .status
+                .as_deref()
+                .is_some_and(|status| status.contains("offline preview"))
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the regression deliberately drives the full three-request interleaving in one readable sequence"
+    )]
+    fn interleaved_engine_events_only_settle_their_own_request() {
+        let (mut app, mut doc) = app();
+        let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
+        let (incoming_tx, incoming) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming,
+        });
+
+        let refresh_id = uuid::Uuid::new_v4();
+        let send_id = uuid::Uuid::new_v4();
+        let unrelated_id = uuid::Uuid::new_v4();
+        let invocation = qos_actions::InvocationId::new();
+        app.resource_refresh_invocation = Some((refresh_id, invocation));
+        let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
+        app.pending_send = Some(PendingSend {
+            request_id: send_id,
+            message,
+            edited_draft: None,
+        });
+        app.pending_engine_requests
+            .insert(refresh_id, EngineRequestKind::Fetch);
+        app.pending_engine_requests
+            .insert(send_id, EngineRequestKind::Send);
+        app.pending_engine_requests
+            .insert(unrelated_id, EngineRequestKind::StoreFlag);
+        app.awaiting_engine = true;
+
+        incoming_tx
+            .send(EngineEvent::Error {
+                request_id: unrelated_id,
+                kind: EngineRequestKind::StoreFlag,
+                context: "flag".into(),
+                message: "rejected".into(),
+            })
+            .unwrap();
+        incoming_tx
+            .send(EngineEvent::Sent {
+                request_id: unrelated_id,
+                wire_bytes: 9,
+            })
+            .unwrap();
+        incoming_tx
+            .send(EngineEvent::Completed {
+                request_id: unrelated_id,
+                kind: crate::engine::EngineRequestKind::StoreFlag,
+            })
+            .unwrap();
+        app.drain_engine(&mut doc);
+        assert!(app.resource_refresh_invocation.is_some());
+        assert!(app.resource_refresh_result.is_none());
+        assert!(app.pending_send.is_some());
+        assert!(app.pending_engine_requests.contains_key(&refresh_id));
+        assert!(app.pending_engine_requests.contains_key(&send_id));
+        assert!(!app.pending_engine_requests.contains_key(&unrelated_id));
+        assert!(
+            app.shared
+                .borrow()
+                .status
+                .as_deref()
+                .is_none_or(|status| !status.contains("Delivered")),
+            "an unmatched Sent event must not claim delivery"
+        );
+
+        incoming_tx
+            .send(EngineEvent::Fetched {
+                request_id: send_id,
+                account_id: "me@qos.example".into(),
+                folder: Folder::Inbox,
+                messages: Vec::new(),
+            })
+            .unwrap();
+        app.drain_engine(&mut doc);
+        assert!(app.pending_send.is_some(), "wrong-kind results are inert");
+        assert!(app.pending_engine_requests.contains_key(&send_id));
+
+        incoming_tx
+            .send(EngineEvent::Fetched {
+                request_id: refresh_id,
+                account_id: "me@qos.example".into(),
+                folder: Folder::Inbox,
+                messages: Vec::new(),
+            })
+            .unwrap();
+        incoming_tx
+            .send(EngineEvent::Completed {
+                request_id: refresh_id,
+                kind: crate::engine::EngineRequestKind::Fetch,
+            })
+            .unwrap();
+        app.drain_engine(&mut doc);
+        assert!(app.resource_refresh_invocation.is_none());
+        assert!(matches!(
+            app.resource_refresh_result.as_ref(),
+            Some(qos_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == invocation
+        ));
+        assert!(app.pending_send.is_some());
+
+        incoming_tx
+            .send(EngineEvent::Sent {
+                request_id: send_id,
+                wire_bytes: 42,
+            })
+            .unwrap();
+        incoming_tx
+            .send(EngineEvent::Completed {
+                request_id: send_id,
+                kind: crate::engine::EngineRequestKind::Send,
+            })
+            .unwrap();
+        app.drain_engine(&mut doc);
+        assert!(app.pending_send.is_none());
+        assert!(!app.awaiting_engine);
     }
 
     #[test]
