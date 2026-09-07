@@ -19,6 +19,21 @@
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled};
 use uuid::Uuid;
 
+/// Import limits keep a malformed or hostile `.vcf` from monopolising the UI
+/// thread.  The app also rejects oversized files before reading them; these
+/// bounds protect callers that parse an in-memory document directly.
+pub const MAX_VCARD_CARDS: usize = 2_048;
+pub const MAX_VCARD_LOGICAL_LINE_BYTES: usize = 32 * 1024;
+
+/// Result of a bounded vCard parse. `skipped_cards` includes empty, malformed,
+/// and over-limit cards, allowing the UI to be honest about partial imports.
+#[derive(Debug, Default)]
+pub struct VCardParseReport {
+    pub contacts: Vec<Contact>,
+    pub skipped_cards: usize,
+    pub limit_reached: bool,
+}
+
 /// The vCard version to emit. Affects the `VERSION` line, `BDAY`
 /// formatting and the `TYPE=` parameter shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +73,12 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         VCardVersion::V3 => "VERSION:3.0".to_string(),
         VCardVersion::V4 => "VERSION:4.0".to_string(),
     });
+    // `UID` is the durable identity used by this address book.  Without it an
+    // exported card comes back with a fresh random id, so importing one's own
+    // backup silently creates duplicates instead of recognising the original
+    // contact. A bare UUID is valid text in both vCard 3.0 and 4.0 and is
+    // broadly understood by other address-book implementations.
+    lines.push(format!("UID:{}", c.id));
 
     // FN is required; N is the structured surname/given form.
     lines.push(format!("FN:{}", esc(&c.display_name())));
@@ -174,24 +195,28 @@ fn esc(s: &str) -> String {
     out
 }
 
-/// Fold a content line to 75-octet segments, continuation lines prefixed
-/// with a single space (RFC 6350 §3.2). Operates on chars (a superset of
-/// the octet rule for ASCII-heavy contact data) which is safe — folding
-/// more aggressively than required never corrupts the value.
+/// Fold a content line to 75-*octet* segments, continuation lines prefixed
+/// with a single space (RFC 6350 §3.2).  The previous character-counting
+/// implementation exceeded the wire limit for non-ASCII names and notes.
+/// Split only at UTF-8 character boundaries, so each physical line remains
+/// valid UTF-8 and every continuation includes its required leading space in
+/// the 75-octet budget.
 fn fold_line(line: &str) -> String {
     const LIMIT: usize = 75;
-    if line.len() <= LIMIT {
-        return line.to_string();
-    }
-    let mut out = String::new();
-    let mut count = 0usize;
-    for (i, ch) in line.chars().enumerate() {
-        if i != 0 && count >= LIMIT {
+    let mut out = String::with_capacity(line.len() + line.len() / LIMIT * 3);
+    let mut used = 0usize;
+    let mut continuation = false;
+    for ch in line.chars() {
+        let bytes = ch.len_utf8();
+        // A continuation's leading whitespace consumes one octet.
+        let payload_limit = LIMIT - usize::from(continuation);
+        if used > 0 && used + bytes > payload_limit {
             out.push_str("\r\n ");
-            count = 1; // the leading space counts toward the next segment
+            continuation = true;
+            used = 0;
         }
         out.push(ch);
-        count += 1;
+        used += bytes;
     }
     out
 }
@@ -204,9 +229,15 @@ fn fold_line(line: &str) -> String {
 /// properties are ignored; malformed cards are skipped rather than
 /// aborting the whole import.
 pub fn parse_vcards(input: &str) -> Vec<Contact> {
+    parse_vcards_report(input).contacts
+}
+
+/// Parse a bounded vCard stream and retain enough outcome data for callers to
+/// distinguish a clean import from a partial one.
+pub fn parse_vcards_report(input: &str) -> VCardParseReport {
     let logical = unfold(input);
-    let mut contacts = Vec::new();
-    let mut cur: Option<Contact> = None;
+    let mut report = VCardParseReport::default();
+    let mut cur: Option<(Contact, bool)> = None;
 
     for raw in logical {
         let line = raw.trim_end_matches(['\r', '\n']);
@@ -215,27 +246,52 @@ pub fn parse_vcards(input: &str) -> Vec<Contact> {
         }
         let upper = line.to_ascii_uppercase();
         if upper.starts_with("BEGIN:VCARD") {
-            cur = Some(Contact {
-                id: Uuid::new_v4(),
-                ..Default::default()
-            });
+            if cur.take().is_some() {
+                report.skipped_cards += 1;
+            }
+            if report.contacts.len() >= MAX_VCARD_CARDS {
+                report.limit_reached = true;
+                break;
+            }
+            cur = Some((
+                Contact {
+                    id: Uuid::new_v4(),
+                    ..Default::default()
+                },
+                false,
+            ));
             continue;
         }
         if upper.starts_with("END:VCARD") {
-            if let Some(c) = cur.take() {
-                contacts.push(c);
+            if let Some((c, invalid)) = cur.take() {
+                if !invalid && has_contact_data(&c) {
+                    report.contacts.push(c);
+                } else {
+                    report.skipped_cards += 1;
+                }
             }
             continue;
         }
-        let Some(contact) = cur.as_mut() else {
+        let Some((contact, invalid)) = cur.as_mut() else {
             continue;
         };
+        if line == "\0" {
+            *invalid = true;
+            continue;
+        }
+        if line.len() > MAX_VCARD_LOGICAL_LINE_BYTES {
+            *invalid = true;
+            continue;
+        }
         let Some((props, value)) = split_line(line) else {
             continue;
         };
         apply_property(contact, &props, value);
     }
-    contacts
+    if cur.is_some() {
+        report.skipped_cards += 1;
+    }
+    report
 }
 
 /// RFC line unfolding: any line beginning with SP or TAB continues the
@@ -250,10 +306,23 @@ fn unfold(input: &str) -> Vec<String> {
             // The leading char is a single-byte SP/TAB, so byte offset 1 is
             // always a char boundary; `.get` is a defensive, never-panicking
             // way to say so.
-            last.push_str(line.get(1..).unwrap_or(""));
+            let continuation = line.get(1..).unwrap_or("");
+            if last.len().saturating_add(continuation.len()) > MAX_VCARD_LOGICAL_LINE_BYTES {
+                // Keep a sentinel that the parser cannot mistake for a
+                // property. This prevents a huge folded value from being
+                // accumulated or partially imported.
+                last.clear();
+                last.push('\0');
+            } else {
+                last.push_str(continuation);
+            }
             continue;
         }
-        out.push(line.to_string());
+        if line.len() > MAX_VCARD_LOGICAL_LINE_BYTES {
+            out.push("\0".to_string());
+        } else {
+            out.push(line.to_string());
+        }
     }
     out
 }
@@ -368,6 +437,18 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
                 .unwrap_or_default();
         }
         "TITLE" => c.title = unescape(value).trim().to_string(),
+        "UID" => {
+            // Own exports use a bare UUID; accepting the common URI spelling
+            // lets those backups be recognised for safe review too.
+            let raw = unescape(value);
+            let raw = raw
+                .strip_prefix("urn:uuid:")
+                .or_else(|| raw.strip_prefix("URN:UUID:"))
+                .unwrap_or(&raw);
+            if let Ok(id) = Uuid::parse_str(raw.trim()) {
+                c.id = id;
+            }
+        }
         "TEL" => {
             c.phones.push(Labeled::new(
                 &collect_types(&desc),
@@ -408,6 +489,24 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
         }
         _ => {}
     }
+}
+
+/// Empty BEGIN/END pairs are not contacts.  They occur in truncated exports
+/// and in hand-edited files; accepting them creates an untitled, unusable
+/// record and makes the import success count misleading.  Name-less cards
+/// with an actual endpoint, note, group, or organization remain valid.
+fn has_contact_data(c: &Contact) -> bool {
+    !c.first.trim().is_empty()
+        || !c.last.trim().is_empty()
+        || !c.org.trim().is_empty()
+        || !c.title.trim().is_empty()
+        || !c.website.trim().is_empty()
+        || c.birthday.is_some()
+        || !c.notes.trim().is_empty()
+        || !c.groups.is_empty()
+        || c.phones.iter().any(|row| !row.value.trim().is_empty())
+        || c.emails.iter().any(|row| !row.value.trim().is_empty())
+        || c.addresses.iter().any(|address| !address.is_empty())
 }
 
 /// Drop a `tel:` / `mailto:` style URI scheme prefix so `TEL;VALUE=uri:
@@ -496,9 +595,11 @@ mod tests {
         let c = sample();
         let doc = to_vcard(&c, VCardVersion::V3);
         assert!(doc.contains("VERSION:3.0"));
+        assert!(doc.contains(&format!("UID:{}", c.id)));
         let back = parse_vcards(&doc);
         assert_eq!(back.len(), 1);
         let r = &back[0];
+        assert_eq!(r.id, c.id, "own exports retain their merge identity");
         assert_eq!(r.first, "Ada");
         assert_eq!(r.last, "Lovelace");
         assert_eq!(r.org, "Analytical Engines");
@@ -621,5 +722,55 @@ mod tests {
         // Unfolding the folded output restores the original logical line.
         let restored = unfold(&format!("{folded}\r\n"));
         assert_eq!(restored[0], format!("NOTE:{long}"));
+    }
+
+    #[test]
+    fn folding_respects_the_octet_limit_for_unicode() {
+        let line = format!("NOTE:{}", "é".repeat(80));
+        let folded = fold_line(&line);
+        for physical in folded.split("\r\n") {
+            assert!(
+                physical.len() <= 75,
+                "physical line is {} bytes: {physical:?}",
+                physical.len()
+            );
+        }
+        assert_eq!(unfold(&format!("{folded}\r\n"))[0], line);
+    }
+
+    #[test]
+    fn uri_uid_is_accepted_for_cross_client_merges() {
+        let id = Uuid::new_v4();
+        let card = format!(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:urn:uuid:{id}\r\nEMAIL:me@example.com\r\nEND:VCARD\r\n"
+        );
+        let parsed = parse_vcards(&card);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, id);
+    }
+
+    #[test]
+    fn empty_or_truncated_cards_do_not_create_blank_contacts() {
+        assert!(parse_vcards("BEGIN:VCARD\r\nEND:VCARD\r\n").is_empty());
+        assert!(parse_vcards("BEGIN:VCARD\r\nFN:Never closed").is_empty());
+    }
+
+    #[test]
+    fn oversized_properties_are_rejected_without_partial_contact_import() {
+        let input = format!(
+            "BEGIN:VCARD\r\nFN:Safe name\r\nNOTE:{}\r\nEND:VCARD\r\n",
+            "x".repeat(MAX_VCARD_LOGICAL_LINE_BYTES)
+        );
+        let report = parse_vcards_report(&input);
+        assert!(report.contacts.is_empty());
+        assert_eq!(report.skipped_cards, 1);
+    }
+
+    #[test]
+    fn parser_stops_at_the_card_limit() {
+        let card = "BEGIN:VCARD\r\nFN:Bounded\r\nEND:VCARD\r\n";
+        let report = parse_vcards_report(&card.repeat(MAX_VCARD_CARDS + 1));
+        assert_eq!(report.contacts.len(), MAX_VCARD_CARDS);
+        assert!(report.limit_reached);
     }
 }
