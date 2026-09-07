@@ -15,7 +15,10 @@ use crate::draw;
 use crate::graph::GraphLayout;
 use crate::model::{Commit, RefKind, RepoModel};
 
-const ROW_H: f64 = 56.0;
+// Ref-decorated commits use three text baselines (refs, summary, metadata).
+// 56px clipped the metadata into the following row, especially in the compact
+// overlay where labels wrap sooner. Keep one deliberate line of breathing room.
+const ROW_H: f64 = 68.0;
 const LANE_W: f64 = 18.0;
 const DOT_R: f64 = 5.0;
 const GRAPH_PAD: f64 = 16.0;
@@ -191,16 +194,22 @@ impl HistoryView {
             y + 30.0
         };
         let avail = area.x1 - sx - 90.0;
+        let summary = tr.elide_to_width_weighted(
+            &commit.summary,
+            13.0,
+            avail.max(12.0) as f32,
+            TextWeight::Medium,
+        );
         draw::text_weighted(
             scene,
             tr,
             t,
-            &commit.summary,
+            &summary,
             13.0,
             c.text_primary,
             sx,
             sy,
-            Some(avail as f32),
+            None,
             TextWeight::Medium,
         );
 
