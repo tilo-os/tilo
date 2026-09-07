@@ -10,6 +10,7 @@ use mysql::consts::ColumnType;
 use mysql::prelude::Queryable;
 use mysql::{Conn, Opts, OptsBuilder, Value};
 
+use crate::engine::{MAX_QUERY_ROWS, can_retain_result_row, row_retained_bytes};
 use crate::model::{
     Cell, ColumnInfo, DatabaseSchema, ForeignKey, IndexInfo, QueryResult, RelationKind, SchemaInfo,
     TableInfo, TypeClass,
@@ -18,6 +19,7 @@ use crate::model::{
 /// A live `MySQL` connection. Owns the connection for the session lifetime.
 pub struct MySqlEngine {
     conn: Conn,
+    opts: Opts,
 }
 
 /// Build the connection options from a profile + password. Pure so the
@@ -57,8 +59,15 @@ impl MySqlEngine {
     /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let opts: Opts = mysql_opts(profile).into();
-        let conn = Conn::new(opts).map_err(|e| e.to_string())?;
-        Ok(Self { conn })
+        let conn = Conn::new(opts.clone()).map_err(|e| e.to_string())?;
+        Ok(Self { conn, opts })
+    }
+
+    pub(crate) fn cancellation_handle(&self) -> crate::engine::QueryCancellation {
+        crate::engine::QueryCancellation::MySql {
+            opts: self.opts.clone(),
+            connection_id: self.conn.connection_id(),
+        }
     }
 
     /// Introspect the connection's current database into the shared
@@ -236,18 +245,32 @@ impl MySqlEngine {
                 elapsed_ms: elapsed_ms(start),
                 rows_affected: Some(affected),
                 is_select: false,
+                truncated: false,
             });
         }
 
         let mut rows_out: Vec<Vec<Cell>> = Vec::new();
+        let mut truncated = false;
+        let mut retained_bytes = 0usize;
+        let mut retained_cells = 0usize;
         for row_res in result.by_ref() {
+            if rows_out.len() == MAX_QUERY_ROWS {
+                truncated = true;
+                break;
+            }
             let row = row_res.map_err(|e| e.to_string())?;
             let values: Vec<Value> = row.unwrap();
-            let cells = values
+            let cells: Vec<Cell> = values
                 .into_iter()
                 .enumerate()
                 .map(|(i, v)| cell_from_value(v, col_meta.get(i).map(|(_, ct)| *ct)))
                 .collect();
+            if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
+                truncated = true;
+                break;
+            }
+            retained_bytes += row_retained_bytes(&cells);
+            retained_cells += cells.len();
             rows_out.push(cells);
         }
         drop(result);
@@ -258,6 +281,7 @@ impl MySqlEngine {
             elapsed_ms: elapsed_ms(start),
             rows_affected: None,
             is_select: true,
+            truncated,
         })
     }
 }
@@ -280,11 +304,13 @@ pub(crate) fn cell_from_value(v: Value, col_type: Option<ColumnType>) -> Cell {
         Err(e) => return Cell::Blob(e.into_bytes().len()),
     };
     match col_type {
-        Some(ct) if is_integer_type(ct) => {
-            s.parse::<i64>().map(Cell::Integer).unwrap_or(Cell::Text(s))
-        }
-        Some(ct) if is_float_type(ct) => s.parse::<f64>().map(Cell::Real).unwrap_or(Cell::Text(s)),
-        _ => Cell::Text(s),
+        Some(ct) if is_integer_type(ct) => s
+            .parse::<i64>()
+            .map_or_else(|_| Cell::bounded_text(s), Cell::Integer),
+        Some(ct) if is_float_type(ct) => s
+            .parse::<f64>()
+            .map_or_else(|_| Cell::bounded_text(s), Cell::Real),
+        _ => Cell::bounded_text(s),
     }
 }
 
@@ -318,24 +344,24 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
             if i64::try_from(u).is_ok() {
                 Cell::Integer(u as i64)
             } else {
-                Cell::Text(u.to_string())
+                Cell::bounded_text(u.to_string())
             }
         }
         Value::Float(f) => Cell::Real(f64::from(f)),
         Value::Double(d) => Cell::Real(d),
         Value::Bytes(b) => match String::from_utf8(b) {
-            Ok(s) => Cell::Text(s),
+            Ok(s) => Cell::bounded_text(s),
             Err(e) => Cell::Blob(e.into_bytes().len()),
         },
         Value::Date(year, month, day, hour, min, sec, micros) => {
             if hour == 0 && min == 0 && sec == 0 && micros == 0 {
-                Cell::Text(format!("{year:04}-{month:02}-{day:02}"))
+                Cell::bounded_text(format!("{year:04}-{month:02}-{day:02}"))
             } else if micros == 0 {
-                Cell::Text(format!(
+                Cell::bounded_text(format!(
                     "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}"
                 ))
             } else {
-                Cell::Text(format!(
+                Cell::bounded_text(format!(
                     "{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}.{micros:06}"
                 ))
             }
@@ -344,9 +370,9 @@ pub(crate) fn mysql_value_to_cell(v: Value) -> Cell {
             let sign = if neg { "-" } else { "" };
             let hours = days * 24 + u32::from(hour);
             if micros == 0 {
-                Cell::Text(format!("{sign}{hours:02}:{min:02}:{sec:02}"))
+                Cell::bounded_text(format!("{sign}{hours:02}:{min:02}:{sec:02}"))
             } else {
-                Cell::Text(format!("{sign}{hours:02}:{min:02}:{sec:02}.{micros:06}"))
+                Cell::bounded_text(format!("{sign}{hours:02}:{min:02}:{sec:02}.{micros:06}"))
             }
         }
     }
@@ -435,5 +461,17 @@ mod tests {
             cell_from_value(Value::Int(7), Some(ColumnType::MYSQL_TYPE_LONG)),
             Cell::Integer(7)
         );
+    }
+
+    #[test]
+    fn hostile_text_protocol_cell_is_retained_at_a_bounded_size() {
+        let Cell::Text(value) = cell_from_value(
+            Value::Bytes(vec![b'x'; Cell::MAX_RETAINED_TEXT_BYTES + 99]),
+            Some(ColumnType::MYSQL_TYPE_VAR_STRING),
+        ) else {
+            panic!("text cell expected")
+        };
+        assert!(value.len() <= Cell::MAX_RETAINED_TEXT_BYTES + 32);
+        assert!(value.ends_with("… [truncated]"));
     }
 }
