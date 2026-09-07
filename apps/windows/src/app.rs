@@ -15,7 +15,9 @@ use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politenes
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonStyle, Widget};
+use ui::widget::{
+    Button, ButtonStyle, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -25,13 +27,36 @@ use winit::keyboard::{Key, NamedKey};
 const PAD: f64 = 20.0;
 const SIDEBAR_W: f64 = 296.0;
 const ROW_H: f64 = 72.0;
-const COMPACT_W: f64 = 720.0;
+// The desktop master/detail surface needs enough room for the status and
+// guest-file controls as well as the route selector. Below this width a list
+// → detail flow is clearer and, importantly, never paints an actionable
+// control into the window's edge padding.
+const COMPACT_W: f64 = 860.0;
 
 fn compact_portal_reason(reason: &str) -> String {
     if reason.chars().count() > 52 {
         format!("{}…", reason.chars().take(51).collect::<String>())
     } else {
         reason.to_string()
+    }
+}
+
+/// Immediate-mode text does not wrap individual property values. Keep compact
+/// details within their value column instead of letting a long server-owned
+/// runner or grant description disappear beyond the right edge; the complete
+/// value remains available in the accessibility description.
+fn compact_detail_value(value: &str, compact: bool) -> String {
+    const COMPACT_VALUE_CHARS: usize = 34;
+    if compact && value.chars().count() > COMPACT_VALUE_CHARS {
+        format!(
+            "{}…",
+            value
+                .chars()
+                .take(COMPACT_VALUE_CHARS.saturating_sub(1))
+                .collect::<String>()
+        )
+    } else {
+        value.to_string()
     }
 }
 
@@ -150,6 +175,10 @@ pub struct WindowsApp {
     resource_result: Option<qos_actions::InvocationUpdate>,
     pending_control_invocation: Option<qos_actions::ControlInvocation>,
     projected_route_policy: HashMap<String, Option<Route>>,
+    /// Immediate-mode modal geometry from the latest frame. It is the single
+    /// pointer-capture boundary while destructive deletion is awaiting an
+    /// explicit confirm or cancel.
+    delete_confirmation_layout: Option<ModalLayout>,
 }
 
 impl WindowsApp {
@@ -183,6 +212,17 @@ impl WindowsApp {
         match scenario {
             "detail" | "error-compact" => app.compact_detail = true,
             "running" => app.selected = 1,
+            "vm-detail" => {
+                app.selected = 2;
+                app.compact_detail = true;
+            }
+            "confirm-delete" => {
+                app.compact_detail = true;
+                if let Some(first) = app.catalogue.apps.first() {
+                    app.confirm_delete_data = Some(first.capsule.clone());
+                    app.notice = Some(strings::t("windows-confirm-delete"));
+                }
+            }
             _ => {}
         }
         app
@@ -482,6 +522,7 @@ impl WindowsApp {
             resource_result: None,
             pending_control_invocation: None,
             projected_route_policy,
+            delete_confirmation_layout: None,
         }
     }
 
@@ -618,6 +659,22 @@ impl WindowsApp {
             invocation,
             message: Some(message.into()),
         });
+    }
+
+    fn cancel_delete_confirmation(&mut self) {
+        self.confirm_delete_data = None;
+        self.notice = None;
+    }
+
+    fn confirm_delete_data(&mut self) {
+        let Some(capsule) = self.confirm_delete_data.take() else {
+            return;
+        };
+        self.notice = self.provider.delete_data(&capsule).err();
+        if self.notice.is_none() {
+            self.notice = Some(strings::t("windows-data-deleted"));
+        }
+        self.refresh();
     }
     /// Conditional controls are retained widgets, while the detail pane is
     /// immediate-mode. Clear their interactive state whenever the selected
@@ -1086,19 +1143,12 @@ impl WindowsApp {
         if self.delete_data_signal.replace(false)
             && let Some(app) = self.selected_app()
             && app.can_delete_data
+            && self.confirm_delete_data.is_none()
         {
             let capsule = app.capsule.clone();
-            if self.confirm_delete_data.as_deref() == Some(capsule.as_str()) {
-                self.confirm_delete_data = None;
-                self.notice = self.provider.delete_data(&capsule).err();
-                if self.notice.is_none() {
-                    self.notice = Some(strings::t("windows-data-deleted"));
-                }
-            } else {
-                self.confirm_delete_data = Some(capsule);
-                self.confirm_vendor_uninstall = None;
-                self.notice = Some(strings::t("windows-confirm-delete"));
-            }
+            self.confirm_delete_data = Some(capsule);
+            self.confirm_vendor_uninstall = None;
+            self.notice = None;
         }
     }
     fn fill(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
@@ -1441,6 +1491,7 @@ impl Widget for WindowsApp {
         presence: &ui::presence::PresenceCtx,
     ) {
         Self::fill(scene, t, self.area, theme.bg_app);
+        self.delete_confirmation_layout = None;
         self.hits.clear();
         let compact = self.area.width() < COMPACT_W;
         if !compact || !self.compact_detail {
@@ -2153,18 +2204,30 @@ impl Widget for WindowsApp {
                 shared_button.draw(scene, t, tr, theme, presence);
             }
         }
+        let reset_needs_row = app.uses_override() && detail.width() < 660.0;
         if app.uses_override() {
-            let reset = Rect::new(
-                detail.x0 + 460.0,
-                routes_y - 8.0,
-                detail.x0 + 655.0,
-                routes_y + 24.0,
-            );
+            let reset = if reset_needs_row {
+                Rect::new(
+                    detail.x0,
+                    routes_y + 32.0,
+                    (detail.x0 + 195.0).min(detail.x1),
+                    routes_y + 64.0,
+                )
+            } else {
+                Rect::new(
+                    detail.x0 + 460.0,
+                    routes_y - 8.0,
+                    detail.x0 + 655.0,
+                    routes_y + 24.0,
+                )
+            };
             self.reset_button.apply_layout_external(reset);
             self.reset_button.set_style(ButtonStyle::Neutral);
             self.reset_button.set_enabled(app.route_override_available);
             self.reset_button.draw(scene, t, tr, theme, presence);
         }
+        let route_notice_needs_row =
+            app.route_override_unavailable_reason.is_some() && !app.route_override_available;
         if let Some(reason) = &app.route_override_unavailable_reason
             && !app.route_override_available
         {
@@ -2179,11 +2242,32 @@ impl Widget for WindowsApp {
                 TextWeight::Regular,
             );
         }
+        // Reserve real vertical space for conditional controls and their
+        // explanation. Previously the access card began six pixels below an
+        // unavailable-route message, which made both unreadable in compact
+        // VM details.
+        let route_controls_offset = if reset_needs_row { 40.0 } else { 0.0 }
+            + if route_notice_needs_row { 24.0 } else { 0.0 };
+        let vm_shared_session = app.route == Route::Vm;
+        let info_line_offset = if vm_shared_session { 8.0 } else { 0.0 };
+        let fallback_is_visible = !compact || app.installation_detail.is_none();
+        let info_top = routes_y + 48.0 + route_controls_offset;
+        let expected_info_bottom = info_top
+            + 151.0
+            + info_line_offset
+            + 20.0 * app.grants.len() as f64
+            + if app.installation_detail.is_some() {
+                24.0
+            } else {
+                0.0
+            }
+            + if fallback_is_visible { 22.0 } else { 0.0 }
+            + 18.0;
         let info = Rect::new(
             detail.x0,
-            routes_y + 48.0,
+            info_top,
             detail.x1,
-            (routes_y + 292.0).min(detail.y1),
+            (routes_y + 292.0).max(expected_info_bottom).min(detail.y1),
         );
         Self::pill(scene, t, info, theme.bg_primary);
         Self::text(
@@ -2200,7 +2284,6 @@ impl Widget for WindowsApp {
             theme.text_primary,
             TextWeight::Bold,
         );
-        let vm_shared_session = app.route == Route::Vm;
         if vm_shared_session {
             Self::text(
                 tr,
@@ -2213,7 +2296,6 @@ impl Widget for WindowsApp {
                 TextWeight::Regular,
             );
         }
-        let info_line_offset = if vm_shared_session { 8.0 } else { 0.0 };
         Self::line(
             tr,
             scene,
@@ -2221,7 +2303,7 @@ impl Widget for WindowsApp {
             info.x0 + PAD,
             info.y0 + 46.0 + info_line_offset,
             &strings::t("windows-runner"),
-            &app.runner,
+            &compact_detail_value(&app.runner, compact),
             theme,
         );
         Self::line(
@@ -2235,7 +2317,7 @@ impl Widget for WindowsApp {
             } else {
                 "windows-capsule"
             }),
-            &app.capsule,
+            &compact_detail_value(&app.capsule, compact),
             theme,
         );
         Self::line(
@@ -2249,7 +2331,7 @@ impl Widget for WindowsApp {
             } else {
                 "windows-private-data"
             }),
-            &app.prefix,
+            &compact_detail_value(&app.prefix, compact),
             theme,
         );
         Self::line(
@@ -2263,19 +2345,22 @@ impl Widget for WindowsApp {
             } else {
                 "windows-host-access"
             }),
-            &if app.route == Route::Vm {
-                if self.catalogue.vm.shared_session_active {
-                    format!(
-                        "{} · {}",
-                        self.catalogue.vm.shared_session_grants.join(", "),
-                        self.catalogue.vm.shared_session_contributors.join(", ")
-                    )
+            &compact_detail_value(
+                &if app.route == Route::Vm {
+                    if self.catalogue.vm.shared_session_active {
+                        format!(
+                            "{} · {}",
+                            self.catalogue.vm.shared_session_grants.join(", "),
+                            self.catalogue.vm.shared_session_contributors.join(", ")
+                        )
+                    } else {
+                        "No active host redirects".to_string()
+                    }
                 } else {
-                    "No active host redirects".to_string()
-                }
-            } else {
-                app.access_summary()
-            },
+                    app.access_summary()
+                },
+                compact,
+            ),
             theme,
         );
         let mut grant_y = info.y0 + 151.0 + info_line_offset;
@@ -2287,23 +2372,26 @@ impl Widget for WindowsApp {
                 info.x0 + PAD,
                 grant_y,
                 &grant.label,
-                &if vm_shared_session {
-                    format!(
-                        "{} · {}",
-                        if grant.enabled {
-                            "Host-authorized request"
-                        } else {
-                            "Not authorized"
-                        },
-                        grant.detail
-                    )
-                } else {
-                    format!(
-                        "{} · {}",
-                        if grant.enabled { "Enabled" } else { "Disabled" },
-                        grant.detail
-                    )
-                },
+                &compact_detail_value(
+                    &if vm_shared_session {
+                        format!(
+                            "{} · {}",
+                            if grant.enabled {
+                                "Host-authorized request"
+                            } else {
+                                "Not authorized"
+                            },
+                            grant.detail
+                        )
+                    } else {
+                        format!(
+                            "{} · {}",
+                            if grant.enabled { "Enabled" } else { "Disabled" },
+                            grant.detail
+                        )
+                    },
+                    compact,
+                ),
                 theme,
             );
             grant_y += 20.0;
@@ -2321,17 +2409,28 @@ impl Widget for WindowsApp {
             );
             grant_y += 24.0;
         }
-        Self::text(
-            tr,
-            scene,
-            t,
-            Point::new(info.x0 + PAD, grant_y + 4.0),
-            &app.fallback_detail,
-            12.0,
-            theme.text_dim,
-            TextWeight::Regular,
-        );
-        let manage_y = (info.y1 + 48.0).min(detail.y1 - 70.0);
+        // On a compact screen the installation state is the actionable
+        // recovery information. Do not paint the longer background fallback
+        // paragraph into the management controls below it; it remains in the
+        // semantic description and is shown in full on the desktop surface.
+        if fallback_is_visible {
+            Self::text(
+                tr,
+                scene,
+                t,
+                Point::new(info.x0 + PAD, grant_y + 4.0),
+                &app.fallback_detail,
+                12.0,
+                theme.text_dim,
+                TextWeight::Regular,
+            );
+        }
+        // The installation status is variable-length and appears after the
+        // grant list. Anchor destructive maintenance controls below the last
+        // rendered status line as well as below the card, so a compact VM
+        // detail can never paint "Manage installation" over its publication
+        // state.
+        let manage_y = (info.y1 + 48.0).max(grant_y + 32.0).min(detail.y1 - 70.0);
         let mut manage_cursor = Point::new(detail.x0, manage_y);
         if app.can_retry_install
             || app.can_escalate_install_to_vm
@@ -2398,19 +2497,77 @@ impl Widget for WindowsApp {
             self.delete_data_button.set_enabled(true);
             self.delete_data_button.draw(scene, t, tr, theme, presence);
         }
-        if let Some(notice) = &self.notice {
+        if let Some(notice) = &self.notice
+            && self.confirm_delete_data.is_none()
+        {
+            let awaiting_confirmation = self.confirm_escalate_to_vm.is_some()
+                || self.confirm_vendor_uninstall.is_some()
+                || self.confirm_delete_data.is_some();
+            // A second-click safety prompt is neither a success toast nor a
+            // transient error. Give it its own visible treatment and wrap it
+            // inside the compact detail width so the required confirmation is
+            // never silently truncated off-screen.
+            Self::wrapped_text(
+                tr,
+                scene,
+                t,
+                Point::new(detail.x0, detail.y1 - 40.0),
+                notice,
+                12.0,
+                detail.width() as f32,
+                if awaiting_confirmation {
+                    theme.accent_primary
+                } else {
+                    theme.status_success
+                },
+                TextWeight::Regular,
+            );
+        }
+        if self.confirm_delete_data.as_deref() == Some(app.capsule.as_str()) {
+            let cancel_label = strings::t("windows-cancel");
+            let delete_label = strings::t("windows-confirm-delete-action");
+            let title = strings::t("windows-confirm-delete-title");
+            let actions = [
+                ModalAction::secondary(&cancel_label),
+                ModalAction::danger(&delete_label),
+            ];
+            let spec = ModalSpec::new(&title)
+                .actions(&actions)
+                .body_height(88.0)
+                .max_width(440.0)
+                .dismiss_on_scrim(false);
+            let layout = ModalFrame::layout(self.area, &spec, tr, theme);
+            ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
+            let (ink, dim) = ModalFrame::ink(theme);
+            Self::wrapped_text(
+                tr,
+                scene,
+                t,
+                Point::new(layout.body.x0, layout.body.y0 + 4.0),
+                &strings::t("windows-confirm-delete-body"),
+                13.0,
+                layout.body.width() as f32,
+                dim,
+                TextWeight::Regular,
+            );
             Self::text(
                 tr,
                 scene,
                 t,
-                Point::new(detail.x0, detail.y1 - 20.0),
-                notice,
-                12.0,
-                theme.status_success,
-                TextWeight::Regular,
+                Point::new(layout.body.x0, layout.body.y0 - 20.0),
+                &app.name,
+                13.0,
+                ink,
+                TextWeight::Bold,
             );
+            ModalFrame::paint_actions(scene, t, tr, theme, &layout, &spec);
+            self.delete_confirmation_layout = Some(layout);
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one event boundary keeps modal capture ahead of the existing routed controls"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -2423,6 +2580,51 @@ impl Widget for WindowsApp {
         node: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.confirm_delete_data.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.mouse = Point::new(position.x, position.y);
+                *handled = true;
+                return;
+            }
+            if let WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } = event
+                && key_event.state == ElementState::Pressed
+            {
+                match key_event.logical_key {
+                    Key::Named(NamedKey::Escape) => self.cancel_delete_confirmation(),
+                    Key::Named(NamedKey::Enter) => self.confirm_delete_data(),
+                    _ => {}
+                }
+                *handled = true;
+                return;
+            }
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                if let Some(layout) = &self.delete_confirmation_layout {
+                    match layout.hit(self.mouse) {
+                        Some(ModalHit::Action(0) | ModalHit::Close) => {
+                            self.cancel_delete_confirmation();
+                        }
+                        Some(ModalHit::Action(1)) => self.confirm_delete_data(),
+                        // A destructive dialog deliberately does not dismiss
+                        // on a stray backdrop click; every modal hit is still
+                        // swallowed so nothing behind it can activate.
+                        Some(ModalHit::Card | ModalHit::Scrim | ModalHit::Action(_)) | None => {}
+                    }
+                }
+                *handled = true;
+                return;
+            }
+            *handled = true;
+            return;
+        }
         macro_rules! forward_button_event {
             ($button:expr) => {
                 $button.handle_event(event, scale, mods, state, path, handled, focus, node, taffy)
@@ -2521,6 +2723,10 @@ impl Widget for WindowsApp {
             .any(|(rect, _)| rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom canvas exports its complete semantic hierarchy in one ordered tree"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
         let sidebar_bounds = Rect::new(
             self.area.x0,
@@ -2610,6 +2816,32 @@ impl Widget for WindowsApp {
                     .with_live(Politeness::Polite),
             );
         }
+        if self.confirm_delete_data.is_some() {
+            children.push(
+                AccessNode::new(Role::Dialog)
+                    .with_name(strings::t("windows-confirm-delete-title"))
+                    .with_description(strings::t("windows-confirm-delete-body"))
+                    .with_bounds(
+                        self.delete_confirmation_layout
+                            .as_ref()
+                            .map_or(Rect::ZERO, |layout| layout.card),
+                    )
+                    .with_state(AccessState {
+                        modal: true,
+                        ..Default::default()
+                    })
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name(strings::t("windows-cancel"))
+                            .with_action_target("windows.delete-cancel")
+                            .with_state(AccessState::new().focusable(true)),
+                        AccessNode::new(Role::Button)
+                            .with_name(strings::t("windows-confirm-delete-action"))
+                            .with_action_target("windows.delete-confirm")
+                            .with_state(AccessState::new().focusable(true)),
+                    ]),
+            );
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name(strings::t("windows-app-title"))
@@ -2637,6 +2869,14 @@ impl Widget for WindowsApp {
         }
         if target == "windows.back" {
             self.hit(Hit::Back);
+            return true;
+        }
+        if target == "windows.delete-cancel" && self.confirm_delete_data.is_some() {
+            self.cancel_delete_confirmation();
+            return true;
+        }
+        if target == "windows.delete-confirm" && self.confirm_delete_data.is_some() {
+            self.confirm_delete_data();
             return true;
         }
         let Some(app_id) = target.strip_prefix("windows.select:") else {
@@ -2754,6 +2994,11 @@ impl Widget for WindowsApp {
     }
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.pending_control_invocation.take()
+    }
+    fn modal_capture(&self) -> Option<Rect> {
+        self.delete_confirmation_layout
+            .as_ref()
+            .map(|layout| layout.card)
     }
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut rects = self
@@ -3157,7 +3402,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_private_data_requires_a_second_explicit_click() {
+    fn deleting_private_data_requires_an_explicit_confirmation_action() {
         let mut app = WindowsApp::new_offline();
         let capsule = app.catalogue.apps[0].capsule.clone();
         app.delete_data_signal.set(true);
@@ -3170,14 +3415,38 @@ mod tests {
         );
         assert_eq!(app.confirm_delete_data.as_deref(), Some(capsule.as_str()));
 
+        // A click on the original management action cannot confirm itself;
+        // only the dedicated destructive control inside the modal can.
         app.delete_data_signal.set(true);
         app.apply_control_signals();
+        assert_eq!(app.confirm_delete_data.as_deref(), Some(capsule.as_str()));
+        app.confirm_delete_data();
         app.refresh();
         assert!(
             !app.catalogue
                 .apps
                 .iter()
                 .any(|item| item.capsule == capsule)
+        );
+    }
+
+    #[test]
+    fn delete_confirmation_is_an_accessible_modal_with_cancel_and_delete() {
+        let app = WindowsApp::new_offline_scenario("confirm-delete");
+        let semantics = app.accessibility().expect("semantic root");
+        let dialog = semantics
+            .children
+            .iter()
+            .find(|node| node.role == Role::Dialog)
+            .expect("destructive confirmation dialog");
+        assert!(dialog.state.modal);
+        assert_eq!(
+            dialog.children[0].action_target.as_deref(),
+            Some("windows.delete-cancel")
+        );
+        assert_eq!(
+            dialog.children[1].action_target.as_deref(),
+            Some("windows.delete-confirm")
         );
     }
 
@@ -3315,6 +3584,16 @@ mod tests {
             "Windows appliance is unavailable."
         );
         assert!(compact_portal_reason(&"x".repeat(60)).ends_with('…'));
+    }
+
+    #[test]
+    fn compact_property_values_are_explicitly_ellipsized() {
+        assert_eq!(compact_detail_value("short", true), "short");
+        assert_eq!(
+            compact_detail_value(&"x".repeat(40), true),
+            format!("{}…", "x".repeat(33))
+        );
+        assert_eq!(compact_detail_value(&"x".repeat(40), false), "x".repeat(40));
     }
 
     #[test]
