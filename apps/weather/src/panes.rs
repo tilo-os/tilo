@@ -21,6 +21,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use ui::a11y::{AccessNode, Action};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -169,6 +170,10 @@ impl Widget for OverviewPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        Some(self.core.borrow().overview_accessibility(self.rect))
+    }
 }
 
 impl Widget for DetailPane {
@@ -234,5 +239,30 @@ impl Widget for DetailPane {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        Some(self.core.borrow().detail_accessibility(self.rect))
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, Action::Activate) {
+            return false;
+        }
+        if key_path.last().copied() != Some(ui::a11y::hash_key(&"weather.refresh-forecast")) {
+            return false;
+        }
+        let mut core = self.core.borrow_mut();
+        if core.is_fetching() {
+            return true;
+        }
+        core.refresh_selected_forecast();
+        true
     }
 }
