@@ -21,7 +21,7 @@ use crate::model::{ActionKind, StoreItem, StoreSource};
 /// Logical px the caller can use to reserve card row height in a
 /// virtualised list (currently we render everything up-front —
 /// virtualisation is a follow-up).
-pub const CARD_HEIGHT: f32 = 84.0;
+pub const CARD_HEIGHT: f32 = 96.0;
 
 /// Build a single card widget.
 ///
@@ -33,7 +33,8 @@ pub const CARD_HEIGHT: f32 = 84.0;
 ///   bit so it's a one-shot edge.
 #[allow(
     clippy::too_many_arguments,
-    reason = "card construction receives the item, paired typed actions, shared artwork service, theme, and responsive mode as one cohesive view boundary"
+    clippy::too_many_lines,
+    reason = "card construction receives the item, paired typed actions, shared artwork service, theme, and responsive mode as one cohesive view boundary; its compact and desktop compositions intentionally live together"
 )]
 pub fn store_card(
     item: &StoreItem,
@@ -50,14 +51,20 @@ pub fn store_card(
     // from the live theme so it stays legible in light and dark.
     // A flex-grow Container owns the width beside the fixed artwork. This is
     // important because a bare Column deliberately claims the full row width.
+    let category = item.categories.first().map_or("General", String::as_str);
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(4.0)
-        .push(Box::new(Text::new(&item.name).with_size(15.0)))
+        .with_gap(5.0)
+        .push(Box::new(Text::new(&item.name).with_size(18.0)))
         .push(Box::new(
             Text::new(&badge_line(item))
-                .with_size(11.0)
+                .with_size(13.0)
+                .with_color(theme.text_dim),
+        ))
+        .push(Box::new(
+            Text::new(category)
+                .with_size(12.0)
                 .with_color(theme.text_dim),
         ));
 
@@ -70,16 +77,19 @@ pub fn store_card(
     if let Some(binding) = action_binding {
         action_btn = action_btn.on_action(binding);
     }
-    let action_btn = action_btn
-        .primary()
-        .tooltip(format!("{} {}", action.label(), item.name));
+    let action_btn = match action {
+        ActionKind::Update | ActionKind::FlatpakInstall | ActionKind::FlatpakUpdate => {
+            action_btn.primary()
+        }
+        _ => action_btn,
+    }
+    .tooltip(format!("{} {}", action.label(), item.name));
 
     let mut details = Button::new(&format!("{select_key}.button"), "Details", Some(select_key));
     if let Some(binding) = detail_binding {
         details = details.on_action(binding);
     }
     let details = details
-        .ghost()
         .fit_content(40.0)
         .tooltip(format!("Show details for {}", item.name));
     let action_btn = action_btn.fit_content(40.0);
@@ -89,7 +99,7 @@ pub fn store_card(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(12.0)
+                .with_gap(10.0)
                 .push(Box::new(
                     Row::new()
                         .no_wrap()
@@ -103,7 +113,7 @@ pub fn store_card(
                 ))
                 .push(Box::new(
                     Text::new(&item.description)
-                        .with_size(12.0)
+                        .with_size(14.0)
                         .with_color(theme.text_dim),
                 ))
                 .push(Box::new(
@@ -126,8 +136,8 @@ pub fn store_card(
                             images,
                             item.icon_url.as_deref(),
                             &item.name,
-                            64.0,
-                            64.0,
+                            52.0,
+                            52.0,
                         )))
                         .push(Box::new(
                             Container::new()
@@ -138,7 +148,7 @@ pub fn store_card(
                 ))
                 .push(Box::new(
                     Text::new(&item.description)
-                        .with_size(13.0)
+                        .with_size(14.0)
                         .with_color(theme.text_dim),
                 ))
                 .push(Box::new(Spacer::new()))
@@ -168,21 +178,28 @@ fn icon_artwork(item: &StoreItem, images: Option<ui::ImageStore>) -> Box<dyn Wid
         images,
         item.icon_url.as_deref(),
         &item.name,
-        48.0,
-        48.0,
+        36.0,
+        36.0,
     ))
 }
 
 /// The right-hand badge line under the name: version + source label.
 fn badge_line(item: &StoreItem) -> String {
-    let source_label = match &item.source {
-        StoreSource::Qos { registry_name } => format!("{} · {registry_name}", item.trust.label()),
-        StoreSource::Flathub => item.trust.label().to_string(),
-    };
     let v = item.latest_version();
-    if v.is_empty() {
-        source_label
-    } else {
-        format!("v{v} · {source_label}")
+    match &item.source {
+        StoreSource::Qos { .. } => {
+            if v.is_empty() {
+                "qOS verified".into()
+            } else {
+                format!("qOS verified · v{v}")
+            }
+        }
+        StoreSource::Flathub => {
+            if v.is_empty() {
+                "Flathub distribution".into()
+            } else {
+                format!("Flathub · v{v}")
+            }
+        }
     }
 }
