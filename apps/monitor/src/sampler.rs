@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use sysinfo::{Networks, Pid, ProcessesToUpdate, Signal, System, Users};
 
-use crate::model::{MonitorModel, ProcessInfo};
+use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 
 /// Which POSIX signal a stop action dispatches. `Term` asks a process to
 /// shut down cleanly (catchable); `Kill` is the un-catchable hard stop.
@@ -145,6 +145,7 @@ impl Sampler {
             let pid_u32 = pid.as_u32();
             procs.push(ProcessInfo {
                 pid: pid_u32,
+                started_at: p.start_time(),
                 ppid: p.parent().map(sysinfo::Pid::as_u32),
                 name,
                 user,
@@ -161,24 +162,66 @@ impl Sampler {
             });
         }
         model.processes = procs;
+        model.process_status =
+            process_snapshot_status(model.processes.len(), process_source_probe());
 
         self.last = Some(now);
     }
 
-    /// Send `kind`'s signal (SIGTERM or SIGKILL) to `pid`. Returns whether
-    /// the signal was dispatched. `SIGTERM` is the polite "Stop"; `SIGKILL`
-    /// is the hard "Kill". Both route through the real process handle.
-    pub fn signal(&self, pid: u32, kind: StopKind) -> bool {
+    /// Re-check a PID's kernel generation and then send `kind`'s signal.
+    ///
+    /// `pid` is deliberately not sufficient authorization: it can be reused
+    /// between the table sample and a delayed click, palette invocation, or
+    /// agent action. Refresh just this process and compare its start-time
+    /// tick immediately before dispatch. A vanished or replaced process is a
+    /// clean failure, never a signal delivered to its replacement.
+    pub fn signal_if_current(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
+        let target = Pid::from_u32(pid);
         self.sys
-            .process(Pid::from_u32(pid))
+            .refresh_processes(ProcessesToUpdate::Some(&[target]), true);
+        self.sys
+            .process(target)
+            .filter(|p| p.start_time() == started_at)
             .and_then(|p| p.kill_with(kind.signal()))
             .unwrap_or(false)
     }
 
-    /// Send SIGKILL to `pid`. Returns whether the signal was dispatched.
-    /// Thin alias over [`Self::signal`] for the hard-stop path.
-    pub fn kill(&self, pid: u32) -> bool {
-        self.signal(pid, StopKind::Kill)
+    /// Send SIGKILL only if `pid` still has the expected generation. Returns
+    /// whether the signal was dispatched. Thin alias over
+    /// [`Self::signal_if_current`] for the hard-stop path.
+    pub fn kill_if_current(&mut self, pid: u32, started_at: u64) -> bool {
+        self.signal_if_current(pid, started_at, StopKind::Kill)
+    }
+}
+
+/// `sysinfo` exposes its process refresh as an infallible API. On Linux we
+/// therefore pair its empty result with a direct `/proc` probe: a readable
+/// `/proc` plus no rows is a genuine empty snapshot, while an access failure
+/// is surfaced explicitly to the app. This is intentionally independent of
+/// per-process `/proc/<pid>/fd` access, which is optional enrichment only.
+#[cfg(target_os = "linux")]
+fn process_source_probe() -> std::io::Result<()> {
+    std::fs::read_dir("/proc").map(|_| ())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_source_probe() -> std::io::Result<()> {
+    Ok(())
+}
+
+fn process_snapshot_status(
+    process_count: usize,
+    source_probe: std::io::Result<()>,
+) -> ProcessDataStatus {
+    if process_count > 0 {
+        return ProcessDataStatus::Ready;
+    }
+    match source_probe {
+        Ok(()) => ProcessDataStatus::Empty,
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            ProcessDataStatus::PermissionDenied
+        }
+        Err(_) => ProcessDataStatus::Unavailable,
     }
 }
 
@@ -207,6 +250,23 @@ fn count_open_files(_pid: u32) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::model::MonitorModel;
+
+    #[test]
+    fn process_source_status_distinguishes_empty_permission_and_failure() {
+        assert_eq!(process_snapshot_status(1, Ok(())), ProcessDataStatus::Ready);
+        assert_eq!(process_snapshot_status(0, Ok(())), ProcessDataStatus::Empty);
+        assert_eq!(
+            process_snapshot_status(
+                0,
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            ),
+            ProcessDataStatus::PermissionDenied
+        );
+        assert_eq!(
+            process_snapshot_status(0, Err(std::io::Error::other("source offline"))),
+            ProcessDataStatus::Unavailable
+        );
+    }
 
     /// A live refresh folds real metrics into the model and ties the
     /// network/disk throughput calculations to their rolling histories — the
@@ -248,19 +308,23 @@ mod tests {
         );
     }
 
-    /// `signal`/`kill` route through the real process handle: an unknown pid
-    /// dispatches nothing (returns false) rather than pretending to succeed.
+    /// Signal effects route through a generation-checked real process handle:
+    /// an unknown or stale PID dispatches nothing rather than pretending to
+    /// succeed.
     #[test]
-    fn signal_and_kill_reject_unknown_pid() {
-        let s = Sampler::new();
+    fn signal_and_kill_reject_unknown_or_stale_pid() {
+        let mut s = Sampler::new();
         assert!(
-            !s.signal(u32::MAX, StopKind::Term),
+            !s.signal_if_current(u32::MAX, 0, StopKind::Term),
             "no such process to SIGTERM"
         );
         assert!(
-            !s.signal(u32::MAX, StopKind::Kill),
+            !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
             "no such process to SIGKILL"
         );
-        assert!(!s.kill(u32::MAX), "no such process to hard-kill");
+        assert!(
+            !s.kill_if_current(u32::MAX, 0),
+            "no such process to hard-kill"
+        );
     }
 }
