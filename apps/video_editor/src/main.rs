@@ -173,11 +173,18 @@ fn render_shot_to_png(
     mut state: ui::State,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
+    // Keep visual-review captures faithful to the live accessibility setting:
+    // an animation that settles in the host must also settle in a one-frame
+    // reduced-motion screenshot instead of preserving an arbitrary midpoint.
     let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    let theme = theme.with_reduce_motion(matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
