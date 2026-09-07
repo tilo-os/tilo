@@ -231,6 +231,10 @@ const SWIPE_STEP_PX: f64 = 80.0;
 const TOC_W: f64 = 244.0;
 const NOTES_W: f64 = 326.0;
 const PAGE_MAX_W: f64 = 680.0;
+/// The rails are independent reading lists.  Keep their scroll state separate
+/// from the page so a wheel over a long table of contents never turns the
+/// book underneath it.
+const RAIL_SCROLLBAR_W: f64 = 4.0;
 
 /// At/above this width the reader draws the floating "paper card"; below it
 /// the page goes borderless and fills the reading area.
@@ -581,6 +585,17 @@ pub struct BooksApp {
     toc_flap: FlapState,
     /// Annotations rail: a secondary inspector, overlay below [`NOTES_BREAKPOINT`].
     notes_flap: FlapState,
+    /// Independent rail offsets.  A book can have hundreds of chapters and a
+    /// reader can have years of annotations, so neither rail may silently
+    /// truncate at the bottom of the viewport.
+    toc_scroll: f64,
+    toc_max_scroll: f64,
+    toc_scroll_to_active: bool,
+    notes_scroll: f64,
+    notes_max_scroll: f64,
+    /// Request a bounded reveal of one annotation (from a search result or
+    /// an edit affordance) on the next rail layout.
+    notes_scroll_to_annotation: Option<Uuid>,
     /// The block a live text selection is anchored in, for positioning the
     /// floating toolbar/composer near the passage. Derived from [`Self::sel`].
     selected_block: Option<usize>,
@@ -752,6 +767,9 @@ pub struct BooksApp {
     /// A `--shots` scenario that wants a highlight-with-comments overlay
     /// open. Shot-only.
     shot_comments: bool,
+    /// A `--shots` scenario with a dense annotation history. Kept as a
+    /// one-frame seed so live readers never receive fabricated annotations.
+    shot_long_annotations: bool,
     /// Last resolved layout mode per rail, so a breakpoint crossing settles
     /// the flap instantly instead of animating on launch/resize.
     settled_toc: Option<SplitLayout>,
@@ -846,6 +864,12 @@ impl BooksApp {
             page: 0,
             toc_flap: FlapState::open_when_docked(),
             notes_flap: FlapState::open_when_docked(),
+            toc_scroll: 0.0,
+            toc_max_scroll: 0.0,
+            toc_scroll_to_active: true,
+            notes_scroll: 0.0,
+            notes_max_scroll: 0.0,
+            notes_scroll_to_annotation: None,
             selected_block: None,
             sel: None,
             drag_select: DragSelect::new(),
@@ -924,6 +948,7 @@ impl BooksApp {
             shot_watched: None,
             shot_compose: false,
             shot_comments: false,
+            shot_long_annotations: false,
             settled_toc: None,
             settled_notes: None,
             layout: None,
@@ -974,6 +999,96 @@ impl BooksApp {
 
     fn notes_open(&self) -> bool {
         self.notes_flap.is_open(self.notes_layout())
+    }
+
+    /// The visible, interactive portion of a rail in this frame.  Overlay
+    /// rails use their animated position so a wheel during the slide still
+    /// belongs to the rail rather than leaking through to page turns.
+    fn toc_panel_rect(&self) -> Option<Rect> {
+        if self.toc_flap.reveal() <= 0.001 {
+            return None;
+        }
+        let r = self.rect;
+        let x0 = match self.toc_layout() {
+            SplitLayout::Docked => r.x0,
+            SplitLayout::Overlay => r.x0 - TOC_W * (1.0 - self.toc_flap.slide()),
+        };
+        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + TOC_W, r.y1))
+    }
+
+    fn notes_panel_rect(&self) -> Option<Rect> {
+        if self.notes_flap.reveal() <= 0.001 {
+            return None;
+        }
+        let r = self.rect;
+        let x0 = match self.notes_layout() {
+            SplitLayout::Docked => r.x1 - NOTES_W,
+            SplitLayout::Overlay => r.x1 - NOTES_W * self.notes_flap.slide(),
+        };
+        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + NOTES_W, r.y1))
+    }
+
+    /// Scroll only the rail under the pointer.  Notes are considered first:
+    /// on an extremely narrow overlay they paint above the contents rail and
+    /// therefore own the gesture too.
+    #[allow(
+        clippy::float_cmp,
+        reason = "the previous value is the exact stored offset; this tests whether clamp() changed it, not an approximate geometric relation"
+    )]
+    fn scroll_reader_rail(&mut self, dy: f64) -> Option<bool> {
+        let scroll = |value: &mut f64, max: f64| {
+            let before = *value;
+            *value = (*value + dy).clamp(0.0, max);
+            *value != before
+        };
+        if self
+            .notes_panel_rect()
+            .is_some_and(|rect| rect.contains(self.cursor))
+        {
+            return Some(scroll(&mut self.notes_scroll, self.notes_max_scroll));
+        }
+        if self
+            .toc_panel_rect()
+            .is_some_and(|rect| rect.contains(self.cursor))
+        {
+            return Some(scroll(&mut self.toc_scroll, self.toc_max_scroll));
+        }
+        None
+    }
+
+    /// Page and arrow keys retain their reader meaning until a rail control
+    /// has focus.  Once a contents/annotation row is focused, scrolling stays
+    /// inside that rail; this prevents keyboard and pointer users from
+    /// accidentally losing their place while browsing long lists.
+    #[allow(
+        clippy::float_cmp,
+        reason = "the previous value is the exact stored offset; this tests whether clamp() changed it, not an approximate geometric relation"
+    )]
+    fn handle_focused_rail_key(&mut self, key: &Key) -> Option<bool> {
+        let target = self.semantic_focus.as_deref()?;
+        let (scroll, max, unit) = if target.starts_with("books.reader.chapter:") {
+            (&mut self.toc_scroll, self.toc_max_scroll, 44.0)
+        } else if target.starts_with("books.annotation.") || target.starts_with("books.highlight.")
+        {
+            (&mut self.notes_scroll, self.notes_max_scroll, 64.0)
+        } else {
+            return None;
+        };
+        let page = (self.rect.height() * 0.8).max(unit);
+        let before = *scroll;
+        match key {
+            Key::Named(NamedKey::ArrowDown) => *scroll += unit,
+            Key::Named(NamedKey::ArrowUp) => *scroll -= unit,
+            Key::Named(NamedKey::PageDown) => *scroll += page,
+            Key::Named(NamedKey::PageUp) => *scroll -= page,
+            Key::Named(NamedKey::Home) => *scroll = 0.0,
+            Key::Named(NamedKey::End) => *scroll = max,
+            _ => return None,
+        }
+        *scroll = (*scroll).clamp(0.0, max);
+        // Consuming the key even at an edge prevents a rail-focused keypress
+        // from leaking through to page navigation.
+        Some(*scroll != before)
     }
 
     /// Reconcile both flaps with the current width. On the first real width
@@ -1122,6 +1237,35 @@ impl BooksApp {
                 self.view = View::Library;
                 self.shelf_scroll = 5000.0;
             }
+            "long-toc" => {
+                self.view = View::Reader;
+                let template = self
+                    .library
+                    .first()
+                    .and_then(|book| book.chapters.first())
+                    .cloned();
+                if let Some(template) = template
+                    && let Some(book) = self.library.first_mut()
+                {
+                    book.chapters = (0..32)
+                        .map(|index| crate::model::Chapter {
+                            title: format!("Chapter {} — a longer voyage", index + 1),
+                            href: format!("chapter-{}.xhtml", index + 1),
+                            blocks: template.blocks.clone(),
+                        })
+                        .collect();
+                    self.chapter = 27;
+                    // Keep the staged chapter from being replaced by the
+                    // sample book's persisted position during first sync.
+                    self.last_persisted = Some((self.chapter, self.page));
+                    self.toc_scroll_to_active = true;
+                }
+            }
+            "long-annotations" => {
+                self.demo = false;
+                self.view = View::Reader;
+                self.shot_long_annotations = true;
+            }
             _ => return false,
         }
         true
@@ -1166,6 +1310,15 @@ impl BooksApp {
                     theme: ReadTheme::HighContrast,
                     ..Settings::default()
                 });
+            }
+            "reduced-motion" => {
+                // The headless renderer has no preference service, so stage
+                // the same app-owned motion policy the live host supplies.
+                // The still is intentionally calm: no rail/page/bubble frame
+                // is requested after this point.
+                self.view = View::Reader;
+                self.reduce_motion = true;
+                self.page_turn = None;
             }
             _ => return false,
         }
@@ -1630,6 +1783,8 @@ impl BooksApp {
         self.comment_overlay.close();
         self.layout = None;
         self.last_persisted = None;
+        self.toc_scroll_to_active = true;
+        self.notes_scroll_to_annotation = None;
     }
 
     /// Ask the host to choose a book to open; the chosen path comes back over
@@ -2103,11 +2258,15 @@ impl BooksApp {
         self.selected_block = None;
         self.comment_overlay.close();
         self.layout = None;
+        self.toc_scroll_to_active = true;
     }
 
     fn on_toggle_toc(&mut self) {
         let layout = self.toc_layout();
         self.toc_flap.toggle(layout);
+        if self.toc_flap.is_open(layout) {
+            self.toc_scroll_to_active = true;
+        }
     }
 
     fn on_toggle_notes(&mut self) {
@@ -2195,6 +2354,7 @@ impl BooksApp {
             self.composing = Some(id);
             self.note_composer.open(id, &note.note);
             self.notes_flap.open();
+            self.notes_scroll_to_annotation = Some(id);
         }
     }
 
@@ -2205,6 +2365,7 @@ impl BooksApp {
             self.clear_selection();
             self.comment_overlay.close();
             self.layout = None;
+            self.notes_scroll_to_annotation = Some(id);
         }
     }
 
@@ -4053,6 +4214,32 @@ impl Widget for BooksApp {
             }
             self.comment_overlay.open(group);
         }
+        if self.shot_long_annotations {
+            self.shot_long_annotations = false;
+            let book_id = self.book_id();
+            for index in 0..30 {
+                let color = HiColor::ALL
+                    .get(index % HiColor::ALL.len())
+                    .copied()
+                    .unwrap_or(HiColor::Yellow);
+                let mut annotation = Annotation::new(&book_id, AnnoKind::Note, 0, index)
+                    .with_color(color)
+                    .with_excerpt(format!(
+                        "Saved passage {} from the lantern keeper's journal",
+                        index + 1
+                    ));
+                annotation.note = if index == 25 {
+                    "Targeted annotation — revealed here after a jump from search.".into()
+                } else {
+                    format!("Reading note {} — a durable, shared thought.", index + 1)
+                };
+                annotation.created = now_ms().saturating_add(index as u64);
+                if index == 25 {
+                    self.notes_scroll_to_annotation = Some(annotation.id);
+                }
+                BooksDoc::upsert_annotation(doc, &annotation);
+            }
+        }
         // On the very first sync, adopt any persisted position for the open book.
         if self.last_persisted.is_none() && self.view == View::Reader {
             let id = self.book_id();
@@ -4284,6 +4471,10 @@ impl Widget for BooksApp {
         self.hover_tooltip.as_deref()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the retained accessibility tree is intentionally assembled in one place so modal visibility and semantic routing remain auditable"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
         let mut seen = std::collections::HashSet::new();
         let mut controls = self
@@ -4362,6 +4553,21 @@ impl Widget for BooksApp {
         let mut children = Vec::new();
         if !has_modal && let Some(document) = self.reading_document_node() {
             children.push(document);
+        }
+        if !has_modal && self.view == View::Reader {
+            if self.toc_open() {
+                children.push(AccessNode::new(Role::StaticText).with_name(format!(
+                    "Contents: chapter {} of {}. Scroll this list to browse every chapter.",
+                    self.chapter + 1,
+                    self.num_chapters()
+                )));
+            }
+            if self.notes_open() {
+                children.push(AccessNode::new(Role::StaticText).with_name(format!(
+                    "Annotations: {} total. Scroll this list to browse every annotation.",
+                    self.annotations.len()
+                )));
+            }
         }
         children.extend(controls);
         if let Some(error) = self.load_error.as_ref().filter(|error| !error.is_empty()) {
@@ -5194,6 +5400,10 @@ impl BooksApp {
             return self.handle_library_key(key, doc);
         }
 
+        if self.handle_focused_rail_key(key).is_some() {
+            return true;
+        }
+
         self.handle_reader_key(key, mods, doc)
     }
 
@@ -5432,6 +5642,12 @@ impl BooksApp {
                 // reading-settings popover or an in-progress note) owns input.
                 if self.reading_settings.is_open() || self.composing.is_some() {
                     return false;
+                }
+                // Contents and annotations are independently scrollable.  Do
+                // this before the page handler: a pointer over an open rail
+                // must never advance the book in the background.
+                if self.scroll_reader_rail(dy).is_some() {
+                    return true;
                 }
                 // Continuous mode scrolls the flow by pixels instead of turning
                 // whole pages — the wheel delta drives the column directly.
@@ -8351,6 +8567,10 @@ impl BooksApp {
     /// position when it floats as an overlay flap.
     // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "contents combines its fixed header, clipped virtual rows, and position indicator so their hit ordering stays explicit"
+    )]
     fn draw_toc(
         &mut self,
         scene: &mut Scene,
@@ -8386,11 +8606,29 @@ impl BooksApp {
         let Some(book) = lib.get(self.book_idx) else {
             return;
         };
-        let mut y = y0 + 44.0;
+        let list_y0 = y0 + 44.0;
         let row_h = 44.0;
+        let list_y1 = y1 - 8.0;
+        let content_h = book.chapters.len() as f64 * row_h;
+        let visible_h = (list_y1 - list_y0).max(0.0);
+        self.toc_max_scroll = (content_h - visible_h).max(0.0);
+        if self.toc_scroll_to_active {
+            let active_y = self.chapter as f64 * row_h;
+            if active_y < self.toc_scroll {
+                self.toc_scroll = active_y;
+            } else if active_y + row_h > self.toc_scroll + visible_h {
+                self.toc_scroll = active_y + row_h - visible_h;
+            }
+            self.toc_scroll_to_active = false;
+        }
+        self.toc_scroll = self.toc_scroll.clamp(0.0, self.toc_max_scroll);
+
+        let clip = Rect::new(panel_x0, list_y0, panel_x0 + TOC_W, list_y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         for (i, ch) in book.chapters.iter().enumerate() {
-            if y + row_h > y1 {
-                break;
+            let y = list_y0 + i as f64 * row_h - self.toc_scroll;
+            if y + row_h < list_y0 || y > list_y1 {
+                continue;
             }
             let row = Rect::new(panel_x0 + 10.0, y, panel_x0 + TOC_W - 10.0, y + row_h - 6.0);
             let active = i == self.chapter;
@@ -8442,8 +8680,53 @@ impl BooksApp {
                 },
             );
             self.push_hit(row, Action::GotoChapter(i));
-            y += row_h;
         }
+        scene.pop_layer();
+        Self::draw_rail_scrollbar(
+            scene,
+            t,
+            c,
+            panel_x0 + TOC_W - 9.0,
+            list_y0,
+            list_y1,
+            self.toc_scroll,
+            self.toc_max_scroll,
+            visible_h,
+            content_h,
+        );
+    }
+
+    /// A deliberately quiet position indicator for a long rail.  It is not a
+    /// draggable pseudo-scrollbar: wheel, touchpad and screen-reader focus
+    /// remain the consistent interaction model, while the thumb preserves
+    /// orientation in a large table of contents or annotation history.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_rail_scrollbar(
+        scene: &mut Scene,
+        t: Affine,
+        c: &ui::tokens::colors::Colors,
+        x: f64,
+        y0: f64,
+        y1: f64,
+        scroll: f64,
+        max_scroll: f64,
+        visible_h: f64,
+        content_h: f64,
+    ) {
+        if max_scroll <= 1.0 || content_h <= 0.0 {
+            return;
+        }
+        let track_h = (y1 - y0).max(1.0);
+        let thumb_h = (track_h * visible_h / content_h).clamp(28.0, track_h);
+        let progress = (scroll / max_scroll).clamp(0.0, 1.0);
+        let thumb_y = y0 + progress * (track_h - thumb_h);
+        paint::fill_round(
+            scene,
+            t,
+            Rect::new(x, thumb_y, x + RAIL_SCROLLBAR_W, thumb_y + thumb_h),
+            RAIL_SCROLLBAR_W / 2.0,
+            c.text_dim.with_alpha_factor(0.5),
+        );
     }
 
     /// `panel_x0` is the rail's left edge — `r.x1 - NOTES_W` when docked, or a
@@ -8478,16 +8761,67 @@ impl BooksApp {
         Self::draw_notes_header(scene, t, tr, c, x0, y0, annos.len());
         let add_y = self.draw_notes_add_row(scene, t, tr, theme, c, x0, panel_x1, y0);
 
-        // list
-        let mut y = add_y + 46.0;
+        // The annotation history is a genuine scroll surface, not a clipped
+        // preview.  Measure rows once to establish a stable list coordinate
+        // system, then paint only rows intersecting the viewport.
+        let list_y0 = add_y + 46.0;
+        let list_y1 = y1 - 10.0;
         let card_x0 = x0 + 16.0;
         let card_x1 = panel_x1 - 16.0;
-        for a in &annos {
-            if y > y1 - 40.0 {
-                break;
+        let row_heights: Vec<f64> = annos
+            .iter()
+            .map(|annotation| {
+                Self::note_card_height(
+                    tr,
+                    card_x0,
+                    card_x1,
+                    annotation,
+                    self.composing == Some(annotation.id),
+                )
+            })
+            .collect();
+        let content_h =
+            row_heights.iter().sum::<f64>() + 12.0 * annos.len().saturating_sub(1) as f64;
+        let visible_h = (list_y1 - list_y0).max(0.0);
+        self.notes_max_scroll = (content_h - visible_h).max(0.0);
+
+        // An action that opens/edits an annotation should reveal that row,
+        // without scanning or repainting more than this already-measured list.
+        if let Some(target) = self.notes_scroll_to_annotation.take()
+            && let Some(index) = annos.iter().position(|annotation| annotation.id == target)
+        {
+            let top = row_heights.iter().take(index).sum::<f64>() + 12.0 * index as f64;
+            let bottom = top + row_heights.get(index).copied().unwrap_or(0.0);
+            if top < self.notes_scroll {
+                self.notes_scroll = top;
+            } else if bottom > self.notes_scroll + visible_h {
+                self.notes_scroll = bottom - visible_h;
             }
-            y = self.draw_note_card(scene, t, tr, theme, c, card_x0, card_x1, y, a);
         }
+        self.notes_scroll = self.notes_scroll.clamp(0.0, self.notes_max_scroll);
+
+        let clip = Rect::new(x0, list_y0, panel_x1, list_y1);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        let mut y = list_y0 - self.notes_scroll;
+        for (a, height) in annos.iter().zip(&row_heights) {
+            if y + *height >= list_y0 && y <= list_y1 {
+                self.draw_note_card(scene, t, tr, theme, c, card_x0, card_x1, y, a);
+            }
+            y += *height + 12.0;
+        }
+        scene.pop_layer();
+        Self::draw_rail_scrollbar(
+            scene,
+            t,
+            c,
+            panel_x1 - 9.0,
+            list_y0,
+            list_y1,
+            self.notes_scroll,
+            self.notes_max_scroll,
+            visible_h,
+            content_h,
+        );
     }
 
     /// "ANNOTATIONS" title + the count badge.
@@ -8593,7 +8927,8 @@ impl BooksApp {
         y: f64,
         a: &Annotation,
     ) -> f64 {
-        // measure note/excerpt to size the card
+        // Measure note/excerpt to size the card. This must stay identical to
+        // `note_card_height`, which establishes the virtual list positions.
         let inner_w = (card_x1 - card_x0 - 28.0) as f32;
         let excerpt = if a.excerpt.is_empty() {
             "(no excerpt)".to_string()
@@ -8630,6 +8965,33 @@ impl BooksApp {
         self.push_note_card_hits(card_x0, card_x1, y, card_h, a);
 
         y + card_h + 12.0
+    }
+
+    fn note_card_height(
+        tr: &mut TextRenderer,
+        card_x0: f64,
+        card_x1: f64,
+        a: &Annotation,
+        composing: bool,
+    ) -> f64 {
+        let inner_w = (card_x1 - card_x0 - 28.0) as f32;
+        let excerpt = if a.excerpt.is_empty() {
+            "(no excerpt)".to_string()
+        } else {
+            format!("“{}”", a.excerpt)
+        };
+        let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
+        let note = if composing {
+            format!("{}\u{2502}", a.note)
+        } else {
+            a.note.clone()
+        };
+        let note_h = if note.is_empty() {
+            0.0
+        } else {
+            f64::from(tr.measure(&note, 12.5, Some(inner_w)).1) + 12.0
+        };
+        30.0 + f64::from(excerpt_h) + note_h + 16.0
     }
 
     fn draw_note_card_frame(
@@ -11122,6 +11484,94 @@ mod interaction_tests {
         assert!(
             (app.chapter, app.page) != mid,
             "turned back from the advanced spot"
+        );
+    }
+
+    #[test]
+    fn wheel_over_a_long_toc_scrolls_the_rail_not_the_book_and_reveals_chapter() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let template = app.library[0].chapters[0].clone();
+        app.library[0].chapters = (0..32)
+            .map(|index| crate::model::Chapter {
+                title: format!("Long chapter {}", index + 1),
+                href: format!("chapter-{}.xhtml", index + 1),
+                blocks: template.blocks.clone(),
+            })
+            .collect();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(app.toc_max_scroll > 0.0, "the long contents list scrolls");
+        let position = (app.chapter, app.page);
+        ptr_move(&mut app, &mut doc, Point::new(TOC_W / 2.0, 300.0));
+        assert!(wheel(&mut app, &mut doc, -4.0), "rail wheel is consumed");
+        assert!(app.toc_scroll > 0.0, "contents moved down");
+        assert_eq!(
+            (app.chapter, app.page),
+            position,
+            "the page does not turn behind the contents rail"
+        );
+
+        app.semantic_focus = Some("books.reader.chapter:0".into());
+        let toc_before_key = app.toc_scroll;
+        let before_key = (app.chapter, app.page);
+        assert!(
+            key_named(&mut app, &mut doc, NamedKey::PageDown),
+            "rail-focused PageDown is consumed"
+        );
+        assert!(
+            app.toc_scroll > toc_before_key,
+            "keyboard scrolled the contents"
+        );
+        assert_eq!(
+            (app.chapter, app.page),
+            before_key,
+            "rail-focused PageDown does not turn the book"
+        );
+
+        app.on_goto_chapter(27);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(
+            find_hit(&app, |action| matches!(action, Action::GotoChapter(27))).is_some(),
+            "the active chapter is brought into the virtualised TOC viewport"
+        );
+    }
+
+    #[test]
+    fn wheel_over_long_annotations_stays_in_the_rail_and_reveals_a_target() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let book_id = app.book_id();
+        let mut target = None;
+        for index in 0..28 {
+            let annotation = Annotation::new(&book_id, AnnoKind::Note, 0, index)
+                .with_excerpt(format!("A saved passage number {index}"));
+            if index == 24 {
+                target = Some(annotation.id);
+            }
+            BooksDoc::upsert_annotation(&mut doc, &annotation);
+        }
+        frame(&mut app, &mut doc, 1280.0, 700.0);
+        assert!(app.notes_max_scroll > 0.0, "the annotation history scrolls");
+        let position = (app.chapter, app.page);
+        ptr_move(&mut app, &mut doc, Point::new(1120.0, 300.0));
+        assert!(wheel(&mut app, &mut doc, -4.0), "rail wheel is consumed");
+        assert!(app.notes_scroll > 0.0, "annotations moved down");
+        assert_eq!(
+            (app.chapter, app.page),
+            position,
+            "the page does not turn behind the annotations rail"
+        );
+
+        let target = target.expect("target annotation id");
+        app.on_jump_to(target);
+        frame(&mut app, &mut doc, 1280.0, 700.0);
+        assert!(
+            find_hit(
+                &app,
+                |action| matches!(action, Action::JumpTo(id) if *id == target)
+            )
+            .is_some(),
+            "a targeted annotation is revealed in the virtualised rail"
         );
     }
 
