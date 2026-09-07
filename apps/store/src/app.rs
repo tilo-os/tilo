@@ -76,6 +76,11 @@ const REFRESH_KEY: &str = "store.refresh_pressed";
 /// the object (the toolkit's `TextInput` binds to an existing `Text`
 /// but never lazily creates one) and reads the typed query back out.
 const SEARCH_QUERY_KEY: &str = "store.search_query";
+/// Shared, replayable catalogue-view preferences. A collaborator reopening
+/// this Store document sees the same scoped result set, rather than a stale
+/// private toggle selection.
+const SOURCE_FILTER_KEY: &str = "store.source_filter";
+const CATEGORY_FILTER_KEY: &str = "store.category_filter";
 const ACTION_CLICK_KEY_PREFIX: &str = "store.action_click.";
 /// Secondary "mark installed" (pin) toggle, one per item id.
 const PIN_CLICK_KEY_PREFIX: &str = "store.pin_click.";
@@ -373,7 +378,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
         code,
         action.label(),
         action,
-        payload,
+        &payload,
         flatpak_available,
     );
     if let Some(pin) = item.pin_action() {
@@ -382,7 +387,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
             action_code(pin),
             pin.label(),
             pin,
-            vec![item.id.clone(), action_code(pin).to_string()],
+            &[item.id.clone(), action_code(pin).to_string()],
             flatpak_available,
         );
     }
@@ -392,7 +397,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
             "remove",
             "Remove",
             remove,
-            vec![item.id.clone(), action_code(remove).to_string()],
+            &[item.id.clone(), action_code(remove).to_string()],
             flatpak_available,
         );
     }
@@ -442,7 +447,7 @@ fn add_store_item_action(
     id: &str,
     label: &str,
     action: ActionKind,
-    payload: Vec<String>,
+    payload: &[String],
     flatpak_available: bool,
 ) {
     let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, "store.app", &payload)
@@ -917,6 +922,16 @@ impl StoreApp {
         }
     }
 
+    fn set_active_filter_from_document(&mut self, value: &str) {
+        if let Some(filter) = SourceFilter::ALL
+            .iter()
+            .copied()
+            .find(|filter| filter.label() == value)
+        {
+            self.set_active_filter(filter);
+        }
+    }
+
     pub fn active_category(&self) -> Option<&str> {
         self.active_category.as_deref()
     }
@@ -1026,31 +1041,6 @@ impl StoreApp {
             .with_vertical_padding(0.0)
             .with_horizontal_padding(0.0, 0.0)
             .push(header);
-        if self.worker_busy {
-            column = column.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Row::new()
-                        .push(Box::new(ui::widget::Spinner::new()))
-                        .push(Box::new(
-                            Text::new(if self.status_line.is_empty() {
-                                "Working…"
-                            } else {
-                                &self.status_line
-                            })
-                            .with_size(13.0),
-                        )),
-                )),
-            ));
-        } else if let Some(error) = &self.operation_error {
-            let error_message = format!("The operation did not finish · {error}");
-            column = column.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Text::new(&error_message)
-                        .with_size(13.0)
-                        .with_color(theme.text_dim),
-                )),
-            ));
-        }
         if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
             column = column
                 .push(self.build_filter_row())
@@ -1498,10 +1488,6 @@ impl StoreApp {
         )
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "header construction deliberately remains an instance layout method alongside sibling Store views"
-    )]
     fn build_header(&self, theme: &Theme) -> Box<dyn Widget> {
         // Live search box: a real `TextInput` bound to a CRDT `Text`
         // object at `SEARCH_QUERY_KEY`. `sync` seeds the object and
@@ -1530,7 +1516,7 @@ impl StoreApp {
             .push(Box::new(safety_btn))
             .push(Box::new(remotes_btn))
             .push(Box::new(refresh_btn));
-        let header = Column::new()
+        let mut header = Column::new()
             .with_intrinsic_height()
             .push(Box::new(title_row))
             .push(Box::new(
@@ -1539,6 +1525,27 @@ impl StoreApp {
                     .with_color(theme.text_dim),
             ))
             .push(Box::new(search));
+        if self.worker_busy {
+            header = header.push(Box::new(
+                Container::new().with_background().with_child(Box::new(
+                    Text::new(if self.status_line.is_empty() {
+                        "Working…"
+                    } else {
+                        &self.status_line
+                    })
+                    .with_size(13.0),
+                )),
+            ));
+        } else if let Some(error) = &self.operation_error {
+            let error_message = format!("The operation did not finish · {error}");
+            header = header.push(Box::new(
+                Container::new().with_background().with_child(Box::new(
+                    Text::new(&error_message)
+                        .with_size(13.0)
+                        .with_color(theme.text_dim),
+                )),
+            ));
+        }
         Box::new(
             Container::new()
                 .with_background()
@@ -2106,6 +2113,16 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Read a scalar string owned by this Store document. Invalid values are
+/// ignored: a malformed peer write cannot become an implicit filter choice.
+fn scalar_string_at(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
+    state
+        .get(root, key)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| value.to_str().map(str::to_owned))
+}
+
 /// Read a `path`.`key` boolean and clear it in one shot. `true`
 /// return means the key was true; the CRDT is left with the key
 /// false so the next frame sees a fresh edge.
@@ -2605,16 +2622,35 @@ impl Widget for StoreApp {
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_report_export();
+        // Take shared selections first. A local activation below then writes
+        // its choice into the same CRDT location during this sync turn.
+        if let Some(filter) = scalar_string_at(state, path, SOURCE_FILTER_KEY) {
+            self.set_active_filter_from_document(&filter);
+        }
+        if let Some(category) = scalar_string_at(state, path, CATEGORY_FILTER_KEY) {
+            let category = (!category.is_empty()).then_some(category);
+            let valid = category.as_ref().is_none_or(|candidate| {
+                self.category_labels()
+                    .iter()
+                    .any(|label| label == candidate)
+            });
+            // A stale category after a catalog refresh fails safely to All
+            // instead of trapping collaborators in an empty result view.
+            self.set_active_category(if valid { category } else { None });
+        }
         // A source-filter chip parked its segment index in the shared
         // cell during the last `handle_event`; adopt it now.
         if let Some(idx) = self.filter_click.take()
             && let Some(f) = SourceFilter::ALL.get(idx).copied()
         {
             self.set_active_filter(f);
+            let _ = state.put(path, SOURCE_FILTER_KEY, f.label());
         }
         if let Some(idx) = self.category_click.take() {
             let category = self.category_labels().get(idx).cloned();
-            self.set_active_category(category.filter(|label| label != "All"));
+            let category = category.filter(|label| label != "All");
+            self.set_active_category(category.clone());
+            let _ = state.put(path, CATEGORY_FILTER_KEY, category.unwrap_or_default());
             self.scroll_offset.set((0.0, 0.0));
         }
         // Seed the search box's backing `Text` object *before* the
@@ -3084,6 +3120,40 @@ mod tests {
         assert_eq!(app.active_category(), Some("Games"));
         assert_eq!(app.scroll_offset.get(), (0.0, 0.0));
         assert_eq!(app.visible_items()[0].name, "Chess");
+    }
+
+    #[test]
+    fn filter_selections_are_persisted_and_adopted_from_the_store_document() {
+        use automerge::transaction::Transactable;
+
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        app.filter_click.set(Some(1)); // qOS
+        let games = app
+            .category_labels()
+            .iter()
+            .position(|label| label == "Games")
+            .unwrap();
+        app.category_click.set(Some(games));
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            scalar_string_at(&doc, &automerge::ROOT, SOURCE_FILTER_KEY).as_deref(),
+            Some("qOS")
+        );
+        assert_eq!(
+            scalar_string_at(&doc, &automerge::ROOT, CATEGORY_FILTER_KEY).as_deref(),
+            Some("Games")
+        );
+
+        // A peer's next room-scoped selection wins through the same CRDT
+        // values, without relying on a private widget cell.
+        doc.put(automerge::ROOT, SOURCE_FILTER_KEY, "Flatpak")
+            .unwrap();
+        doc.put(automerge::ROOT, CATEGORY_FILTER_KEY, "Games")
+            .unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.active_filter(), SourceFilter::Flatpak);
+        assert_eq!(app.active_category(), Some("Games"));
     }
 
     #[test]
