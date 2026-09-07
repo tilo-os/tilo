@@ -36,14 +36,31 @@ use ui::widget::Widget;
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let entries = if std::env::var("QOS_LOGS_EMPTY").is_ok() {
+    let entries = if std::env::var("QOS_LOGS_EMPTY").is_ok() || args.has("--error") {
         Vec::new()
     } else {
         logs::journal::sample_entries()
     };
-    let mut app = logs::LogsApp::new(entries, false);
+    let mut app = if args.has("--error") {
+        logs::LogsApp::new_with_source_error(
+            entries,
+            true,
+            logs::journal::JournalLoadError::AccessDenied,
+        )
+    } else {
+        logs::LogsApp::new(entries, args.has("--actions"))
+    };
     if args.has("--detail") {
         app.shots_show_detail();
+    }
+    if args.has("--filter-errors") {
+        app.shots_filter_errors();
+    }
+    if args.has("--loading") {
+        app.shots_show_loading();
+    }
+    if args.has("--actions") {
+        app.shots_show_actions();
     }
     Ok(Box::new(app))
 }
@@ -59,7 +76,13 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.logs", logs::app_root)
             .shot_root(shot_root)
-            .allowed_flags(&["--detail"])
+            .allowed_flags(&[
+                "--detail",
+                "--error",
+                "--filter-errors",
+                "--loading",
+                "--actions",
+            ])
             .configure_app(configure_app),
     );
 }
