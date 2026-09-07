@@ -517,6 +517,12 @@ impl TubeApp {
         if let Route::Search(q) = &route {
             q.clone_into(&mut self.model.search_query);
         }
+        // The shell uses `NavStack` as the navigation authority (Back state,
+        // keyboard handling and the top bar all consult it), while the model
+        // mirrors its current route.  A deterministic screenshot must seed
+        // both sides together; changing only the presentation model created a
+        // state that a user or an agent could never actually navigate to.
+        self.nav = ui::NavStack::new(route.clone());
         self.model.route = route;
         self
     }
@@ -3085,6 +3091,17 @@ mod tests {
                 .with_viewport(560.0, 720.0)
                 .sidebar_currently_open(),
             "a narrow shot viewport overlays and closes the rail"
+        );
+    }
+
+    #[test]
+    fn route_shot_seeds_the_navigation_authority_with_the_visible_route() {
+        let app = TubeApp::new().with_route_shot(Route::Search("rust".into()));
+        assert!(matches!(&app.model.route, Route::Search(query) if query == "rust"));
+        assert!(matches!(app.nav.current(), Route::Search(query) if query == "rust"));
+        assert!(
+            !app.can_go_back_for_test(),
+            "a direct screenshot route has no fabricated prior destination"
         );
     }
 
