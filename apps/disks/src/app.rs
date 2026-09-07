@@ -23,7 +23,7 @@ use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Wi
 use ui::winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
-use ui::a11y::{AccessNode, Politeness, Role};
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -696,7 +696,10 @@ impl DisksApp {
     /// [`Self::compute_layout`]).
     fn compute_modal_layout(&self, v: Rect) -> Option<ModalLayout> {
         self.pending.map(|_| {
-            let w = 480.0;
+            // A fixed desktop dialog made the card overflow on phone-width
+            // windows. Keep a comfortable 12px edge gutter while allowing the
+            // same confirmation workflow at every supported viewport width.
+            let w = (v.width() - 24.0).clamp(1.0, 480.0);
             let h = 258.0;
             let cx = f64::midpoint(v.x0, v.x1);
             let cy = f64::midpoint(v.y0, v.y1);
@@ -868,12 +871,23 @@ impl DisksApp {
         };
         // The OS owns the window title/app-name — the header shows only the
         // contextual drive summary (functional status, not an app wordmark).
-        let summary = format!(
-            "{} drives · {} total · {} in use",
-            self.topo.drives.len(),
-            fmt_size(self.topo.total_size()),
-            fmt_size(self.topo.total_used()),
-        );
+        let summary = if lay.hamburger.is_some() {
+            // The full summary collides with Rescan on phone widths. The
+            // compact form still conveys count and capacity, while all usage
+            // detail remains one activation away in the drive list.
+            format!(
+                "{} drives · {}",
+                self.topo.drives.len(),
+                fmt_size(self.topo.total_size()),
+            )
+        } else {
+            format!(
+                "{} drives · {} total · {} in use",
+                self.topo.drives.len(),
+                fmt_size(self.topo.total_size()),
+                fmt_size(self.topo.total_used()),
+            )
+        };
         Self::txt(
             scene,
             tr,
@@ -882,7 +896,7 @@ impl DisksApp {
             c.text_primary,
             title_x,
             18.0,
-            None,
+            Some((lay.refresh.x0 - title_x - 12.0).max(0.0) as f32),
             TextWeight::Medium,
         );
 
@@ -2653,8 +2667,17 @@ impl DisksApp {
         pending: Pending,
     ) {
         let c = &theme.tokens.colors;
-        // Scrim.
-        scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
+        // `surfaces.overlay` is intentionally opaque in the high-contrast
+        // palette, which previously erased all surrounding context whenever a
+        // confirmation opened. A translucent, theme-neutral scrim keeps the
+        // target storage screen visible while preserving modal separation.
+        scene.fill(
+            Fill::NonZero,
+            t,
+            with_alpha(c.surfaces.scrim, 172),
+            None,
+            &self.rect,
+        );
         Self::fill_rr(scene, t, ml.card, 16.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, ml.card, 16.0, c.border_standard, 1.0);
         let danger = pending.action.destructive();
@@ -2883,20 +2906,44 @@ impl DisksApp {
     }
 
     // ---- status line ---------------------------------------------------
-    fn draw_statusline(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, _t: Affine) {
+    fn draw_statusline(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine) {
         if self.status.is_empty() {
             return;
         }
         let c = &theme.tokens.colors;
+        let lower = self.status.to_ascii_lowercase();
+        let tone = if lower.contains("failed") || lower.contains("error") {
+            c.semantic.danger
+        } else if lower.contains("mounted")
+            || lower.contains("formatted")
+            || lower.contains("ejected")
+            || lower.contains("rescanned")
+            || lower.contains("complete")
+        {
+            c.semantic.success
+        } else {
+            c.semantic.info
+        };
+        // An elevated, bounded toast keeps completion and failure feedback
+        // readable above scrolled content rather than letting it disappear
+        // into whichever partition row happens to sit at the window bottom.
+        let r = Rect::new(
+            PAD,
+            self.rect.y1 - 48.0,
+            (PAD + 760.0).min(self.rect.x1 - PAD),
+            self.rect.y1 - PAD,
+        );
+        Self::fill_rr(scene, t, r, 9.0, c.surfaces.raised);
+        Self::stroke_rr(scene, t, r, 9.0, tone, 1.0);
         Self::txt(
             scene,
             tr,
             &self.status,
             12.0,
-            c.semantic.info,
-            PAD,
-            self.rect.y1 - 22.0,
-            None,
+            tone,
+            r.x0 + 12.0,
+            r.y0 + 9.0,
+            Some((r.width() - 24.0) as f32),
             TextWeight::Medium,
         );
     }
@@ -3084,6 +3131,105 @@ impl DisksApp {
         self.content_scroll = 0.0;
         self.dirty = true;
     }
+
+    /// Build the canonical resource-operation descriptor used by every disk
+    /// and partition. Keeping this in one place prevents search, agents and
+    /// the visible UI from disagreeing about risk, confirmation or retry
+    /// semantics.
+    fn operation_spec(
+        &self,
+        action: ActionKind,
+        leaf: &str,
+        fstype: Option<&str>,
+    ) -> Option<ActionSpec> {
+        let payload = vec![
+            action.key().to_string(),
+            leaf.to_string(),
+            fstype.unwrap_or_default().to_string(),
+        ];
+        let spec = ActionSpec::operation(
+            action.key(),
+            action.label().trim_end_matches('…'),
+            OperationKind::Effect,
+            "disks.operation",
+            &payload,
+        )
+        .ok()?;
+        let destructive = action.destructive();
+        Some(spec.with_contract(ActionContract {
+            availability: if self.live {
+                Availability::Available
+            } else {
+                Availability::Unavailable {
+                    code: "live_access_disabled".into(),
+                    reason: "Live disk access is disabled".into(),
+                }
+            },
+            permission: PermissionRequirement::Admin,
+            risk: if destructive {
+                RiskLevel::Destructive
+            } else {
+                RiskLevel::Privileged
+            },
+            confirmation: if destructive {
+                ConfirmationPolicy::Phrase {
+                    phrase: leaf.to_string(),
+                }
+            } else {
+                ConfirmationPolicy::Confirm
+            },
+            retry: if action == ActionKind::Benchmark {
+                RetryPolicy::Idempotent
+            } else {
+                RetryPolicy::AtMostOnce
+            },
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..ActionContract::default()
+        }))
+    }
+
+    /// Resolve an operation payload against the latest locally-probed
+    /// topology. Resource invocations may arrive after a collaborator's
+    /// document snapshot or a search result has gone stale, so a leaf name in
+    /// a payload is never authority to touch an arbitrary `/dev/*` node.
+    ///
+    /// The return value deliberately derives the filesystem type from the
+    /// current probe instead of trusting the serialized payload.
+    fn revalidate_operation_target(
+        &self,
+        action: ActionKind,
+        leaf: &str,
+    ) -> Result<Option<String>, String> {
+        for drive in &self.topo.drives {
+            if drive.name == leaf {
+                return match action {
+                    ActionKind::Format | ActionKind::Benchmark => Ok(None),
+                    ActionKind::Eject if drive.removable => Ok(None),
+                    ActionKind::Eject => Err(format!("/dev/{leaf} is not removable")),
+                    ActionKind::Mount | ActionKind::Unmount => Err(format!(
+                        "/dev/{leaf} is a whole disk; select one of its filesystems"
+                    )),
+                };
+            }
+            for part in &drive.partitions {
+                if part.name != leaf {
+                    continue;
+                }
+                return match action {
+                    ActionKind::Mount if part.mountpoint.is_none() => Ok(part.fstype.clone()),
+                    ActionKind::Unmount if part.mountpoint.is_some() => Ok(part.fstype.clone()),
+                    ActionKind::Mount => Err(format!("/dev/{leaf} is already mounted")),
+                    ActionKind::Unmount => Err(format!("/dev/{leaf} is not mounted")),
+                    ActionKind::Format | ActionKind::Benchmark => Ok(part.fstype.clone()),
+                    ActionKind::Eject => Err("eject targets a whole removable drive".into()),
+                };
+            }
+        }
+        Err(format!(
+            "/dev/{leaf} is no longer present; rescan storage and try again"
+        ))
+    }
 }
 
 /// Centred empty-state card + its Rescan button, given the viewport and the
@@ -3216,33 +3362,19 @@ impl Widget for DisksApp {
                 "disks.drive",
                 drive.model.clone(),
             );
-            if drive.removable {
-                let payload = vec!["eject".to_string(), drive.name.clone(), String::new()];
-                if let Ok(spec) = ActionSpec::operation(
-                    "eject",
-                    "Eject",
-                    OperationKind::Effect,
-                    "disks.operation",
-                    &payload,
-                ) {
-                    disk.actions.push(spec.with_contract(ActionContract {
-                        availability: if self.live {
-                            Availability::Available
-                        } else {
-                            Availability::Unavailable {
-                                code: "live_access_disabled".into(),
-                                reason: "Live disk access is disabled".into(),
-                            }
-                        },
-                        permission: PermissionRequirement::Admin,
-                        risk: RiskLevel::Privileged,
-                        confirmation: ConfirmationPolicy::Confirm,
-                        retry: RetryPolicy::AtMostOnce,
-                        execution: ExecutionMode::Background { cancellable: false },
-                        result: ResultSpec::Job,
-                        ..ActionContract::default()
-                    }));
+            // Whole-drive operations are meaningful independently of any
+            // partition selection. Publishing them here (rather than only in
+            // the custom action bar) lets search, history, collaboration and
+            // agents address the same operation contract.
+            for action in [ActionKind::Format, ActionKind::Benchmark] {
+                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
+                    disk.actions.push(spec);
                 }
+            }
+            if drive.removable
+                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
+            {
+                disk.actions.push(spec);
             }
             for part in &drive.partitions {
                 let mut partition = Resource::new(
@@ -3255,55 +3387,16 @@ impl Widget for DisksApp {
                 } else {
                     "mount"
                 };
-                for (id, label) in [
-                    (verb, if verb == "mount" { "Mount" } else { "Unmount" }),
-                    ("benchmark", "Benchmark"),
-                    ("format", "Format"),
-                ] {
-                    let payload = vec![
-                        id.to_string(),
-                        part.name.clone(),
-                        part.fstype.clone().unwrap_or_default(),
-                    ];
-                    if let Ok(spec) = ActionSpec::operation(
-                        id,
-                        label,
-                        OperationKind::Effect,
-                        "disks.operation",
-                        &payload,
-                    ) {
-                        let destructive = id == "format";
-                        partition.actions.push(spec.with_contract(ActionContract {
-                            availability: if self.live {
-                                Availability::Available
-                            } else {
-                                Availability::Unavailable {
-                                    code: "live_access_disabled".into(),
-                                    reason: "Live disk access is disabled".into(),
-                                }
-                            },
-                            permission: PermissionRequirement::Admin,
-                            risk: if destructive {
-                                RiskLevel::Destructive
-                            } else {
-                                RiskLevel::Privileged
-                            },
-                            confirmation: if destructive {
-                                ConfirmationPolicy::Phrase {
-                                    phrase: part.name.clone(),
-                                }
-                            } else {
-                                ConfirmationPolicy::Confirm
-                            },
-                            retry: if id == "benchmark" {
-                                RetryPolicy::Idempotent
-                            } else {
-                                RetryPolicy::AtMostOnce
-                            },
-                            execution: ExecutionMode::Background { cancellable: false },
-                            result: ResultSpec::Job,
-                            ..ActionContract::default()
-                        }));
+                let mount_action = if verb == "mount" {
+                    ActionKind::Mount
+                } else {
+                    ActionKind::Unmount
+                };
+                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
+                    if let Some(spec) =
+                        self.operation_spec(action, &part.name, part.fstype.as_deref())
+                    {
+                        partition.actions.push(spec);
                     }
                 }
                 disk.children.push(partition);
@@ -3349,10 +3442,13 @@ impl Widget for DisksApp {
             .get(1)
             .ok_or_else(|| "missing device".to_string())?
             .clone();
-        let fstype = args.get(2).filter(|v| !v.is_empty()).cloned();
         if !self.live {
             return Err("live disk access is disabled".into());
         }
+        // Re-check against the locally probed inventory immediately before
+        // execution. This rejects stale remote/search invocations and ignores
+        // a caller-supplied filesystem type in favour of current system data.
+        let fstype = self.revalidate_operation_target(action, &leaf)?;
         let (tx, rx) = mpsc::channel();
         let refresh = action.changes_topology();
         thread::spawn(move || {
@@ -3389,6 +3485,10 @@ impl Widget for DisksApp {
         None
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered reconciliation pass keeps the CRDT projection and operation lifecycle atomic"
+    )]
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.init.seeded {
             if DisksDoc::is_empty(state) {
@@ -3788,10 +3888,199 @@ impl Widget for DisksApp {
         self.rect
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the custom canvas exports its complete semantic tree beside its visual layout"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
+        let lay = self.compute_layout();
         let mut root = AccessNode::new(Role::Window)
             .with_name("Disks")
             .with_bounds(self.rect);
+
+        // A custom-painted canvas has no retained children for AccessKit to
+        // discover. Mirror every visible, meaningful control as a stable
+        // synthetic node so keyboard users, screen readers and agent driving
+        // all address the exact same operations as pointer input.
+        if let (Some(ml), Some(pending)) = (lay.modal, self.pending) {
+            let expected = self.pending_target_leaf(pending);
+            let ready = self.confirm_ready();
+            let mut dialog = AccessNode::new(Role::Dialog)
+                .with_name(pending.action.confirm_title(&format!("/dev/{expected}")))
+                .with_description(
+                    pending
+                        .action
+                        .confirm_body(&format!("/dev/{expected}"), self.live),
+                )
+                .with_bounds(ml.card)
+                .with_state(AccessState::new().modal(true));
+            dialog.children.push(
+                AccessNode::new(Role::TextInput)
+                    .with_name(format!("Type {expected} to confirm"))
+                    .with_description("The erase button unlocks only after an exact match.")
+                    .with_value(self.confirm_input.value())
+                    .with_bounds(ml.input)
+                    .with_action_target("disks.modal.confirm-input")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.confirm_input.is_focused()),
+                    ),
+            );
+            dialog.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel")
+                    .with_bounds(ml.cancel)
+                    .with_action_target("disks.modal.cancel")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            dialog.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(if pending.action.destructive() {
+                        "Erase"
+                    } else {
+                        "Confirm"
+                    })
+                    .with_description(if ready {
+                        "Confirmation text matches the target device."
+                    } else {
+                        "Type the exact device name to enable this action."
+                    })
+                    .with_bounds(ml.confirm)
+                    .with_action_target("disks.modal.confirm")
+                    .with_state(AccessState::new().focusable(true).disabled(!ready)),
+            );
+            root.children.push(dialog);
+        } else {
+            let mut toolbar = AccessNode::new(Role::Toolbar).with_name("Storage controls");
+            if let Some(menu) = lay.hamburger {
+                toolbar.children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(if self.list_open() {
+                            "Hide drives"
+                        } else {
+                            "Show drives"
+                        })
+                        .with_bounds(menu)
+                        .with_action_target("disks.menu")
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+            toolbar.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Rescan storage devices")
+                    .with_description("Refresh the local block-device inventory.")
+                    .with_bounds(lay.refresh)
+                    .with_action_target("disks.rescan")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            root.children.push(toolbar);
+
+            if self.list_open() {
+                let mut list = AccessNode::new(Role::List).with_name("Drives");
+                let n = self.topo.drives.len();
+                for (i, drive) in self.topo.drives.iter().enumerate() {
+                    let Some(&bounds) = lay.cards.get(i) else {
+                        continue;
+                    };
+                    if bounds.y1 < lay.list_body.y0 || bounds.y0 > lay.list_body.y1 {
+                        continue;
+                    }
+                    list.children.push(
+                        AccessNode::new(Role::ListItem)
+                            .with_name(format!("{} /dev/{}", drive.model, drive.name))
+                            .with_description(format!(
+                                "{}; {}; {}",
+                                drive.kind.long(),
+                                fmt_size(drive.size),
+                                drive.smart_status().label()
+                            ))
+                            .with_position(i + 1, n)
+                            .with_bounds(bounds)
+                            .with_action_target(format!("disks.drive:{}", drive.name))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(i == self.selected),
+                            ),
+                    );
+                }
+                root.children.push(list);
+            }
+
+            let mut tabs = AccessNode::new(Role::TabBar).with_name("Drive details");
+            for (bounds, tab) in &lay.tabs {
+                tabs.children.push(
+                    AccessNode::new(Role::Tab)
+                        .with_name(tab.title())
+                        .with_bounds(*bounds)
+                        .with_action_target(format!("disks.tab:{}", tab.key()))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(*tab == self.tab),
+                        ),
+                );
+            }
+            root.children.push(tabs);
+
+            if let Some(drive) = self.drive() {
+                let mut actions = AccessNode::new(Role::Group)
+                    .with_name(format!("Actions for /dev/{}", drive.name))
+                    .with_bounds(lay.action_bar);
+                for (bounds, action, enabled) in &lay.action_buttons {
+                    actions.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(action.label())
+                            .with_description(action.describe())
+                            .with_bounds(*bounds)
+                            .with_action_target(format!("disks.action:{}", action.key()))
+                            .with_state(AccessState::new().focusable(*enabled).disabled(!enabled)),
+                    );
+                }
+                root.children.push(actions);
+
+                if self.tab == Tab::Overview {
+                    root.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name("Select whole disk")
+                            .with_bounds(lay.whole_disk_pill)
+                            .with_action_target("disks.part:whole")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(self.part_index().is_none()),
+                            ),
+                    );
+                }
+                let parts: &[(Rect, usize)] = match self.tab {
+                    Tab::Overview => lay.part_segments.as_slice(),
+                    Tab::Partitions => lay.part_rows.as_slice(),
+                    Tab::Smart => &[],
+                };
+                for (bounds, i) in parts {
+                    let Some(part) = drive.partitions.get(*i) else {
+                        continue;
+                    };
+                    root.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(format!("Select partition /dev/{}", part.name))
+                            .with_description(format!(
+                                "{}; {}",
+                                part.display_label(),
+                                fmt_size(part.size)
+                            ))
+                            .with_bounds(*bounds)
+                            .with_action_target(format!("disks.part:{}", part.name))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(self.part_index() == Some(*i)),
+                            ),
+                    );
+                }
+            }
+        }
         if !self.status.is_empty() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
@@ -3800,6 +4089,70 @@ impl Widget for DisksApp {
             );
         }
         Some(root)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if let A11yAction::SetValue(value) = action
+            && target == "disks.modal.confirm-input"
+            && self.pending.is_some()
+        {
+            self.confirm_input.set_text(value);
+            self.confirm_input.set_focus(true);
+            self.dirty = true;
+            return true;
+        }
+        if !matches!(action, A11yAction::Activate) {
+            return matches!(action, A11yAction::Focus);
+        }
+        match target {
+            "disks.menu" if self.compute_layout().hamburger.is_some() => {
+                self.flap.toggle(self.split_layout());
+            }
+            "disks.rescan" if self.pending.is_none() => self.do_refresh(state),
+            "disks.modal.cancel" if self.pending.is_some() => self.cancel_pending(state),
+            "disks.modal.confirm" if self.pending.is_some() => self.confirm_pending(state),
+            "disks.part:whole" if self.pending.is_none() => self.select_part(state, None),
+            _ if self.pending.is_none() => {
+                if let Some(name) = target.strip_prefix("disks.drive:") {
+                    if let Some(i) = self.topo.drives.iter().position(|drive| drive.name == name) {
+                        self.select(state, i);
+                    } else {
+                        return false;
+                    }
+                } else if let Some(key) = target.strip_prefix("disks.tab:") {
+                    self.set_tab(state, Tab::from_key(key));
+                } else if let Some(key) = target.strip_prefix("disks.action:") {
+                    let Some(kind) = ActionKind::from_key(key) else {
+                        return false;
+                    };
+                    if !self
+                        .drive()
+                        .is_some_and(|drive| self.action_enabled(drive, kind))
+                    {
+                        return false;
+                    }
+                    self.trigger_action(state, kind);
+                } else if let Some(name) = target.strip_prefix("disks.part:") {
+                    let Some(i) = self.drive().and_then(|drive| {
+                        drive.partitions.iter().position(|part| part.name == name)
+                    }) else {
+                        return false;
+                    };
+                    self.select_part(state, Some(i));
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        self.dirty = true;
+        true
     }
 
     fn needs_redraw(&self) -> bool {
@@ -4173,6 +4526,14 @@ mod tests {
         (app, doc)
     }
 
+    fn target_exists(node: &AccessNode, target: &str) -> bool {
+        node.action_target.as_deref() == Some(target)
+            || node
+                .children
+                .iter()
+                .any(|child| target_exists(child, target))
+    }
+
     #[test]
     fn sync_seeds_sample_topology() {
         let (app, _doc) = seeded_app();
@@ -4243,6 +4604,68 @@ mod tests {
             ));
             assert_eq!(action.contract.result, ResultSpec::Job);
         }
+    }
+
+    #[test]
+    fn disk_resources_publish_whole_drive_format_and_benchmark() {
+        let (app, doc) = seeded_app();
+        let resources = Widget::resources(&app, &doc);
+        let disk = resources
+            .first()
+            .and_then(|root| root.children.first())
+            .expect("sample exposes its first disk resource");
+        for id in ["format", "benchmark"] {
+            assert!(
+                disk.actions.iter().any(|action| action.id == id),
+                "whole-drive resource must publish {id}"
+            );
+        }
+        let format = disk
+            .actions
+            .iter()
+            .find(|action| action.id == "format")
+            .expect("format action");
+        assert!(matches!(
+            format.contract.confirmation,
+            ConfirmationPolicy::Phrase { .. }
+        ));
+    }
+
+    #[test]
+    fn resource_operation_targets_are_revalidated_against_current_topology() {
+        let (app, _doc) = seeded_app();
+        assert!(
+            app.revalidate_operation_target(ActionKind::Benchmark, "nvme0n1")
+                .is_ok()
+        );
+        assert!(
+            app.revalidate_operation_target(ActionKind::Mount, "nvme0n1")
+                .unwrap_err()
+                .contains("whole disk")
+        );
+        assert!(
+            app.revalidate_operation_target(ActionKind::Format, "no-longer-present")
+                .unwrap_err()
+                .contains("no longer present")
+        );
+    }
+
+    #[test]
+    fn accessibility_exposes_and_routes_canvas_controls() {
+        let (mut app, mut doc) = seeded_app();
+        layout_at(&mut app, 1280.0);
+        let node = app.accessibility().expect("disks accessibility tree");
+        assert!(target_exists(&node, "disks.rescan"));
+        assert!(target_exists(&node, "disks.drive:nvme0n1"));
+        assert!(target_exists(&node, "disks.action:format"));
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "disks.tab:smart",
+            &A11yAction::Activate,
+            &mut doc,
+            &ui::automerge::ROOT,
+        ));
+        assert_eq!(app.tab, Tab::Smart);
     }
 
     #[test]
