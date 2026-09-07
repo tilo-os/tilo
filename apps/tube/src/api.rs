@@ -24,11 +24,18 @@
 //! and is opened into the watch page's `ui::widget::VideoPlayer` engine — which
 //! does the actual `GStreamer` decode + audio out, so no decoder lives here.
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
 
 use crate::backend::{BackendResult, Query, YtBackend};
 use crate::model::{Category, Channel, Comment, Playlist, Segment, Video};
+
+/// Network work is deliberately a small, bounded pipeline.  A hostile source
+/// or a fast sequence of keystrokes must not turn into an unbounded request or
+/// UI-update backlog while the media worker is busy.
+const REQUEST_QUEUE_CAPACITY: usize = 32;
+const UPDATE_QUEUE_CAPACITY: usize = 128;
+const MAX_UPDATES_PER_POLL: usize = 32;
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -417,7 +424,7 @@ pub fn search(
 /// The background worker: owns the blocking HTTP client and turns
 /// [`Request`]s into [`Update`]s.
 pub struct Worker {
-    tx: Sender<Request>,
+    tx: SyncSender<Request>,
     rx: Receiver<Update>,
 }
 
@@ -429,8 +436,8 @@ impl Worker {
                   one arm"
     )]
     pub fn spawn() -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<Request>();
-        let (up_tx, up_rx) = std::sync::mpsc::channel::<Update>();
+        let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
+        let (up_tx, up_rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
         // If the OS can't give us a thread (resource exhaustion), degrade to a
         // worker that never produces updates rather than crashing the app:
         // `request` sends go unread and `poll` stays empty, same as "no live
@@ -738,13 +745,20 @@ impl Worker {
         }
     }
 
-    pub fn request(&self, req: Request) {
-        let _ = self.tx.send(req);
+    /// Queue work without ever blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unqueued request when the bounded worker is saturated or
+    /// has stopped. Callers must surface this outcome; a one-shot navigation,
+    /// search, or playback intent is never silently discarded.
+    pub fn request(&self, req: Request) -> Result<(), std::sync::mpsc::TrySendError<Request>> {
+        self.tx.try_send(req)
     }
 
     /// Non-blocking drain of any results ready this frame.
     pub fn poll(&self) -> Vec<Update> {
-        self.rx.try_iter().collect()
+        self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
     }
 }
 
@@ -789,7 +803,7 @@ fn resolve_stream_url(live: Option<&dyn YtBackend>, id: &str) -> Option<(String,
 /// initialises. Returns `None` in the default build or on a construction error
 /// (the UI then shows its explicit offline/no-data state). Never panics.
 #[cfg(feature = "live")]
-fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+fn try_live_backend(up_tx: &SyncSender<Update>) -> Option<Box<dyn YtBackend>> {
     // Primary: yt-dlp, the community-maintained extractor. A subprocess, so it
     // tracks YouTube's changes for us and needs no in-process PoToken/BotGuard.
     match crate::backend::ytdlp::YtDlpBackend::new() {
@@ -822,7 +836,7 @@ fn try_live_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
 }
 
 #[cfg(not(feature = "live"))]
-fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+fn try_live_backend(_up_tx: &SyncSender<Update>) -> Option<Box<dyn YtBackend>> {
     None
 }
 
@@ -832,7 +846,7 @@ fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
 /// `playlist()` resolves playlist pages — so one backend serves comments, search
 /// enrichment, the avatar-bearing popular feed, and playlist pages.
 #[cfg(feature = "live")]
-fn try_enricher(up_tx: &Sender<Update>) -> Option<crate::backend::live::RustyPipeBackend> {
+fn try_enricher(up_tx: &SyncSender<Update>) -> Option<crate::backend::live::RustyPipeBackend> {
     match crate::backend::live::RustyPipeBackend::new() {
         Ok(b) => Some(b),
         Err(e) => {
@@ -898,7 +912,7 @@ fn fetch(
     offline: &dyn YtBackend,
     query: Query,
     fallback: bool,
-    up_tx: &Sender<Update>,
+    up_tx: &SyncSender<Update>,
 ) -> Option<(BackendResult, bool)> {
     if let Some(b) = live {
         match b.run(query.clone()) {
@@ -923,7 +937,7 @@ fn feed_trending(
     live: Option<&dyn YtBackend>,
     enrich: Option<&dyn YtBackend>,
     offline: &dyn YtBackend,
-    up_tx: &Sender<Update>,
+    up_tx: &SyncSender<Update>,
 ) -> Option<(Vec<Video>, String)> {
     // Dedicated endpoint first. `fetch` surfaces the real error as a status note
     // (e.g. "live Trending: trending: http status 400"), so the failure of the
@@ -947,7 +961,7 @@ fn feed_trending(
 /// `None` when there is no live backend so the caller keeps the empty state.
 fn live_popular_feed(
     backend: Option<&dyn YtBackend>,
-    up_tx: &Sender<Update>,
+    up_tx: &SyncSender<Update>,
 ) -> Option<Vec<Video>> {
     // Broad, evergreen topics so the union approximates a general popular feed
     // rather than one niche.
@@ -988,7 +1002,7 @@ fn dedup_by_id(videos: Vec<Video>) -> Vec<Video> {
 }
 
 /// Broadcast which data source just answered so the UI pill reflects reality.
-fn send_status(up_tx: &Sender<Update>, live: bool) {
+fn send_status(up_tx: &SyncSender<Update>, live: bool) {
     let label = if live {
         "live (rustypipe)"
     } else {
@@ -1034,6 +1048,27 @@ mod tests {
     #[test]
     fn parse_skip_segments_empty_on_non_array() {
         assert!(parse_skip_segments(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn saturated_worker_queue_returns_the_unqueued_request() {
+        let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
+        let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
+        let worker = Worker { tx, rx };
+        assert!(worker.request(Request::Feed).is_ok());
+        let error = worker
+            .request(Request::Search {
+                query: "latest intent".into(),
+            })
+            .expect_err("saturation must be observable to the app");
+        let rejected = match error {
+            std::sync::mpsc::TrySendError::Full(request)
+            | std::sync::mpsc::TrySendError::Disconnected(request) => request,
+        };
+        assert!(matches!(
+            rejected,
+            Request::Search { query } if query == "latest intent"
+        ));
     }
 
     /// Real-path check: actually call `SponsorBlock`, `DeArrow` and Return `YouTube`

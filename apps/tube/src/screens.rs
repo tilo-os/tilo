@@ -236,12 +236,10 @@ fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Fle
 
 fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: &Video) -> Flex {
     let dearrow = model.settings.dearrow_titles_on();
-    let active_dearrow = v.dearrow_active(dearrow);
     let progress = model.history.first().filter(|h| **h == v.id).map(|_| 0.35);
     let mut thumb = Thumbnail::new(&v.seed, v.duration)
         .height(THUMB_H)
         .image_source(imgs.store_handle(), model.display_thumbnail_url(v))
-        .dearrow(v.dearrow_thumb && model.settings.dearrow_thumbs_on())
         .live(v.live);
     if let Some(p) = progress {
         thumb = thumb.progress(p);
@@ -264,30 +262,6 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         format!("{} • {}", human_views(v.views), v.published),
         12.5,
     ));
-    if active_dearrow {
-        meta = meta.push(
-            Flex::row()
-                .gap(4.0)
-                .align(Align::Center)
-                .pad_xy(6.0, 2.0)
-                .surface(Surface {
-                    fill: Some(Color::from_rgba8(0x9b, 0x59, 0xb6, 40)),
-                    radius: 4.0,
-                    border: None,
-                })
-                .push(icon(
-                    Icon::Sparkles,
-                    11.0,
-                    Color::from_rgb8(0xc8, 0x8e, 0xe0),
-                ))
-                .push(text_c(
-                    "DeArrow title",
-                    11.0,
-                    Color::from_rgb8(0xc8, 0x8e, 0xe0),
-                )),
-        );
-    }
-
     // No fixed width: as a responsive-grid item the card stretches to fill its
     // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
@@ -756,6 +730,8 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
     let body = if model.videos.is_empty() {
         if model.feed_loading {
             skeleton_grid(theme, 12)
+        } else if let Some(error) = &model.feed_error {
+            empty_state(theme, "Home refresh delayed", error)
         } else if model.data_source.label.to_lowercase().contains("offline") {
             empty_state(
                 theme,
@@ -1073,6 +1049,8 @@ pub fn search(
         // While a fetch is in flight, show a skeleton — NEVER a premature "No
         // results".
         skeleton_grid(theme, 8)
+    } else if let Some(error) = &model.search_error {
+        empty_state(theme, "Search delayed", error)
     } else if query.trim().is_empty() {
         empty_state(
             theme,
