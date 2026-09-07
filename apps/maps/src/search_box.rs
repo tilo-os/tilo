@@ -16,7 +16,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{TextInput, TextInputKind, Widget};
 
 use crate::draw;
 use crate::geo;
@@ -65,6 +65,10 @@ pub(crate) struct SearchBox {
 impl SearchBox {
     pub(crate) fn new() -> Self {
         let mut input = TextInput::local()
+            // Place names, addresses, and category terms are structured search
+            // tokens, not prose. This semantic intent disables spelling-error
+            // decoration and autocorrection without masking normal text input.
+            .with_kind(TextInputKind::Search)
             .with_enter_submits(true)
             .with_font_size(15.0);
         input.set_plain_chrome(true);
@@ -475,5 +479,13 @@ mod tests {
         assert!(!search.is_focused());
         assert!(search.results().is_empty());
         assert!(search.take_due_query(now + DEBOUNCE, "museum").is_none());
+    }
+
+    #[test]
+    fn place_search_is_not_spellchecked_as_prose() {
+        assert!(
+            !SearchBox::new().input.spellcheck_enabled(),
+            "place and address terms must not gain spelling-error decoration"
+        );
     }
 }
