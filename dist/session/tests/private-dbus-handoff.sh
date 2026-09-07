@@ -88,7 +88,9 @@ private_bus() {
 }
 
 if [[ ${1:-} == --private-bus ]]; then
-    private_bus "$2" "$3"
+    if ! private_bus "$2" "$3"; then
+        exit 1
+    fi
     exit 0
 fi
 
