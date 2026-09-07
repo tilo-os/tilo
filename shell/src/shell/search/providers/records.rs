@@ -16,7 +16,6 @@
 //! matches strings; it never touches the filesystem or a CRDT.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::shell::chrome_state::Chrome;
@@ -39,13 +38,6 @@ const MAX_RESULTS: usize = 20;
 
 pub struct RecordsProvider {
     index: Rc<RefCell<RoomRecords>>,
-    lookup: RefCell<RecordLookup>,
-}
-
-#[derive(Default)]
-struct RecordLookup {
-    revision: String,
-    exact_title: HashMap<String, Vec<usize>>,
 }
 
 impl RecordsProvider {
@@ -58,10 +50,7 @@ impl RecordsProvider {
     /// A provider over a caller-supplied index — the shell shares one
     /// across every surface that references records.
     pub fn with_index(index: Rc<RefCell<RoomRecords>>) -> Self {
-        Self {
-            index,
-            lookup: RefCell::new(RecordLookup::default()),
-        }
+        Self { index }
     }
 
     pub fn index(&self) -> Rc<RefCell<RoomRecords>> {
@@ -90,55 +79,22 @@ impl SearchProvider for RecordsProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        if !ctx.wanted.contains(&ResourceKind::Record) {
-            return Vec::new();
-        }
-        let needle = ctx.needle.trim().to_lowercase();
-        if needle.is_empty() {
-            return Vec::new();
-        }
-        // Dropped before any result is built: a row's callback borrows
-        // the chrome mutably.
-        let (here, rooms) = {
-            let tree = ctx.chrome.tree();
-            (tree.active_workspace().map(|w| w.room), room_names(&tree))
-        };
-
-        let index = self.index.borrow();
-        let mut ranked: Vec<(i32, KnownRecord, String)> = Vec::new();
-        for record in index.known().iter() {
-            let title = record.title();
-            let Some(score) = match_score(&needle, &title, record.id.as_str()) else {
-                continue;
-            };
-            ranked.push((score, record.clone(), title));
-        }
-        drop(index);
-        // Best first; ties broken by title so the order is stable
-        // rather than following map iteration.
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
-        ranked.truncate(MAX_RESULTS);
-
-        ranked
-            .into_iter()
-            .map(|(score, record, title)| {
-                let subtitle = provenance(&record, here, &rooms);
-                let index = Rc::clone(&self.index);
-                let id = record.id.clone();
-                let kind = record.kind.clone();
-                SearchResult::nullary(
-                    ResourceKind::Record,
-                    "records",
-                    record.id.as_str().to_string(),
-                    title,
-                    Some(subtitle),
-                    score,
-                    move |_doc, _root, chrome: &Chrome| {
-                        bring_into_this_room(&index, &id, &kind, chrome);
-                    },
-                )
-            })
-            .collect()
+        // Legacy direct callers get one retained, bounded page too. They no
+        // longer accidentally turn an integration test or an old surface into
+        // an unbounded corpus traversal.
+        let mut results = self
+            .query_page(
+                ctx,
+                None,
+                SearchBudget {
+                    max_results: MAX_RESULTS,
+                    max_bytes: SearchBudget::PALETTE.max_bytes,
+                    max_work: SearchBudget::PALETTE.max_work,
+                },
+            )
+            .results;
+        results.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
+        results
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -165,61 +121,46 @@ impl SearchProvider for RecordsProvider {
             let tree = ctx.chrome.tree();
             (tree.active_workspace().map(|w| w.room), room_names(&tree))
         };
-        let index = self.index.borrow();
-        let revision = index.search_generation();
-        let known = index.known();
         let needle = ctx.needle.trim().to_lowercase();
-        let exact_positions = {
-            let mut lookup = self.lookup.borrow_mut();
-            if lookup.revision != revision {
-                let mut exact_title: HashMap<String, Vec<usize>> = HashMap::new();
-                for (position, record) in known.iter().enumerate() {
-                    exact_title
-                        .entry(record.title().to_lowercase())
-                        .or_default()
-                        .push(position);
-                }
-                lookup.revision.clone_from(&revision);
-                lookup.exact_title = exact_title;
-            }
-            lookup.exact_title.get(&needle).cloned()
-        };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.split_once('\u{1f}') {
-                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
-                    Ok(offset)
-                        if offset <= exact_positions.as_ref().map_or(known.len(), Vec::len) =>
-                    {
-                        offset
-                    }
-                    _ => return SearchPage::stale(revision),
+        let (revision, after) = {
+            let index = self.index.borrow();
+            let revision = index.search_generation();
+            let after = match cursor {
+                Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+                Some(cursor) => match decode_cursor(&cursor.token, &needle) {
+                    Ok(after) => after,
+                    Err(InvalidCursor) => return SearchPage::stale(revision),
                 },
-                _ => return SearchPage::stale(revision),
-            },
-            None => 0,
+                None => None,
+            };
+            (revision, after)
         };
-        let source_len = exact_positions.as_ref().map_or(known.len(), Vec::len);
-        let end = offset.saturating_add(budget.max_work).min(source_len);
+        let source = self
+            .index
+            .borrow()
+            .search_records(after.as_deref(), budget.max_work);
+        // The scan worker may have published between taking the cursor
+        // revision and acquiring its retained map. Never label those newer
+        // rows with the older revision: force a clean retry instead.
+        let current_revision = self.index.borrow().search_generation();
+        if current_revision != revision {
+            return SearchPage::stale(current_revision);
+        }
+        if source.invalid_cursor {
+            return SearchPage::stale(revision);
+        }
         let mut used = 0usize;
         let mut results = Vec::new();
-        let mut next = end;
+        let mut last_consumed = after;
         let mut stopped_for_budget = false;
-        for relative in offset..end {
-            let position = exact_positions
-                .as_ref()
-                .and_then(|positions| positions.get(relative).copied())
-                .unwrap_or(relative);
-            let Some(record) = known.get(position) else {
-                continue;
-            };
-            let source_position = relative;
+        for entry in source.entries {
+            let record = entry.record;
             let title = record.title();
             let Some(score) = match_score(&needle, &title, record.id.as_str()) else {
+                last_consumed = Some(entry.cursor);
                 continue;
             };
             if results.len() >= budget.max_results {
-                next = source_position;
                 stopped_for_budget = true;
                 break;
             }
@@ -232,7 +173,6 @@ impl SearchProvider for RecordsProvider {
                 .saturating_add(subtitle.len())
                 .saturating_add(96);
             if used.saturating_add(bytes) > budget.max_bytes {
-                next = source_position;
                 stopped_for_budget = true;
                 break;
             }
@@ -251,18 +191,19 @@ impl SearchProvider for RecordsProvider {
                     bring_into_this_room(&index, &id, &kind, chrome);
                 },
             ));
+            last_consumed = Some(entry.cursor);
         }
-        let exhausted = !stopped_for_budget && end == source_len;
+        let exhausted = !stopped_for_budget && source.exhausted;
         SearchPage {
             revision: revision.clone(),
             results,
             next_cursor: (!exhausted).then(|| SearchCursor {
                 revision,
-                token: format!("{needle}\u{1f}{next}"),
+                token: encode_cursor(&needle, last_consumed.as_deref()),
             }),
             exhausted,
             stale_cursor: false,
-            budget_exhausted: stopped_for_budget || !exhausted,
+            budget_exhausted: stopped_for_budget || !source.exhausted,
         }
     }
 }
@@ -361,6 +302,27 @@ fn display_path(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
+/// Prefix the provider-owned source continuation with an exact byte length of
+/// the normalized query. A delimiter alone is ambiguous because a record
+/// search string is ordinary user text; malformed continuations are rejected
+/// as stale instead of seeking an unintended part of the corpus.
+fn encode_cursor(needle: &str, after: Option<&str>) -> String {
+    format!("{}:{needle}{}", needle.len(), after.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InvalidCursor;
+
+fn decode_cursor(token: &str, needle: &str) -> Result<Option<String>, InvalidCursor> {
+    let (length, rest) = token.split_once(':').ok_or(InvalidCursor)?;
+    let length = length.parse::<usize>().map_err(|_| InvalidCursor)?;
+    if rest.len() < length || rest.get(..length).ok_or(InvalidCursor)? != needle {
+        return Err(InvalidCursor);
+    }
+    let after = rest.get(length..).ok_or(InvalidCursor)?;
+    Ok((!after.is_empty()).then(|| after.to_string()))
+}
+
 /// How well `needle` names this record. Title first; the identity is
 /// matched last and lowest — a file record's id contains its whole path,
 /// so a directory-name match is a weaker signal than the title matching.
@@ -436,6 +398,172 @@ mod tests {
             doc: &doc,
             doc_root: &automerge::ROOT,
         })
+    }
+
+    fn page(
+        provider: &RecordsProvider,
+        needle: &str,
+        chrome: &Chrome,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        provider.query_page(
+            SearchContext {
+                needle,
+                wanted: &[ResourceKind::Record],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            cursor,
+            budget,
+        )
+    }
+
+    #[test]
+    fn a_large_corpus_is_capped_on_the_first_page_without_a_title_rebuild() {
+        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+        for number in 0..128 {
+            index.borrow_mut().reference(
+                rooms[0],
+                &RecordId::for_file(format!("/work/entry-{number:03}.note")),
+                &RecordKind::new("note"),
+            );
+        }
+        let provider = RecordsProvider::with_index(index);
+        let first = page(
+            &provider,
+            "entry",
+            &chrome,
+            None,
+            SearchBudget {
+                max_results: 16,
+                max_bytes: usize::MAX,
+                max_work: 3,
+            },
+        );
+        assert_eq!(first.results.len(), 3, "work is a hard source cap");
+        assert!(first.budget_exhausted);
+        assert!(!first.exhausted);
+        assert!(first.next_cursor.is_some());
+    }
+
+    #[test]
+    fn record_pages_seek_from_the_last_key_without_duplicates() {
+        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+        for number in 0..5 {
+            index.borrow_mut().reference(
+                rooms[0],
+                &RecordId::for_file(format!("/work/page-{number}.note")),
+                &RecordKind::new("note"),
+            );
+        }
+        let provider = RecordsProvider::with_index(index);
+        let budget = SearchBudget {
+            max_results: 2,
+            max_bytes: usize::MAX,
+            max_work: 2,
+        };
+        let first = page(&provider, "page", &chrome, None, budget);
+        let cursor = first.next_cursor.clone().expect("more source rows");
+        let second = page(&provider, "page", &chrome, Some(&cursor), budget);
+        let cursor = second.next_cursor.clone().expect("one final source row");
+        let third = page(&provider, "page", &chrome, Some(&cursor), budget);
+        let ids: Vec<_> = first
+            .results
+            .iter()
+            .chain(&second.results)
+            .chain(&third.results)
+            .map(|row| row.id.clone())
+            .collect();
+        assert_eq!(ids.len(), 5);
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "a key cursor must not replay rows");
+        assert!(third.exhausted);
+    }
+
+    #[test]
+    fn resource_limits_do_not_consume_an_unemitted_record() {
+        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+        index.borrow_mut().reference(
+            rooms[0],
+            &RecordId::for_file("/work/too-large-to-fit.note"),
+            &RecordKind::new("note"),
+        );
+        let provider = RecordsProvider::with_index(index);
+        let limited = page(
+            &provider,
+            "large",
+            &chrome,
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: 1,
+                max_work: 1,
+            },
+        );
+        assert!(limited.results.is_empty());
+        assert!(limited.budget_exhausted);
+        let cursor = limited.next_cursor.expect("the unreturned row is retained");
+        let retried = page(
+            &provider,
+            "large",
+            &chrome,
+            Some(&cursor),
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            },
+        );
+        assert_eq!(retried.results.len(), 1, "retry resumes at the row");
+    }
+
+    #[test]
+    fn a_room_reference_mutation_stales_a_retained_cursor() {
+        let (chrome, rooms) = chrome_with_rooms(&["Work"]);
+        let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
+        for name in ["first", "second"] {
+            index.borrow_mut().reference(
+                rooms[0],
+                &RecordId::for_file(format!("/work/{name}.note")),
+                &RecordKind::new("note"),
+            );
+        }
+        let provider = RecordsProvider::with_index(Rc::clone(&index));
+        let first = page(
+            &provider,
+            "note",
+            &chrome,
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            },
+        );
+        let cursor = first.next_cursor.expect("one source row remains");
+        index.borrow_mut().reference(
+            rooms[0],
+            &RecordId::for_file("/work/third.note"),
+            &RecordKind::new("note"),
+        );
+        assert!(
+            page(
+                &provider,
+                "note",
+                &chrome,
+                Some(&cursor),
+                SearchBudget::PALETTE,
+            )
+            .stale_cursor,
+            "local mutations must never advance an old continuation"
+        );
     }
 
     #[test]
