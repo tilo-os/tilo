@@ -832,13 +832,10 @@ mod tests {
             options: None,
             active_index: 0,
         };
-        let latest = KeyboardSettings {
-            source_ids: vec!["fr".into()],
-            layouts: "fr".into(),
-            variants: String::new(),
-            options: None,
-            active_index: 0,
-        };
+        // The latest request deliberately returns to the last successfully
+        // applied layout. This is the edge that an early `keyboard ==
+        // self.keyboard` check used to lose while `applied` was in flight.
+        let latest = KeyboardSettings::default();
         let temp = tempfile::tempdir().unwrap();
         let fake_setxkbmap = temp.path().join("setxkbmap");
         std::fs::write(&fake_setxkbmap, "#!/bin/sh\nexec /usr/bin/sleep 30\n").unwrap();
