@@ -1122,7 +1122,14 @@ impl State {
     /// Forward a pointer button press/release to the surface the pointer is focused on — no-op when the pointer is over chrome.
     pub fn forward_client_pointer_button(&mut self, button: u32, pressed: bool) -> bool {
         // A chrome drag's grab needs the release even with no client under the pointer — that is how it learns the drag was cancelled.
-        if self.client_input.pointer_focus.is_none() && self.selection.chrome_drag.is_none() {
+        let smithay_grabbed = self
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed());
+        if self.client_input.pointer_focus.is_none()
+            && self.selection.chrome_drag.is_none()
+            && !smithay_grabbed
+        {
             return false;
         }
         let Some(pointer) = self.seat.get_pointer() else {
@@ -1347,6 +1354,11 @@ pub fn touch_target(
     {
         return Some((surface_id, (rect.x0, rect.y0)));
     }
+    if let Some((surface_id, rect)) = fb.fullscreen_surface_hit((*x, *y))
+        && state.client_input.surfaces.contains_key(&surface_id)
+    {
+        return Some((surface_id, (rect.x0, rect.y0)));
+    }
     if let Some((surface_id, rect)) = fb.floating_surface_hit((*x, *y))
         && state.client_input.surfaces.contains_key(&surface_id)
     {
@@ -1361,6 +1373,29 @@ pub fn touch_target(
         return None;
     }
     Some((hit.surface_id, (hit.rect.x0, hit.rect.y0)))
+}
+
+/// Direct touch follows the same click-to-focus policy as pointer input for
+/// app-owned overlays. Tiled focus remains owned by the chrome's active-tab
+/// writeback, while touching the OSK must preserve the edited app's focus.
+pub fn focus_touch_target(state: &mut State, fb: &FrameBuilder, surface_id: u64) {
+    if state.osk_surface == Some(surface_id) {
+        return;
+    }
+    if state.is_output_presentation_surface(surface_id) {
+        state.focus_output_presentation_surface(surface_id);
+        sync_keyboard_focus(state, fb);
+        return;
+    }
+    state.clear_output_presentation_focus();
+    if state.is_floating_toplevel(surface_id)
+        || state.is_transient_surface(surface_id)
+        || fb
+            .fullscreen_surface_rect()
+            .is_some_and(|(fullscreen_id, _)| fullscreen_id == surface_id)
+    {
+        state.set_client_keyboard_focus(Some(surface_id));
+    }
 }
 
 // Run-loop entry points.
@@ -1736,10 +1771,19 @@ fn route_mouse_input(
                 return true;
             }
             deliver_pointer(state, hit);
-            state.client_input.grab = Some(match hit {
-                Some(h) => PointerOwner::Client(h.surface_id),
-                None => PointerOwner::Chrome,
-            });
+            // Smithay's xdg-popup grab must receive the outside press even
+            // when the pointer has left every client surface. Do not layer
+            // our ordinary implicit grab over that protocol-modal grab.
+            let smithay_grabbed = state
+                .seat
+                .get_pointer()
+                .is_some_and(|pointer| pointer.is_grabbed());
+            if !smithay_grabbed {
+                state.client_input.grab = Some(match hit {
+                    Some(h) => PointerOwner::Client(h.surface_id),
+                    None => PointerOwner::Chrome,
+                });
+            }
             // Click-to-focus: raise the clicked window group so the keyboard follows the pointer into the client.
             if let Some(h) = hit {
                 if state.is_output_presentation_surface(h.surface_id) {
@@ -1749,6 +1793,14 @@ fn route_mouse_input(
                     sync_keyboard_focus(state, fb);
                 } else {
                     state.clear_output_presentation_focus();
+                }
+                let overlay_focus = state.is_floating_toplevel(h.surface_id)
+                    || state.is_transient_surface(h.surface_id)
+                    || fb
+                        .fullscreen_surface_rect()
+                        .is_some_and(|(surface_id, _)| surface_id == h.surface_id);
+                if overlay_focus && state.osk_surface != Some(h.surface_id) {
+                    state.set_client_keyboard_focus(Some(h.surface_id));
                 }
                 // Tapping the keyboard must keep the editable field's
                 // keyboard focus. Pointer focus moves to the OSK, but
@@ -1770,8 +1822,13 @@ fn route_mouse_input(
     }
     // A chrome drag's release is the drop: the server-side grab smithay holds only ends on a button event, whether or not a client is under the pointer.
     let chrome_drag = state.selection.chrome_drag.is_some();
-    let to_client = (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
-        && state.client_input.pointer_focus.is_some())
+    let smithay_grabbed = state
+        .seat
+        .get_pointer()
+        .is_some_and(|pointer| pointer.is_grabbed());
+    let to_client = ((matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
+        || smithay_grabbed)
+        && (state.client_input.pointer_focus.is_some() || smithay_grabbed))
         || (chrome_drag && !pressed);
     let consumed = if to_client {
         match evdev_button(button) {
@@ -2060,6 +2117,16 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                     rect,
                 });
             }
+            if let Some((fullscreen_id, rect)) = fb.fullscreen_surface_rect()
+                && fullscreen_id == surface_id
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
             let (strip, group) = *state.client_input.placements.get(&surface_id)?;
             let rect = fb.host().active_tile_rect(group)?;
             Some(TileHit {
@@ -2088,6 +2155,16 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
                 });
             }
             if let Some((surface_id, rect)) = fb.transient_surface_hit(state.client_input.cursor())
+                && state.client_input.surfaces.contains_key(&surface_id)
+            {
+                return Some(TileHit {
+                    surface_id,
+                    strip: StripId::default(),
+                    group: 0,
+                    rect,
+                });
+            }
+            if let Some((surface_id, rect)) = fb.fullscreen_surface_hit(state.client_input.cursor())
                 && state.client_input.surfaces.contains_key(&surface_id)
             {
                 return Some(TileHit {

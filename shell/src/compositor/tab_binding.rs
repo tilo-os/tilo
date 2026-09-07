@@ -505,6 +505,22 @@ pub fn close_tab_for_destroyed_surface(
     tab_id.is_some_and(|tab_id| remove_tab(tree, tab_id))
 }
 
+/// Remove a destroyed foreign surface and immediately persist the authoritative
+/// tree.  Ordinary reconciliation also uses [`close_tab_for_destroyed_surface`]
+/// while it is converging two in-memory trees; only the protocol-owned close
+/// paths use this wrapper because a surface destruction is a durable user
+/// decision and must not leave its relaunchable `LocalApp` record on disk.
+pub fn close_tab_for_destroyed_surface_and_persist(
+    tree: &mut WorkspaceTree,
+    destroyed_surface_id: u64,
+) -> bool {
+    let removed = close_tab_for_destroyed_surface(tree, destroyed_surface_id);
+    if removed {
+        tree.flush_to_disk();
+    }
+    removed
+}
+
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
@@ -1170,6 +1186,56 @@ mod tests {
         assert!(
             !still_there,
             "the foreign tab with surface_id=42 must be gone"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn destroyed_foreign_surface_close_flushes_away_relaunch_record() {
+        crate::shell::launcher::clear_pending_placements();
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = Some(state_path.clone());
+        let _ = adopt_toplevel(&mut tree, 42, Some("io.example.thing".into()));
+
+        // The persistence writer deliberately turns a live Foreign tile into
+        // a symbolic LocalApp record.  A real surface destroy must remove that
+        // record, not leave it available for the next session to relaunch.
+        tree.flush_to_disk();
+        let saved = crate::shell::persist::load_tree_from(&state_path)
+            .expect("live foreign state is a valid persistence snapshot");
+        assert!(
+            saved.workspaces.iter().any(|workspace| workspace
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .any(|tab| matches!(
+                    &tab.tile,
+                    TileContent::LocalApp { app_id, .. } if app_id == "io.example.thing"
+                ))),
+            "precondition: a live foreign surface is represented as a relaunchable record"
+        );
+
+        assert!(close_tab_for_destroyed_surface_and_persist(&mut tree, 42));
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("destroyed foreign state is a valid persistence snapshot");
+        assert!(
+            restarted.workspaces.iter().all(|workspace| workspace
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .all(|tab| !matches!(
+                    &tab.tile,
+                    TileContent::Foreign { surface_id, .. } if *surface_id == 42
+                ) && !matches!(
+                    &tab.tile,
+                    TileContent::LocalApp { app_id, .. } if app_id == "io.example.thing"
+                ))),
+            "a surface destroyed before restart must not resurrect as a LocalApp"
         );
     }
 

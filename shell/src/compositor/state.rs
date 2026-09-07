@@ -24,8 +24,11 @@ struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer, Format, Modifier};
+use smithay::desktop::{
+    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, find_popup_root_surface,
+};
 use smithay::input::keyboard::{Layout, XkbConfig};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, Focus, MotionEvent, RelativeMotionEvent};
 
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
@@ -420,6 +423,14 @@ pub(crate) struct TrackedPopup {
     grabbed: bool,
 }
 
+#[derive(Clone)]
+pub(crate) struct FullscreenTarget {
+    pub surface_id: u64,
+    pub requested_output: Option<WlOutput>,
+    pub surface: ToplevelSurface,
+    pub configured_size: Option<(i32, i32)>,
+}
+
 #[derive(Debug, Clone)]
 struct HostLaunchActivation {
     desktop_id: String,
@@ -611,6 +622,7 @@ pub struct State {
     /// steals the presenter's local keyboard.
     output_presentation_focus: Option<SurfaceId>,
     output_presentation_sequences: HashMap<SurfaceId, u64>,
+    pub(crate) fullscreen_target: Option<FullscreenTarget>,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -632,6 +644,7 @@ pub struct State {
     /// XDG popups are separate surfaces, not tabs.  They are captured and
     /// composed above their parent through this registry.
     pub(crate) popups: Vec<TrackedPopup>,
+    pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
     pub(crate) input_method_popups: Vec<InputMethodPopupSurface>,
@@ -895,9 +908,12 @@ impl State {
         // (e.g. 1.5×) and have the compositor composite the correct logical size; the preferred scale is pushed per-surface on commit.
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
-        // Advertise `ext_session_lock_manager_v1` for standard-protocol locking; the compositor still owns the lock UI + authentication.
+        // Session locking controls the compositor's authentication boundary:
+        // only clients accepted on the session's privileged socket may even
+        // see the manager. Sandboxed and ordinary host applications receive
+        // the public socket and cannot acquire (or later release) the lock.
         let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&display_handle, |_client| true);
+            SessionLockManagerState::new::<Self, _>(&display_handle, is_privileged_client);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
@@ -954,12 +970,14 @@ impl State {
             pending_presentation_outputs: HashMap::new(),
             output_presentation_focus: None,
             output_presentation_sequences: HashMap::new(),
+            fullscreen_target: None,
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
+            popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
@@ -2330,11 +2348,12 @@ pub struct ClientState {
     /// Whether this connection arrived on the compositor's **privileged**
     /// socket rather than the public one.
     ///
-    /// The only thing it gates is the clipboard-manager protocol pair
-    /// (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`), which
-    /// hands its holder every selection on the seat with no focus requirement
-    /// — see [`crate::compositor::selection`]. A *socket* privilege, not a flag
-    /// a client can ask for: the sandbox launcher bind-mounts only the public socket into a sandbox.
+    /// This gates authority-bearing globals: the clipboard-manager protocol
+    /// pair (`zwlr_data_control_manager_v1`/`ext_data_control_manager_v1`) and
+    /// `ext_session_lock_manager_v1`. The former hands its holder every
+    /// selection without focus; the latter controls the compositor's lock
+    /// lifecycle. A *socket* privilege, not a flag a client can ask for: the
+    /// sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
     /// Connection accepted on the compositor-owned OSK socket. This is the
     /// only credential accepted by the input-method and virtual-keyboard
@@ -2386,6 +2405,17 @@ impl ClientState {
 
 fn is_osk_client(client: &Client) -> bool {
     client.get_data::<ClientState>().is_some_and(|d| d.osk)
+}
+
+/// Connection-provenance gate for authority-bearing Wayland protocols.
+///
+/// A client cannot opt into this bit: only the dedicated privileged socket
+/// acceptor constructs this state, while the sandbox launcher exposes only
+/// the public socket.
+fn is_privileged_client(client: &Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .is_some_and(|data| data.privileged)
 }
 
 /// The compositor's globally unique id for `surface`.
@@ -2806,6 +2836,16 @@ impl State {
             .collect()
     }
 
+    #[doc(hidden)]
+    pub fn xdg_popup_count(&self) -> usize {
+        self.popups.len()
+    }
+
+    #[doc(hidden)]
+    pub fn popup_surfaces_for_tests(&self) -> Vec<(SurfaceId, Rect)> {
+        self.popup_surfaces()
+    }
+
     /// Candidate windows provided by the privileged input method.  They use
     /// the focused text field as their parent and are clipped to its output,
     /// so a candidate strip cannot escape a multi-monitor desktop.
@@ -3178,7 +3218,17 @@ impl XdgShellHandler for State {
             self.fullscreen_group = None;
             self.fullscreen_output = None;
         }
-        let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
+        if self
+            .fullscreen_target
+            .as_ref()
+            .is_some_and(|target| target.surface_id == surface_id)
+        {
+            self.fullscreen_target = None;
+        }
+        let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(
+            &mut self.workspace_tree,
+            surface_id,
+        );
         self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
         // `BufferAssignment::Removed` branch already forgets the slot on
@@ -3260,6 +3310,19 @@ impl XdgShellHandler for State {
         }
     }
 
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        let surface_id = surface_id(surface.wl_surface());
+        let title = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|data| data.title.clone()))
+        });
+        if let Some(title) = title {
+            let _ = tab_binding::rename_tab_for_title(&mut self.workspace_tree, surface_id, title);
+        }
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
         let Some(parent_surface) = surface.get_parent_surface() else {
             // Smithay will report the protocol violation at commit time; send
@@ -3280,6 +3343,12 @@ impl XdgShellHandler for State {
             geometry,
             grabbed: false,
         });
+        if let Err(error) = self
+            .popup_manager
+            .track_popup(PopupKind::from(surface.clone()))
+        {
+            tracing::debug!(?error, parent, "could not register popup grab tree");
+        }
         if let Err(error) = surface.send_configure() {
             tracing::warn!(
                 target: "shell::compositor::popup",
@@ -3290,7 +3359,26 @@ impl XdgShellHandler for State {
         }
     }
 
-    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        if !self.seat.owns(&seat) {
+            return;
+        }
+        let popup_kind = PopupKind::from(surface.clone());
+        let Ok(root) = find_popup_root_surface(&popup_kind) else {
+            return;
+        };
+        let Ok(grab) = self
+            .popup_manager
+            .grab_popup(root, popup_kind, &self.seat, serial)
+        else {
+            return;
+        };
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Clear);
+        }
         if let Some(popup) = self
             .popups
             .iter_mut()
@@ -3360,6 +3448,12 @@ impl XdgShellHandler for State {
             self.fullscreen_group =
                 tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
             self.fullscreen_output = requested;
+            self.fullscreen_target = self.fullscreen_group.map(|_| FullscreenTarget {
+                surface_id,
+                requested_output: wl_output.clone(),
+                surface: surface.clone(),
+                configured_size: None,
+            });
         }
         let (w, h) = if presentation {
             self.output_presentation_surfaces
@@ -3396,6 +3490,7 @@ impl XdgShellHandler for State {
         {
             self.fullscreen_group = None;
             self.fullscreen_output = None;
+            self.fullscreen_target = None;
         }
         surface.with_pending_state(|state| {
             state.states.unset(
