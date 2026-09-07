@@ -9,7 +9,7 @@ use ui::{
 // click gesture detection, or clipboard access.
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use base64::Engine as _;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, bounded};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -40,6 +40,25 @@ use winit::keyboard::{Key, NamedKey};
 use crate::graphics::{
     GraphicsScanner, StreamEvent, TerminalImagePlacement, decode_for_rendering, parse_kitty,
 };
+
+/// The PTY reader applies natural backpressure once this many chunks are
+/// waiting for the UI. A terminal must never silently discard process output,
+/// but it also must not let a noisy process allocate without bound.
+const PTY_QUEUE_CHUNKS: usize = 64;
+/// One UI turn may parse at most this much queued PTY output. Anything beyond
+/// it stays in the bounded queue for the following frame, preserving ordering
+/// while keeping pointer input and accessibility responsive during a build
+/// flood.
+const MAX_PUMP_BYTES: usize = 256 * 1024;
+/// A palette/agent invocation is intentionally much smaller than local paste:
+/// it is a reviewed command submission, not a bulk data transport.
+pub(crate) const MAX_RESOURCE_SEND_BYTES: usize = 8 * 1024;
+/// OSC is process-controlled input. Keep its metadata bounded before it can
+/// enter the replicated document, clipboard, or app title.
+const MAX_OSC_TITLE_BYTES: usize = 256;
+const MAX_OSC_LINK_BYTES: usize = 2 * 1024;
+const MAX_OSC_LINKS: usize = 4096;
+const MAX_OSC_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
 /// Cell coordinate within the terminal buffer. `row` is an **absolute** index
 /// into the full `grid` (scrollback included), not a viewport-local row — the
@@ -105,6 +124,65 @@ pub(crate) fn open_url(url: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// Convert an OSC metadata field into a compact, single-line label. OSC is
+/// emitted by the process, not entered through a trusted text field: control
+/// characters would corrupt window/accessibility labels and an unlimited value
+/// would become replicated metadata. Invalid UTF-8, empty, or over-limit
+/// fields are deliberately ignored rather than lossy-decoded.
+pub(crate) fn safe_osc_text(bytes: &[u8], max_bytes: usize) -> Option<String> {
+    if bytes.is_empty() || bytes.len() > max_bytes {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    if text.chars().any(char::is_control) {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// Record the first terminal transport failure. Later failures cannot make a
+/// dead session live again, so keeping the first reason makes the persistent
+/// status deterministic instead of flapping with each rejected keypress.
+fn set_terminal_disconnected(
+    disconnected: &AtomicBool,
+    message: &Mutex<&'static str>,
+    status: &'static str,
+) {
+    if !disconnected.swap(true, Ordering::AcqRel)
+        && let Ok(mut message) = message.lock()
+    {
+        *message = status;
+    }
+}
+
+/// Wake an idle app after either fresh PTY bytes *or a lifecycle transition*.
+/// The latter is crucial: EOF has no bytes to queue, but it still changes
+/// visible text, accessibility, and action availability. Coalescing is shared
+/// with the reader's normal output wake path.
+fn request_terminal_wake(
+    waker: &Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
+    wake_pending: &AtomicBool,
+) {
+    if !wake_pending.swap(true, Ordering::AcqRel) {
+        let sent = waker
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard.as_ref().map(|proxy| {
+                    proxy
+                        .send_event(UserEvent::External("terminal-lifecycle".to_string()))
+                        .is_ok()
+                })
+            })
+            .unwrap_or(false);
+        if !sent {
+            // Embedded/startup callers have no proxy yet. They poll through
+            // `needs_animation_frame`; do not strand a future real wake.
+            wake_pending.store(false, Ordering::Release);
+        }
+    }
 }
 
 /// A single foreground/background color, as produced by SGR. `Default`
@@ -332,6 +410,17 @@ pub struct TerminalWidget {
     pty_write: Arc<Mutex<Box<dyn Write + Send>>>,
     pty_master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     output_rx: Receiver<Vec<u8>>,
+    /// At most one reader chunk that did not fit the current bounded pump.
+    /// Retaining it locally preserves byte ordering without an unbounded
+    /// worklist and lets the next frame resume exactly where parsing stopped.
+    deferred_output: Option<Vec<u8>>,
+    /// Set permanently when the process end of the PTY closes, its reader
+    /// fails, or a write fails. A live session cannot be honestly revived by
+    /// retrying arbitrary input, so this is local terminal lifecycle state.
+    session_disconnected: Arc<AtomicBool>,
+    /// Stable, non-sensitive reason shown in the retained terminal surface and
+    /// its accessibility description. Kept local with the transport state.
+    session_status_message: Arc<Mutex<&'static str>>,
     parser: Parser,
 
     grid: Vec<String>,
@@ -555,6 +644,9 @@ impl TerminalWidget {
             pty_write: writer,
             pty_master: master,
             output_rx,
+            deferred_output: None,
+            session_disconnected: Arc::new(AtomicBool::new(false)),
+            session_status_message: Arc::new(Mutex::new("Session ended — input unavailable")),
             parser: Parser::new(),
             grid,
             grid_attrs,
@@ -649,6 +741,27 @@ impl TerminalWidget {
     /// True between left-mouse-press and left-mouse-release. Test-only.
     pub fn is_dragging(&self) -> bool {
         self.drag_select.is_dragging()
+    }
+
+    /// True once the terminal process or its PTY transport has ended. This is
+    /// intentionally local: it describes this peer's transport, not a shared
+    /// claim that a collaborator's separately attached terminal is dead.
+    pub fn is_disconnected(&self) -> bool {
+        self.session_disconnected.load(Ordering::Acquire)
+    }
+
+    fn mark_disconnected(&self, message: &'static str) {
+        set_terminal_disconnected(
+            &self.session_disconnected,
+            &self.session_status_message,
+            message,
+        );
+    }
+
+    fn disconnected_message(&self) -> &'static str {
+        self.session_status_message
+            .lock()
+            .map_or("Session ended — input unavailable", |message| *message)
     }
     /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
     /// accessor — also what `AppWidget::app_title` returns.
@@ -1008,7 +1121,22 @@ impl TerminalWidget {
         // Draining first also drops the `output_rx` borrow before `feed` takes
         // `&mut self`.
         let mut batch = Vec::new();
-        while let Ok(bytes) = self.output_rx.try_recv() {
+        while batch.len() < MAX_PUMP_BYTES {
+            let bytes = match self.deferred_output.take() {
+                Some(bytes) => bytes,
+                None => match self.output_rx.try_recv() {
+                    Ok(bytes) => bytes,
+                    Err(_) => break,
+                },
+            };
+            let remaining = MAX_PUMP_BYTES.saturating_sub(batch.len());
+            // Chunks are reader-owned 8 KiB buffers, so this normally copies
+            // whole chunks. If either constant changes, do not drop the tail:
+            // parse that single oversize chunk and resume the budget next frame.
+            if bytes.len() > remaining && !batch.is_empty() {
+                self.deferred_output = Some(bytes);
+                break;
+            }
             batch.extend_from_slice(&bytes);
         }
         let activity = !batch.is_empty();
@@ -1148,14 +1276,40 @@ impl TerminalWidget {
         self.set_geometry(rect);
     }
 
-    /// Write raw bytes to the PTY's stdin — the same path a keystroke takes,
-    /// exposed so an embedding host (or a headless screenshot scenario) can
-    /// drive the shell programmatically (e.g. run a command for a demo frame).
-    pub fn write_input(&mut self, bytes: &[u8]) {
-        if let Ok(mut w) = self.pty_write.lock() {
-            let _ = w.write_all(bytes);
-            let _ = w.flush();
+    /// Write raw bytes to the PTY's stdin and report exact transport failure.
+    /// Resource actions use this fallible path so the action door cannot turn a
+    /// dead PTY into a false `Succeeded` result. Local keyboard/paste callers
+    /// use [`Self::write_input`], which records the same terminal state and
+    /// exposes it visibly even though winit cannot return an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the PTY has already ended, its writer lock is
+    /// poisoned, or either write/flush operation fails. Every such error marks
+    /// the session disconnected before returning.
+    pub fn try_write_input(&self, bytes: &[u8]) -> Result<(), String> {
+        if self.is_disconnected() {
+            return Err("terminal session is disconnected; input was not sent".to_string());
         }
+        let Ok(mut writer) = self.pty_write.lock() else {
+            self.mark_disconnected("Terminal input unavailable — PTY writer stopped");
+            return Err("terminal input is unavailable because its PTY writer stopped".to_string());
+        };
+        let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
+        drop(writer);
+        if failed {
+            self.mark_disconnected("Terminal input failed — session unavailable");
+            return Err("terminal input failed; the session is now disconnected".to_string());
+        }
+        Ok(())
+    }
+
+    /// Best-effort convenience wrapper for keyboard and embedded callers. Any
+    /// failure is still made durable through [`Self::is_disconnected`] and the
+    /// visible/a11y disconnected state; callers that can report completion use
+    /// [`Self::try_write_input`] instead.
+    pub fn write_input(&self, bytes: &[u8]) {
+        let _ = self.try_write_input(bytes);
     }
 
     /// Paste `text` into the PTY. When the running app has requested
@@ -1394,35 +1548,48 @@ impl Widget for TerminalWidget {
         reason = "JSON serialization of an owned String is infallible"
     )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let disconnected = self.is_disconnected();
+        let unavailable_reason =
+            "The terminal process has ended or its PTY failed; input cannot be sent.";
         let mut terminal = Resource::new(
             self.terminal_resource_id(),
             "terminal.session",
-            self.title.clone(),
+            "Terminal session",
         );
-        terminal.actions.push(
-            ActionSpec::prompted_operation(
-                "send",
-                "Send text",
-                "Text to send",
-                "command",
-                OperationKind::Effect,
-                "terminal.send",
-                |text| {
-                    EncodedAction::encode_operation("terminal.send", &text).expect("string payload")
-                },
-            )
-            .retry_policy(RetryPolicy::AtMostOnce),
-        );
+        let mut send = ActionSpec::prompted_operation(
+            "send",
+            "Send text",
+            "Text to send",
+            "command",
+            OperationKind::Effect,
+            "terminal.send",
+            |text| EncodedAction::encode_operation("terminal.send", &text).expect("string payload"),
+        )
+        .with_description(
+            "Writes reviewed text to this live process. It can run commands; confirmation is required.",
+        )
+        .privileged()
+        .retry_policy(RetryPolicy::AtMostOnce);
+        if disconnected {
+            send = send.unavailable("session_disconnected", unavailable_reason);
+        }
+        terminal.actions.push(send);
         for (id, label) in [
             ("interrupt", "Interrupt process"),
             ("clear", "Clear screen"),
         ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
-            {
-                terminal
-                    .actions
-                    .push(spec.retry_policy(RetryPolicy::Idempotent));
+            if let Ok(spec) = ActionSpec::operation(
+                id,
+                label,
+                OperationKind::Effect,
+                "terminal.control",
+                &id,
+            ) {
+                let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
+                if disconnected {
+                    control = control.unavailable("session_disconnected", unavailable_reason);
+                }
+                terminal.actions.push(control);
             }
         }
         vec![terminal]
@@ -1441,10 +1608,21 @@ impl Widget for TerminalWidget {
         }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
-            "terminal.send" => self.write_input(value.as_bytes()),
+            "terminal.send" => {
+                if value.is_empty() {
+                    return Err("text to send cannot be empty".to_string());
+                }
+                if value.len() > MAX_RESOURCE_SEND_BYTES {
+                    return Err(format!(
+                        "text to send exceeds the {} KiB reviewed-command limit",
+                        MAX_RESOURCE_SEND_BYTES / 1024
+                    ));
+                }
+                self.try_write_input(value.as_bytes())?;
+            }
             "terminal.control" => match value.as_str() {
-                "interrupt" => self.write_input(&[0x03]),
-                "clear" => self.write_input(&[0x0c]),
+                "interrupt" => self.try_write_input(&[0x03])?,
+                "clear" => self.try_write_input(&[0x0c])?,
                 _ => return Ok(false),
             },
             _ => return Ok(false),
@@ -1542,7 +1720,13 @@ impl Widget for TerminalWidget {
     /// armed — embedded in a host that pumps us, or during startup before the
     /// loop runs — we keep requesting frames so output still surfaces.
     fn needs_animation_frame(&self) -> bool {
-        self.waker.lock().map_or(true, |g| g.is_none())
+        // A bounded pump deliberately leaves excess output queued. Keep frames
+        // flowing until it is drained even when the reader's coalesced wake is
+        // already in flight; otherwise a saturated producer could strand the
+        // final queue behind `ControlFlow::Wait`.
+        self.deferred_output.is_some()
+            || !self.output_rx.is_empty()
+            || self.waker.lock().map_or(true, |g| g.is_none())
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing
@@ -1683,6 +1867,7 @@ impl Widget for TerminalWidget {
         }
         if !self.alt_active && !self.ever_nonblank {
             self.draw_empty_state(scene, transform, text_renderer, theme);
+            self.draw_disconnected_status(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -1748,6 +1933,7 @@ impl Widget for TerminalWidget {
                 presence,
             );
         }
+        self.draw_disconnected_status(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -1845,15 +2031,20 @@ impl Widget for TerminalWidget {
             .iter()
             .filter(|placement| placement.alternate_screen == self.alt_active)
             .count();
-        let description = if graphics == 0 {
+        let mut description = if graphics == 0 {
             "Read-only terminal transcript shared with collaborators; use the Send text action to write to the live process".to_string()
         } else {
             format!(
                 "Read-only terminal transcript shared with collaborators; use the Send text action \
                  to write to the live process; {graphics} graphical placement(s) are visible \
-                 when their image blobs are available"
+                when their image blobs are available"
             )
         };
+        if self.is_disconnected() {
+            description.push_str(". ");
+            description.push_str(self.disconnected_message());
+            description.push_str("; input actions are unavailable.");
+        }
         let selection = self.visible_selection_bytes(&value);
         let transcript = AccessNode::new(Role::Terminal)
             .with_name(self.title.clone())
@@ -2113,7 +2304,12 @@ impl TerminalWidget {
     /// Forward one xterm-compatible mouse report. SGR mode is preferred by
     /// modern TUIs and has unbounded coordinates; the legacy X10 form remains
     /// for older applications and is safely capped to its byte range.
-    fn report_mouse(&mut self, mut button: u8, pressed: bool, modifiers: winit::event::Modifiers) {
+    fn report_mouse(
+        &self,
+        mut button: u8,
+        pressed: bool,
+        modifiers: winit::event::Modifiers,
+    ) {
         let mods = modifiers.state();
         if mods.shift_key() {
             button |= 4;
@@ -2296,10 +2492,7 @@ impl TerminalWidget {
             bytes = Some(t.as_bytes().to_vec());
         }
         if let Some(b) = bytes {
-            if let Ok(mut w) = self.pty_write.lock() {
-                let _ = w.write_all(&b);
-                let _ = w.flush();
-            }
+            let _ = self.try_write_input(&b);
             // Typing snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
             *handled = true;
@@ -2362,21 +2555,27 @@ impl TerminalWidget {
 
     /// Refresh the window title + hyperlink registry from the CRDT so a
     /// collaborator picking up a remote OSC 0/2/8 sees the same title and
-    /// can resolve the same links. Cheap: title is one scalar, links is a
-    /// small map keyed by link id. Helper for [`Widget::sync`].
+    /// can resolve the same links. The remote document is still treated as
+    /// untrusted: revalidate title text and cap the link materialisation rather
+    /// than assuming every collaborator used this build. Helper for
+    /// [`Widget::sync`].
     fn refresh_title_and_links(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title")
             && let Some(t) = v.to_str()
+            && let Some(t) = safe_osc_text(t.as_bytes(), MAX_OSC_TITLE_BYTES)
         {
-            self.title = t.to_string();
+            self.title = t;
         }
         if let Some(links_id) = self.links_id.clone() {
             self.links.clear();
-            for key in state.keys(&links_id) {
+            self.next_link_id = 0;
+            for key in state.keys(&links_id).take(MAX_OSC_LINKS) {
                 if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key)
                     && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str())
+                    && let Some(url) = safe_osc_text(url.as_bytes(), MAX_OSC_LINK_BYTES)
                 {
-                    self.links.insert(id, url.to_string());
+                    self.next_link_id = self.next_link_id.max(id);
+                    self.links.insert(id, url);
                 }
             }
         }
@@ -2986,6 +3185,51 @@ impl TerminalWidget {
             size,
             theme.text_dim.with_alpha_factor(0.7),
             transform * Affine::translate((cx - f64::from(lw) / 2.0, cy + 4.0)),
+            None,
+            TextWeight::Medium,
+        );
+    }
+
+    /// Persistent, token-driven terminal lifecycle state. This deliberately is
+    /// not a transient toast: when a shell exits there is no live process to
+    /// recover by retrying, so both sighted users and assistive technology need
+    /// a stable explanation beside the preserved transcript.
+    fn draw_disconnected_status(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.is_disconnected() || self.grid_rect.width() <= 0.0 {
+            return;
+        }
+        let label = self.disconnected_message();
+        let size = theme.tokens.typography.scale.sm;
+        let (label_w, _) = tr.measure(label, size, None);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let height = f64::from(size) * 1.7;
+        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width());
+        let rect = Rect::new(
+            self.grid_rect.x0 + pad,
+            self.grid_rect.y1 - height - pad,
+            self.grid_rect.x0 + pad + width,
+            self.grid_rect.y1 - pad,
+        );
+        let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.spacing.s1));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.lift(0.3),
+            None,
+            &card,
+        );
+        tr.draw_text_weighted(
+            scene,
+            label,
+            size,
+            theme.text_primary,
+            transform * Affine::translate((rect.x0 + pad, rect.y0 + f64::from(size) * 0.25)),
             None,
             TextWeight::Medium,
         );
@@ -3787,8 +4031,10 @@ impl Perform for TerminalPerformer<'_> {
             // OSC 0 = icon name + window title; OSC 2 = window title. Both set
             // the title for our purposes.
             0 | 2 => {
-                if let Some(title) = params.get(1).copied() {
-                    *self.title_out = Some(String::from_utf8_lossy(title).into_owned());
+                if let Some(title) = params.get(1).copied()
+                    && let Some(title) = safe_osc_text(title, MAX_OSC_TITLE_BYTES)
+                {
+                    *self.title_out = Some(title);
                 }
             }
             // OSC 52 — manipulate the selection/clipboard. Form:
@@ -3802,7 +4048,15 @@ impl Perform for TerminalPerformer<'_> {
                 if data == b"?" || data.is_empty() {
                     return;
                 }
+                let max_encoded = MAX_OSC_CLIPBOARD_BYTES
+                    .saturating_mul(4)
+                    .saturating_div(3)
+                    .saturating_add(4);
+                if data.len() > max_encoded {
+                    return;
+                }
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data)
+                    && bytes.len() <= MAX_OSC_CLIPBOARD_BYTES
                     && let Ok(text) = String::from_utf8(bytes)
                 {
                     // `p` selects the primary selection; anything else
@@ -3821,10 +4075,11 @@ impl Perform for TerminalPerformer<'_> {
                 let uri = params.get(2).copied().unwrap_or(b"");
                 if uri.is_empty() {
                     self.current_link_id = 0;
-                } else {
-                    let url = String::from_utf8_lossy(uri).into_owned();
-                    *self.next_link_id = self.next_link_id.wrapping_add(1).max(1);
-                    let id = *self.next_link_id;
+                } else if self.state.length(&self.links_id) < MAX_OSC_LINKS
+                    && let Some(url) = safe_osc_text(uri, MAX_OSC_LINK_BYTES)
+                    && let Some(id) = self.next_link_id.checked_add(1)
+                {
+                    *self.next_link_id = id;
                     let _ = self.state.put(&self.links_id, id.to_string(), url);
                     self.current_link_id = id;
                 }
@@ -5352,24 +5607,44 @@ impl TerminalWidget {
     fn from_backend(backend: TerminalBackend) -> Self {
         let writer = std::sync::Arc::new(std::sync::Mutex::new(backend.writer));
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
-        let (output_tx, output_rx) = crossbeam_channel::unbounded();
+        let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
 
         let widget = TerminalWidget::new(writer, master, output_rx);
         // Share the waker + coalescing flag with the reader thread so fresh PTY
         // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
         let waker = widget.waker.clone();
         let wake_pending = widget.wake_pending.clone();
+        let session_disconnected = widget.session_disconnected.clone();
+        let session_status_message = widget.session_status_message.clone();
 
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
-        std::thread::spawn(move || {
+        let reader_result = std::thread::Builder::new()
+            .name("qos-terminal-pty-reader".to_string())
+            .spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
                 // A poisoned lock means the reader is unrecoverable (some
                 // other thread panicked while holding it); nothing to do but
                 // stop this reader rather than panic here too.
-                let Ok(mut r) = reader.lock() else { break };
+                let Ok(mut r) = reader.lock() else {
+                    set_terminal_disconnected(
+                        &session_disconnected,
+                        &session_status_message,
+                        "Terminal reader failed — session unavailable",
+                    );
+                    request_terminal_wake(&waker, &wake_pending);
+                    break;
+                };
                 match std::io::Read::read(&mut *r, &mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        set_terminal_disconnected(
+                            &session_disconnected,
+                            &session_status_message,
+                            "Session ended — input unavailable",
+                        );
+                        request_terminal_wake(&waker, &wake_pending);
+                        break;
+                    }
                     Ok(n) => {
                         let Some(chunk) = buf.get(..n) else { break };
                         if output_tx.send(chunk.to_vec()).is_err() {
@@ -5378,27 +5653,15 @@ impl TerminalWidget {
                         // Wake the event loop so `sync` drains the PTY. Coalesced
                         // via `wake_pending`: at most one in-flight wake until the
                         // App delivers it (`on_external_event` clears the flag).
-                        if !wake_pending.swap(true, Ordering::AcqRel) {
-                            let armed = waker
-                                .lock()
-                                .ok()
-                                .and_then(|g| {
-                                    g.as_ref().map(|p| {
-                                        let _ = p.send_event(UserEvent::External(String::new()));
-                                    })
-                                })
-                                .is_some();
-                            if !armed {
-                                // No proxy yet (embedded host, or startup before
-                                // the loop arms it): reset so the next read retries.
-                                // `needs_animation_frame` keeps polling meanwhile.
-                                wake_pending.store(false, Ordering::Release);
-                            }
-                        }
+                        request_terminal_wake(&waker, &wake_pending);
                     }
                 }
             }
         });
+        if reader_result.is_err() {
+            widget.mark_disconnected("Terminal unavailable — PTY reader could not start");
+            request_terminal_wake(&widget.waker, &widget.wake_pending);
+        }
 
         widget
     }
