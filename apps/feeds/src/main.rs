@@ -51,6 +51,7 @@ pub fn main() {
                 "context-menu",
                 "post-import",
                 "add-subscription",
+                "tags",
             ])
             .configure_app(|app| feeds::actions::register(app.action_registry_mut())),
     );
