@@ -21,6 +21,7 @@ use crate::model::{Article, Feed, Store};
 pub const ARTICLE_KIND: &str = "Articles";
 /// The group header for feed (subscription) results.
 pub const FEED_KIND: &str = "Feeds";
+pub const TAG_KIND: &str = "Tags";
 
 /// A complete, bounded-query search catalogue over the reader's durable store.
 ///
@@ -48,6 +49,9 @@ impl FeedsSearchProvider {
             if let Some(feed) = store.feed(article.feed_id) {
                 provider.index_article(article, feed);
             }
+        }
+        for tag in store.tags() {
+            provider.index_tag(&tag);
         }
         provider
     }
@@ -102,11 +106,29 @@ impl FeedsSearchProvider {
         let _ = self.catalog.upsert(
             address.resource,
             format!(
-                "{}\0{}\0{}\0{}",
-                article.title, article.author, article.summary, feed.title
+                "{}\0{}\0{}\0{}\0{}",
+                article.title,
+                article.author,
+                article.summary,
+                feed.title,
+                article.tags.join("\0")
             ),
             result,
         );
+    }
+
+    fn index_tag(&self, tag: &str) {
+        let result = SearchResult::for_action(
+            TAG_KIND,
+            format!("#{tag}"),
+            qos_actions::ActionAddress::new(crate::actions::tag_resource_id(tag), "open"),
+        )
+        .with_icon(Icon::Pin)
+        .with_subtitle("Tagged articles");
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        let _ = self.catalog.upsert(address.resource, tag, result);
     }
 
     #[cfg(test)]
@@ -209,6 +231,7 @@ mod tests {
             blocks: Vec::new(),
             read: false,
             starred: false,
+            tags: Vec::new(),
         }
     }
 
@@ -238,7 +261,7 @@ mod tests {
     fn empty_query_browses_every_article_and_feed_within_the_requested_limit() {
         let store = seeded();
         let provider = FeedsSearchProvider::new(&store);
-        let total = store.articles.len() + store.feeds.len();
+        let total = store.articles.len() + store.feeds.len() + store.tags().len();
         assert_eq!(provider.search_limited("", total).len(), total);
     }
 
@@ -309,12 +332,19 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         let resources = app.resources(&doc);
-        let total = app.store_article_ids().len() + app.store_feed_ids().len();
+        let tag_count = crate::sample::store().tags().len();
+        let total = app.store_article_ids().len() + app.store_feed_ids().len() + tag_count;
         let hits = app.search_providers()[0].search_limited("", total);
         assert!(hits.iter().all(|hit| {
             hit.action_address().is_some_and(|address| {
                 qos_actions::door::resolve(&resources, &address)
                     .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View)
+                    || app
+                        .resource(&doc, address.resource.as_str())
+                        .is_some_and(|resource| {
+                            qos_actions::door::resolve(&[resource], &address)
+                                .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View)
+                        })
             })
         }));
     }
