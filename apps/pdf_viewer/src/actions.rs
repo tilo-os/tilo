@@ -50,6 +50,29 @@ pub const PDF_VIEWER_OPERATION_TYPE: &str = "pdf_viewer.operation";
 /// contract, while [`ResourceProvider::resource`] retains complete reachability
 /// by stable id.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
+/// A find query can produce hundreds of matches, but resources are consumed by
+/// global search, agents and history.  Project a useful first page without
+/// turning a pathological PDF into an unbounded action directory.
+pub const SEARCH_RESULT_RESOURCE_LIMIT: usize = 32;
+
+/// Stable, non-secret identity for one local find projection.  Include the
+/// matching options because the same words under a different option set are a
+/// different result set.  This is deliberately an address token rather than a
+/// display value; the original query remains in the operation payload.
+pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in query
+        .trim()
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain([u8::from(whole_word), u8::from(case_sensitive)])
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PdfOperation {
@@ -62,9 +85,24 @@ pub enum PdfOperation {
     ToggleSidebar,
     ToggleRail,
     OpenSearch,
-    GoToPage { page: usize },
-    Open { path: Option<String> },
-    SaveAs { path: Option<String> },
+    GoToPage {
+        page: usize,
+    },
+    /// A materialised, bounded find result.  Carry the complete local query
+    /// state so invocation restores the exact result before navigating.
+    GoToSearchResult {
+        query: String,
+        whole_word: bool,
+        case_sensitive: bool,
+        index: usize,
+        page: usize,
+    },
+    Open {
+        path: Option<String>,
+    },
+    SaveAs {
+        path: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -128,7 +166,8 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: PdfOperation) ->
         | PdfOperation::ToggleSidebar
         | PdfOperation::ToggleRail
         | PdfOperation::OpenSearch
-        | PdfOperation::GoToPage { .. } => spec.with_contract(ActionContract::view()),
+        | PdfOperation::GoToPage { .. }
+        | PdfOperation::GoToSearchResult { .. } => spec.with_contract(ActionContract::view()),
         PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => spec.destructive(),
     }
 }
@@ -296,6 +335,9 @@ pub enum PdfViewerAction {
     /// Append a reply to a comment thread.
     AddReply {
         comment_id: String,
+        /// Minted by the author, never by `Action::apply`, so replay and
+        /// concurrent replicas retain the exact same reply identity.
+        id: String,
         author: String,
         body: String,
     },
@@ -420,6 +462,7 @@ impl Action for PdfViewerAction {
             }
             PdfViewerAction::AddReply {
                 comment_id,
+                id,
                 author,
                 body,
             } => {
@@ -427,6 +470,7 @@ impl Action for PdfViewerAction {
                     doc,
                     comment_id,
                     &Reply {
+                        id: id.clone(),
                         author: author.clone(),
                         body: body.clone(),
                     },
@@ -579,8 +623,21 @@ pub fn set_comment_resolved_action(id: &str, resolved: bool) -> PdfViewerAction 
 }
 
 pub fn add_reply_action(comment_id: &str, author: &str, body: &str) -> PdfViewerAction {
+    add_reply_action_with_id(comment_id, &Reply::new_id(), author, body)
+}
+
+/// Build a reply action with its already-minted durable id.  The explicit
+/// variant is used by replay/merge tests and by integrations that author an
+/// envelope before it is dispatched.
+pub fn add_reply_action_with_id(
+    comment_id: &str,
+    reply_id: &str,
+    author: &str,
+    body: &str,
+) -> PdfViewerAction {
     PdfViewerAction::AddReply {
         comment_id: comment_id.to_string(),
+        id: reply_id.to_string(),
         author: author.to_string(),
         body: body.to_string(),
     }
@@ -671,6 +728,11 @@ pub struct PdfResourceCtx {
     /// Current bounded find projection. Search itself stays local view state;
     /// each materialized hit is still navigable by agents and history.
     pub search_query: String,
+    pub search_whole_word: bool,
+    pub search_case_sensitive: bool,
+    /// Stable token for the query plus options.  It prevents a stale result
+    /// address from being rebound to ordinal `N` in a later find query.
+    pub search_token: String,
     pub search_pages: Vec<usize>,
     pub outline: Vec<(String, usize, u8)>,
 }
@@ -703,6 +765,32 @@ fn comment_label(c: &Comment) -> String {
     } else {
         format!("Comment — {t}")
     }
+}
+
+fn reply_label(reply: &Reply) -> String {
+    let mut text: String = reply.body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() > 48 {
+        text = text.chars().take(45).collect::<String>() + "…";
+    }
+    if text.is_empty() {
+        format!("Reply — {}", reply.author)
+    } else {
+        format!("Reply — {text}")
+    }
+}
+
+fn reply_resource(comment: &Comment, reply: &Reply) -> Resource {
+    Resource::new(
+        format!("pdf.reply:{}:{}", comment.id, reply.id),
+        "pdf.reply",
+        reply_label(reply),
+    )
+    .with_action(operation(
+        "open",
+        "Go to reply",
+        OperationKind::View,
+        PdfOperation::GoToPage { page: comment.page },
+    ))
 }
 
 /// Build a comment resource: edit / reply / resolve / delete, all one source of
@@ -754,6 +842,9 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
 
     if let Some(spec) = encode_spec("delete", "Delete comment", &delete_comment_action(&c.id)) {
         res = res.with_action(spec);
+    }
+    for reply in c.replies.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        res = res.with_child(reply_resource(c, reply));
     }
     res
 }
@@ -835,7 +926,10 @@ fn outline_resource(ctx: &PdfResourceCtx, index: usize, title: &str, page: usize
 
 fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Resource {
     Resource::new(
-        format!("pdf.search-result:{}:{index}:{page}", ctx.doc_id),
+        format!(
+            "pdf.search-result:{}:{}:{index}:{page}",
+            ctx.doc_id, ctx.search_token
+        ),
         "pdf.search-result",
         format!("Match {} · page {page}", index + 1),
     )
@@ -843,7 +937,13 @@ fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Re
         "open",
         "Go to match",
         OperationKind::View,
-        PdfOperation::GoToPage { page },
+        PdfOperation::GoToSearchResult {
+            query: ctx.search_query.clone(),
+            whole_word: ctx.search_whole_word,
+            case_sensitive: ctx.search_case_sensitive,
+            index,
+            page,
+        },
     ))
 }
 
@@ -973,7 +1073,7 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             .search_pages
             .iter()
             .copied()
-            .take(CONTEXTUAL_CHILD_LIMIT)
+            .take(SEARCH_RESULT_RESOURCE_LIMIT)
             .enumerate()
         {
             search = search.with_child(search_result_resource(ctx, index, page));
@@ -1198,6 +1298,19 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
             .find(|comment| comment.id == raw)
             .map(|comment| comment_resource(&comment, &ctx.author));
     }
+    if let Some(raw) = id.strip_prefix("pdf.reply:") {
+        let (comment_id, reply_id) = raw.split_once(':')?;
+        return PdfDoc::list_comments(doc)
+            .into_iter()
+            .find(|comment| comment.id == comment_id)
+            .and_then(|comment| {
+                comment
+                    .replies
+                    .iter()
+                    .find(|reply| reply.id == reply_id)
+                    .map(|reply| reply_resource(&comment, reply))
+            });
+    }
     if let Some(raw) = id.strip_prefix("pdf.signature:") {
         return PdfDoc::list_signatures(doc)
             .into_iter()
@@ -1236,7 +1349,13 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
     }
     let search_prefix = format!("pdf.search-result:{}:", ctx.doc_id);
     if let Some(raw) = id.strip_prefix(&search_prefix) {
-        let (index, page) = raw.split_once(':')?;
+        let mut parts = raw.split(':');
+        let token = parts.next()?;
+        let index = parts.next()?;
+        let page = parts.next()?;
+        if parts.next().is_some() || token != ctx.search_token {
+            return None;
+        }
         let index = index.parse::<usize>().ok()?;
         let page = page.parse::<usize>().ok()?;
         return ctx
@@ -1391,6 +1510,27 @@ mod tests {
         assert!(cm_actions.contains(&"reply"), "{cm_actions:?}");
         assert!(cm_actions.contains(&"toggle-resolved"), "{cm_actions:?}");
         assert!(cm_actions.contains(&"delete"), "{cm_actions:?}");
+        let comment_with_reply = document
+            .children
+            .iter()
+            .flat_map(|parent| parent.children.iter())
+            .find(|resource| resource.kind == "pdf.comment" && !resource.children.is_empty())
+            .expect("a seeded reply belongs to a canonical comment resource");
+        let reply = comment_with_reply
+            .children
+            .first()
+            .expect("durable reply is nested under its canonical comment");
+        assert_eq!(reply.kind, "pdf.reply");
+        assert!(reply.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            resolve_resource(
+                &app.pdf_resource_ctx().unwrap(),
+                &state.doc,
+                reply.id.as_str(),
+            )
+            .is_some(),
+            "a reply remains lazily addressable for agents and history"
+        );
 
         // The seeded free comment (pinned to no annotation) is a document child.
         assert!(
@@ -1731,6 +1871,9 @@ mod tests {
             signature_date: "2026-09-06".into(),
             created_seed: 0,
             search_query: String::new(),
+            search_whole_word: false,
+            search_case_sensitive: false,
+            search_token: search_result_token("", false, false),
             search_pages: Vec::new(),
             outline: Vec::new(),
         };
