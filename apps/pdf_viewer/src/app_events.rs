@@ -120,7 +120,13 @@ impl PdfApp {
         }
         let lay = self.toolbar_layout();
         if lay.open.contains(p) {
-            return Some(ToolbarHit::Open);
+            // A pending open owns the document slot; starting a second picker
+            // would only create a competing request.  Consume the press while
+            // the chrome is visibly disabled.
+            if self.pending_open.is_none() {
+                return Some(ToolbarHit::Open);
+            }
+            return Some(ToolbarHit::Tool(self.tool));
         }
         if lay.save.contains(p) {
             return Some(ToolbarHit::Save);
@@ -342,7 +348,7 @@ impl PdfApp {
         }
         // Empty state: the only affordance is the centred "Open a PDF…" button.
         if !self.has_document {
-            if self.empty_open_button_rect().contains(p) {
+            if self.pending_open.is_none() && self.empty_open_button_rect().contains(p) {
                 self.request_open_via_portal();
             }
             return true;

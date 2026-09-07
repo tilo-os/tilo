@@ -8,7 +8,7 @@ use ui::search::{
     SearchProvider, SearchResult,
 };
 
-use crate::actions::PdfResourceCtx;
+use crate::actions::{PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT};
 use crate::model::{Annotation, Comment, Page, Signature};
 
 pub const PDF_SEARCH_KIND: &str = "PDF Viewer";
@@ -30,6 +30,10 @@ impl PdfSearchProvider {
     ///
     /// Returns a catalog error if a stable id is invalid or a result does not
     /// use an action address for exactly that resource.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one retained index projection keeps every canonical PDF resource visible for global search"
+    )]
     pub fn index_into(
         catalog: &SearchCatalog,
         ctx: &PdfResourceCtx,
@@ -112,6 +116,23 @@ impl PdfSearchProvider {
                 .with_subtitle(comment.body.clone()),
             )?;
             ids.insert(resource);
+            for reply in &comment.replies {
+                let resource = format!("pdf.reply:{}:{}", comment.id, reply.id);
+                catalog.upsert(
+                    resource.clone(),
+                    format!(
+                        "reply\0{}\0{}\0page {}\0open",
+                        reply.author, reply.body, comment.page
+                    ),
+                    SearchResult::for_action(
+                        PDF_SEARCH_KIND,
+                        format!("Reply — {}", reply.author),
+                        ActionAddress::new(&resource, "open"),
+                    )
+                    .with_subtitle(reply.body.clone()),
+                )?;
+                ids.insert(resource);
+            }
         }
         for signature in signatures {
             let resource = format!("pdf.signature:{}", signature.id);
@@ -129,6 +150,40 @@ impl PdfSearchProvider {
                 .with_subtitle(format!("Page {} · {}", signature.page, signature.date)),
             )?;
             ids.insert(resource);
+        }
+        // The current find query is local view state, but its materialised
+        // results are still first-class, canonical resources.  Keep this
+        // projection bounded and use the same ids/actions as Ctrl+K's resource
+        // tree so a global-search hit cannot accidentally navigate to a later
+        // query's ordinal match.
+        if !ctx.search_query.trim().is_empty() {
+            for (index, page) in ctx
+                .search_pages
+                .iter()
+                .copied()
+                .take(SEARCH_RESULT_RESOURCE_LIMIT)
+                .enumerate()
+            {
+                let resource = format!(
+                    "pdf.search-result:{}:{}:{index}:{page}",
+                    ctx.doc_id, ctx.search_token
+                );
+                catalog.upsert(
+                    resource.clone(),
+                    format!(
+                        "find result\0{}\0page {page}\0match {}\0open",
+                        ctx.search_query,
+                        index + 1
+                    ),
+                    SearchResult::for_action(
+                        PDF_SEARCH_KIND,
+                        format!("Match {} · page {page}", index + 1),
+                        ActionAddress::new(&resource, "open"),
+                    )
+                    .with_subtitle(format!("Find result for “{}”", ctx.search_query)),
+                )?;
+                ids.insert(resource);
+            }
         }
         Ok(ids)
     }
