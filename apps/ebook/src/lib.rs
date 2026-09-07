@@ -47,6 +47,7 @@ pub mod content;
 pub mod doc;
 pub mod epub;
 mod input_controls;
+mod local_library;
 pub mod model;
 pub mod paginate;
 pub mod paint;
