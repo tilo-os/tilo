@@ -14,8 +14,10 @@ use vello::kurbo::Point;
 #[test]
 fn overlay_stack_push_pop_order() {
     let mut s = OverlayStack::new();
-    let a = s.push_modal(Modal::new("a"));
-    let b = s.push_popover(Popover::new("b", Point::new(100.0, 100.0)));
+    let a = s.push_modal(Modal::new("a")).expect("initial ID");
+    let b = s
+        .push_popover(Popover::new("b", Point::new(100.0, 100.0)))
+        .expect("second ID");
     assert_eq!(s.len(), 2);
     assert_eq!(s.top_id(), Some(b));
     s.dismiss(a);
