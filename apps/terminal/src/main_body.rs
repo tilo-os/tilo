@@ -1578,13 +1578,9 @@ impl Widget for TerminalWidget {
             ("interrupt", "Interrupt process"),
             ("clear", "Clear screen"),
         ] {
-            if let Ok(spec) = ActionSpec::operation(
-                id,
-                label,
-                OperationKind::Effect,
-                "terminal.control",
-                &id,
-            ) {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
+            {
                 let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
                 if disconnected {
                     control = control.unavailable("session_disconnected", unavailable_reason);
@@ -2304,12 +2300,7 @@ impl TerminalWidget {
     /// Forward one xterm-compatible mouse report. SGR mode is preferred by
     /// modern TUIs and has unbounded coordinates; the legacy X10 form remains
     /// for older applications and is safely capped to its byte range.
-    fn report_mouse(
-        &self,
-        mut button: u8,
-        pressed: bool,
-        modifiers: winit::event::Modifiers,
-    ) {
+    fn report_mouse(&self, mut button: u8, pressed: bool, modifiers: winit::event::Modifiers) {
         let mods = modifiers.state();
         if mods.shift_key() {
             button |= 4;
@@ -5621,43 +5612,43 @@ impl TerminalWidget {
         let reader_result = std::thread::Builder::new()
             .name("qos-terminal-pty-reader".to_string())
             .spawn(move || {
-            let mut buf = [0u8; 8192];
-            loop {
-                // A poisoned lock means the reader is unrecoverable (some
-                // other thread panicked while holding it); nothing to do but
-                // stop this reader rather than panic here too.
-                let Ok(mut r) = reader.lock() else {
-                    set_terminal_disconnected(
-                        &session_disconnected,
-                        &session_status_message,
-                        "Terminal reader failed — session unavailable",
-                    );
-                    request_terminal_wake(&waker, &wake_pending);
-                    break;
-                };
-                match std::io::Read::read(&mut *r, &mut buf) {
-                    Ok(0) | Err(_) => {
+                let mut buf = [0u8; 8192];
+                loop {
+                    // A poisoned lock means the reader is unrecoverable (some
+                    // other thread panicked while holding it); nothing to do but
+                    // stop this reader rather than panic here too.
+                    let Ok(mut r) = reader.lock() else {
                         set_terminal_disconnected(
                             &session_disconnected,
                             &session_status_message,
-                            "Session ended — input unavailable",
+                            "Terminal reader failed — session unavailable",
                         );
                         request_terminal_wake(&waker, &wake_pending);
                         break;
-                    }
-                    Ok(n) => {
-                        let Some(chunk) = buf.get(..n) else { break };
-                        if output_tx.send(chunk.to_vec()).is_err() {
+                    };
+                    match std::io::Read::read(&mut *r, &mut buf) {
+                        Ok(0) | Err(_) => {
+                            set_terminal_disconnected(
+                                &session_disconnected,
+                                &session_status_message,
+                                "Session ended — input unavailable",
+                            );
+                            request_terminal_wake(&waker, &wake_pending);
                             break;
                         }
-                        // Wake the event loop so `sync` drains the PTY. Coalesced
-                        // via `wake_pending`: at most one in-flight wake until the
-                        // App delivers it (`on_external_event` clears the flag).
-                        request_terminal_wake(&waker, &wake_pending);
+                        Ok(n) => {
+                            let Some(chunk) = buf.get(..n) else { break };
+                            if output_tx.send(chunk.to_vec()).is_err() {
+                                break;
+                            }
+                            // Wake the event loop so `sync` drains the PTY. Coalesced
+                            // via `wake_pending`: at most one in-flight wake until the
+                            // App delivers it (`on_external_event` clears the flag).
+                            request_terminal_wake(&waker, &wake_pending);
+                        }
                     }
                 }
-            }
-        });
+            });
         if reader_result.is_err() {
             widget.mark_disconnected("Terminal unavailable — PTY reader could not start");
             request_terminal_wake(&widget.waker, &widget.wake_pending);
