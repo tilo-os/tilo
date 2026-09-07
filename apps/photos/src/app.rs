@@ -35,7 +35,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
-use ui::icons::Icon;
+use ui::icons::{Icon, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -91,6 +91,12 @@ const CANVAS_INSET: f32 = 10.0;
 const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
+
+/// A four-column shelf is only useful while each photograph remains a
+/// recognisable, comfortably targetable card.  At tablet and phone widths a
+/// two-column shelf preserves both the picture and its independent favourite
+/// and removal affordances instead of squeezing all four into a tiny row.
+const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
 
 #[derive(Clone)]
 struct ThumbnailJob {
@@ -1825,7 +1831,11 @@ impl PhotosApp {
             return;
         }
         let bounds = self.canvas_rect;
-        let columns: usize = if bounds.width() < 540.0 { 2 } else { 4 };
+        let columns: usize = if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W {
+            2
+        } else {
+            4
+        };
         let gap = if columns == 2 { 8.0 } else { 12.0 };
         let card_w =
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
@@ -1909,7 +1919,17 @@ impl PhotosApp {
                 x += width + 8.0;
             }
         }
-        let top = heading_y + 31.0 + album_h;
+        // On a phone the album-management actions sit beneath the chips, not
+        // over the final row of photographs. Reserve their compact strip in
+        // the grid geometry so a short library cannot make controls look
+        // attached to (or hide) an unrelated picture.
+        let compact_album_actions_h =
+            if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W && !self.album_editor {
+                42.0
+            } else {
+                0.0
+            };
+        let top = heading_y + 31.0 + album_h + compact_album_actions_h;
         let preview_h = (card_w * 0.62).clamp(68.0, 144.0);
         let card_h = preview_h + 38.0;
         let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
@@ -1951,6 +1971,22 @@ impl PhotosApp {
                     ))
                     * Affine::scale(scale);
                 scene.draw_image(image, image_transform);
+            } else {
+                // Decoding happens off the UI thread and is deliberately
+                // bounded to one small job per sync.  A quiet image glyph is
+                // an honest loading/unavailable placeholder that keeps a
+                // shelf recognisable while it catches up, instead of a row
+                // of anonymous empty rectangles.
+                let icon_side = preview.width().min(preview.height()).min(34.0);
+                let icon_rect = Rect::from_center_size(preview.center(), (icon_side, icon_side));
+                draw_icon(
+                    scene,
+                    transform,
+                    icon_rect,
+                    Icon::Image,
+                    theme.text_dim,
+                    1.5,
+                );
             }
             scene.fill(
                 Fill::NonZero,
@@ -2036,8 +2072,22 @@ impl PhotosApp {
         // A phone must keep actual photographs reachable while editing; a
         // compact bottom sheet leaves the upper grid visible instead of
         // turning “choose photographs” into an instruction with no surface.
-        let panel_h = if narrow { 230.0 } else { 332.0 };
-        let panel_y = if narrow {
+        let panel_h = if !self.album_editor && narrow {
+            36.0
+        } else if narrow {
+            230.0
+        } else {
+            332.0
+        };
+        let album_chips_h = if self.library_albums.is_empty() {
+            0.0
+        } else {
+            38.0
+        };
+        let panel_y = if !self.album_editor && narrow {
+            // Kept in lock-step with `draw_library`'s compact action reserve.
+            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 3.0
+        } else if narrow {
             bounds.y1 - panel_h - 8.0
         } else {
             bounds.y0 + 10.0
