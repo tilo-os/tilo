@@ -2012,6 +2012,7 @@ dependencies = [
  "gstreamer-app",
  "image",
  "iroh",
+ "qdoc",
  "qos-actions",
  "qos-app",
  "qos-callstream",

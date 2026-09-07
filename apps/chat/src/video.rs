@@ -174,6 +174,7 @@ mod tests {
         let mut sender = VideoStreamSender::new(W, H, 30).expect("shared-stack sender");
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
+            .expect("shared sender accepts the frame")
             .expect("throttle admits first frame + encoder emits a NALU");
 
         // Cross the wire form the call transport uses.
