@@ -70,7 +70,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
     // A `--scenario NAME` arg snaps a specific UI surface into view so a
     // single headless frame captures it (new-contact form, export
-    // selection dialog, unsaved-changes modal, right-click menu). The
+    // selection dialog, unsaved-changes modal, group filter, right-click menu). The
     // hooks need the document seeded first, which `render_shot_to_png`
     // does before drawing — so they're applied through a closure run
     // *after* the sync pass.
@@ -80,6 +80,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("editfocus") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_focused()),
         Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
         Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
+        Some("groups") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_group_filter()),
         Some("context") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu()),
         Some("confirm") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_confirm_delete()),
         Some("import-conflict") => {
@@ -115,6 +116,7 @@ pub fn main() {
                 "editfocus",
                 "export",
                 "unsaved",
+                "groups",
                 "context",
                 "confirm",
                 "import-conflict",
