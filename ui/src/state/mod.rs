@@ -78,10 +78,19 @@ impl UndoLog {
         self.revision
     }
 
+    /// Whether another distinct stack revision can be issued.
+    fn can_bump(&self) -> bool {
+        self.revision != u64::MAX
+    }
+
     /// Record that a stack changed. Called from every mutation below; if a new
-    /// one forgets, a control renders stale.
+    /// one forgets, a control renders stale. Callers must reserve capacity with
+    /// [`Self::can_bump`] before changing a stack, so revision exhaustion never
+    /// wraps or leaves a half-applied undo transition behind.
     fn bump(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
+        if let Some(next) = self.revision.checked_add(1) {
+            self.revision = next;
+        }
     }
 
     /// Re-baseline against the document's current heads, without touching
@@ -183,6 +192,13 @@ impl UndoLog {
         author: Option<UserId>,
         message: Option<String>,
     ) -> bool {
+        // Do this before committing the open Automerge transaction. At the
+        // limit we must leave both the document's commit boundary and the
+        // history stacks untouched rather than make a change widgets cannot
+        // distinguish from an earlier one.
+        if !self.can_bump() {
+            return false;
+        }
         let before = self.last_heads.clone();
         // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
         // automerge's advisory timestamp at zero, which is why a history pane
@@ -230,8 +246,8 @@ impl UndoLog {
         before: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-    ) {
-        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None);
+    ) -> bool {
+        self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
     }
 
     /// As [`Self::record_committed_action`], naming who performed it — for a
@@ -248,13 +264,16 @@ impl UndoLog {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
         author: Option<UserId>,
-    ) {
+    ) -> bool {
         let after = doc.get_heads();
         if after == before {
             // Nothing to undo, but the baseline moves up all the same — same
             // reason as the empty-transaction path in `commit_action_authored`.
             self.last_heads = after;
-            return;
+            return false;
+        }
+        if !self.can_bump() {
+            return false;
         }
         push_history(
             &mut self.undo_stack,
@@ -269,6 +288,7 @@ impl UndoLog {
         self.redo_stack.clear();
         self.last_heads = after;
         self.bump();
+        true
     }
 
     /// Apply the inverse of `[entry.before, entry.after]` as a NEW forward
@@ -295,6 +315,9 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        if !self.can_bump() {
+            return None;
+        }
         let entry = self.undo_stack.pop()?;
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
@@ -337,6 +360,9 @@ impl UndoLog {
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
         let idx = self.undo_index_for(Some(author))?;
+        if !self.can_bump() {
+            return None;
+        }
         let entry = self.undo_stack.remove(idx);
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
@@ -372,6 +398,9 @@ impl UndoLog {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
+        if !self.can_bump() {
+            return None;
+        }
         let entry = self.redo_stack.pop()?;
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
@@ -399,6 +428,9 @@ impl UndoLog {
             return self.redo(doc, current_focused_idx, current_metadata);
         };
         let idx = self.redo_index_for(Some(a))?;
+        if !self.can_bump() {
+            return None;
+        }
         let entry = self.redo_stack.remove(idx);
         self.bump();
         let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
@@ -426,6 +458,9 @@ impl UndoLog {
     ) -> bool {
         let current = doc.get_heads();
         if current == target_heads {
+            return false;
+        }
+        if !self.can_bump() {
             return false;
         }
         // `apply_inverse` writes the delta that leads from `after` back to
@@ -497,12 +532,19 @@ impl State {
     ///
     /// `collab` (remote cursors and presence) is kept: presence is about who
     /// else is here, which does not change because the document on screen did.
-    pub fn adopt_doc(&mut self, doc: AutoCommit) {
-        let next = self.undo.revision().wrapping_add(1);
+    /// Returns `false` when the history revision namespace is exhausted. In
+    /// that case the live document is deliberately left in place: adopting a
+    /// new one under an indistinguishable revision could reuse cached history
+    /// UI from the old document.
+    pub fn adopt_doc(&mut self, doc: AutoCommit) -> bool {
+        let Some(next) = self.undo.revision().checked_add(1) else {
+            return false;
+        };
         self.doc = doc;
         self.root = automerge::ROOT;
         self.undo = UndoLog::new(&mut self.doc);
         self.undo.revision = next;
+        true
     }
 
     /// This document's history, for a caller that drives undo itself.
@@ -631,9 +673,9 @@ impl State {
         before: Vec<ChangeHash>,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
-    ) {
+    ) -> bool {
         self.undo
-            .record_committed_action(&mut self.doc, before, focused_node_idx, metadata);
+            .record_committed_action(&mut self.doc, before, focused_node_idx, metadata)
     }
 
     /// As [`Self::record_committed_action`], naming who performed it — for a
@@ -645,14 +687,14 @@ impl State {
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
         author: Option<UserId>,
-    ) {
+    ) -> bool {
         self.undo.record_committed_action_authored(
             &mut self.doc,
             before,
             focused_node_idx,
             metadata,
             author,
-        );
+        )
     }
 
     /// Rewrite the document to the content it had at `target_heads`, as a NEW
@@ -1556,6 +1598,35 @@ mod tests {
             !state.can_undo_as(Some(&a)),
             "the new document has no history"
         );
+    }
+
+    #[test]
+    fn exhausted_history_revision_refuses_transitions_without_mutating() {
+        let mut state = State::new();
+        let author = alice();
+        type_action(&mut state, "body", "before exhaustion", &author);
+        let heads_before_undo = state.doc.get_heads();
+        state.undo.revision = u64::MAX;
+
+        assert!(
+            state.undo_as(Some(&author), None, None).is_none(),
+            "undo must fail rather than reuse an old revision"
+        );
+        assert_eq!(state.doc.get_heads(), heads_before_undo);
+        assert!(state.can_undo_as(Some(&author)), "the entry was not popped");
+
+        state.doc.put(&automerge::ROOT, "later", 1).unwrap();
+        let heads_before_commit = state.doc.get_heads();
+        assert!(
+            !state.commit_action_authored(None, None, Some(author)),
+            "committing at exhaustion must fail closed"
+        );
+        assert_eq!(state.doc.get_heads(), heads_before_commit);
+        assert_eq!(state.history_revision(), u64::MAX);
+
+        let replacement = automerge::AutoCommit::new();
+        assert!(!state.adopt_doc(replacement));
+        assert_eq!(state.doc.get_heads(), heads_before_commit);
     }
 
     /// A restore from the history scrubber lands on the undo stack, so a
