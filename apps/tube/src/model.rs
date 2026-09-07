@@ -615,10 +615,19 @@ pub struct TubeModel {
     /// on launch); the hermetic `--shots`/sample path leaves it `false`.
     #[serde(default)]
     pub feed_loading: bool,
+    /// A user-legible reason the newest Home request could not be queued. This
+    /// is distinct from offline provenance: queue saturation is local and
+    /// retryable, not evidence that the network is unavailable.
+    #[serde(default)]
+    pub feed_error: Option<String>,
     /// Whether a search is in flight, so the results screen shows a skeleton
     /// instead of a premature "No results".
     #[serde(default)]
     pub search_loading: bool,
+    /// A user-legible reason the newest search could not be queued. Cleared on
+    /// each fresh submission and on a result response.
+    #[serde(default)]
+    pub search_error: Option<String>,
 }
 
 impl Default for TubeModel {
@@ -649,7 +658,9 @@ impl Default for TubeModel {
             dislikes: BTreeMap::new(),
             dearrow_thumb_url: BTreeMap::new(),
             feed_loading: false,
+            feed_error: None,
             search_loading: false,
+            search_error: None,
         }
     }
 }

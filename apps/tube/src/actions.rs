@@ -39,6 +39,7 @@ use crate::model::{Route, TubeModel};
 
 const MAX_RESOURCE_ENTITIES: usize = 100;
 const MAX_RESOURCE_COMMENTS: usize = 50;
+const MAX_RESOURCE_LABEL_CHARS: usize = 160;
 const QUALITY_OPTIONS: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 /// Registry `type_id` for every Tube action.
@@ -521,6 +522,25 @@ fn comment_label(author: &str, text: &str) -> String {
     }
 }
 
+/// Resource labels originate in remote metadata and are shown in global
+/// surfaces. Keep them single-line and bounded before publishing, so a hostile
+/// title/creator/query cannot dominate the palette or force unbounded text
+/// shaping work. Resource actions retain the untouched canonical ids.
+fn resource_label(value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = value.chars();
+    for _ in 0..MAX_RESOURCE_LABEL_CHARS {
+        let Some(ch) = chars.next() else {
+            return out;
+        };
+        out.push(if ch.is_control() { ' ' } else { ch });
+    }
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
 fn view_spec(id: &str, label: &str, operation: &TubeOperation) -> Option<ActionSpec> {
     ActionSpec::operation(
         id,
@@ -537,7 +557,7 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
     let mut resource = Resource::new(
         format!("tube.video:{video_id}"),
         "tube.video",
-        video.title.clone(),
+        resource_label(&video.title),
     );
     if let Some(open) = view_spec(
         "open",
@@ -615,7 +635,7 @@ fn comment_resource(video_id: &str, index: usize, comment: &crate::model::Commen
     Resource::new(
         format!("tube.comment:{comment_id}"),
         "tube.comment",
-        comment_label(&comment.author, &comment.text),
+        resource_label(&comment_label(&comment.author, &comment.text)),
     )
     .with_action(
         immediate_spec(
@@ -692,13 +712,18 @@ fn navigation_resource() -> Resource {
 
 fn library_resource(model: &TubeModel) -> Resource {
     let mut library = Resource::new("tube.library", "tube.library", "Known library");
+    // Collections are deliberately separate resources, rather than merely
+    // presentation filters over the catalogue.  That gives Ctrl+K, history,
+    // collaboration and agents stable scopes to address without having to
+    // infer membership from the currently rendered route.
+    let mut videos = Resource::new("tube.videos", "tube.collection", "Videos");
     for video in model.videos.iter().take(MAX_RESOURCE_ENTITIES) {
         if let Some(resource) = video_resource(
             model,
             &video.id,
             matches!(&model.route, Route::Watch(id) if id == &video.id),
         ) {
-            library = library.with_child(resource);
+            videos = videos.with_child(resource);
         }
     }
     let mut creators = Resource::new("tube.creators", "tube.collection", "Creators");
@@ -706,7 +731,7 @@ fn library_resource(model: &TubeModel) -> Resource {
         let mut resource = Resource::new(
             format!("tube.channel:{}", channel.id),
             "tube.channel",
-            channel.name.clone(),
+            resource_label(&channel.name),
         );
         if let Some(open) = view_spec(
             "open",
@@ -735,7 +760,7 @@ fn library_resource(model: &TubeModel) -> Resource {
         let mut resource = Resource::new(
             format!("tube.playlist:{}", playlist.id),
             "tube.playlist",
-            playlist.title.clone(),
+            resource_label(&playlist.title),
         );
         if let Some(open) = view_spec(
             "open",
@@ -748,8 +773,177 @@ fn library_resource(model: &TubeModel) -> Resource {
         }
         playlists = playlists.with_child(resource);
     }
-    library = library.with_child(creators).with_child(playlists);
+    library = library
+        .with_child(videos)
+        .with_child(creators)
+        .with_child(playlists)
+        .with_child(subscriptions_resource(model))
+        .with_child(history_resource(model))
+        .with_child(search_results_resource(model))
+        // Downloads are a first-class, canonical collection even when it is
+        // empty. Tube does not claim to have downloaded media until a host
+        // grants a storage/download capability, so this is intentionally an
+        // honest empty collection rather than fabricated completed jobs.
+        .with_child(Resource::new(
+            "tube.downloads",
+            "tube.collection",
+            "Downloads (none available)",
+        ));
     library
+}
+
+/// The user's durable subscriptions, projected separately from the discovered
+/// creator catalogue. A subscription can survive its cached channel record, so
+/// retain an entry (and a deterministic unsubscribe action) even if metadata
+/// has not been fetched yet.
+fn subscriptions_resource(model: &TubeModel) -> Resource {
+    let mut subscriptions = Resource::new("tube.subscriptions", "tube.collection", "Subscriptions");
+    for channel_id in model.subscriptions.iter().take(MAX_RESOURCE_ENTITIES) {
+        let label = model.channel(channel_id).map_or_else(
+            || resource_label(&format!("Subscribed creator {channel_id}")),
+            |channel| resource_label(&channel.name),
+        );
+        let mut entry = Resource::new(
+            format!("tube.subscription:{channel_id}"),
+            "tube.subscription",
+            label,
+        )
+        .with_action(
+            immediate_spec(
+                "unsubscribe",
+                "Unsubscribe",
+                &TubeAction::SetSubscription {
+                    channel_id: channel_id.clone(),
+                    subscribed: false,
+                },
+            )
+            .reversible(),
+        );
+        if model.channel(channel_id).is_some()
+            && let Some(open) = view_spec(
+                "open",
+                "Open creator",
+                &TubeOperation::OpenChannel {
+                    channel_id: channel_id.clone(),
+                },
+            )
+        {
+            entry = entry.with_action(open);
+        }
+        subscriptions = subscriptions.with_child(entry);
+    }
+    subscriptions
+}
+
+/// Ordered durable watch history. Entries are membership resources rather than
+/// aliases of `tube.video:*`, preserving both the original video identity and
+/// the user's chronological history identity for automation clients.
+fn history_resource(model: &TubeModel) -> Resource {
+    let mut history = Resource::new("tube.history", "tube.collection", "Watch history");
+    for video_id in model.history.iter().take(MAX_RESOURCE_ENTITIES) {
+        let Some(video) = model.video(video_id) else {
+            // Do not invent a title for an evicted/unknown video. The durable
+            // id remains useful to clients, and opening it will fail closed.
+            continue;
+        };
+        let mut entry = Resource::new(
+            format!("tube.history:{video_id}"),
+            "tube.history-entry",
+            resource_label(&video.title),
+        );
+        if let Some(open) = view_spec(
+            "open",
+            "Open video",
+            &TubeOperation::OpenVideo {
+                video_id: video_id.clone(),
+            },
+        ) {
+            entry = entry.with_action(open);
+        }
+        history = history.with_child(entry);
+    }
+    history
+}
+
+/// The exact ordered result set for the active completed search. Keeping this
+/// separate from the general library means an agent can act on "the third
+/// search result" without relying on local substring matching or screen state.
+fn search_results_resource(model: &TubeModel) -> Resource {
+    let query = model.search_hits_query.trim();
+    let label = if query.is_empty() {
+        "Search results".to_string()
+    } else {
+        resource_label(&format!("Search results: {query}"))
+    };
+    let mut results = Resource::new("tube.search-results", "tube.collection", label);
+    if query.is_empty() {
+        return results;
+    }
+    for video_id in model.search_hits.iter().take(MAX_RESOURCE_ENTITIES) {
+        let Some(video) = model.video(video_id) else {
+            continue;
+        };
+        let mut entry = Resource::new(
+            format!("tube.search-result:video:{video_id}"),
+            "tube.search-result",
+            resource_label(&video.title),
+        );
+        if let Some(open) = view_spec(
+            "open",
+            "Open video",
+            &TubeOperation::OpenVideo {
+                video_id: video_id.clone(),
+            },
+        ) {
+            entry = entry.with_action(open);
+        }
+        results = results.with_child(entry);
+    }
+    for playlist_id in model
+        .search_playlist_hits
+        .iter()
+        .take(MAX_RESOURCE_ENTITIES)
+    {
+        let Some(playlist) = model.playlist(playlist_id) else {
+            continue;
+        };
+        let mut entry = Resource::new(
+            format!("tube.search-result:playlist:{playlist_id}"),
+            "tube.search-result",
+            resource_label(&playlist.title),
+        );
+        if let Some(open) = view_spec(
+            "open",
+            "Open playlist",
+            &TubeOperation::OpenPlaylist {
+                playlist_id: playlist_id.clone(),
+            },
+        ) {
+            entry = entry.with_action(open);
+        }
+        results = results.with_child(entry);
+    }
+    for channel_id in model.search_channel_hits.iter().take(MAX_RESOURCE_ENTITIES) {
+        let Some(channel) = model.channel(channel_id) else {
+            continue;
+        };
+        let mut entry = Resource::new(
+            format!("tube.search-result:channel:{channel_id}"),
+            "tube.search-result",
+            resource_label(&channel.name),
+        );
+        if let Some(open) = view_spec(
+            "open",
+            "Open creator",
+            &TubeOperation::OpenChannel {
+                channel_id: channel_id.clone(),
+            },
+        ) {
+            entry = entry.with_action(open);
+        }
+        results = results.with_child(entry);
+    }
+    results
 }
 
 fn settings_resource(model: &TubeModel) -> Resource {
@@ -931,9 +1125,86 @@ mod tests {
         let projected_videos = library
             .children
             .iter()
+            .find(|resource| resource.id.0 == "tube.videos")
+            .expect("videos collection")
+            .children
+            .iter()
             .filter(|resource| resource.kind == "tube.video")
             .count();
         assert_eq!(projected_videos, MAX_RESOURCE_ENTITIES);
+    }
+
+    #[test]
+    fn durable_views_and_search_are_canonical_bounded_collections() {
+        let mut model = crate::sample::model();
+        let video = model.videos[0].id.clone();
+        let channel = model.videos[0].channel_id.clone();
+        model.subscriptions = vec![channel];
+        model.history = vec![video.clone()];
+        model.search_hits_query = "rust".into();
+        model.search_hits = vec![video.clone()];
+
+        let resources = provide_resources(&model);
+        let library = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.library")
+            .expect("library resource");
+        let subscriptions = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.subscriptions")
+            .expect("subscriptions collection");
+        assert_eq!(subscriptions.children.len(), 1);
+        assert!(
+            subscriptions.children[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "unsubscribe")
+        );
+        let history = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.history")
+            .expect("history collection");
+        assert_eq!(history.children[0].id.0, format!("tube.history:{video}"));
+        let search = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.search-results")
+            .expect("search-results collection");
+        assert_eq!(
+            search.children[0].id.0,
+            format!("tube.search-result:video:{video}")
+        );
+        assert!(
+            library
+                .children
+                .iter()
+                .any(|resource| resource.id.0 == "tube.downloads")
+        );
+    }
+
+    #[test]
+    fn resource_labels_bound_remote_metadata_without_changing_actions() {
+        let mut model = crate::sample::model();
+        model.videos[0].title = format!("title\n{}", "x".repeat(MAX_RESOURCE_LABEL_CHARS + 20));
+        let resources = provide_resources(&model);
+        let resource = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.library")
+            .and_then(|library| {
+                library
+                    .children
+                    .iter()
+                    .find(|resource| resource.id.0 == "tube.videos")
+            })
+            .and_then(|videos| videos.children.first())
+            .expect("first video resource");
+        assert!(resource.label.chars().count() <= MAX_RESOURCE_LABEL_CHARS + 1);
+        assert!(!resource.label.contains('\n'));
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
     }
 
     fn registry() -> ActionRegistry {
