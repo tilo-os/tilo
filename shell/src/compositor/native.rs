@@ -4790,6 +4790,7 @@ pub fn run() -> ! {
         }
 
         state.expire_host_launch_activations();
+        crate::shell::launcher::expire_pending_placements();
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
