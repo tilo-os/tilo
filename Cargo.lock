@@ -13575,7 +13575,9 @@ name = "slides"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "image",
+ "qdoc",
  "qos-actions",
  "qos-app",
  "quick-xml 0.41.0",

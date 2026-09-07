@@ -25,6 +25,8 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+blake3.workspace = true
+qdoc = { path = "../../crates/doc/qdoc" }
 vello.workspace = true
 # The image picker accepts these four raster formats.  Keeping the list
 # explicit matters for the one-Cargo-graph qpkg build: `default-features`
