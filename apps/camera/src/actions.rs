@@ -1,12 +1,13 @@
 //! Camera's exported **actions** and the **resource tree** it publishes to Ctrl+K.
 //!
-//! The camera's *pixels* are ordinary files on disk — a shutter press writes a
-//! PNG/JPEG, a recording writes a clip — and the *device I/O* around them
+//! The camera's *pixels* are verified qdoc blobs with an optional local file
+//! projection — a shutter press writes a PNG/JPEG, a recording writes a clip
+//! — and the *device I/O* around them
 //! (opening a lens, decoding a QR out of a frame, the live viewfinder) is
 //! external, not collaborative. What lives in the shared Automerge document
-//! (see [`crate::doc`]) is the *metadata*: which gallery shots are favorited and
-//! the history of scanned codes. Those two are the camera's collaborative CRUD,
-//! so those two are its [`CameraAction`]s: small serializable values that
+//! (see [`crate::doc`]) is the *metadata*: portable capture registrations,
+//! mode and capture preferences, favorites, and scan history. Those durable
+//! choices are [`CameraAction`]s: small serializable values that
 //! deterministically mutate the CRDT and therefore replicate, replay and undo
 //! for free. The exact same [`EncodedAction`] the gallery's favorite affordance
 //! dispatches is what the Ctrl+K palette dispatches — one source of truth, one
@@ -14,21 +15,18 @@
 //!
 //! ## What is *not* an action
 //!
-//! Capturing a photo/video (the frame write is device I/O; the file lands via
-//! FUSE), deleting the file itself (device I/O — only its favorite flag is a
-//! doc mutation), the camera settings (resolution / format / timer / flash /
-//! lens — device and session state), and the live preview are all external,
-//! never actions. Which shot is selected, the gallery scroll, the active filter,
-//! zoom, and the photo/video mode switch are presentation and stay out of the
-//! document too.
+//! Capturing a photo/video (the frame write is device I/O), deleting the local
+//! file projection (device I/O — shared metadata removal is a canonical
+//! action), and the live preview are external effects. Which shot is selected, the gallery
+//! scroll, the active filter, zoom, and an open chooser are presentation-only.
 //!
 //! ## Determinism contract
 //!
 //! Both variants carry everything [`Action::apply`] needs (the item id, the
 //! favorite direction, the scanned payload, and a timestamp minted at authoring
 //! time); `apply` never touches the RNG or the wall-clock. A malformed payload
-//! (an empty id, an empty scan) is a **no-op** rather than an error, so a bad
-//! replay can't wedge a peer.
+//! or an oversized legacy list is an explicit [`ActionError::Refused`], so the
+//! invoker never mistakes a rejected durable mutation for success.
 
 use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
@@ -39,7 +37,9 @@ use qos_actions::{
 };
 
 use crate::doc;
-use crate::model::{CaptureMode, Facing, PhotoFormat, Resolution, Settings, Timer};
+use crate::model::{
+    CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, Screen, Settings, Timer,
+};
 
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
@@ -47,6 +47,11 @@ pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraOperation {
+    /// Reveal a view locally. Navigation is presentation state and must not
+    /// create collaboration history or move a peer away from their work.
+    Reveal {
+        screen: Screen,
+    },
     Capture,
     ToggleRecording,
     /// Drop a stale device session and re-run real device discovery.
@@ -85,6 +90,25 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<CameraOp
 /// metadata. The pixels and the decode are external; these are the doc writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraAction {
+    /// Atomically publish a bounded capture metadata row pointing only at
+    /// verified qdoc bytes. This is the peer-replayable capture boundary.
+    RegisterCapture {
+        id: String,
+        media_id: String,
+        kind: CaptureKind,
+        ts: i64,
+        w: u32,
+        h: u32,
+        dur_ms: i64,
+        label: String,
+        facing: Facing,
+    },
+    /// Remove a published capture from the shared gallery index. Blob bytes
+    /// are content-addressed and may remain referenced elsewhere; this action
+    /// removes only this resource's canonical metadata row.
+    RemoveCapture {
+        id: String,
+    },
     SetMode {
         mode: CaptureMode,
     },
@@ -143,6 +167,35 @@ pub enum CameraAction {
 impl Action for CameraAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            CameraAction::RegisterCapture {
+                id,
+                media_id,
+                kind,
+                ts,
+                w,
+                h,
+                dur_ms,
+                label,
+                facing,
+            } => doc::register_shared_capture(
+                doc,
+                &ROOT,
+                &doc::SharedCapture {
+                    id: id.clone(),
+                    media_id: media_id.clone(),
+                    kind: *kind,
+                    ts: *ts,
+                    w: *w,
+                    h: *h,
+                    dur_ms: *dur_ms,
+                    label: label.clone(),
+                    facing: *facing,
+                },
+            )
+            .map_err(ActionError::Refused)?,
+            CameraAction::RemoveCapture { id } => {
+                doc::remove_shared_capture(doc, &ROOT, id).map_err(ActionError::Refused)?;
+            }
             CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
             CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
             CameraAction::SetResolution { resolution } => {
@@ -167,9 +220,7 @@ impl Action for CameraAction {
                 }
             }
             CameraAction::RecordScan { raw, ts } => {
-                if !raw.is_empty() {
-                    doc::record_scan(doc, &ROOT, raw, *ts);
-                }
+                doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
             }
         }
         Ok(())
@@ -297,6 +348,23 @@ fn item_label(it: &GalleryItem) -> String {
     reason = "the gallery and settings are Camera's two resource roots; keeping their complete, typed action inventory together makes the palette contract auditable"
 )]
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut navigation = Resource::new("camera", "camera", "Camera");
+    for screen in [
+        Screen::Camera,
+        Screen::Scanner,
+        Screen::Gallery,
+        Screen::Settings,
+    ] {
+        if let Ok(spec) = ActionSpec::operation(
+            format!("open-{}", screen.as_str()),
+            format!("Open {}", screen.label()),
+            OperationKind::View,
+            CAMERA_OPERATION_TYPE,
+            &CameraOperation::Reveal { screen },
+        ) {
+            navigation = navigation.with_action(spec);
+        }
+    }
     let mut root = Resource::new("camera.gallery", "camera.gallery", "Gallery");
     if let Ok(spec) = ActionSpec::operation(
         "capture",
@@ -443,7 +511,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
         ) {
             child = child.with_action(spec);
         }
-        // File deletion also clears collaborative favourite metadata. The
+        // File deletion also removes collaborative capture/favourite metadata. The
         // host's compound-operation boundary gives Camera the document only
         // for this admission turn, so deleting through Search/Ctrl+K follows
         // the same replayable metadata path as the on-screen Delete control.
@@ -575,7 +643,9 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    vec![root, settings]
+    // Keep the gallery first for callers that scope Ctrl+K to the current
+    // media collection, then expose navigation as its own searchable root.
+    vec![root, settings, navigation]
 }
 
 impl ResourceProvider for crate::app::CameraApp {
@@ -588,6 +658,7 @@ impl ResourceProvider for crate::app::CameraApp {
 mod tests {
     use super::*;
     use crate::app::CameraApp;
+    use automerge::transaction::Transactable;
     use qos_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
@@ -620,7 +691,11 @@ mod tests {
     fn ctrl_k_publishes_the_gallery_tree() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 2, "gallery and settings roots");
+        assert_eq!(
+            resources.len(),
+            3,
+            "gallery, settings, and navigation roots"
+        );
         let gallery = resources
             .iter()
             .find(|resource| resource.id.as_str() == "camera.gallery")
@@ -772,6 +847,105 @@ mod tests {
             b.get_heads(),
             "the preference replayed exactly"
         );
+    }
+
+    #[test]
+    fn published_capture_replays_as_portable_metadata() {
+        let media_id = crate::media::store(b"portable camera bytes").unwrap();
+        let mut a = AutoCommit::new();
+        doc::init_defaults(&mut a, &ROOT, Screen::Camera);
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let action = CameraAction::RegisterCapture {
+            id: "IMG_peer.jpg".into(),
+            media_id,
+            kind: crate::model::CaptureKind::Photo,
+            ts: 42,
+            w: 64,
+            h: 48,
+            dur_ms: 0,
+            label: "Peer photo".into(),
+            facing: Facing::Back,
+        };
+        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads());
+        let captures = doc::read_shared_captures(&b, &ROOT);
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].id, "IMG_peer.jpg");
+        assert!(crate::media::is_media_id(&captures[0].media_id));
+    }
+
+    #[test]
+    fn published_capture_removal_replays_without_touching_blob_bytes() {
+        let media_id = crate::media::store(b"portable camera bytes").unwrap();
+        let mut a = AutoCommit::new();
+        doc::init_defaults(&mut a, &ROOT, Screen::Camera);
+        let register = CameraAction::RegisterCapture {
+            id: "IMG_remove.jpg".into(),
+            media_id: media_id.clone(),
+            kind: crate::model::CaptureKind::Photo,
+            ts: 42,
+            w: 64,
+            h: 48,
+            dur_ms: 0,
+            label: "Remove me".into(),
+            facing: Facing::Back,
+        };
+        qos_actions::apply_local(&mut a, &register, encode(&register).unwrap()).unwrap();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let remove = CameraAction::RemoveCapture {
+            id: "IMG_remove.jpg".into(),
+        };
+        let envelope = qos_actions::apply_local(&mut a, &remove, encode(&remove).unwrap()).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        assert!(doc::read_shared_captures(&a, &ROOT).is_empty());
+        assert!(doc::read_shared_captures(&b, &ROOT).is_empty());
+        assert_eq!(
+            crate::media::read(&media_id).as_deref(),
+            Some(b"portable camera bytes".as_slice())
+        );
+    }
+
+    #[test]
+    fn oversized_capture_index_is_an_explicit_action_refusal() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(&ROOT, "captures", automerge::ObjType::List)
+            .expect("capture list");
+        for index in 0..=2_000 {
+            doc.insert(&list, index, "legacy row")
+                .expect("legacy capture row");
+        }
+        let action = CameraAction::RemoveCapture {
+            id: "IMG_refuse.jpg".into(),
+        };
+
+        assert!(matches!(
+            action.apply(&mut doc),
+            Err(ActionError::Refused(message)) if message.contains("safety limit")
+        ));
+    }
+
+    #[test]
+    fn navigation_is_a_local_reveal_operation_and_discoverable_resource() {
+        let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+        let navigation = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "camera")
+            .expect("camera navigation resource");
+        assert!(
+            navigation
+                .actions
+                .iter()
+                .any(|spec| spec.id == "open-scanner")
+        );
+        let scanner = navigation
+            .actions
+            .iter()
+            .find(|spec| spec.id == "open-scanner")
+            .expect("scanner reveal action");
+        assert_eq!(scanner.kind, OperationKind::View);
     }
 
     #[test]
