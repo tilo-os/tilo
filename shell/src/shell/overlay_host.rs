@@ -3617,6 +3617,7 @@ impl ShellOverlayHost {
                     }
                 }
             }
+            tree.flush_to_disk();
         }
         // `RuntimeGroup::set_width` flags its own style dirty; the
         // frame loop's structure sweep is what rebuilds the taffy node
@@ -3753,8 +3754,8 @@ impl ShellOverlayHost {
             return;
         }
         let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
         for (_strip_id, group_id, new_value) in changes {
-            let mut tree = st.tree_mut();
             for ws in &mut tree.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
@@ -3763,6 +3764,7 @@ impl ShellOverlayHost {
                 }
             }
         }
+        tree.flush_to_disk();
     }
 
     /// Mirrors a completed whole-group reorder drag into the persisted
@@ -4697,6 +4699,7 @@ impl ShellOverlayHost {
                 return false;
             }
             group.width = crate::shell::state::WindowWidth::Fraction(next);
+            tree.flush_to_disk();
             let result = (group_id, next);
             drop(tree);
             drop(st);
@@ -21376,6 +21379,66 @@ mod maximize_harvest_tests {
         assert!(
             st.tree().workspaces[0].strips[0].window_groups[0].maximized,
             "no-op harvest must not overwrite persisted true with widget default",
+        );
+    }
+
+    #[test]
+    fn set_group_widths_flushes_the_layout_to_disk() {
+        let (mut tree, strip_id, group_id) = one_group_tree(false);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert_eq!(host.set_group_widths(600), vec![group_id]);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("width writeback creates valid durable state");
+        let group = restarted.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+            })
+            .expect("persisted group");
+        assert_eq!(
+            group.width,
+            StateWidth::Fraction(600),
+            "a control-driven width change must survive restart"
+        );
+    }
+
+    #[test]
+    fn resize_focused_group_flushes_the_layout_to_disk() {
+        let (mut tree, strip_id, group_id) = one_group_tree(false);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+
+        assert!(host.resize_focused_group(50));
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("keyboard width writeback creates valid durable state");
+        let group = restarted.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == strip_id)
+            .and_then(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == group_id)
+            })
+            .expect("persisted group");
+        assert_eq!(
+            group.width,
+            StateWidth::Fraction(ui::widget::WIDTH_NORMAL_PERMILLE.saturating_add(50)),
+            "a keyboard resize must survive restart"
         );
     }
 }
