@@ -15,6 +15,7 @@
 //! record is attributed to its `home` even when no room's index references it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -92,6 +93,10 @@ struct Held {
 #[derive(Default)]
 struct ScanState {
     records: Vec<ObservedRecord>,
+    /// The scan worker prepares this ordered, de-duplicated source index
+    /// before publishing a new revision. Search therefore never turns a
+    /// first keystroke after a scan into a corpus walk.
+    search: BTreeMap<RecordSearchKey, ObservedRecord>,
     /// Canonical, scan-root-confined document locations. Kept separate from
     /// public search metadata so callers cannot manufacture arbitrary paths.
     locations: BTreeMap<RecordId, ValidatedRecordLocation>,
@@ -124,7 +129,16 @@ impl ScanState {
             );
             return;
         }
+        let mut search = BTreeMap::new();
+        for observed in &found.records {
+            // `records` is sorted deterministically by id/package. Keeping
+            // the first value preserves `compute_known`'s historic winner.
+            search
+                .entry(RecordSearchKey::from_observed(observed))
+                .or_insert_with(|| observed.clone());
+        }
         self.records = found.records;
+        self.search = search;
         self.locations = found.locations;
         self.ambiguous = found.ambiguous;
         self.done = true;
@@ -134,6 +148,113 @@ impl ScanState {
                 self.revision = next;
             }
         }
+    }
+}
+
+/// Ordering identity for the retained search corpus. It deliberately matches
+/// `known()`'s `(home, id)` ordering: equal ids in different rooms remain
+/// distinct rows rather than borrowing metadata across collaboration scopes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RecordSearchKey {
+    home: Option<RoomId>,
+    id: RecordId,
+}
+
+impl RecordSearchKey {
+    fn from_observed(record: &ObservedRecord) -> Self {
+        Self {
+            home: record.home,
+            id: record.id.clone(),
+        }
+    }
+
+    fn held(room: RoomId, id: &RecordId) -> Self {
+        Self {
+            home: Some(room),
+            id: id.clone(),
+        }
+    }
+
+    /// Opaque, delimiter-safe continuation payload. Record ids are not a
+    /// constrained user-input format, so hex keeps a cursor unambiguous even
+    /// if a future id scheme admits control characters.
+    fn encode(&self) -> String {
+        match self.home {
+            Some(room) => format!("1\u{1f}{room}\u{1f}{}", hex::encode(self.id.as_str())),
+            None => format!("0\u{1f}{}", hex::encode(self.id.as_str())),
+        }
+    }
+
+    fn decode(token: &str) -> Option<Self> {
+        let mut fields = token.split('\u{1f}');
+        let tagged = fields.next()?;
+        let (home, encoded_id) = match tagged {
+            "0" => (None, fields.next()?),
+            "1" => (Some(RoomId::parse(fields.next()?)?), fields.next()?),
+            _ => return None,
+        };
+        if fields.next().is_some() {
+            return None;
+        }
+        let id = String::from_utf8(hex::decode(encoded_id).ok()?).ok()?;
+        Some(Self {
+            home,
+            id: RecordId::parse(&id)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct LocalSearchRecord {
+    /// The first seeded observation for this scope/id, matching the legacy
+    /// merge precedence after scanned observations.
+    seeded: Option<ObservedRecord>,
+    held: bool,
+}
+
+/// One bounded piece of the retained record index. `cursor` is the key of
+/// this entry and can be supplied back to [`RoomRecords::search_records`].
+#[derive(Clone, Debug)]
+pub(crate) struct SearchRecordEntry {
+    pub(crate) record: KnownRecord,
+    pub(crate) cursor: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SearchRecordPage {
+    pub(crate) entries: Vec<SearchRecordEntry>,
+    pub(crate) exhausted: bool,
+    pub(crate) invalid_cursor: bool,
+}
+
+fn known_search_record(
+    key: &RecordSearchKey,
+    scanned: Option<&ObservedRecord>,
+    local: Option<&LocalSearchRecord>,
+    labelled: &BTreeMap<RecordId, RecordKind>,
+) -> KnownRecord {
+    let seeded = local.and_then(|record| record.seeded.as_ref());
+    // This is the same precedence as `compute_known`: scanned metadata is
+    // observed first, then seed metadata fills only absent/empty fields.
+    let kind = scanned
+        .filter(|record| !record.kind.as_str().is_empty())
+        .or_else(|| seeded.filter(|record| !record.kind.as_str().is_empty()))
+        .map(|record| record.kind.clone())
+        .or_else(|| labelled.get(&key.id).cloned())
+        .unwrap_or_else(|| RecordKind::new(""));
+    KnownRecord {
+        id: key.id.clone(),
+        kind,
+        home: key.home,
+        held_by: local
+            .is_some_and(|record| record.held)
+            .then_some(key.home)
+            .flatten()
+            .into_iter()
+            .collect(),
+        package_id: scanned
+            .map(|record| record.package_id.clone())
+            .or_else(|| seeded.map(|record| record.package_id.clone())),
     }
 }
 
@@ -164,6 +285,10 @@ pub struct RoomRecords {
     scan: Option<Arc<Mutex<ScanState>>>,
     /// Records seeded directly rather than scanned.
     seeded: Vec<ObservedRecord>,
+    /// The local half of the retained search index. It is updated as room
+    /// references and test/early observations change, never reconstructed by
+    /// a search request.
+    search_local: BTreeMap<RecordSearchKey, LocalSearchRecord>,
     persistent: bool,
     /// The type each record was last labelled with. Belongs to the
     /// record, not a room's reference: `RoomId` is a random uuid, so
@@ -206,6 +331,7 @@ impl RoomRecords {
             held: BTreeMap::new(),
             scan: None,
             seeded: Vec::new(),
+            search_local: BTreeMap::new(),
             persistent: false,
             labelled: BTreeMap::new(),
             generation: 0,
@@ -283,7 +409,14 @@ impl RoomRecords {
         if records.peek().is_none() || !self.can_change() {
             return;
         }
-        self.seeded.extend(records);
+        for record in records {
+            self.search_local
+                .entry(RecordSearchKey::from_observed(&record))
+                .or_default()
+                .seeded
+                .get_or_insert_with(|| record.clone());
+            self.seeded.push(record);
+        }
         self.changed();
     }
 
@@ -300,6 +433,10 @@ impl RoomRecords {
             saver.request(&mut slot.doc);
         }
         self.labelled.insert(id.clone(), kind.clone());
+        self.search_local
+            .entry(RecordSearchKey::held(room, id))
+            .or_default()
+            .held = true;
         self.changed();
         added
     }
@@ -316,6 +453,18 @@ impl RoomRecords {
         let dropped = room::unreference(&mut slot.doc, id);
         if dropped && let Some(saver) = slot.autosave.as_mut() {
             saver.request(&mut slot.doc);
+        }
+        if dropped {
+            let key = RecordSearchKey::held(room, id);
+            let remove = if let Some(entry) = self.search_local.get_mut(&key) {
+                entry.held = false;
+                entry.seeded.is_none()
+            } else {
+                false
+            };
+            if remove {
+                self.search_local.remove(&key);
+            }
         }
         self.changed();
         dropped
@@ -334,6 +483,94 @@ impl RoomRecords {
             .get(&room)
             .map(|h| room::references(&h.doc))
             .unwrap_or_default()
+    }
+
+    /// Read at most `max_work` rows from the retained, ordered search corpus.
+    /// Both source maps are maintained when data changes (the scan worker owns
+    /// its map; room mutations own the local map), so this does no CRDT walk,
+    /// corpus merge, or exact-title-map construction on the query path.
+    ///
+    /// A continuation is a last-seen key rather than an offset: B-tree range
+    /// seeking is bounded even on deep pages. Callers must still compare their
+    /// outer search revision before using one; malformed source tokens fail
+    /// closed as invalid cursors.
+    // The B-tree range borrows the scan mutex guard, so the guard must be a
+    // named value for exactly the iterator's lexical block. Clippy's proposed
+    // temporary merge would not live long enough.
+    #[allow(clippy::significant_drop_tightening)]
+    pub(crate) fn search_records(&self, after: Option<&str>, max_work: usize) -> SearchRecordPage {
+        let after = match after {
+            Some(token) => match RecordSearchKey::decode(token) {
+                Some(key) => Some(key),
+                None => {
+                    return SearchRecordPage {
+                        entries: Vec::new(),
+                        exhausted: false,
+                        invalid_cursor: true,
+                    };
+                }
+            },
+            None => None,
+        };
+        if max_work == 0 {
+            return SearchRecordPage {
+                entries: Vec::new(),
+                exhausted: false,
+                invalid_cursor: false,
+            };
+        }
+        let (entries, exhausted) = {
+            let scan = self.scan.as_ref().and_then(|scan| scan.lock().ok());
+            let mut scanned = scan.as_ref().map(|scan| match &after {
+                Some(after) => scan.search.range((Excluded(after), Unbounded)),
+                None => scan.search.range(..),
+            });
+            let mut local = match &after {
+                Some(after) => self.search_local.range((Excluded(after), Unbounded)),
+                None => self.search_local.range(..),
+            };
+            let mut next_scanned = scanned.as_mut().and_then(Iterator::next);
+            let mut next_local = local.next();
+            // `max_work` is protocol input. Do not turn a maliciously large
+            // budget into a proportional allocation before any rows are read.
+            let mut entries = Vec::new();
+            while entries.len() < max_work && (next_scanned.is_some() || next_local.is_some()) {
+                let key = match (next_scanned, next_local) {
+                    (Some((scanned_key, _)), Some((local_key, _))) => {
+                        if scanned_key <= local_key {
+                            scanned_key.clone()
+                        } else {
+                            local_key.clone()
+                        }
+                    }
+                    (Some((key, _)), None) | (None, Some((key, _))) => key.clone(),
+                    (None, None) => break,
+                };
+                let scanned_record = next_scanned
+                    .filter(|(candidate, _)| *candidate == &key)
+                    .map(|(_, record)| record);
+                let local_record = next_local
+                    .filter(|(candidate, _)| *candidate == &key)
+                    .map(|(_, record)| record);
+                if scanned_record.is_some() {
+                    next_scanned = scanned.as_mut().and_then(Iterator::next);
+                }
+                if local_record.is_some() {
+                    next_local = local.next();
+                }
+                entries.push(SearchRecordEntry {
+                    cursor: key.encode(),
+                    record: known_search_record(&key, scanned_record, local_record, &self.labelled),
+                });
+            }
+            let exhausted = next_scanned.is_none() && next_local.is_none();
+            (entries, exhausted)
+        };
+        SearchRecordPage {
+            exhausted,
+            entries,
+            invalid_cursor: false,
+        }
     }
 
     /// Every record this compositor knows about, merged from the rooms'
@@ -441,6 +678,7 @@ impl RoomRecords {
             return None;
         }
         let location = scan.locations.get(id).cloned()?;
+        drop(scan);
         read_validated_record_document(id, &location)
     }
 
@@ -526,6 +764,15 @@ impl RoomRecords {
                 continue;
             };
             let _ = self.index_mut(room);
+            // Disk loading happens during attachment, never during a search.
+            // Mirror the loaded CRDT references into the retained index here.
+            for checkout in self.records_in(room) {
+                self.search_local
+                    .entry(RecordSearchKey::held(room, &checkout.id))
+                    .or_default()
+                    .held = true;
+                self.labelled.entry(checkout.id).or_insert(checkout.kind);
+            }
         }
     }
 }
