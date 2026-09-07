@@ -1318,7 +1318,7 @@ mod tests {
             catalog
                 .upsert(
                     &resource_id,
-                    "abc x bcd",
+                    "abc c d",
                     SearchResult::for_action(
                         "Items",
                         format!("Broad candidate {id}"),
@@ -1331,10 +1331,10 @@ mod tests {
         catalog
             .upsert(
                 target_id,
-                "abcd",
+                "abc d",
                 SearchResult::for_action(
                     "Items",
-                    "The only exact abcd result",
+                    "The only exact abc d result",
                     qos_actions::ActionAddress::new(target_id, "open"),
                 ),
             )
@@ -1342,13 +1342,16 @@ mod tests {
 
         let mut palette = ActionPalette::new();
         palette.set_providers(vec![Box::new(catalog)]);
-        palette.set_query("abcd");
+        // The whitespace-bearing query intentionally cannot take the token
+        // fast path. Every false candidate shares its n-grams, so this proves
+        // progressive exact verification continues across work pages.
+        palette.set_query("abc d");
         let generation = palette.search_generation;
         let mut ticks = 0usize;
         while !palette
             .result_labels()
             .iter()
-            .any(|label| label == "The only exact abcd result")
+            .any(|label| label == "The only exact abc d result")
         {
             let progress = palette.advance_search_page();
             assert!(progress.inspected <= PROVIDER_HIT_BUDGET);
@@ -1377,7 +1380,7 @@ mod tests {
             !palette
                 .result_labels()
                 .iter()
-                .any(|label| label == "The only exact abcd result")
+                .any(|label| label == "The only exact abc d result")
         );
         let restarted = palette.advance_search_page();
         assert_eq!(restarted.generation, palette.search_generation);
