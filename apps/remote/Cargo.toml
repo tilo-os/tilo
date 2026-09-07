@@ -28,6 +28,8 @@ qos-actions = { path = "../../crates/collab/actions" }
 qos-relay = { path = "../../crates/hosting/qos-relay" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 qos-callstream = { path = "../../crates/collab/qos-callstream" }
+# Durable, same-directory replacement for the device-private SSH trust store.
+atomic-file = { path = "../../crates/system/atomic-file" }
 iroh.workspace = true
 automerge.workspace = true
 serde.workspace = true
