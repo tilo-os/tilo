@@ -463,6 +463,7 @@ mod tests {
     fn p(pid: u32, ppid: Option<u32>, name: &str, cpu: f32, mem_mib: u64) -> ProcessInfo {
         ProcessInfo {
             pid,
+            started_at: u64::from(pid) * 10,
             ppid,
             name: name.into(),
             user: "quinten".into(),
