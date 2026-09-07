@@ -2323,6 +2323,28 @@ impl Widget for BrowserWidget {
         ) {
             extensions.actions.push(spec);
         }
+        // Installed add-ons are durable local profile entities even while the
+        // WebKit activation API is unavailable. Publish each bounded,
+        // address-safe inventory item so the action directory, invocation
+        // history and agents use the same identity as the extension manager.
+        for extension in crate::extensions::list_installed() {
+            let mut child = Resource::new(
+                crate::extensions::resource_id(&extension.id),
+                "browser.extension",
+                extension.name,
+            );
+            if let Some(spec) = operation(
+                "show",
+                "Show extension details",
+                OperationKind::View,
+                BrowserOperation::ShowLibrary {
+                    section: LibrarySection::Extensions,
+                },
+            ) {
+                child.actions.push(spec);
+            }
+            extensions.children.push(child);
+        }
         let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
         if let Some(spec) = operation(
             "show",
@@ -3452,6 +3474,22 @@ mod tests {
         assert_eq!(
             w.pip_feedback.as_ref().map(|feedback| feedback.kind),
             Some(PipFeedbackKind::NoVideo)
+        );
+    }
+
+    #[test]
+    fn reduced_motion_settles_pip_feedback_without_requesting_frames() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        w.pip_feedback = Some(PipFeedback {
+            kind: PipFeedbackKind::NoVideo,
+            started: std::time::Instant::now(),
+        });
+
+        assert!(w.needs_animation_frame());
+        w.set_motion_reduced(true);
+        assert!(
+            !w.needs_animation_frame(),
+            "reduced motion keeps the feedback visible but does not animate its fade"
         );
     }
 
