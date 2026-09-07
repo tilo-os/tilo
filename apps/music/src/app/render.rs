@@ -7105,7 +7105,7 @@ impl Palette {
             panel: col.surfaces.base,
             card: col.surfaces.raised,
             skeleton: if theme.name == "High Contrast" {
-                Color::from_rgb8(72, 72, 72)
+                col.neutral[4]
             } else {
                 col.surfaces.raised
             },
