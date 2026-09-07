@@ -445,8 +445,17 @@ impl Session {
             self.status = RunStatus::Error("A query is already running".into());
             return;
         }
-        self.next_query_generation = self.next_query_generation.wrapping_add(1);
-        let generation = self.next_query_generation;
+        let Some(generation) = self.next_query_generation.checked_add(1) else {
+            // Query generations are authority tokens shared by execution,
+            // cancellation, and reply settlement. Reusing zero after the
+            // counter wraps could let a late reply for an ancient query
+            // acquire ownership of a newly-started one, so exhaustion fails
+            // closed and asks for a fresh process instead.
+            self.status =
+                RunStatus::Error("Query identity space exhausted; restart Database Client".into());
+            return;
+        };
+        self.next_query_generation = generation;
         self.active_query = Some((connection_id, generation));
         self.worker.request(DbRequest::Query {
             connection_id,
@@ -670,6 +679,22 @@ mod tests {
         });
         assert_eq!(s.active_query, Some((id, 2)));
         assert!(matches!(s.status, RunStatus::Busy(_)));
+    }
+
+    #[test]
+    fn exhausted_query_generation_refuses_without_reusing_authority() {
+        let mut s = Session::new();
+        s.set_connections(vec![ConnectionProfile::new("A", Engine::Sqlite)]);
+        s.next_query_generation = u64::MAX;
+
+        s.run_query("SELECT 1");
+
+        assert_eq!(s.next_query_generation, u64::MAX);
+        assert!(s.active_query.is_none());
+        assert!(matches!(
+            s.status,
+            RunStatus::Error(ref message) if message.contains("identity space exhausted")
+        ));
     }
 
     #[test]
