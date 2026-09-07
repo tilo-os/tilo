@@ -12,7 +12,8 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -741,6 +742,43 @@ impl Widget for ToggleGroup {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } if self.is_focused && self.is_enabled() => {
+                let len = self.segments.len();
+                let selection = match logical_key {
+                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
+                        self.selected
+                            .checked_sub(1)
+                            .unwrap_or_else(|| len.saturating_sub(1)),
+                    ),
+                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
+                        Some(if self.selected == len.saturating_sub(1) {
+                            0
+                        } else {
+                            self.selected.saturating_add(1)
+                        })
+                    }
+                    Key::Named(NamedKey::Home) if len > 0 => Some(0),
+                    Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
+                    // A segmented control is single-select: activating the
+                    // focused group confirms its current choice rather than
+                    // toggling it off.
+                    Key::Named(NamedKey::Enter | NamedKey::Space) => Some(self.selected),
+                    _ => None,
+                };
+                if let Some(selection) = selection {
+                    *handled = true;
+                    self.request_selection(selection);
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor.set(logical_pos);
@@ -967,7 +1005,27 @@ mod tests {
         }
     }
 
+    fn key_press(key: NamedKey) -> WindowEvent {
+        // SAFETY: the non-public `KeyEventExtra` field accepts its all-zero
+        // representation; every public field used by routing is set below.
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.state = ElementState::Pressed;
+        event.logical_key = Key::Named(key);
+        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
     fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
+        let _ = dispatch_handled(g, event);
+    }
+
+    fn dispatch_handled(g: &mut ToggleGroup, event: &WindowEvent) -> bool {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
@@ -985,6 +1043,7 @@ mod tests {
             node,
             &tree,
         );
+        handled
     }
 
     #[test]
@@ -1014,6 +1073,48 @@ mod tests {
             *captured.borrow(),
             Some(2),
             "on_change must fire with the new index"
+        );
+    }
+
+    #[test]
+    fn focused_toggle_group_supports_keyboard_navigation_and_activation() {
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&changes);
+        let mut group = ToggleGroup::new(
+            vec![
+                Segment::new("One"),
+                Segment::new("Two"),
+                Segment::new("Three"),
+            ],
+            0,
+        )
+        .on_change(move |index| captured.borrow_mut().push(index));
+        group.set_focus(true);
+
+        assert!(dispatch_handled(
+            &mut group,
+            &key_press(NamedKey::ArrowRight)
+        ));
+        assert_eq!(group.selected(), 1);
+        assert!(dispatch_handled(&mut group, &key_press(NamedKey::End)));
+        assert_eq!(group.selected(), 2);
+        assert!(dispatch_handled(
+            &mut group,
+            &key_press(NamedKey::ArrowRight)
+        ));
+        assert_eq!(group.selected(), 0, "arrow navigation wraps");
+        assert!(dispatch_handled(&mut group, &key_press(NamedKey::Enter)));
+        assert_eq!(&*changes.borrow(), &[1, 2, 0]);
+
+        group.set_focus(false);
+        assert!(!dispatch_handled(
+            &mut group,
+            &key_press(NamedKey::ArrowRight)
+        ));
+        assert_eq!(
+            group.selected(),
+            0,
+            "unfocused controls do not consume keys"
         );
     }
 
