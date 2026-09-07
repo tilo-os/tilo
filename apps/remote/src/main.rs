@@ -57,6 +57,9 @@ pub fn main() {
                 "session-qos",
                 "session-connecting",
                 "session-failed",
+                "confirm-connect",
+                "confirm-delete",
+                "confirm-ssh-trust",
             ])
             .configure_app(|app| remote::actions::register(app.action_registry_mut())),
     );

@@ -67,6 +67,13 @@ pub enum RemoteOperation {
         connection_id: ConnectionId,
         text: String,
     },
+    TrustSshHostKey {
+        connection_id: ConnectionId,
+        observed: crate::ssh::HostKeyIdentity,
+    },
+    ForgetSshHostKey {
+        connection_id: ConnectionId,
+    },
 }
 
 pub fn operation_kind(operation: &RemoteOperation) -> OperationKind {
@@ -76,7 +83,9 @@ pub fn operation_kind(operation: &RemoteOperation) -> OperationKind {
         | RemoteOperation::EditConnection { .. } => OperationKind::View,
         RemoteOperation::Connect { .. }
         | RemoteOperation::Disconnect { .. }
-        | RemoteOperation::SendText { .. } => OperationKind::Effect,
+        | RemoteOperation::SendText { .. }
+        | RemoteOperation::TrustSshHostKey { .. }
+        | RemoteOperation::ForgetSshHostKey { .. } => OperationKind::Effect,
     }
 }
 
@@ -164,7 +173,15 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
     }
 }
 
-pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resource {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the session resource intentionally keeps its lifecycle and trust affordances together"
+)]
+pub fn session_resource(
+    connection: &Connection,
+    can_send_text: bool,
+    host_key_issue: Option<&crate::ssh::HostKeyIssue>,
+) -> Resource {
     let id = connection.id;
     let disconnect = ActionSpec::operation(
         "disconnect",
@@ -217,7 +234,7 @@ pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resourc
         tags: vec!["remote-input".into(), "session".into()],
         ..ActionContract::default()
     });
-    Resource::new(
+    let mut resource = Resource::new(
         format!("remote.session:{id}"),
         "remote.session",
         format!("{} session", connection.name),
@@ -230,7 +247,56 @@ pub fn session_resource(connection: &Connection, can_send_text: bool) -> Resourc
             "terminal_not_connected",
             "Text input requires a connected SSH terminal",
         )
-    })
+    });
+    match host_key_issue {
+        Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => {
+            let operation = RemoteOperation::TrustSshHostKey {
+                connection_id: id,
+                observed: observed.clone(),
+            };
+            resource = resource.with_action(
+                operation_spec(
+                    "trust-host-key",
+                    "Trust SSH host key",
+                    OperationKind::Effect,
+                    &operation,
+                )
+                .with_description(format!(
+                    "Explicitly trust {} {} for this device only after out-of-band verification.",
+                    observed.algorithm, observed.fingerprint
+                ))
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Privileged,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    execution: ExecutionMode::Background { cancellable: false },
+                    result: ResultSpec::Job,
+                    tags: vec!["ssh".into(), "host-key".into(), "device-private".into()],
+                    ..ActionContract::default()
+                }),
+            );
+        }
+        Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
+            let operation = RemoteOperation::ForgetSshHostKey { connection_id: id };
+            resource = resource.with_action(
+                operation_spec("forget-host-key", "Forget SSH host key", OperationKind::Effect, &operation)
+                    .with_description("Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.")
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Write,
+                        risk: RiskLevel::Destructive,
+                        confirmation: ConfirmationPolicy::Confirm,
+                        retry: RetryPolicy::AtMostOnce,
+                        execution: ExecutionMode::Background { cancellable: false },
+                        result: ResultSpec::Job,
+                        tags: vec!["ssh".into(), "host-key".into(), "device-private".into()],
+                        ..ActionContract::default()
+                    }),
+            );
+        }
+        _ => {}
+    }
+    resource
 }
 
 /// Every collaborative operation Remote exports on the shared document. Each
@@ -757,7 +823,7 @@ mod tests {
         assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
         assert_eq!(connect.contract.result, ResultSpec::Job);
 
-        let input = session_resource(&connection, true)
+        let input = session_resource(&connection, true, None)
             .actions
             .into_iter()
             .find(|action| action.id == "send-text")
@@ -803,7 +869,7 @@ mod tests {
     #[test]
     fn active_session_exports_lifecycle_and_typed_input() {
         let id = Uuid::new_v4();
-        let session = session_resource(&sample(id, "Build Box"), false);
+        let session = session_resource(&sample(id, "Build Box"), false, None);
         assert_eq!(session.id.as_str(), format!("remote.session:{id}"));
         let disconnect = session
             .actions
@@ -818,6 +884,37 @@ mod tests {
             .unwrap();
         assert_eq!(input.params()[0].ty, ParamType::Text);
         assert!(!input.contract.availability.is_available());
+    }
+
+    #[test]
+    fn first_contact_exports_an_explicit_device_private_trust_action() {
+        let id = Uuid::new_v4();
+        let issue = crate::ssh::HostKeyIssue::FirstContact {
+            observed: crate::ssh::HostKeyIdentity {
+                algorithm: "ssh-ed25519".into(),
+                fingerprint: "SHA256:example".into(),
+            },
+        };
+        let trust = session_resource(&sample(id, "Build Box"), false, Some(&issue))
+            .actions
+            .into_iter()
+            .find(|action| action.id == "trust-host-key")
+            .expect("first contact publishes a trust action");
+        assert_eq!(trust.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(trust.contract.risk, RiskLevel::Privileged);
+        assert!(
+            trust
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == "device-private")
+        );
+        assert!(
+            trust
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("SHA256:example"))
+        );
     }
 
     /// The palette's favourite action tracks the live document: with a favourited
