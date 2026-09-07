@@ -424,19 +424,25 @@ fn keyboard_slider_arrows_route_through_the_host() {
 /// overlay ordering and modifier state have historically swallowed keys.
 #[test]
 fn keyboard_actions_and_reverse_tab_route_through_the_host() {
-    // Tab → Settings → Enter opens settings and dismisses the popover.
+    // The first Tab selects Edit; the second selects Settings. Enter opens
+    // settings and dismisses the popover.
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    for _ in 0..2 {
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
-    }
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
     assert!(press_key(
         &mut host,
         &taffy,
@@ -518,8 +524,9 @@ fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
     });
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // Tab chooses Edit; Space enters it; the second editable row is
-    // Bluetooth. Move it below Night Light with Ctrl+Down.
+    // Tab chooses Edit; Space enters it with the first editable row focused.
+    // Two further Tabs select Bluetooth. Move it below Night Light with
+    // Ctrl+Down.
     assert!(press_key(
         &mut host,
         &taffy,
@@ -563,13 +570,8 @@ fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
         .filter_map(|node| node.name.as_deref())
         .collect::<Vec<_>>();
     assert_eq!(
-        names[..4],
-        [
-            "Finish editing controls",
-            "Wi-Fi",
-            "Night Light",
-            "Bluetooth"
-        ],
+        names[..3],
+        ["Wi-Fi", "Night Light", "Bluetooth"],
         "Ctrl+Down must reorder the semantic and visual row order"
     );
 
@@ -592,13 +594,8 @@ fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
         .filter_map(|node| node.name.as_deref())
         .collect::<Vec<_>>();
     assert_eq!(
-        names[..4],
-        [
-            "Finish editing controls",
-            "Wi-Fi",
-            "Bluetooth",
-            "Night Light"
-        ],
+        names[..3],
+        ["Wi-Fi", "Bluetooth", "Night Light"],
         "Ctrl+Up must reverse a keyboard reorder"
     );
 }

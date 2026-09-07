@@ -346,7 +346,7 @@ mod image_worker_impl {
     struct State {
         data_device_manager: DataDeviceManagerState,
         registry: RegistryState,
-        seats_state: SeatState,
+        seat_registry: SeatState,
         seats: HashMap<WlSeat, SeatData>,
         latest_seat: Option<WlSeat>,
         queue_handle: QueueHandle<Self>,
@@ -390,6 +390,10 @@ mod image_worker_impl {
             return;
         };
         let seat_state = SeatState::new(&globals, &qh);
+        #[allow(
+            clippy::mutable_key_type,
+            reason = "Wayland object identity is the protocol key used by SCTK callbacks"
+        )]
         let seats = seat_state
             .seats()
             .map(|seat| (seat, SeatData::default()))
@@ -397,7 +401,7 @@ mod image_worker_impl {
         let mut state = State {
             data_device_manager,
             registry: RegistryState::new(&globals),
-            seats_state: seat_state,
+            seat_registry: seat_state,
             seats,
             latest_seat: None,
             queue_handle: qh,
@@ -658,7 +662,7 @@ mod image_worker_impl {
 
     impl SeatHandler for State {
         fn seat_state(&mut self) -> &mut SeatState {
-            &mut self.seats_state
+            &mut self.seat_registry
         }
         fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: WlSeat) {
             self.seats.entry(seat).or_default();
@@ -682,14 +686,14 @@ mod image_worker_impl {
                     }
                 }
                 Capability::Pointer => {
-                    data.pointer = self.seats_state.get_pointer(qh, &seat).ok();
+                    data.pointer = self.seat_registry.get_pointer(qh, &seat).ok();
                     if data.data_device.is_none() {
                         data.data_device =
                             Some(self.data_device_manager.get_data_device(qh, &seat));
                     }
                 }
                 Capability::Touch => {
-                    data.touch = self.seats_state.get_touch(qh, &seat).ok();
+                    data.touch = self.seat_registry.get_touch(qh, &seat).ok();
                     if data.data_device.is_none() {
                         data.data_device =
                             Some(self.data_device_manager.get_data_device(qh, &seat));

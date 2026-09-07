@@ -265,12 +265,13 @@ impl ApplicationsProvider {
     /// Score not-yet-installed apps and build Store-detail rows. `installed`
     /// keeps an app from being offered twice between an install finishing and the
     /// catalogue refetching.
+    #[cfg(test)]
     pub(crate) fn catalogue_results_for(
         &self,
         needle: &str,
         apps: Vec<CatalogueApp>,
         installed: &[String],
-        _open_target: OpenTarget,
+        open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         self.catalogue_results_for_with_hosts(needle, apps, installed, &[], open_target)
     }
@@ -281,7 +282,7 @@ impl ApplicationsProvider {
         apps: Vec<CatalogueApp>,
         installed: &[String],
         host_apps: &[crate::shell::host_apps::HostApp],
-        open_target: OpenTarget,
+        _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
@@ -353,7 +354,7 @@ impl ApplicationsProvider {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                launcher::launch_failure_title(&display_name),
+                                format!("Couldn't open App Store for {display_name}"),
                                 launcher::LaunchError::NoWorkspace.notification_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
