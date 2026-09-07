@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transac
 use base64::Engine as _;
 use crossbeam_channel::{Receiver, bounded};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -59,6 +59,22 @@ const MAX_OSC_TITLE_BYTES: usize = 256;
 const MAX_OSC_LINK_BYTES: usize = 2 * 1024;
 const MAX_OSC_LINKS: usize = 4096;
 const MAX_OSC_CLIPBOARD_BYTES: usize = 1024 * 1024;
+/// Keep contextual resource publication proportional to what is on screen.
+/// Historical OSC links remain lazily resolvable by their stable id, but a
+/// malicious process cannot make every palette refresh materialise thousands
+/// of children.
+const MAX_VISIBLE_RESOURCE_LINKS: usize = 32;
+/// Resource labels are navigation chrome, not a second copy of an arbitrarily
+/// long OSC URL. The full validated target stays in the operation payload.
+const MAX_LINK_RESOURCE_LABEL_CHARS: usize = 120;
+
+fn link_resource_label(url: &str) -> String {
+    let mut label: String = url.chars().take(MAX_LINK_RESOURCE_LABEL_CHARS).collect();
+    if url.chars().count() > MAX_LINK_RESOURCE_LABEL_CHARS {
+        label.push('…');
+    }
+    label
+}
 
 /// Cell coordinate within the terminal buffer. `row` is an **absolute** index
 /// into the full `grid` (scrollback included), not a viewport-local row — the
@@ -778,6 +794,239 @@ impl TerminalWidget {
 
     fn terminal_transcript_target(&self) -> String {
         format!("terminal.transcript:{}", self.pane_id)
+    }
+
+    fn terminal_link_resource_id(&self, link_id: u16) -> String {
+        format!("terminal.link:{}:{link_id}", self.pane_id)
+    }
+
+    fn current_visible_text(&self) -> String {
+        let start = self.viewport_start_y.min(self.grid.len());
+        let end = (start + self.current_visible_rows()).min(self.grid.len());
+        self.grid
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|row| row.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn visible_link_ids(&self) -> Vec<u16> {
+        let start = self.viewport_start_y.min(self.grid_attrs.len());
+        let end = (start + self.current_visible_rows()).min(self.grid_attrs.len());
+        let mut seen = HashSet::new();
+        let mut ids = Vec::new();
+        for row in self.grid_attrs.get(start..end).unwrap_or_default() {
+            for attr in row {
+                if attr.link_id != 0
+                    && seen.insert(attr.link_id)
+                    && self.links.contains_key(&attr.link_id)
+                {
+                    ids.push(attr.link_id);
+                    if ids.len() >= MAX_VISIBLE_RESOURCE_LINKS {
+                        return ids;
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    fn link_resource(&self, link_id: u16, url: &str) -> Resource {
+        let mut resource = Resource::new(
+            self.terminal_link_resource_id(link_id),
+            "terminal.link",
+            link_resource_label(url),
+        );
+        if let Ok(spec) = ActionSpec::operation(
+            "open",
+            "Open link",
+            OperationKind::Effect,
+            "terminal.open-link",
+            &url,
+        ) {
+            resource
+                .actions
+                .push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
+        }
+        resource
+    }
+
+    fn transcript_resource(&self) -> Resource {
+        let mut transcript = Resource::new(
+            self.terminal_transcript_target(),
+            "terminal.transcript",
+            "Terminal output history",
+        );
+        for (id, label, available, reason) in [
+            (
+                "history-top",
+                "Show oldest output",
+                self.grid.len() > self.current_visible_rows(),
+                "No older output is retained",
+            ),
+            (
+                "history-live",
+                "Return to live output",
+                self.scroll_offset > 0,
+                "Already showing live output",
+            ),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::View, "terminal.control", &id)
+            {
+                transcript.actions.push(if available {
+                    spec
+                } else {
+                    spec.unavailable("history_boundary", reason)
+                });
+            }
+        }
+        if let Ok(spec) = ActionSpec::operation(
+            "copy-visible",
+            "Copy visible output",
+            OperationKind::Effect,
+            "terminal.control",
+            &"copy-visible",
+        ) {
+            transcript
+                .actions
+                .push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
+        }
+        transcript.children.extend(
+            self.visible_link_ids()
+                .into_iter()
+                .filter_map(|id| self.links.get(&id).map(|url| self.link_resource(id, url))),
+        );
+        transcript
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "JSON serialization of an owned String is infallible"
+    )]
+    fn session_resource(&self) -> Resource {
+        let disconnected = self.is_disconnected();
+        let unavailable_reason =
+            "The terminal process has ended or its PTY failed; input cannot be sent.";
+        let label = if self.title == "Terminal" {
+            "Terminal session".to_string()
+        } else {
+            format!("Terminal — {}", self.title)
+        };
+        let mut terminal = Resource::new(self.terminal_resource_id(), "terminal.session", label);
+        for (id, label, prompt, placeholder, type_id) in [
+            ("send", "Send text", "Text to send", "text", "terminal.send"),
+            (
+                "run",
+                "Run command",
+                "Command to run",
+                "command",
+                "terminal.run",
+            ),
+        ] {
+            let mut spec = ActionSpec::prompted_operation(
+                id,
+                label,
+                prompt,
+                placeholder,
+                OperationKind::Effect,
+                type_id,
+                move |text| {
+                    EncodedAction::encode_operation(type_id, &text).expect("string payload")
+                },
+            )
+            .with_description(if id == "run" {
+                "Runs one reviewed command in this live process; confirmation is required."
+            } else {
+                "Writes reviewed text without pressing Enter; confirmation is required."
+            })
+            .privileged()
+            .retry_policy(RetryPolicy::AtMostOnce);
+            if disconnected {
+                spec = spec.unavailable("session_disconnected", unavailable_reason);
+            }
+            terminal.actions.push(spec);
+        }
+        for (id, label) in [
+            ("interrupt", "Interrupt process"),
+            ("clear", "Clear screen"),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
+            {
+                let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
+                if disconnected {
+                    control = control.unavailable("session_disconnected", unavailable_reason);
+                }
+                terminal.actions.push(control);
+            }
+        }
+        terminal.children.push(self.transcript_resource());
+        terminal
+    }
+
+    fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        self.visible_link_ids()
+            .into_iter()
+            .filter_map(|link_id| {
+                self.links.get(&link_id).map(|url| {
+                    AccessNode::new(Role::Link)
+                        .with_name(link_resource_label(url))
+                        .with_description("Link in visible terminal output")
+                        .with_action_target(self.terminal_link_resource_id(link_id))
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        })
+                })
+            })
+            .collect()
+    }
+
+    fn context_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        self.context_menu.is_open().then(|| {
+            let action_count = self
+                .context_menu
+                .items()
+                .iter()
+                .filter(|item| item.label().is_some())
+                .count();
+            let mut position = 0usize;
+            let children = self
+                .context_menu
+                .items()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    let label = item.label()?;
+                    position = position.saturating_add(1);
+                    Some(
+                        AccessNode::new(Role::MenuItem)
+                            .with_name(label)
+                            .with_action_target(format!("terminal.menu:{}:{index}", self.pane_id))
+                            .with_position(position, action_count)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            }),
+                    )
+                })
+                .collect();
+            AccessNode::new(Role::Menu)
+                .with_hashed_key("terminal-context-menu")
+                .with_state(AccessState {
+                    expanded: Some(true),
+                    modal: true,
+                    ..Default::default()
+                })
+                .with_children(children)
+        })
     }
 
     /// Convert an accessible extended-grapheme offset in the current visible
@@ -1540,55 +1789,64 @@ impl Widget for TerminalWidget {
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["terminal.send", "terminal.control"]
+        &[
+            "terminal.send",
+            "terminal.run",
+            "terminal.control",
+            "terminal.open-link",
+        ]
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "JSON serialization of an owned String is infallible"
-    )]
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let disconnected = self.is_disconnected();
-        let unavailable_reason =
-            "The terminal process has ended or its PTY failed; input cannot be sent.";
-        let mut terminal = Resource::new(
-            self.terminal_resource_id(),
-            "terminal.session",
-            "Terminal session",
-        );
-        let mut send = ActionSpec::prompted_operation(
-            "send",
-            "Send text",
-            "Text to send",
-            "command",
-            OperationKind::Effect,
-            "terminal.send",
-            |text| EncodedAction::encode_operation("terminal.send", &text).expect("string payload"),
-        )
-        .with_description(
-            "Writes reviewed text to this live process. It can run commands; confirmation is required.",
-        )
-        .privileged()
-        .retry_policy(RetryPolicy::AtMostOnce);
-        if disconnected {
-            send = send.unavailable("session_disconnected", unavailable_reason);
+        vec![self.session_resource()]
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| self.session_resource())
+            .into_iter()
+            .collect();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        use std::hash::{Hash, Hasher};
+
+        let mut revision = std::collections::hash_map::DefaultHasher::new();
+        self.pane_id.hash(&mut revision);
+        self.title.hash(&mut revision);
+        self.grid.len().hash(&mut revision);
+        self.current_visible_rows().hash(&mut revision);
+        self.scroll_offset.hash(&mut revision);
+        self.is_disconnected().hash(&mut revision);
+        for link_id in self.visible_link_ids() {
+            link_id.hash(&mut revision);
+            self.links.get(&link_id).hash(&mut revision);
         }
-        terminal.actions.push(send);
-        for (id, label) in [
-            ("interrupt", "Interrupt process"),
-            ("clear", "Clear screen"),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
-            {
-                let mut control = spec.privileged().retry_policy(RetryPolicy::AtMostOnce);
-                if disconnected {
-                    control = control.unavailable("session_disconnected", unavailable_reason);
-                }
-                terminal.actions.push(control);
-            }
+        Some(format!("{:016x}", revision.finish()))
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == self.terminal_resource_id() {
+            return Some(self.session_resource());
         }
-        vec![terminal]
+        if id == self.terminal_transcript_target() {
+            return Some(self.transcript_resource());
+        }
+        let prefix = format!("terminal.link:{}:", self.pane_id);
+        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
+        self.links
+            .get(&link_id)
+            .map(|url| self.link_resource(link_id, url))
     }
 
     fn invoke_resource_operation(
@@ -1599,12 +1857,12 @@ impl Widget for TerminalWidget {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
         let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         match type_id {
             "terminal.send" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
                 if value.is_empty() {
                     return Err("text to send cannot be empty".to_string());
                 }
@@ -1616,11 +1874,51 @@ impl Widget for TerminalWidget {
                 }
                 self.try_write_input(value.as_bytes())?;
             }
-            "terminal.control" => match value.as_str() {
-                "interrupt" => self.try_write_input(&[0x03])?,
-                "clear" => self.try_write_input(&[0x0c])?,
+            "terminal.run" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                if value.trim().is_empty() {
+                    return Err("command to run cannot be empty".to_string());
+                }
+                if value.len() > MAX_RESOURCE_SEND_BYTES {
+                    return Err(format!(
+                        "command exceeds the {} KiB reviewed-command limit",
+                        MAX_RESOURCE_SEND_BYTES / 1024
+                    ));
+                }
+                let mut command = value.into_bytes();
+                command.push(b'\r');
+                self.try_write_input(&command)?;
+            }
+            "terminal.control" => match (kind, value.as_str()) {
+                (OperationKind::Effect, "interrupt") => self.try_write_input(&[0x03])?,
+                (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
+                (OperationKind::Effect, "copy-visible") => {
+                    let visible = self.current_visible_text();
+                    if visible.trim().is_empty() {
+                        return Err("there is no visible terminal output to copy".to_string());
+                    }
+                    clipboard_copy(&visible);
+                }
+                (OperationKind::View, "history-top") => self.scroll_to_top(),
+                (OperationKind::View, "history-live") => self.scroll_to_bottom(),
                 _ => return Ok(false),
             },
+            "terminal.open-link" => {
+                if kind != OperationKind::Effect {
+                    return Ok(false);
+                }
+                if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
+                    || !(value.starts_with("http://")
+                        || value.starts_with("https://")
+                        || value.starts_with("file://")
+                        || value.starts_with("mailto:"))
+                {
+                    return Err("link target is not a supported safe URL".to_string());
+                }
+                open_url(&value);
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -1940,11 +2238,36 @@ impl Widget for TerminalWidget {
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         self.init_crdt(state, root);
+
+        // The menu is app-owned overlay content, so route every event to the
+        // shared primitive while it is open and do not let keys/clicks fall
+        // through to the PTY. This gives it Arrow/Enter/Escape keyboard
+        // navigation in addition to pointer selection.
+        if self.context_menu.is_open() {
+            let mut menu_handled = false;
+            Widget::handle_event(
+                &mut self.context_menu,
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                root,
+                &mut menu_handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(index) = self.context_menu.take_selection() {
+                self.activate_context_menu_item(index);
+            }
+            *handled |= menu_handled;
+            return;
+        }
 
         match event {
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2025,29 +2348,21 @@ impl Widget for TerminalWidget {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let visible_rows = self.current_visible_rows();
-        let end = (self.viewport_start_y + visible_rows).min(self.grid.len());
-        let value = self
-            .grid
-            .get(self.viewport_start_y..end)
-            .unwrap_or_default()
-            .iter()
-            .map(|row| row.trim_end())
-            .collect::<Vec<_>>()
-            .join("\n");
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        let value = self.current_visible_text();
         let graphics = self
             .image_placements
             .iter()
             .filter(|placement| placement.alternate_screen == self.alt_active)
             .count();
         let mut description = if graphics == 0 {
-            "Read-only terminal transcript shared with collaborators; use the Send text action to write to the live process".to_string()
+            "Terminal output shared with collaborators. Typing is sent to the live process. Control Shift C copies, Control Shift V pastes, and Shift Page Up or Shift Page Down reviews output history".to_string()
         } else {
             format!(
-                "Read-only terminal transcript shared with collaborators; use the Send text action \
-                 to write to the live process; {graphics} graphical placement(s) are visible \
-                when their image blobs are available"
+                "Terminal output shared with collaborators. Typing is sent to the live process. \
+                 Control Shift C copies, Control Shift V pastes, and Shift Page Up or Shift Page \
+                 Down reviews output history. {graphics} graphical placement(s) are visible when \
+                 their image blobs are available"
             )
         };
         if self.is_disconnected() {
@@ -2056,7 +2371,7 @@ impl Widget for TerminalWidget {
             description.push_str("; input actions are unavailable.");
         }
         let selection = self.visible_selection_bytes(&value);
-        let transcript = AccessNode::new(Role::Terminal)
+        let mut transcript = AccessNode::new(Role::Terminal)
             .with_name(self.title.clone())
             .with_description(description)
             .with_value(value)
@@ -2069,6 +2384,20 @@ impl Widget for TerminalWidget {
                 read_only: true,
                 ..Default::default()
             });
+        transcript
+            .children
+            .extend(self.visible_link_accessibility());
+        if let Some(menu) = self.context_menu_accessibility() {
+            transcript.children.push(menu);
+        }
+        if self.is_disconnected() {
+            transcript.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_hashed_key("terminal-lifecycle")
+                    .with_name(self.disconnected_message())
+                    .with_live(Politeness::Assertive),
+            );
+        }
         Some(match selection {
             Some((anchor, focus)) => transcript.with_text_selection(anchor, focus),
             None => transcript,
@@ -2090,6 +2419,43 @@ impl Widget for TerminalWidget {
                 self.set_visible_grapheme_selection(*anchor, *focus)
             }
             _ => false,
+        }
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let link_prefix = format!("terminal.link:{}:", self.pane_id);
+        if let Some(link_id) = target
+            .strip_prefix(&link_prefix)
+            .and_then(|id| id.parse::<u16>().ok())
+        {
+            let Some(url) = self.links.get(&link_id) else {
+                return false;
+            };
+            open_url(url);
+            return true;
+        }
+        let menu_prefix = format!("terminal.menu:{}:", self.pane_id);
+        let Some(index) = target
+            .strip_prefix(&menu_prefix)
+            .and_then(|id| id.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        self.context_menu.click_item(index);
+        if let Some(index) = self.context_menu.take_selection() {
+            self.activate_context_menu_item(index);
+            true
+        } else {
+            false
         }
     }
 
@@ -2353,14 +2719,6 @@ impl TerminalWidget {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) {
-        // A left click while the context menu is open routes to the menu
-        // (pick a row, or dismiss on click-outside) instead of starting a
-        // new selection.
-        if matches!(element_state, ElementState::Pressed) && self.context_menu.is_open() {
-            self.click_context_menu_at_cursor();
-            *handled = true;
-            return;
-        }
         // Application mouse reporting was already handled by
         // `handle_mouse_button_event` above. Reaching this helper therefore
         // means reporting is off or Shift requested the conventional local
@@ -2457,10 +2815,13 @@ impl TerminalWidget {
             return;
         }
 
-        // Scrollback navigation — only intercepted for the main
-        // buffer; the alternate screen (pager / editor) gets the
-        // keys forwarded to the app instead.
+        // Conventional terminal scrollback navigation requires Shift. Plain
+        // Page Up/Down must reach readline, pagers and other foreground apps;
+        // stealing them made the emulator behave unlike established desktop
+        // terminals. The alternate screen always receives the keys because a
+        // full-screen app owns its own viewport.
         if !self.alt_active
+            && mods.shift_key()
             && let Key::Named(named) = logical_key
         {
             let page = self.current_visible_rows().saturating_sub(1).max(1);
@@ -3502,10 +3863,9 @@ impl TerminalWidget {
         self.last_padding_x
     }
 
-    /// Build + open the right-click Copy/Paste menu at the cached cursor.
-    /// Copy appears only when there is a non-empty selection; Paste always
-    /// (matches every terminal). The `MenuItem` callbacks are inert — dispatch
-    /// happens by label in [`Self::click_context_menu_at_cursor`].
+    /// Build + open the shared terminal context menu at the cached cursor.
+    /// Selection and clipboard basics stay first; less common session
+    /// affordances remain discoverable without adding permanent app chrome.
     fn open_context_menu_at_cursor(&mut self) {
         let has_selection = self.selected_text().is_some_and(|t| !t.is_empty());
         let mut menu = ContextMenu::new();
@@ -3513,47 +3873,74 @@ impl TerminalWidget {
             menu.push(MenuItem::action("Copy", || {}));
         }
         menu.push(MenuItem::action("Paste", || {}));
+        menu.push(MenuItem::separator());
+        if !self.grid_is_blank() {
+            menu.push(MenuItem::action("Select all output", || {}));
+        }
+        menu.push(MenuItem::action("Clear screen", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action(
+            if self.select_to_copy {
+                "Copy on select: On"
+            } else {
+                "Copy on select: Off"
+            },
+            || {},
+        ));
         let p = self.last_cursor_pos;
         menu.open_at([p.x as f32, p.y as f32]);
         self.context_menu = menu;
     }
 
-    /// Route a click at the cached cursor to the open menu: run the chosen row
-    /// (dispatched by label, since the `Arc<dyn Fn>` callbacks can't reach the
-    /// PTY) or dismiss on click-outside. No-op when the menu is closed.
-    fn click_context_menu_at_cursor(&mut self) {
-        if !self.context_menu.is_open() {
-            return;
-        }
-        let p = self.last_cursor_pos;
-        let point = [p.x, p.y];
-        if let Some(idx) = self.context_menu.item_at(point) {
-            let label = self
-                .context_menu
-                .items()
-                .get(idx)
-                .and_then(|i| i.label())
-                .map(str::to_owned);
-            self.context_menu.close();
-            match label.as_deref() {
-                Some("Copy") => {
-                    if let Some(text) = self.selected_text()
-                        && !text.is_empty()
-                    {
-                        clipboard_copy(&text);
-                    }
+    fn activate_context_menu_item(&mut self, index: usize) {
+        let label = self
+            .context_menu
+            .items()
+            .get(index)
+            .and_then(MenuItem::label)
+            .map(str::to_owned);
+        match label.as_deref() {
+            Some("Copy") => {
+                if let Some(text) = self.selected_text()
+                    && !text.is_empty()
+                {
+                    clipboard_copy(&text);
                 }
-                Some("Paste") => {
-                    if let Some(text) = clipboard_paste() {
-                        self.paste(&text);
-                    }
-                }
-                _ => {}
             }
-        } else if !self.context_menu.contains(point) {
-            // Clicked outside the menu — dismiss. (A click on menu padding is
-            // inside the rect but on no row, so it keeps the menu open.)
-            self.context_menu.close();
+            Some("Paste") => {
+                if let Some(text) = clipboard_paste() {
+                    self.paste(&text);
+                }
+            }
+            Some("Select all output") => self.select_all_output(),
+            Some("Clear screen") => self.write_input(&[0x0c]),
+            Some("Copy on select: On" | "Copy on select: Off") => {
+                self.select_to_copy = !self.select_to_copy;
+            }
+            _ => {}
+        }
+    }
+
+    fn select_all_output(&mut self) {
+        let Some(last_row) = self.grid.iter().rposition(|row| !row.trim_end().is_empty()) else {
+            self.selection = None;
+            return;
+        };
+        let last_col = self
+            .grid
+            .get(last_row)
+            .map_or(0, |row| row.trim_end().width());
+        self.selection = Some(Selection {
+            anchor: GridPos { row: 0, col: 0 },
+            cursor: GridPos {
+                row: last_row,
+                col: last_col,
+            },
+        });
+        if let Some(text) = self.selected_text()
+            && !text.is_empty()
+        {
+            clipboard_copy_primary(&text);
         }
     }
 
