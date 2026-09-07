@@ -137,7 +137,15 @@ pub fn open_hosted_app(
         title: title.clone(),
         tile: TileContent::AppPlaceholder { kind, label: title },
     };
-    place_tab(tree, new_tab, placement)
+    let tab_id = place_tab(tree, new_tab, placement);
+    // Hosted apps have no Wayland surface whose later adoption can write the
+    // tab back.  Persist both authorities at the point of creation, or a
+    // restart/peer export that happens before the next unrelated mutation
+    // loses the newly-opened native window.  Foreign adoption deliberately
+    // stays process-local and therefore only calls `place_tab` directly.
+    tree.seed_doc_from_cache();
+    tree.flush_to_disk();
+    tab_id
 }
 
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
@@ -248,7 +256,22 @@ pub fn rename_tab_for_app_id(
     surface_id: u64,
     new_app_id: String,
 ) -> bool {
-    let new_title = tab_label_for_foreign(&new_app_id);
+    rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, None)
+}
+
+/// Rewrite a foreign tab's app-id after a late `set_app_id`, retaining an
+/// already-authoritative label when a compositor-issued host-launch token
+/// identified this exact surface.  The app-id remains current for later
+/// routing; only the untrusted late label is ignored.
+pub fn rename_tab_for_app_id_with_title(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    new_app_id: String,
+    authoritative_title: Option<&str>,
+) -> bool {
+    let new_title = authoritative_title
+        .map(str::to_string)
+        .unwrap_or_else(|| tab_label_for_foreign(&new_app_id));
     for ws in &mut tree.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
@@ -263,6 +286,114 @@ pub fn rename_tab_for_app_id(
                         tab.title = new_title;
                         return true;
                     }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Finish adoption when a client (notably Electron and some GTK stacks) sets
+/// its app-id after `new_toplevel`.  The anonymous adoption has already used
+/// the ordinary placement rule, so claim the launch note now and re-home that
+/// exact surface before merely changing its label.  The note is intentionally
+/// left claimed: the rendered mirror asks the same API and receives the same
+/// placement, while a later surface retires the one-shot note normally.
+pub fn rebind_toplevel_for_app_id(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    new_app_id: String,
+    authoritative_title: Option<&str>,
+) -> bool {
+    let title = authoritative_title
+        .map(str::to_string)
+        .unwrap_or_else(|| tab_label_for_foreign(&new_app_id));
+    let anonymous =
+        app_id_for_surface(tree, surface_id).is_some_and(|app_id| app_id.starts_with("anon-"));
+    if anonymous
+        && let Some(placement) =
+            crate::shell::launcher::placement_for_toplevel(&new_app_id, surface_id)
+    {
+        // `relocate_foreign_toplevel` deliberately preserves the identity
+        // already stored on the tab. Replace the synthetic identity first so
+        // the relocated tab cannot remain `anon-*` even though its title and
+        // destination changed successfully.
+        if !rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, Some(&title)) {
+            return false;
+        }
+        return relocate_foreign_toplevel(tree, surface_id, placement, &title);
+    }
+    rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, Some(&title))
+}
+
+/// Re-home an already mapped foreign surface after its compositor-minted
+/// activation token identifies the user-selected launch. The original tab is
+/// process-local; remove it before creating the replacement so neither the
+/// durable tree nor a rendered mirror can retain a duplicate surface.
+pub fn relocate_foreign_toplevel(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    placement: Placement,
+    title: &str,
+) -> bool {
+    let Some(app_id) = app_id_for_surface(tree, surface_id).map(str::to_string) else {
+        return false;
+    };
+    // The ordinary first-adoption path may already have claimed this launch's
+    // pending `IntoTab` note before the activation request arrives.  That is
+    // the desired destination, so do not remove the target tab and try to
+    // bind it again: removing it would make `IntoTab` fall back to a new
+    // group.  Activation still gives us the canonical display label.
+    if let Placement::IntoTab(target) = placement
+        && tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .any(|tab| {
+                tab.id == target
+                    && matches!(
+                        &tab.tile,
+                        TileContent::Foreign { surface_id: id, .. } if *id == surface_id
+                    )
+            })
+    {
+        return rename_tab_for_app_id(tree, surface_id, app_id)
+            && rename_tab_for_title(tree, surface_id, title.to_string());
+    }
+    if !close_tab_for_destroyed_surface(tree, surface_id) {
+        return false;
+    }
+    let tab_id = adopt_toplevel_at(tree, surface_id, Some(app_id), placement);
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.title = title.to_string();
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Rewrite only a foreign tab's client-provided visible title.  App identity
+/// remains stable for launch matching and grouping; an empty title clears
+/// stale document metadata exactly as `xdg_toplevel.set_title("")` requests.
+pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: String) -> bool {
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                if let Some(tab) = group.tabs.iter_mut().find(|tab| {
+                    matches!(
+                        &tab.tile,
+                        TileContent::Foreign { surface_id: id, .. } if *id == surface_id
+                    )
+                }) {
+                    tab.title = title;
+                    return true;
                 }
             }
         }
@@ -290,75 +421,185 @@ pub fn group_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<Gro
     None
 }
 
+/// Bring the already-adopted foreign toplevel to the front, including a
+/// workspace/strip transition when it lives outside the current view.
+///
+/// This is the compositor-side effect of an accepted `xdg_activation_v1`
+/// request. It deliberately mutates only local focus pointers; no window is
+/// created, moved, or written into collaborative continuity state.
+pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
+    let location = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group.tabs.iter().find_map(|tab| {
+                    matches!(
+                        &tab.tile,
+                        TileContent::Foreign { surface_id: id, .. } if *id == surface_id
+                    )
+                    .then_some((workspace.id, strip.id, group.id, tab.id))
+                })
+            })
+        })
+    });
+    let Some((workspace_id, strip_id, group_id, tab_id)) = location else {
+        return false;
+    };
+
+    let Some(workspace) = tree.workspaces.iter_mut().find(|ws| ws.id == workspace_id) else {
+        return false;
+    };
+    let Some(group) = workspace
+        .strips
+        .iter_mut()
+        .find(|strip| strip.id == strip_id)
+        .and_then(|strip| {
+            strip
+                .window_groups
+                .iter_mut()
+                .find(|group| group.id == group_id)
+        })
+    else {
+        return false;
+    };
+    group.active_tab = tab_id;
+    tree.active = workspace_id;
+    tree.active_strip.insert(workspace_id, strip_id);
+    tree.set_active_group(strip_id, group_id);
+    tree.flush_to_disk();
+    true
+}
+
+/// App id recorded for a foreign surface, if it has been adopted.
+pub fn app_id_for_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<&str> {
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find_map(|tab| match &tab.tile {
+            TileContent::Foreign {
+                surface_id: id,
+                app_id,
+            } if *id == surface_id => Some(app_id.as_str()),
+            _ => None,
+        })
+}
+
 /// Walk the tree for a `TileContent::Foreign` tab whose `surface_id` matches
 /// `destroyed_surface_id`, remove it, return `true` if found. The widget tree handles close animation; this just records absence.
 pub fn close_tab_for_destroyed_surface(
     tree: &mut WorkspaceTree,
     destroyed_surface_id: u64,
 ) -> bool {
-    for ws in &mut tree.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                if let Some(pos) = group.tabs.iter().position(|t| {
-                    matches!(
-                        &t.tile,
-                        TileContent::Foreign { surface_id: s, .. }
-                            if *s == destroyed_surface_id
-                    )
-                }) {
-                    let tab_id = group.tabs[pos].id;
-                    if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
-                        tree.continuation_closed_tabs.insert(tab_id, room);
-                    }
-                    let removed = group.tabs.remove(pos);
-                    if let Ok(mut registry) =
-                        crate::shell::personal_continuity_registry::global_registry().lock()
-                    {
-                        registry.forget_local_tab(
-                            crate::shell::personal_continuity::AppInstanceId(removed.id),
-                        );
-                    }
-                    // If the removed tab was active, fall back to the new last tab; a stale id is tolerated by the chrome's resolver, which picks the first existing tab.
-                    if group.active_tab == removed.id {
-                        group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                    }
-                    return true;
-                }
+    let tab_id = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id, .. } if *surface_id == destroyed_surface_id => {
+                Some(tab.id)
             }
-        }
+            _ => None,
+        });
+    tab_id.is_some_and(|tab_id| remove_tab(tree, tab_id))
+}
+
+/// Remove a destroyed foreign surface and immediately persist the authoritative
+/// tree.  Ordinary reconciliation also uses [`close_tab_for_destroyed_surface`]
+/// while it is converging two in-memory trees; only the protocol-owned close
+/// paths use this wrapper because a surface destruction is a durable user
+/// decision and must not leave its relaunchable `LocalApp` record on disk.
+pub fn close_tab_for_destroyed_surface_and_persist(
+    tree: &mut WorkspaceTree,
+    destroyed_surface_id: u64,
+) -> bool {
+    let removed = close_tab_for_destroyed_surface(tree, destroyed_surface_id);
+    if removed {
+        tree.flush_to_disk();
     }
-    false
+    removed
 }
 
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
 pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
-    for ws in &mut tree.workspaces {
-        for strip in &mut ws.strips {
-            for group in &mut strip.window_groups {
-                let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) else {
-                    continue;
-                };
-                if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
-                    tree.continuation_closed_tabs.insert(tab_id, room);
+    let located = tree.workspaces.iter().enumerate().find_map(|(ws_idx, ws)| {
+        ws.strips.iter().enumerate().find_map(|(strip_idx, strip)| {
+            strip
+                .window_groups
+                .iter()
+                .enumerate()
+                .find_map(|(group_idx, group)| {
+                    group
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.id == tab_id)
+                        .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx, strip.id, group.id))
+                })
+        })
+    });
+    let Some((ws_idx, strip_idx, group_idx, tab_idx, strip_id, group_id)) = located else {
+        return false;
+    };
+
+    let remove_group = tree.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx]
+        .tabs
+        .len()
+        == 1;
+    let process_local_foreign = tree
+        .workspaces
+        .get(ws_idx)
+        .and_then(|workspace| workspace.strips.get(strip_idx))
+        .and_then(|strip| strip.window_groups.get(group_idx))
+        .and_then(|group| group.tabs.get(tab_idx))
+        .is_some_and(|tab| matches!(&tab.tile, TileContent::Foreign { .. }));
+    // Delete from the CRDT before touching the cache. Besides making the
+    // ordering explicit, this guarantees that a revision/peer merge between
+    // the two representations cannot treat the stale document entry as an
+    // insertion and resurrect it. A newly adopted `Foreign` surface is
+    // deliberately process-local and may never have entered the replicated
+    // document; absence there is therefore already the desired durable
+    // state, not a failed close.
+    if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !process_local_foreign {
+        return false;
+    }
+
+    let group = &mut tree.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx];
+    let removed = group.tabs.remove(tab_idx);
+    if group.active_tab == tab_id {
+        group.active_tab = group.tabs.last().map_or(0, |tab| tab.id);
+    }
+    if remove_group {
+        let removed_was_active = tree.active_group.get(&strip_id) == Some(&group_id);
+        tree.workspaces[ws_idx].strips[strip_idx]
+            .window_groups
+            .remove(group_idx);
+        if removed_was_active {
+            let groups = &tree.workspaces[ws_idx].strips[strip_idx].window_groups;
+            match groups
+                .get(group_idx)
+                .or_else(|| groups.last())
+                .map(|group| group.id)
+            {
+                Some(next) => {
+                    tree.active_group.insert(strip_id, next);
                 }
-                let removed = group.tabs.remove(pos);
-                if let Ok(mut registry) =
-                    crate::shell::personal_continuity_registry::global_registry().lock()
-                {
-                    registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(
-                        removed.id,
-                    ));
+                None => {
+                    tree.active_group.remove(&strip_id);
                 }
-                if group.active_tab == tab_id {
-                    group.active_tab = group.tabs.last().map_or(0, |t| t.id);
-                }
-                return true;
             }
         }
     }
-    false
+    if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
+        tree.continuation_closed_tabs.insert(tab_id, room);
+    }
+    if let Ok(mut registry) = crate::shell::personal_continuity_registry::global_registry().lock() {
+        registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(removed.id));
+    }
+    true
 }
 
 /// Turn a wayland app-id into a tab-bar label. The app's own name wins (this session's
@@ -428,6 +669,37 @@ mod tests {
         (strip_id, group_id)
     }
 
+    #[test]
+    fn accepted_surface_activation_persists_complete_focus_address() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("workspace.json");
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = Some(path.clone());
+        let original_workspace = tree.active;
+        let surface = 0xabc;
+        let tab = adopt_toplevel(&mut tree, surface, Some("org.example.Activated".into()));
+        let target_strip = tree.active_strip[&original_workspace];
+        let target_group = group_of(&tree, surface).id;
+
+        let other = tree.workspaces[1].id;
+        tree.set_active(other);
+        assert!(activate_surface(&mut tree, surface));
+
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("activation state");
+        assert_eq!(restarted.active, original_workspace);
+        assert_eq!(
+            restarted.active_strip.get(&original_workspace),
+            Some(&target_strip)
+        );
+        assert_eq!(restarted.active_group_for(target_strip), Some(target_group));
+        let group = restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == target_group)
+            .expect("activated group");
+        assert_eq!(group.active_tab, tab);
+    }
+
     /// A window started for a tab the room already has lands *in* that tab, not in a second one beside it.
     #[test]
     #[serial_test::serial(process_env)]
@@ -493,6 +765,64 @@ mod tests {
             target,
             "the tab showing the window is the one in front of its group"
         );
+    }
+
+    /// A host launch can be adopted by the ordinary identity path just before
+    /// its activation request arrives.  Consuming the activation must retain
+    /// that existing `IntoTab` binding, then retire the launch note so a
+    /// second, unrelated window with the same class cannot inherit it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn activation_relocation_keeps_claimed_target_and_retires_host_launch_note() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let target = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let identity = "org.example.Host".to_string();
+        crate::shell::launcher::set_pending_placement_for_identities(
+            "org.example.Host.desktop",
+            std::slice::from_ref(&identity),
+            Placement::IntoTab(target),
+        );
+
+        assert_eq!(
+            adopt_toplevel(&mut tree, 0xfeed, Some(identity.clone())),
+            target,
+            "the initial identity adoption claimed the reserved tab"
+        );
+        crate::shell::launcher::clear_pending_placement("org.example.Host.desktop");
+        assert!(relocate_foreign_toplevel(
+            &mut tree,
+            0xfeed,
+            Placement::IntoTab(target),
+            "Host application",
+        ));
+        assert_eq!(
+            tab_of(&tree, 0xfeed).id,
+            target,
+            "relocation must not delete an already-claimed IntoTab target"
+        );
+        assert_eq!(tab_of(&tree, 0xfeed).title, "Host application");
+        assert_eq!(
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .filter(|tab| matches!(&tab.tile, TileContent::Foreign { surface_id, .. } if *surface_id == 0xfeed))
+                .count(),
+            1,
+            "the same toplevel remains represented by exactly one local tab"
+        );
+        assert!(
+            crate::shell::launcher::placement_for_toplevel(&identity, 0xbeef).is_none(),
+            "the token's desktop-id note is gone before another matching window arrives"
+        );
+        let later = adopt_toplevel(&mut tree, 0xbeef, Some(identity));
+        assert_ne!(
+            later, target,
+            "a later matching window must not replace the token-bound surface"
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 
     /// The tab was closed by its owner while the local instance was starting; placement degrades to the ordinary launch rule.
@@ -837,6 +1167,29 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
+    fn activation_reveals_exact_surface_without_moving_it() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 7001, Some("org.example.Editor".into()));
+        let original_workspace = tree.active;
+        let original_group = group_of(&tree, 7001).id;
+        let other = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id != original_workspace)
+            .map(|workspace| workspace.id)
+            .expect("demo has another workspace");
+        tree.active = other;
+
+        assert!(activate_surface(&mut tree, 7001));
+        assert_eq!(tree.active, original_workspace);
+        assert_eq!(group_id_for_surface(&tree, 7001), Some(original_group));
+        assert_eq!(app_id_for_surface(&tree, 7001), Some("org.example.Editor"));
+        assert!(!activate_surface(&mut tree, 9999));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
     fn close_tab_for_destroyed_surface_removes_matching_foreign_tab() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -865,6 +1218,56 @@ mod tests {
         assert!(
             !still_there,
             "the foreign tab with surface_id=42 must be gone"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn destroyed_foreign_surface_close_flushes_away_relaunch_record() {
+        crate::shell::launcher::clear_pending_placements();
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = Some(state_path.clone());
+        let _ = adopt_toplevel(&mut tree, 42, Some("io.example.thing".into()));
+
+        // The persistence writer deliberately turns a live Foreign tile into
+        // a symbolic LocalApp record.  A real surface destroy must remove that
+        // record, not leave it available for the next session to relaunch.
+        tree.flush_to_disk();
+        let saved = crate::shell::persist::load_tree_from(&state_path)
+            .expect("live foreign state is a valid persistence snapshot");
+        assert!(
+            saved.workspaces.iter().any(|workspace| workspace
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .any(|tab| matches!(
+                    &tab.tile,
+                    TileContent::LocalApp { app_id, .. } if app_id == "io.example.thing"
+                ))),
+            "precondition: a live foreign surface is represented as a relaunchable record"
+        );
+
+        assert!(close_tab_for_destroyed_surface_and_persist(&mut tree, 42));
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("destroyed foreign state is a valid persistence snapshot");
+        assert!(
+            restarted.workspaces.iter().all(|workspace| workspace
+                .strips
+                .iter()
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .all(|tab| !matches!(
+                    &tab.tile,
+                    TileContent::Foreign { surface_id, .. } if *surface_id == 42
+                ) && !matches!(
+                    &tab.tile,
+                    TileContent::LocalApp { app_id, .. } if app_id == "io.example.thing"
+                ))),
+            "a surface destroyed before restart must not resurrect as a LocalApp"
         );
     }
 
@@ -969,6 +1372,36 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn removing_a_group_survives_document_rehydration() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let group_id = tree.workspaces[0].strips[0].window_groups[0].id;
+        let tab_ids = tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+
+        for tab_id in tab_ids {
+            assert!(remove_tab(&mut tree, tab_id));
+        }
+        assert!(
+            tree.workspaces[0].strips[0].window_groups.is_empty(),
+            "the cache drops the group when its last tab closes"
+        );
+
+        tree.resync_cache_from_doc();
+        assert!(
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .all(|group| group.id != group_id),
+            "rehydrating from the durable document must not resurrect the closed group"
+        );
+    }
+
     /// A tab id nothing in the tree holds is reported as not removed, not silently accepted — a caller unwinding a launch has to know whether there was anything to unwind.
     #[test]
     #[serial_test::serial(process_env)]
@@ -996,6 +1429,85 @@ mod tests {
         }
         // Humanised, not raw. A tab is a name badge; `late` is a fragment of an identifier and `Late` is a word.
         assert_eq!(tab.title, "Late", "title is the humanised app-id component");
+    }
+
+    #[test]
+    fn late_app_id_keeps_a_claimed_host_launch_label() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 99, None);
+
+        assert!(rename_tab_for_app_id_with_title(
+            &mut tree,
+            99,
+            "com.openai.ChatGPT".into(),
+            Some("ChatGPT"),
+        ));
+        let tab = tab_of(&tree, 99);
+        assert!(matches!(
+            &tab.tile,
+            TileContent::Foreign { app_id, surface_id: 99 } if app_id == "com.openai.ChatGPT"
+        ));
+        assert_eq!(tab.title, "ChatGPT");
+    }
+
+    /// Electron/GTK may create the xdg-toplevel before publishing its app-id.
+    /// The anonymous first adoption must still claim the launch placement when
+    /// the identity arrives; otherwise the next same-app window consumes the
+    /// stale note and lands in the first launch's intended group.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn late_app_id_claims_placement_once_and_does_not_leak_to_next_window() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let (_strip, opener) = focus_lone_window(&mut tree);
+        crate::shell::launcher::set_pending_placement(
+            "org.example.electron",
+            Placement::TabIn(opener),
+        );
+
+        // The first protocol callback has no app-id yet, so it follows the
+        // ordinary fallback and is initially beside the focused group.
+        let first = adopt_toplevel(&mut tree, 0x101, None);
+        assert_ne!(group_of(&tree, 0x101).id, opener);
+        assert!(rebind_toplevel_for_app_id(
+            &mut tree,
+            0x101,
+            "org.example.electron".into(),
+            None,
+        ));
+        assert_eq!(group_of(&tree, 0x101).id, opener);
+        assert_eq!(tab_of(&tree, 0x101).title, "Electron");
+        assert_eq!(
+            app_id_for_surface(&tree, 0x101),
+            Some("org.example.electron"),
+            "late placement must replace the synthetic identity as well as the title"
+        );
+
+        // A second window must not inherit the one-shot placement claimed by
+        // the first surface, even when it announces the app-id immediately.
+        // Move focus to a distinct one-tab group so the ordinary placement
+        // rule is observably different from the original `TabIn(opener)`
+        // launch request.
+        let _ = adopt_toplevel_at(
+            &mut tree,
+            0x999,
+            Some("org.example.anchor".into()),
+            Placement::NewGroup,
+        );
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
+        let second = adopt_toplevel(&mut tree, 0x102, Some("org.example.electron".into()));
+        assert_ne!(second, first);
+        assert_ne!(
+            group_of(&tree, 0x102).id,
+            opener,
+            "the second surface must follow current placement, not the claimed launch note"
+        );
+        assert_eq!(
+            tree.workspaces[0].strips[0].window_groups.len(),
+            groups_before + 1,
+            "the claimed late identity note must not place the next window as a tab"
+        );
+        crate::shell::launcher::clear_pending_placements();
     }
 
     // A tab carries the app's name, never a raw identifier like `app` or `word-processor`.
@@ -1242,5 +1754,28 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn title_change_rewrites_visible_label_without_changing_app_identity() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let _ = adopt_toplevel(&mut tree, 99, Some("org.example.Editor".into()));
+
+        assert!(rename_tab_for_title(
+            &mut tree,
+            99,
+            "draft.md — qOS Writer".into()
+        ));
+        let tab = tab_of(&tree, 99);
+        assert_eq!(tab.title, "draft.md — qOS Writer");
+        match &tab.tile {
+            TileContent::Foreign { app_id, .. } => assert_eq!(app_id, "org.example.Editor"),
+            other => panic!("expected Foreign tile, got {other:?}"),
+        }
+
+        assert!(rename_tab_for_title(&mut tree, 99, String::new()));
+        assert!(tab_of(&tree, 99).title.is_empty());
+        assert!(!rename_tab_for_title(&mut tree, 12345, "gone".into()));
     }
 }

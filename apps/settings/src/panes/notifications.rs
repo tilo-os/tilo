@@ -16,7 +16,7 @@
 //! - **Play sounds** — an audible cue when a notification arrives.
 //! - **Show on lock screen** — mirror notifications onto the lock screen.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, Value, transaction::Transactable};
 use qos_actions::EncodedAction;
@@ -78,7 +78,21 @@ fn installed_notification_apps(
         settings_store::notification_policy::AppNotificationRule,
     >,
 ) -> Vec<InstalledNotificationApp> {
-    let mut apps = Vec::new();
+    installed_notification_apps_from(existing, &desktop_entry::cache::cached_scan().entries)
+}
+
+/// Merge the qOS registry with the system's freedesktop application catalog.
+/// A host app's desktop-file id and a Flatpak's `X-Flatpak` id are the same
+/// stable identities the notification service verifies from launch/cgroup
+/// metadata; display names are presentation only.
+fn installed_notification_apps_from(
+    existing: &std::collections::BTreeMap<
+        String,
+        settings_store::notification_policy::AppNotificationRule,
+    >,
+    desktop_entries: &[desktop_entry::DesktopEntry],
+) -> Vec<InstalledNotificationApp> {
+    let mut apps = BTreeMap::new();
     for entry in launcher::registry::list_installed().unwrap_or_default() {
         let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
             continue;
@@ -97,20 +111,28 @@ fn installed_notification_apps(
         let name = manifest
             .name
             .unwrap_or_else(|| launcher::registry::display_name_for_package_id(&id));
-        apps.push(InstalledNotificationApp { id, name });
+        apps.entry(id).or_insert(name);
+    }
+    for entry in desktop_entries {
+        let id = match &entry.source {
+            desktop_entry::EntrySource::Flatpak { app_id } => app_id.clone(),
+            desktop_entry::EntrySource::Host => entry.id.clone(),
+        };
+        if valid_app_id(&id) {
+            apps.entry(id).or_insert_with(|| entry.name.clone());
+        }
     }
     // Preserve access to a rule when an app has just been uninstalled. It can
     // be reset without trusting the sender-controlled notification app_name.
     for id in existing.keys().filter(|id| valid_app_id(id)) {
-        if !apps.iter().any(|app| &app.id == id) {
-            apps.push(InstalledNotificationApp {
-                id: id.clone(),
-                name: launcher::registry::display_name_for_package_id(id),
-            });
-        }
+        apps.entry(id.clone())
+            .or_insert_with(|| launcher::registry::display_name_for_package_id(id));
     }
+    let mut apps: Vec<_> = apps
+        .into_iter()
+        .map(|(id, name)| InstalledNotificationApp { id, name })
+        .collect();
     apps.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
-    apps.dedup_by(|a, b| a.id == b.id);
     apps
 }
 
@@ -591,7 +613,7 @@ impl NotificationsPane {
             card(
                 "Applications",
                 rows(vec![caption(
-                    "Rules use verified package identities from the launcher, never the name an application writes into a notification.",
+                    "Rules use verified qOS, system, or Flatpak identities — never the name an application writes into a notification.",
                 )]),
             )
         }
@@ -602,7 +624,7 @@ impl NotificationsPane {
             "How this applies",
             rows(vec![caption(
                 "These choices are read by the compositor's notification layer, \
-                 so every qOS app follows the same delivery policy. Do Not \
+                 so every verified app follows the same delivery policy. Do Not \
                  Disturb overrides the individual banner and sound toggles.",
             )]),
         )
@@ -978,6 +1000,44 @@ impl Widget for NotificationsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_rules_enumerate_system_and_flatpak_desktop_identities() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps_dir = tmp.path().join("applications");
+        std::fs::create_dir_all(&apps_dir).unwrap();
+        std::fs::write(
+            apps_dir.join("org.example.Writer.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Writer\nExec=/bin/true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            apps_dir.join("org.example.Chat.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Chat\nExec=/bin/true\nX-Flatpak=org.example.Chat\n",
+        )
+        .unwrap();
+        let entries = desktop_entry::scan_dirs(
+            &[apps_dir],
+            &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+        )
+        .entries;
+
+        let apps = installed_notification_apps_from(&BTreeMap::default(), &entries);
+        assert_eq!(
+            apps.iter()
+                .find(|app| app.id == "org.example.Chat")
+                .map(|app| app.name.as_str()),
+            Some("Chat"),
+            "Flatpak rules use X-Flatpak rather than the desktop-file id"
+        );
+        assert_eq!(
+            apps.iter()
+                .find(|app| app.id == "org.example.Writer")
+                .map(|app| app.name.as_str()),
+            Some("Writer"),
+            "system rules use the desktop-file id"
+        );
+    }
 
     #[test]
     fn seed_writes_current_prefs_into_crdt() {

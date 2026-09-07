@@ -49,6 +49,10 @@ use crate::collab::colorimetry::{
 use crate::collab::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume};
 
 /// The maximum protocol version we support. Bump on staging churn.
+///
+/// Keep event emission below aligned with this value: `ready2` was added in
+/// version 2 and sending it on a version-1 image-description object disconnects
+/// clients with "has no event 2".
 const MAX_VERSION: u32 = 1;
 
 /// Advertised capability set for `wp_color_manager_v1`.
@@ -379,9 +383,8 @@ fn mint_identity() -> u64 {
 pub struct ImageDescriptionData {
     pub colorimetry: Colorimetry,
     pub hdr: Option<Hdr10Metadata>,
-    /// Compositor-wide unique id number returned via `ready2`. Kept
-    /// as u64 even though the pre-v2 `ready` event only exposes the
-    /// low 32 bits — see below.
+    /// Compositor-wide unique id number. Kept as u64 even though the
+    /// currently advertised v1 protocol exposes only the low 32 bits.
     pub identity: u64,
 }
 
@@ -905,7 +908,7 @@ fn set_builder_field_once(
 }
 
 /// `Create` request: builds the final [`ImageDescriptionData`] and
-/// advertises it via `ready2`/`ready`, or posts `IncompleteSet` when a
+/// advertises it via the v1 `ready` event, or posts `IncompleteSet` when a
 /// required field is still missing. Split out of the
 /// `WpImageDescriptionCreatorParamsV1` dispatch to keep that match short.
 fn create_image_description<D>(
@@ -920,10 +923,10 @@ fn create_image_description<D>(
         Some(data) => {
             let identity = data.identity;
             let obj = data_init.init(image_description, data);
-            // Advertise the modern `ready2` identity + the
-            // legacy `ready` identity so v1 clients also
-            // observe the object as usable.
-            let () = obj.ready2((identity >> 32) as u32, (identity & 0xFFFF_FFFF) as u32);
+            // The global is deliberately version 1, so `ready` is the only
+            // valid success event. `ready2` has opcode 2 and exists only from
+            // version 2 onward; emitting it disconnects v1 clients.
+            let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
             builder.mark_consumed();
         }
         None => {
@@ -1080,10 +1083,9 @@ where
                     hdr: None,
                     identity: mint_identity(),
                 };
-                let identity_hi = desc.identity_hi();
                 let identity_lo = desc.identity_lo();
                 let obj = data_init.init(image_description, desc);
-                let () = obj.ready2(identity_hi, identity_lo);
+                let () = obj.ready(identity_lo);
             }
             _ => {}
         }
@@ -1109,10 +1111,9 @@ where
             request
         {
             let desc = data.snapshot();
-            let identity_hi = desc.identity_hi();
             let identity_lo = desc.identity_lo();
             let obj = data_init.init(image_description, desc);
-            let () = obj.ready2(identity_hi, identity_lo);
+            let () = obj.ready(identity_lo);
         }
     }
 }

@@ -155,7 +155,10 @@ fn render(case: Case) -> Option<Frame> {
     Some(Frame {
         width,
         height,
-        rgba: renderer.render(&scene, theme.bg_app),
+        // Golden generation and comparison must use the renderer's canonical
+        // one-shot path. It retries glyph-atlas/bump warm-up internally;
+        // `render` can return a partial first frame even without overflow.
+        rgba: renderer.render_resilient(&scene, theme.bg_app),
     })
 }
 

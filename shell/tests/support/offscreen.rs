@@ -183,9 +183,18 @@ impl OffscreenRenderer {
         tight
     }
 
+    /// Render a deterministic screenshot frame after Vello has populated its
+    /// first-use glyph/path state. The live compositor naturally submits a
+    /// following frame; one-shot tests must do that explicitly or can capture
+    /// partially populated text and icon geometry.
+    pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
+        let _warmup = self.render(scene, bg);
+        self.render(scene, bg)
+    }
+
     /// Render `scene` to `path` as a PNG, creating parent dirs as needed.
     pub fn render_png<P: AsRef<Path>>(&mut self, scene: &Scene, bg: Color, path: P) {
-        let rgba = self.render(scene, bg);
+        let rgba = self.render_resilient(scene, bg);
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();

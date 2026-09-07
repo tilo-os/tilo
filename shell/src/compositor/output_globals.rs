@@ -125,6 +125,19 @@ impl OutputGlobals {
         self.live.get(&id).map(|l| &l.handle)
     }
 
+    /// Resolve a client-provided `wl_output` resource back to the stable
+    /// backend identity.  xdg-shell fullscreen requests carry the resource,
+    /// while hotplug/mode reconciliation is keyed by [`OutputId`].
+    pub fn id_for_resource(
+        &self,
+        resource: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) -> Option<OutputId> {
+        let requested = WlOutputHandle::from_resource(resource)?;
+        self.live
+            .iter()
+            .find_map(|(id, live)| (live.handle == requested).then_some(*id))
+    }
+
     /// Snapshot of what is advertised, in the shape [`plan`] compares.
     fn snapshot(&self) -> Vec<(OutputId, AdvertisedState)> {
         let mut v: Vec<(OutputId, AdvertisedState)> =

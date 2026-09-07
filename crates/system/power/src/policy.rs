@@ -55,6 +55,10 @@ impl PowerAction {
 /// missing or corrupt config never leaves the machine unmanaged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerPolicy {
+    /// Idle duration before the display blanks. `None` means "Never". This
+    /// is intentionally independent from idle-suspend: a machine can save
+    /// display power without suspending an active background task.
+    pub idle_blank: Option<Duration>,
     /// Idle duration before the session suspends. `None` disables
     /// idle-suspend (the display can still blank/lock — that is the idle
     /// state machine's separate concern).
@@ -76,6 +80,9 @@ pub struct PowerPolicy {
 impl Default for PowerPolicy {
     fn default() -> Self {
         Self {
+            // Match the Settings default. `config::default_policy` only
+            // changes the more disruptive idle-suspend behaviour.
+            idle_blank: Some(Duration::from_secs(600)),
             // Idle-suspend is opt-in: suspending is more disruptive than
             // blanking, so a fresh machine only suspends if the user (or the
             // Settings default) asks. The Settings default *does* enable it

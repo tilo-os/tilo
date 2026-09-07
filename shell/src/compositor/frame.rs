@@ -337,6 +337,8 @@ pub struct FrameBuilder {
     /// are real client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
     floating_overlays: Vec<(u64, ForeignSurfaceWidget)>,
+    /// Per-output fullscreen client painted above the unchanged tiled scene.
+    fullscreen_overlay: Option<(u64, ForeignSurfaceWidget)>,
     /// XDG and input-method transient surfaces.  These are intentionally
     /// outside the workspace tree: they follow parent geometry and paint
     /// above the app that owns them without becoming a window/tab.
@@ -378,18 +380,34 @@ impl FrameBuilder {
         Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
     }
 
-    /// Optional theme override for offscreen `shots` capture:
-    /// `QOS_SHOTS_THEME=light|high-contrast|dark`. Unset keeps the dark
-    /// default — lets a theme-driven chrome change be proven in light +
-    /// high-contrast, not just dark.
+    /// Optional presentation overrides for offscreen `shots` capture:
+    /// `QOS_SHOTS_THEME=light|high-contrast|dark` and
+    /// `QOS_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
+    /// a theme-driven chrome change be proven in high contrast and at large
+    /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
-        let raw = std::env::var("QOS_SHOTS_THEME").ok()?;
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "light" => Some(Theme::light()),
-            "high-contrast" | "high_contrast" | "hc" => Some(Theme::high_contrast()),
-            "dark" => Some(Theme::dark()),
-            _ => None,
+        let requested_theme = std::env::var("QOS_SHOTS_THEME").ok();
+        let requested_scale = std::env::var("QOS_SHOTS_TEXT_SCALE")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|value| value.is_finite());
+        if requested_theme.is_none() && requested_scale.is_none() {
+            return None;
         }
+        let theme = match requested_theme
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("light") => Theme::light(),
+            Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
+            _ => Theme::dark(),
+        };
+        Some(if let Some(scale) = requested_scale {
+            theme.with_text_scale(scale)
+        } else {
+            theme
+        })
     }
 
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`], with
@@ -475,6 +493,7 @@ impl FrameBuilder {
             peer_presence: None,
             osk_overlay: None,
             floating_overlays: Vec::new(),
+            fullscreen_overlay: None,
             transient_overlays: Vec::new(),
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
@@ -905,6 +924,17 @@ impl FrameBuilder {
                 );
             }
         }
+        if let Some((_, surface)) = &mut self.fullscreen_overlay
+            && surface.is_mapped()
+        {
+            surface.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            );
+        }
         for (_, surface) in &mut self.transient_overlays {
             if surface.is_mapped() {
                 surface.draw(
@@ -972,6 +1002,28 @@ impl FrameBuilder {
             proxy.draw(&mut sections.above_quick_settings);
         }
         for (_, surface) in &mut self.floating_overlays {
+            if surface.is_mapped() {
+                surface.draw(
+                    &mut sections.above_quick_settings,
+                    Affine::IDENTITY,
+                    &mut self.text_renderer,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
+        }
+        if let Some((_, surface)) = &mut self.fullscreen_overlay
+            && surface.is_mapped()
+        {
+            surface.draw(
+                &mut sections.above_quick_settings,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+                &self.presence,
+            );
+        }
+        for (_, surface) in &mut self.transient_overlays {
             if surface.is_mapped() {
                 surface.draw(
                     &mut sections.above_quick_settings,
@@ -1280,6 +1332,7 @@ impl FrameBuilder {
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme
             || std::env::var_os("QOS_SHOTS_THEME").is_some()
+            || std::env::var_os("QOS_SHOTS_TEXT_SCALE").is_some()
             || self.last_theme_store_check.elapsed() < Duration::from_millis(750)
         {
             return;
@@ -1692,6 +1745,33 @@ impl FrameBuilder {
         }
     }
 
+    pub fn set_fullscreen_surface(&mut self, surface: Option<(u64, String, Rect)>) {
+        self.fullscreen_overlay = surface.map(|(surface_id, app_id, rect)| {
+            let mut widget = self
+                .fullscreen_overlay
+                .take()
+                .filter(|(id, _)| *id == surface_id)
+                .map(|(_, widget)| widget)
+                .unwrap_or_else(|| ForeignSurfaceWidget::new_floating(surface_id, app_id));
+            widget.place_floating(rect);
+            (surface_id, widget)
+        });
+    }
+
+    pub fn fullscreen_surface_rect(&self) -> Option<(u64, Rect)> {
+        self.fullscreen_overlay
+            .as_ref()
+            .filter(|(_, surface)| surface.is_mapped())
+            .map(|(id, surface)| (*id, surface.get_rect()))
+    }
+
+    pub fn fullscreen_surface_hit(&self, point: (f64, f64)) -> Option<(u64, Rect)> {
+        let (surface_id, surface) = self.fullscreen_overlay.as_ref()?;
+        let rect = surface.get_rect();
+        (surface.is_mapped() && rect.contains(Point::new(point.0, point.1)))
+            .then_some((*surface_id, rect))
+    }
+
     /// Reconcile popup/candidate surfaces in compositor z-order.  Widgets are
     /// retained by id, preserving their mapped frame between reactive
     /// position changes while a parent moves across outputs.
@@ -1810,6 +1890,14 @@ impl FrameBuilder {
             .map(|(_, surface)| surface.get_rect())
     }
 
+    pub fn transient_surface_rects(&self) -> Vec<(u64, Rect)> {
+        self.transient_overlays
+            .iter()
+            .filter(|(_, surface)| surface.is_mapped())
+            .map(|(id, surface)| (*id, surface.get_rect()))
+            .collect()
+    }
+
     pub fn floating_surface_rect(&self, surface_id: u64) -> Option<Rect> {
         self.floating_overlays
             .iter()
@@ -1832,6 +1920,16 @@ impl FrameBuilder {
         let rect = keyboard.get_rect();
         (self.osk_active && keyboard.is_mapped() && rect.contains(Point::new(point.0, point.1)))
             .then_some((keyboard.surface_id(), rect))
+    }
+
+    /// The compositor-owned keyboard's painted rectangle, if it is currently
+    /// visible. Native output membership uses this rather than the focused
+    /// app's rectangle: the keyboard is its own Wayland surface and may move
+    /// to a different output as focus changes.
+    pub fn osk_surface_rect(&self) -> Option<(u64, Rect)> {
+        let keyboard = self.osk_overlay.as_ref()?;
+        (self.osk_active && keyboard.is_mapped())
+            .then_some((keyboard.surface_id(), keyboard.get_rect()))
     }
 
     pub fn theme(&self) -> &Theme {
@@ -2008,18 +2106,6 @@ impl FrameBuilder {
     ) -> bool {
         self.reconcile_native_focus(focus);
 
-        // Match `ui::App`: unmodified Tab owns the global DFS focus order.
-        // Ctrl+Tab and other modified chords remain shell shortcuts and must
-        // continue through `ShellOverlayHost`.
-        if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.state == winit::event::ElementState::Pressed
-            && matches!(event.logical_key, Key::Named(NamedKey::Tab))
-            && !modifiers.state().control_key()
-            && !modifiers.state().alt_key()
-            && !modifiers.state().super_key()
-        {
-            return self.focus_tab(focus, modifiers.state().shift_key());
-        }
         let Some(child) = self.host_node() else {
             // No layout tree yet (see `host_node`'s doc) — nothing to
             // dispatch into.
@@ -2060,6 +2146,21 @@ impl FrameBuilder {
         if self.host.take_focus_reset() {
             self.relayout();
             self.focus_first(focus);
+        }
+        // Match `ui::App`: unmodified Tab advances the global DFS focus order
+        // only when the focused widget did not claim it. A terminal and a
+        // multiline editor legitimately consume Tab as input; intercepting it
+        // before dispatch made completion/indentation impossible. Ctrl+Tab and
+        // other modified chords remain shell shortcuts.
+        if !handled
+            && let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+            && matches!(event.logical_key, Key::Named(NamedKey::Tab))
+            && !modifiers.state().control_key()
+            && !modifiers.state().alt_key()
+            && !modifiers.state().super_key()
+        {
+            return self.focus_tab(focus, modifiers.state().shift_key());
         }
         handled
     }
@@ -2284,7 +2385,9 @@ mod tests {
             .expect("existing-identity action reaches the external tree");
         let (_, create) = exported_node_named(&update, "Create identity")
             .expect("create-identity action reaches the external tree");
-        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 3: Choose")
+        // Identity setup has distinct backup and final hand-off states, so
+        // its semantic progress surface contains four stages.
+        let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
             .expect("the OOBE progress state reaches the external tree");
 
         assert_eq!(existing.role(), ui::accesskit::Role::Button);
@@ -2383,7 +2486,7 @@ mod tests {
         let (ack_id, acknowledgement) =
             exported_node_named(&protect, crate::onboarding::ACKNOWLEDGEMENT)
                 .expect("the recovery acknowledgement reaches the external tree");
-        let (_, create) = exported_node_named(&protect, "Create")
+        let (_, create) = exported_node_named(&protect, "Create local identity")
             .expect("the gated create action reaches the external tree");
         assert_eq!(acknowledgement.role(), ui::accesskit::Role::CheckBox);
         assert_eq!(
@@ -2413,7 +2516,7 @@ mod tests {
         let acknowledged = fb.build_a11y_tree_update(focus, 1.0);
         let (_, acknowledgement) =
             exported_node_named(&acknowledged, crate::onboarding::ACKNOWLEDGEMENT).unwrap();
-        let (_, create) = exported_node_named(&acknowledged, "Create").unwrap();
+        let (_, create) = exported_node_named(&acknowledged, "Create local identity").unwrap();
         assert_eq!(
             acknowledgement.toggled(),
             Some(ui::accesskit::Toggled::True),
@@ -2444,6 +2547,35 @@ mod tests {
         let shift = Modifiers::from(ModifiersState::SHIFT);
         assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
         assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+    }
+
+    #[test]
+    fn focused_terminal_gets_plain_tab_before_focus_traversal() {
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        let terminal = fb.node_map.iter().find_map(|(id, widget)| {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid until the next structural rebuild.
+            (unsafe { (**widget).name() } == "Terminal").then_some(*id)
+        });
+        let Some(terminal) = terminal else {
+            // Environments without a PTY deliberately mount the terminal
+            // fallback instead; the routing rule remains covered by OOBE's
+            // unclaimed-Tab traversal test above.
+            return;
+        };
+        let mut focus = None;
+        fb.set_native_focus(&mut focus, Some(terminal));
+        let mut doc = AutoCommit::new();
+
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Tab)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(focus, Some(terminal), "terminal Tab must not move focus");
     }
 
     #[test]

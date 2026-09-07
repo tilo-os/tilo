@@ -1150,7 +1150,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
         let mut ws = Workspace::test_default(id, "Demo");
-        ws.set_owner(crate::shell::state::local_user_id());
+        ws.set_owner(crate::shell::state::local_user_id_for_room(&ws.room));
         tree.workspaces.push(ws);
         tree.active = id;
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
