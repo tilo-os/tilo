@@ -150,11 +150,15 @@ fn render_shot_to_png(
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    theme.reduce_motion = matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    );
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -253,9 +257,9 @@ fn drive_live_shell(
     // A short demo: identify the shell, print some content, and end with a
     // green "done" so the shot shows real SGR-coloured output.
     widget.write_input(
-        b"printf 'qOS terminal (real PTY) - shell: %s\\n' \"$0\"; \
+        b"clear; printf 'qOS terminal - live PTY session\\n'; \
           printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
-          printf '\\033[1;32mdone\\033[0m\\n'\n",
+          printf '\\033[1;32mdone\\033[0m\\n'\r",
     );
     for _ in 0..30 {
         widget.sync(doc, root);
