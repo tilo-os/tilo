@@ -19,13 +19,15 @@ use crate::shell::state::{
 /// Shown while the local instance is starting.
 const OPENING: &str = "Opening here…";
 
-/// One unexamined peer window, lifted out of the tree so the decision can
-/// be made without holding a borrow on it.
+/// One symbolic application window, lifted out of the tree so the decision
+/// can be made without holding a borrow on it. `local` distinguishes a window
+/// this machine persisted for session restore from a peer's room projection.
 struct Pending {
     tab: TabId,
     app_id: String,
     /// Index of the owning workspace in `tree.workspaces`.
     workspace: usize,
+    local: bool,
 }
 
 /// Examine every peer window this machine has not yet answered for, and
@@ -53,7 +55,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         // A same-identity continuation can discover the room before its
         // signed membership document arrives. Keep it pending so the next
         // reconciliation pass opens it as soon as authority is available.
-        if workspace.owner.is_none() {
+        if !item.local && workspace.owner.is_none() {
             continue;
         }
         let note = match open_for(tree, &item) {
@@ -82,15 +84,19 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    if let TileContent::PeerWindow { app_id, note, .. } = &tab.tile
-                        && note.is_empty()
-                        && !app_id.trim().is_empty()
-                    {
-                        out.push(Pending {
-                            tab: tab.id,
-                            app_id: app_id.clone(),
-                            workspace: idx,
-                        });
+                    match &tab.tile {
+                        TileContent::PeerWindow { app_id, note, .. }
+                        | TileContent::LocalApp { app_id, note, .. }
+                            if note.is_empty() && !app_id.trim().is_empty() =>
+                        {
+                            out.push(Pending {
+                                tab: tab.id,
+                                app_id: app_id.clone(),
+                                workspace: idx,
+                                local: matches!(&tab.tile, TileContent::LocalApp { .. }),
+                            });
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -107,13 +113,17 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
-    admits(ws, &item.app_id)?;
+    if !item.local {
+        admits(ws, &item.app_id)?;
+    }
     // After `admits`, so nothing is granted for a launch the room refused.
-    crate::shell::search::providers::applications::grant_file_manager_home(
-        tree,
-        ws_id,
-        &item.app_id,
-    );
+    if !item.local {
+        crate::shell::search::providers::applications::grant_file_manager_home(
+            tree,
+            ws_id,
+            &item.app_id,
+        );
+    }
     let Some(ws) = tree.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
@@ -144,12 +154,25 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
             launcher::stage_continuation_record(ws.room, item.tab, record_instance.0);
         }
     }
-    match launcher::launch_in_workspace(&item.app_id, ws) {
-        Ok(_) => Ok(()),
+    let launched = launcher::launch_in_workspace(&item.app_id, ws)
+        .map(|_| ())
+        .or_else(|err| {
+            if item.local
+                && matches!(err, launcher::LaunchError::NotInstalled { .. })
+                && let Some(app) = crate::shell::host_apps::app_for_window_id(&item.app_id)
+            {
+                crate::shell::host_apps::note_placement(&app, Placement::IntoTab(item.tab));
+                return crate::shell::host_apps::launch(&app.desktop_id, None).map(|_| ());
+            }
+            Err(err)
+        });
+    match launched {
+        Ok(()) => Ok(()),
         Err(err) => {
             launcher::clear_pending_placement(&item.app_id);
             Err(match err {
-                launcher::LaunchError::NotInstalled { .. } => {
+                launcher::LaunchError::NotInstalled { .. }
+                | launcher::LaunchError::HostAppNotFound { .. } => {
                     "Not installed on this machine".to_string()
                 }
                 launcher::LaunchError::NotAGuiApp { .. } => {
@@ -185,9 +208,13 @@ fn set_note(tree: &mut WorkspaceTree, tab: TabId, note: String) -> bool {
                     if t.id != tab {
                         continue;
                     }
-                    if let TileContent::PeerWindow { note: slot, .. } = &mut t.tile {
-                        *slot = note;
-                        return true;
+                    match &mut t.tile {
+                        TileContent::PeerWindow { note: slot, .. }
+                        | TileContent::LocalApp { note: slot, .. } => {
+                            *slot = note;
+                            return true;
+                        }
+                        _ => {}
                     }
                     return false;
                 }

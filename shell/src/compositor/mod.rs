@@ -7,6 +7,7 @@
 //! Mode selection is a single `--mode <hosted|native>` (or `--mode=<...>`) flag; anything unrecognised, including the flag being absent, falls back to [`Mode::Native`].
 
 pub mod accessibility;
+pub mod activation;
 #[cfg(feature = "hdr-decode")]
 mod audio_capture;
 pub mod backend;
@@ -39,6 +40,7 @@ pub mod remote_seat;
 pub mod render_node;
 pub mod selection;
 pub mod state;
+pub mod surface_outputs;
 pub mod surface_readback;
 pub mod switch_control;
 pub mod tab_binding;

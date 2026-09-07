@@ -29,7 +29,7 @@
 #
 # Format: <path relative to ui/> <pattern> <count>
 src/app.rs literal_color 1
-src/app.rs white_or_black 3
+src/app.rs white_or_black 0
 # fill_scrim's soft-light source: black is the `Cb²` identity the two-stage
 # scrim is built on, not a palette choice, so no token can stand in for it.
 src/chrome/shell.rs literal_color 1

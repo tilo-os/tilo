@@ -456,6 +456,32 @@ impl LaunchError {
             }
         }
     }
+
+    /// Concise recovery copy for fixed-height desktop notifications. Detailed
+    /// ids, paths, and backend errors belong in the session log and in the
+    /// fallible caller's error, not in top-right chrome.
+    pub(crate) fn notification_message(&self) -> &'static str {
+        match self {
+            Self::NotInstalled { .. } | Self::HostAppNotFound { .. } => {
+                "This app is no longer installed. Refresh the app list and try again."
+            }
+            Self::NotAGuiApp { .. } => "This app does not provide a window.",
+            Self::NotAManagedService { .. } => "This service cannot be opened as an app.",
+            Self::AgentNotAdmitted { .. } | Self::AgentLaunchNotAuthorized => {
+                "You do not have permission to start this workspace service."
+            }
+            Self::AgentLaunchWorkerUnavailable { .. } | Self::LauncherBinaryMissing { .. } => {
+                "The app launcher is unavailable. Try again."
+            }
+            Self::NoDisplay => "The desktop is still starting. Try again in a moment.",
+            Self::NoWorkspace => "Choose a workspace, then try again.",
+            Self::ShellOwnedIntent => "Open this destination from the desktop controls.",
+            Self::IdentityUnavailable { .. } => {
+                "The workspace identity could not be loaded. Try again."
+            }
+            Self::RegistryUnreadable { .. } => "The app list could not be read. Try again.",
+        }
+    }
 }
 
 impl std::fmt::Display for LaunchError {
@@ -495,6 +521,94 @@ pub enum LaunchEventKind {
     Exited,
 }
 
+/// Normal-user copy for an asynchronous launch failure. The launcher keeps
+/// the complete process output in the event; this deliberately does not.
+/// Fixed-height desktop banners must remain a summary, not become a log
+/// viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaunchFailureNotice {
+    pub title: String,
+    pub body: &'static str,
+}
+
+/// Long enough to read and act on, but not a persistent alarm for a
+/// recoverable failure.
+pub(crate) const LAUNCH_FAILURE_NOTICE_LIFETIME: std::time::Duration =
+    std::time::Duration::from_secs(8);
+
+impl LaunchEvent {
+    /// Build the short, actionable banner for a failed launch. Full process
+    /// diagnostics are emitted by [`Self::log_failure`] instead of being
+    /// copied into notification chrome.
+    pub(crate) fn failure_notice(&self) -> Option<LaunchFailureNotice> {
+        let body = match &self.kind {
+            LaunchEventKind::SpawnFailed { .. } => {
+                "The app launcher is unavailable. Open Applications and try again."
+            }
+            LaunchEventKind::Failed { .. } => {
+                "The app stopped before opening. Open Applications and try again."
+            }
+            LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
+        };
+        Some(LaunchFailureNotice {
+            title: launch_failure_title(&self.display_name),
+            body,
+        })
+    }
+
+    /// Preserve the complete failure in the compositor's session log. Field
+    /// values use tracing's structured formatting, so embedded newlines or
+    /// terminal escapes cannot alter the surrounding log record.
+    pub(crate) fn log_failure(&self) {
+        match &self.kind {
+            LaunchEventKind::SpawnFailed { detail } => {
+                tracing::error!(
+                    target: "qos::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    detail = ?detail,
+                    "application launcher could not be started"
+                );
+            }
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                tracing::error!(
+                    target: "qos::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    exit_code = ?code,
+                    stderr_tail = ?stderr_tail,
+                    "application stopped before presenting a window"
+                );
+            }
+            LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
+        }
+    }
+}
+
+/// Keep untrusted desktop-entry names on one notification line. Whitespace is
+/// normalised and the scalar-value cap avoids slicing UTF-8; the full name is
+/// still present in the structured failure log.
+fn compact_notice_name(name: &str) -> String {
+    const MAX_CHARS: usize = 32;
+    let normalised = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalised = if normalised.is_empty() {
+        "application"
+    } else {
+        &normalised
+    };
+    let mut chars = normalised.chars();
+    let compact: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{compact}…")
+    } else {
+        compact
+    }
+}
+
+pub(crate) fn launch_failure_title(display_name: &str) -> String {
+    format!("Couldn't open {}", compact_notice_name(display_name))
+}
+
 /// Who a running launch is, for the event stream — a package id for a
 /// `.qpkg`, a desktop-file id for a host app.
 struct LaunchIdentity {
@@ -518,6 +632,11 @@ pub struct LaunchCommand {
     /// Compositor-owned service authority registered only after this exact
     /// launcher process exists. Never serialised into the child environment.
     pub service_identity: Option<ServiceLaunchIdentity>,
+    /// Workspace used only to attribute standard desktop-portal requests from
+    /// an unconfined host/Flatpak process.  This is deliberately separate
+    /// from `service_identity`: it grants no qOS service authority and never
+    /// enters the child environment.
+    pub portal_workspace_id: Option<String>,
     /// Correlates launch events to one delegated agent without putting that
     /// identifier in ambient environment state.
     pub managed_agent_id: Option<String>,
@@ -554,7 +673,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 struct PendingPlacement {
-    /// Package id, or desktop-file id for a host app; keys replacement.
+    /// Package id, or desktop-file id for a host app; identifies one launch
+    /// within the FIFO queue for that application.
     key: String,
     /// Every string the window might announce itself as (package id +
     /// trailing component, or a host app's `.desktop` identities) —
@@ -567,6 +687,10 @@ struct PendingPlacement {
     continuity_instance: Option<u64>,
     /// The surface that claimed this note, once one has.
     claimed_by: Option<u64>,
+    /// A successful launcher parent may exit after daemonising before its
+    /// actual GUI process maps a window. Keep the destination until this
+    /// deadline; a truly windowless launch is retired once it passes.
+    retire_after: Option<Instant>,
 }
 
 impl PendingPlacement {
@@ -1264,6 +1388,7 @@ fn build_launch_command_for(
             },
             compat_entry_generation: windows_compat_entry_generation(),
         }),
+        portal_workspace_id: None,
         managed_agent_id: None,
     }
 }
@@ -1643,7 +1768,8 @@ pub fn spawn_launch(
         let workspace_id = command
             .service_identity
             .as_ref()
-            .map(|identity| identity.workspace_id.as_str());
+            .map(|identity| identity.workspace_id.as_str())
+            .or(command.portal_workspace_id.as_deref());
         register_launched_process(child.id(), &app.package_id, workspace_id);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
@@ -1797,7 +1923,8 @@ pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
 }
 
 /// Record where the window of the launch about to start should land.
-/// Replaces any note for the same package — the newer intent wins.
+/// Multiple launches of the same package remain FIFO: each arriving surface
+/// consumes the destination chosen by its own user action.
 pub fn set_pending_placement(
     package_id: &str,
     placement: crate::compositor::tab_binding::Placement,
@@ -1819,13 +1946,13 @@ pub fn set_pending_placement_for_identities(
     placement: crate::compositor::tab_binding::Placement,
 ) {
     let mut pending = lock(&PENDING_PLACEMENT);
-    pending.retain(|p| p.key != key);
     pending.push(PendingPlacement {
         key: key.to_string(),
         identities: identities.to_vec(),
         placement,
         continuity_instance: None,
         claimed_by: None,
+        retire_after: None,
     });
 }
 
@@ -1848,6 +1975,14 @@ pub fn placement_and_instance_for_toplevel(
     let mut pending = lock(&PENDING_PLACEMENT);
     loop {
         let idx = pending.iter().position(|p| p.matches(app_id))?;
+        if pending
+            .get(idx)
+            .and_then(|note| note.retire_after)
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            pending.remove(idx);
+            continue;
+        }
         let claimed_by = pending.get(idx)?.claimed_by;
         let placement = pending.get(idx)?.placement;
         let instance = pending.get(idx)?.continuity_instance;
@@ -1855,6 +1990,13 @@ pub fn placement_and_instance_for_toplevel(
             None => {
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
+                    // Both compositor trees ask for the same launch note,
+                    // so keep a claimed answer briefly rather than consume
+                    // it on the first lookup. Bound that duplication window
+                    // as well: an app that never causes a second lookup must
+                    // not leave a permanent note capable of steering a much
+                    // later surface with the same identity.
+                    entry.retire_after = Some(Instant::now() + PENDING_PLACEMENT_CLAIM_GRACE);
                 }
                 return Some((placement, instance));
             }
@@ -1886,6 +2028,7 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             placement: crate::compositor::tab_binding::Placement::NewGroup,
             continuity_instance: Some(instance),
             claimed_by: None,
+            retire_after: None,
         });
     }
 }
@@ -1932,12 +2075,54 @@ pub(crate) fn take_staged_resume_for_package(
     take_staged_resume(placement, room)
 }
 
-/// Drop the placement note for `package_id`, if any — undoes a
-/// [`set_pending_placement`] whose launch then failed to start.
+/// Drop the newest unclaimed placement note for `package_id`, if any —
+/// undoing the most recently staged launch that failed before a surface was
+/// created without destroying older concurrent launches' destinations.
 pub fn clear_pending_placement(package_id: &str) {
     let mut pending = lock(&PENDING_PLACEMENT);
-    pending.retain(|p| p.key != package_id);
+    if let Some(index) = pending
+        .iter()
+        .rposition(|p| p.key == package_id && p.claimed_by.is_none())
+    {
+        pending.remove(index);
+    }
 }
+
+/// Allow a cleanly-exited launcher parent a bounded handoff window for a
+/// daemonised GUI child to announce its toplevel. Failure paths still call
+/// [`clear_pending_placement`] immediately.
+pub fn retire_pending_placement_after_grace(package_id: &str) {
+    retire_pending_placement_at(package_id, Instant::now() + PENDING_PLACEMENT_EXIT_GRACE);
+}
+
+fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
+    let mut pending = lock(&PENDING_PLACEMENT);
+    if let Some(note) = pending
+        .iter_mut()
+        .rev()
+        .find(|note| note.key == package_id && note.claimed_by.is_none())
+    {
+        note.retire_after = Some(deadline);
+    }
+}
+
+/// Retire windowless clean launches without waiting for another application
+/// with the same identity to map.
+pub fn expire_pending_placements() {
+    expire_pending_placements_at(Instant::now());
+}
+
+fn expire_pending_placements_at(now: Instant) {
+    lock(&PENDING_PLACEMENT).retain(|note| note.retire_after.is_none_or(|deadline| now < deadline));
+}
+
+/// Long enough for a daemonising desktop entry to hand off to its GUI child,
+/// while keeping a genuinely windowless launch from steering a later app.
+const PENDING_PLACEMENT_EXIT_GRACE: Duration = Duration::from_secs(10);
+
+/// Enough for the rendered and protocol trees to observe the same newly
+/// mapped surface, but finite so a claimed note cannot leak forever.
+const PENDING_PLACEMENT_CLAIM_GRACE: Duration = Duration::from_secs(10);
 
 /// Drop every placement note. Used by tests, which share this
 /// process-wide state.
@@ -1964,6 +2149,98 @@ pub fn wayland_socket_display() -> OsString {
 mod tests {
     use super::*;
 
+    fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
+        LaunchEvent {
+            package_id: "org.example.Broken".into(),
+            display_name: "Broken App".into(),
+            managed_agent_id: None,
+            managed_workspace_id: None,
+            kind,
+        }
+    }
+
+    #[test]
+    fn failed_launch_banner_never_contains_raw_stderr() {
+        let raw = "error: could not connect\nWAYLAND_DISPLAY=wayland-1\nbacktrace: 0xdeadbeef";
+        let event = launch_event(LaunchEventKind::Failed {
+            code: Some(1),
+            stderr_tail: raw.into(),
+        });
+        let notice = event.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Couldn't open Broken App");
+        assert_eq!(
+            notice.body,
+            "The app stopped before opening. Open Applications and try again."
+        );
+        assert!(!notice.body.contains(raw));
+        assert!(!notice.body.contains('\n'));
+        assert_eq!(LAUNCH_FAILURE_NOTICE_LIFETIME, Duration::from_secs(8));
+    }
+
+    #[test]
+    fn spawn_failure_and_non_failure_events_have_sensible_banner_copy() {
+        let event = launch_event(LaunchEventKind::SpawnFailed {
+            detail: "No such file or directory (os error 2)".into(),
+        });
+        let notice = event.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Couldn't open Broken App");
+        assert_eq!(
+            notice.body,
+            "The app launcher is unavailable. Open Applications and try again."
+        );
+        assert!(
+            launch_event(LaunchEventKind::Started { pid: 42 })
+                .failure_notice()
+                .is_none()
+        );
+        assert!(
+            launch_event(LaunchEventKind::Exited)
+                .failure_notice()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn launch_failure_title_normalises_and_bounds_untrusted_app_names() {
+        let mut event = launch_event(LaunchEventKind::Failed {
+            code: None,
+            stderr_tail: String::new(),
+        });
+        event.display_name = "  An app\nwith a deliberately extremely long display name  ".into();
+        let notice = event.failure_notice().unwrap();
+        assert_eq!(
+            notice.title,
+            "Couldn't open An app with a deliberately extre…"
+        );
+        assert!(!notice.title.contains('\n'));
+        assert_eq!(compact_notice_name(" \t "), "application");
+    }
+
+    #[test]
+    fn preflight_notification_copy_excludes_paths_and_backend_detail() {
+        let missing = LaunchError::LauncherBinaryMissing {
+            searched: vec![
+                PathBuf::from("/a/private/developer/build/qos-launcher"),
+                PathBuf::from("/another/very/long/path/qos-launcher"),
+            ],
+        };
+        let registry = LaunchError::RegistryUnreadable {
+            detail: "permission denied while reading /var/lib/qos/apps.json".into(),
+        };
+        assert_eq!(
+            missing.notification_message(),
+            "The app launcher is unavailable. Try again."
+        );
+        assert_eq!(
+            registry.notification_message(),
+            "The app list could not be read. Try again."
+        );
+        assert!(!missing.notification_message().contains('/'));
+        assert!(!registry.notification_message().contains('/'));
+        assert!(missing.user_message().contains("/a/private"));
+        assert!(registry.user_message().contains("/var/lib"));
+    }
+
     #[test]
     fn restored_launch_keeps_the_source_crdt_record_identity() {
         let room = RoomId::new();
@@ -1978,6 +2255,104 @@ mod tests {
             take_staged_resume_for_package("dev.qos.browser", room),
             Some((None, 0xdead_beef))
         );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn same_app_launch_placements_are_claimed_fifo() {
+        clear_pending_placements();
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(11),
+        );
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(22),
+        );
+
+        assert_eq!(
+            placement_for_toplevel("same-app", 101),
+            Some(crate::compositor::tab_binding::Placement::IntoTab(11))
+        );
+        assert_eq!(
+            placement_for_toplevel("same-app", 202),
+            Some(crate::compositor::tab_binding::Placement::IntoTab(22))
+        );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn failed_newest_same_app_launch_keeps_older_destination() {
+        clear_pending_placements();
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(11),
+        );
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(22),
+        );
+        clear_pending_placement("dev.qos.same-app");
+
+        assert_eq!(
+            placement_for_toplevel("same-app", 101),
+            Some(crate::compositor::tab_binding::Placement::IntoTab(11)),
+            "clearing the failed second launch must not erase the first launch's placement"
+        );
+        assert_eq!(placement_for_toplevel("same-app", 202), None);
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn clean_parent_exit_keeps_delayed_window_placement_until_deadline() {
+        clear_pending_placements();
+        let package = "dev.qos.daemonised";
+        let wanted = crate::compositor::tab_binding::Placement::IntoTab(44);
+        set_pending_placement(package, wanted);
+
+        retire_pending_placement_at(package, Instant::now() + Duration::from_secs(1));
+        assert_eq!(
+            placement_for_toplevel("daemonised", 701),
+            Some(wanted),
+            "a GUI child mapping after its launcher parent exits keeps the user's destination"
+        );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn windowless_clean_launch_expires_without_sleeping() {
+        clear_pending_placements();
+        let package = "dev.qos.windowless";
+        set_pending_placement(
+            package,
+            crate::compositor::tab_binding::Placement::IntoTab(55),
+        );
+
+        let now = Instant::now();
+        retire_pending_placement_at(package, now);
+        expire_pending_placements_at(now);
+        assert_eq!(placement_for_toplevel("windowless", 702), None);
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn claimed_placement_expires_without_a_second_surface() {
+        clear_pending_placements();
+        let package = "dev.qos.claimed-once";
+        let wanted = crate::compositor::tab_binding::Placement::IntoTab(56);
+        set_pending_placement(package, wanted);
+
+        assert_eq!(placement_for_toplevel("claimed-once", 703), Some(wanted));
+        let deadline = lock(&PENDING_PLACEMENT)[0]
+            .retire_after
+            .expect("claim receives a bounded retirement deadline");
+        expire_pending_placements_at(deadline);
+        assert_eq!(placement_for_toplevel("claimed-once", 703), None);
         clear_pending_placements();
     }
 
@@ -2718,6 +3093,55 @@ mod tests {
         assert_eq!(verified_package_for_descendant(child.id()), None);
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_unconfined_launch_is_portal_attributed_without_service_authority() {
+        let _ = drain_events();
+        let command = LaunchCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "sleep 1".into()],
+            env: Vec::new(),
+            service_identity: None,
+            portal_workspace_id: Some("host-room".into()),
+            managed_agent_id: None,
+        };
+        spawn_launch("org.example.Flatpak".into(), "Example".into(), command)
+            .expect("launch worker");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let launcher_pid = loop {
+            let started = drain_events().into_iter().find_map(|event| {
+                (event.package_id == "org.example.Flatpak")
+                    .then_some(event.kind)
+                    .and_then(|kind| match kind {
+                        LaunchEventKind::Started { pid } => Some(pid),
+                        _ => None,
+                    })
+            });
+            if let Some(pid) = started {
+                break pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "launch never became attributable"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            verified_workspaces_for_app("org.example.Flatpak"),
+            ["host-room".to_string()]
+        );
+        assert!(
+            consume_trusted_service_launch_for_pid(
+                launcher_pid,
+                "org.example.Flatpak",
+                "host-room"
+            )
+            .is_none(),
+            "portal attribution must not mint service authority"
+        );
     }
 
     #[test]

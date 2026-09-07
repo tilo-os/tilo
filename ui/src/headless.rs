@@ -846,6 +846,18 @@ impl FrameHarness {
         self.focused
     }
 
+    /// Mirrors [`crate::app::App`]: an explicitly opted-in focused widget
+    /// receives Tab before the host considers focus traversal.
+    fn focused_widget_wants_tab_input(&self) -> bool {
+        self.focused
+            .and_then(|node| self.node_map.get(&node).copied())
+            .is_some_and(|widget| {
+                // `node_map` is rebuilt with the retained tree and stays
+                // valid until the next relayout.
+                unsafe { (*widget).wants_tab_input() }
+            })
+    }
+
     /// Move keyboard focus to the widget at `node`, toggling `set_focus` on
     /// the outgoing/incoming widgets exactly as
     /// [`crate::app::App::set_focused_node`] does.
@@ -1810,12 +1822,12 @@ impl FrameHarness {
 
     /// Press and release one key.
     ///
-    /// `Tab` is intercepted and drives keyboard focus (Shift+Tab reverses),
-    /// exactly as [`crate::app::App`] does in the live event loop — the root
-    /// widget never sees Tab. Every other key is delivered to the root's
-    /// `handle_event`, where the focused child consumes it.
+    /// `Tab` drives host focus traversal unless the focused widget explicitly
+    /// owns it (for example, a code editor's indentation). This mirrors
+    /// [`crate::app::App`]'s live routing; every delivered key then follows
+    /// the normal root-widget event path.
     pub fn key(&mut self, spec: &str) {
-        if spec == "Tab" {
+        if spec == "Tab" && !self.focused_widget_wants_tab_input() {
             self.tab(self.modifiers.state().shift_key());
             return;
         }
@@ -2755,7 +2767,47 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{Button, Checkbox, Column, TextInput, TreeNode, TreeView};
+    use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
+
+    /// The frame harness is the app wrapper used by scenarios. Keep Tab
+    /// coverage here rather than only in direct widget tests: the live host
+    /// decides whether focus traversal intercepts the key before a widget can
+    /// see it.
+    #[test]
+    fn app_wrapper_routes_tab_to_an_opted_in_code_editor_but_traverses_forms() {
+        let mut editor = Driver::new(State::new(), Box::new(CodeEditor::local()), (320, 160));
+        editor.tab(false);
+        editor.key("Tab");
+        let editor_node = editor.focused().expect("editor has focus");
+        // The retained node is valid until relayout, and `key` has already
+        // completed its relayout before this observation.
+        assert_eq!(
+            unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
+            Some("4".into()),
+            "Tab reaches the code editor and inserts its configured indent"
+        );
+        editor.set_modifiers(&["shift".into()]);
+        editor.key("Tab");
+        let editor_node = editor.focused().expect("editor remains focused");
+        assert_eq!(
+            unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
+            Some("0".into()),
+            "Shift+Tab reaches the same editor and outdents"
+        );
+
+        let form = Column::new()
+            .push(Box::new(TextInput::local().with_id("field")))
+            .push(Box::new(Button::new("next", "Next", None)));
+        let mut fields = Driver::new(State::new(), Box::new(form), (320, 160));
+        fields.tab(false);
+        let field = fields.focused().expect("first field has focus");
+        fields.key("Tab");
+        assert_ne!(
+            fields.focused(),
+            Some(field),
+            "ordinary fields yield Tab to focus traversal"
+        );
+    }
 
     #[test]
     fn native_app_audit_proves_action_binding_and_a11y_together() {

@@ -80,24 +80,45 @@ impl HostApplicationsProvider {
                     if let Some(app) = host_apps::find(&desktop_id) {
                         let st = chrome.borrow();
                         let tree = st.tree();
-                        crate::shell::placement::note_placement_for_launch_identities(
-                            &app.desktop_id,
-                            &app.window_identities,
-                            &tree,
-                            st.strip_viewport(),
-                        );
+                        let placement =
+                            crate::shell::placement::note_placement_for_launch_identities(
+                                &app.desktop_id,
+                                &app.window_identities,
+                                &tree,
+                                st.strip_viewport(),
+                            );
+                        let portal_workspace_id = tree
+                            .active_workspace()
+                            .map(|workspace| workspace.room.to_string());
+                        host_apps::queue_launch(host_apps::QueuedLaunch {
+                            desktop_id: app.desktop_id,
+                            display_name: app.name,
+                            placement,
+                            portal_workspace_id,
+                        });
+                        return;
                     }
                     // No capability publication or workspace id: no
                     // sandbox for either to act on.
-                    if let Err(err) = host_apps::launch(&desktop_id) {
+                    if let Err(err) = host_apps::launch(&desktop_id, None) {
+                        tracing::error!(
+                            target: "qos::app_launch",
+                            desktop_id = %desktop_id,
+                            display_name = %notify_name,
+                            detail = %err,
+                            "host application launch was refused before spawn"
+                        );
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
-                                format!("Couldn't open {notify_name}"),
-                                err.user_message(),
+                                crate::shell::launcher::launch_failure_title(&notify_name),
+                                err.notification_message(),
                             )
                             .with_severity(NotificationSeverity::Error)
-                            .with_app_name(HOST_APPLICATIONS_KIND),
+                            .with_app_name(HOST_APPLICATIONS_KIND)
+                            .with_dismiss_after(
+                                crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME,
+                            ),
                         );
                         st.bump();
                     }
@@ -108,31 +129,16 @@ impl HostApplicationsProvider {
     }
 }
 
-/// Whether an installed qOS package already answers for this app. Matched
-/// on the trailing reverse-DNS segment or the display name, both exact —
-/// overlapping words alone must not hide a host app.
+/// Whether an installed qOS package already answers for this app. Names and
+/// reverse-DNS tails are deliberately insufficient: different desktops ship
+/// real, distinct applications called Calendar, Notes and Terminal.
 fn shadowed_by_a_qos_package(
     app: &HostApp,
     installed: &[crate::shell::launcher::InstalledApp],
 ) -> bool {
-    let host_tail = app
-        .desktop_id
-        .rsplit('.')
-        .next()
-        .unwrap_or(&app.desktop_id)
-        .to_ascii_lowercase();
-    let host_name = app.name.to_ascii_lowercase();
-    installed.iter().any(|pkg| {
-        let pkg_tail = pkg
-            .package_id
-            .rsplit('.')
-            .next()
-            .unwrap_or(&pkg.package_id)
-            .to_ascii_lowercase();
-        pkg.package_id.eq_ignore_ascii_case(&app.desktop_id)
-            || pkg_tail == host_tail
-            || pkg.display_name.to_ascii_lowercase() == host_name
-    })
+    installed
+        .iter()
+        .any(|pkg| pkg.package_id.eq_ignore_ascii_case(&app.desktop_id))
 }
 
 /// Same scale as the applications provider, one step lower at each rung so
@@ -271,6 +277,18 @@ mod tests {
     }
 
     #[test]
+    fn a_system_app_row_names_system_provenance() {
+        let p = HostApplicationsProvider::new();
+        let system = HostApp {
+            source_label: "System",
+            ..app("org.gnome.Console", "Terminal")
+        };
+        let out = p.results_against("terminal", vec![system], &[]);
+        let subtitle = out[0].subtitle.as_deref().expect("a subtitle");
+        assert!(subtitle.starts_with("System · unconfined host app ·"));
+    }
+
+    #[test]
     fn host_apps_are_a_separate_kind_from_qos_applications() {
         let p = HostApplicationsProvider::new();
         assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
@@ -394,11 +412,10 @@ mod tests {
         assert!(!n.body.is_empty());
     }
 
-    #[test]
-    fn a_qos_package_of_the_same_name_hides_the_host_row() {
-        let installed = vec![crate::shell::launcher::InstalledApp {
-            package_id: "dev.qos.terminal".into(),
-            display_name: "Terminal".into(),
+    fn installed(package_id: &str, display_name: &str) -> crate::shell::launcher::InstalledApp {
+        crate::shell::launcher::InstalledApp {
+            package_id: package_id.into(),
+            display_name: display_name.into(),
             category: None,
             version: "1".into(),
             manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
@@ -407,20 +424,41 @@ mod tests {
             opens_extensions: Vec::new(),
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
-        }];
-        // Same trailing id segment.
+        }
+    }
+
+    #[test]
+    fn only_an_exact_qos_package_identity_hides_the_host_row() {
+        let installed = vec![installed("dev.qos.terminal", "Terminal")];
         assert!(shadowed_by_a_qos_package(
-            &app("org.x.terminal", "Konsole"),
+            &app("dev.qos.terminal", "Terminal"),
             &installed
         ));
-        // Same display name.
-        assert!(shadowed_by_a_qos_package(
-            &app("org.x.whatever", "Terminal"),
-            &installed
-        ));
-        // Merely overlapping words must NOT hide it.
+    }
+
+    #[test]
+    fn qos_terminal_does_not_hide_a_distinct_host_terminal() {
+        let installed = vec![installed("dev.qos.terminal", "Terminal")];
         assert!(!shadowed_by_a_qos_package(
-            &app("org.x.termite", "Terminal Emulator"),
+            &app("org.gnome.Console", "Terminal"),
+            &installed
+        ));
+    }
+
+    #[test]
+    fn qos_calendar_does_not_hide_gnome_calendar() {
+        let installed = vec![installed("dev.qos.calendar", "Calendar")];
+        assert!(!shadowed_by_a_qos_package(
+            &app("org.gnome.Calendar", "Calendar"),
+            &installed
+        ));
+    }
+
+    #[test]
+    fn a_generic_shared_name_does_not_hide_a_host_app() {
+        let installed = vec![installed("dev.qos.notes", "Notes")];
+        assert!(!shadowed_by_a_qos_package(
+            &app("org.example.PrivateNotes", "Notes"),
             &installed
         ));
     }

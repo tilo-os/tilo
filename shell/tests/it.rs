@@ -91,14 +91,20 @@ mod headless_examples_smoke;
 mod hevc_hardware_encode;
 #[path = "interaction_test.rs"]
 mod interaction_test;
+#[path = "keyboard_focus_wire.rs"]
+mod keyboard_focus_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
+#[path = "lock_screen_visual.rs"]
+mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
 #[path = "nirios_e2e_test.rs"]
 mod nirios_e2e_test;
 #[path = "nvenc_hardware_encode.rs"]
 mod nvenc_hardware_encode;
+#[path = "onboarding_visual.rs"]
+mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
 mod opening_configure_carries_the_tab_size;
 #[path = "peer_join_toast_batches.rs"]
@@ -151,3 +157,5 @@ mod vaapi_hardware_encode;
 mod wayland_test;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
+#[path = "xdg_activation.rs"]
+mod xdg_activation;
