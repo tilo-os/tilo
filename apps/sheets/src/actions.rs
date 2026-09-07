@@ -19,9 +19,9 @@
 //! delete a row/column, write a cell's value or formula, set a cell's format.
 //! Presentation → never an action: the selection (incl. multi-range), scroll,
 //! which sheet tab is active, a column-width drag preview until it commits, and
-//! the formula-bar edit buffer until Enter. External → never an action:
-//! import/export (xlsx/csv/ods) and the formula-graph recompute (derived, not a
-//! stored mutation).
+//! the formula-bar edit buffer until Enter. External file selection and bytes
+//! are effects; the parsed import is then one bounded `ImportSheets` action.
+//! Export and formula recomputation remain derived effects, not stored state.
 //!
 //! ## Determinism contract
 //!
@@ -166,6 +166,14 @@ const MAX_COLUMN: u32 = 16_383;
 const MAX_ROW: u32 = 1_048_575;
 const MAX_CELL_INPUT_BYTES: usize = 32 * 1024;
 const MAX_WRITES_PER_ACTION: usize = 16 * 1024;
+/// Imports deliberately share the same bounded action transport as a paste.
+/// Keeping the cap here (rather than only in the parser) protects remote
+/// replay and history from a malicious or stale import envelope too.
+const MAX_IMPORTED_SHEETS: usize = 64;
+/// A whole workbook import has its own bound: it is one atomic action rather
+/// than a normal paste, but still has a strict replay/history budget.
+pub const MAX_IMPORTED_CELLS: usize = 64 * 1024;
+const MAX_IMPORT_RAW_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SHEET_NAME_CHARS: usize = 100;
 const TAB_COLOR_COUNT: u32 = 6;
 
@@ -188,6 +196,16 @@ pub struct FormatWrite {
     pub fmt: String,
 }
 
+/// One newly-created sheet in an atomic imported workbook action.  It carries
+/// an author-created identity so a replay never falls back to a positional
+/// sheet target after peers reorder their tabs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportedSheet {
+    pub name: String,
+    pub sheet_id: String,
+    pub cells: Vec<CellWrite>,
+}
+
 /// Every collaborative operation Sheets exports on the shared workbook.
 ///
 /// Determinism contract: coordinates and values are carried in the payload;
@@ -196,6 +214,11 @@ pub struct FormatWrite {
 /// than partially applying its valid prefix.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SheetsAction {
+    /// Atomically add one or more imported sheets and their cells.  Parsing a
+    /// local file is an external effect, but the resulting workbook content is
+    /// a normal collaborative action: one undo point, one history entry, and
+    /// a byte-identical peer replay with no privately-written half import.
+    ImportSheets { sheets: Vec<ImportedSheet> },
     /// Write a cell's raw input (a value or a formula). An empty `raw` clears
     /// the cell. When `fmt` is `Some`, the cell's display format is set to it in
     /// the same action (smart-typed entry carries its inferred format here);
@@ -347,6 +370,12 @@ fn range_resource(label: &'static str, sheet_id: &str, cells: usize) -> HistoryR
 
 fn history_resource(action: &SheetsAction) -> HistoryResource {
     match action {
+        SheetsAction::ImportSheets { sheets } => (
+            "Import workbook",
+            "sheets.workbook".to_string(),
+            "sheets.workbook",
+            format!("{} imported sheet(s)", sheets.len()),
+        ),
         SheetsAction::SetCell {
             sheet_id, col, row, ..
         } => cell_resource("Edit cell", sheet_id, *col, *row),
@@ -457,6 +486,13 @@ impl Action for SheetsAction {
         // later coordinate/format is malformed or stale.
         validate_action(doc, self)?;
         match self {
+            SheetsAction::ImportSheets { sheets } => {
+                for imported in sheets {
+                    let sheet =
+                        SheetsDoc::add_sheet_with_id(doc, &imported.name, &imported.sheet_id);
+                    apply_set_cells(doc, sheet, &imported.cells);
+                }
+            }
             SheetsAction::SetCell {
                 sheet: _,
                 sheet_id,
@@ -737,6 +773,51 @@ fn validate_writes<'a>(
     Ok(())
 }
 
+/// Validate an import envelope completely before creating its first sheet.
+/// This is deliberately separate from `validate_writes`: imported sheets do
+/// not exist yet, while their coordinates/formats need exactly the same
+/// hostile-input checks as a normal paste.
+fn validate_imported_sheets(doc: &Doc, sheets: &[ImportedSheet]) -> Result<(), ActionError> {
+    if sheets.is_empty() || sheets.len() > MAX_IMPORTED_SHEETS {
+        return refuse("an import must contain between one and 64 sheets");
+    }
+    let mut ids = HashSet::new();
+    let mut total_cells = 0usize;
+    let mut total_raw_bytes = 0usize;
+    for sheet in sheets {
+        if !valid_sheet_name(&sheet.name) {
+            return refuse(
+                "imported sheet name is empty, too long, or contains control characters",
+            );
+        }
+        validate_new_sheet_id(doc, &sheet.sheet_id)?;
+        if !ids.insert(sheet.sheet_id.as_str()) {
+            return refuse("an import reuses a sheet identity");
+        }
+        let mut seen = HashSet::new();
+        for cell in &sheet.cells {
+            total_cells = total_cells.saturating_add(1);
+            total_raw_bytes = total_raw_bytes.saturating_add(cell.raw.len());
+            if total_cells > MAX_IMPORTED_CELLS {
+                return refuse("an import has too many populated cells");
+            }
+            if total_raw_bytes > MAX_IMPORT_RAW_BYTES {
+                return refuse("imported cell input is too large");
+            }
+            if !valid_addr(cell.col, cell.row) || cell.raw.len() > MAX_CELL_INPUT_BYTES {
+                return refuse("imported cell is outside the workbook bounds");
+            }
+            if cell.fmt.as_deref().is_some_and(|fmt| !valid_format(fmt)) {
+                return refuse("imported cell format is invalid");
+            }
+            if !seen.insert((cell.col, cell.row)) {
+                return refuse("an imported sheet contains the same cell more than once");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Preflight every action against the replay base. This is intentionally pure
 /// read-only validation: a refusal leaves the document unchanged, while a
 /// valid action can then apply as one deterministic transaction.
@@ -746,6 +827,7 @@ fn validate_writes<'a>(
 )]
 fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> {
     match action {
+        SheetsAction::ImportSheets { sheets } => validate_imported_sheets(doc, sheets),
         SheetsAction::SetCell {
             sheet,
             sheet_id,
@@ -1075,6 +1157,24 @@ pub fn set_cells_action(
                 row: addr.1,
                 raw,
                 fmt: fmt.map(super::model::CellFormat::as_str),
+            })
+            .collect(),
+    }
+}
+
+/// Build the one replayable action produced after an external spreadsheet has
+/// been parsed and fully preflighted.  The caller supplies rows in stable
+/// order; each new sheet gets a non-reused resource identity at author time.
+pub fn import_sheets_action(
+    sheets: impl IntoIterator<Item = (String, Vec<CellWrite>)>,
+) -> SheetsAction {
+    SheetsAction::ImportSheets {
+        sheets: sheets
+            .into_iter()
+            .map(|(name, cells)| ImportedSheet {
+                name,
+                sheet_id: Uuid::new_v4().to_string(),
+                cells,
             })
             .collect(),
     }
@@ -2092,6 +2192,120 @@ mod tests {
             before,
             "refusal leaves the CRDT byte-for-byte unchanged"
         );
+    }
+
+    #[test]
+    fn imported_workbook_is_atomic_and_replays_byte_identically() {
+        let mut a = seeded();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("same base");
+        let action = import_sheets_action(vec![
+            (
+                "Imported budget".into(),
+                vec![
+                    CellWrite {
+                        col: 0,
+                        row: 0,
+                        raw: "Rent".into(),
+                        fmt: Some("text".into()),
+                    },
+                    CellWrite {
+                        col: 1,
+                        row: 0,
+                        raw: "1200".into(),
+                        fmt: Some("currency:USD".into()),
+                    },
+                ],
+            ),
+            (
+                "Imported totals".into(),
+                vec![CellWrite {
+                    col: 0,
+                    row: 0,
+                    raw: "=SUM(B1:B3)".into(),
+                    fmt: None,
+                }],
+            ),
+        ]);
+        let encoded = encode(&action);
+        let env = qos_actions::apply_local(&mut a, &action, encoded).expect("import applies");
+        qos_actions::replay(&mut b, &env, &registry()).expect("import replays");
+        assert_eq!(a.get_heads(), b.get_heads());
+        assert_eq!(SheetsDoc::sheet_count(&mut b), 4);
+        assert_eq!(SheetsDoc::cell_raw(&mut b, 2, (1, 0)), "1200");
+        assert_eq!(SheetsDoc::cell_raw(&mut b, 3, (0, 0)), "=SUM(B1:B3)");
+    }
+
+    #[test]
+    fn hostile_import_refuses_before_creating_any_sheet() {
+        let mut doc = seeded();
+        let before = doc.save();
+        let action = SheetsAction::ImportSheets {
+            sheets: vec![
+                ImportedSheet {
+                    name: "Would exist".into(),
+                    sheet_id: Uuid::new_v4().to_string(),
+                    cells: vec![CellWrite {
+                        col: 0,
+                        row: 0,
+                        raw: "safe".into(),
+                        fmt: None,
+                    }],
+                },
+                ImportedSheet {
+                    name: "Bad later sheet".into(),
+                    sheet_id: Uuid::new_v4().to_string(),
+                    cells: vec![CellWrite {
+                        col: MAX_COLUMN + 1,
+                        row: 0,
+                        raw: "outside grid".into(),
+                        fmt: None,
+                    }],
+                },
+            ],
+        };
+        assert!(qos_actions::apply_local(&mut doc, &action, encode(&action)).is_err());
+        assert_eq!(
+            doc.save(),
+            before,
+            "no prefix of an import can leak into the CRDT"
+        );
+    }
+
+    #[test]
+    fn imported_workbook_has_an_exact_replay_cell_boundary() {
+        let doc = seeded();
+        let rows = u32::try_from(MAX_IMPORTED_CELLS).expect("bounded import cap fits u32");
+        let cells = (0..rows)
+            .map(|row| CellWrite {
+                col: 0,
+                row,
+                raw: "1".into(),
+                fmt: None,
+            })
+            .collect();
+        let mut action = SheetsAction::ImportSheets {
+            sheets: vec![ImportedSheet {
+                name: "At the import limit".into(),
+                sheet_id: Uuid::new_v4().to_string(),
+                cells,
+            }],
+        };
+        assert!(validate_action(&doc, &action).is_ok());
+        let SheetsAction::ImportSheets { sheets } = &mut action else {
+            return;
+        };
+        sheets[0].cells.push(CellWrite {
+            col: 1,
+            row: 0,
+            raw: "2".into(),
+            fmt: None,
+        });
+        assert!(matches!(
+            validate_action(&doc, &action),
+            Err(ActionError::Refused(_))
+        ));
     }
 
     #[test]
