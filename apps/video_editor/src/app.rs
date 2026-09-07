@@ -163,6 +163,29 @@ const FOCUS_RING_INSET: f64 = 3.0;
 
 const BIN_BREAKPOINT: f64 = 900.0;
 
+/// A top-bar command needs a target a finger can reliably acquire. The old
+/// 28px icon targets were especially easy to miss on a narrow timeline, where
+/// the collapsed-bin and collapsed-inspector controls are the only way back to
+/// those panes.
+const TOPBAR_TOUCH_TARGET: f64 = 36.0;
+const TOPBAR_CONTROL_Y: f64 = 6.0;
+const TOPBAR_EDGE: f64 = 14.0;
+const TOPBAR_GAP: f64 = 10.0;
+/// At this width the Split button is redundant with its stable `S` shortcut
+/// and prevents the two independent side-panel toggles from fitting.
+const TOPBAR_COMPACT_BREAKPOINT: f64 = 480.0;
+
+/// Stable accessibility routes for the controls painted in the top bar.
+/// These are deliberately independent from their rectangles: a compact layout
+/// can hide Split without letting a stale assistive-technology route operate a
+/// control that is no longer on screen.
+const TOPBAR_A11Y_KEY: &str = "topbar";
+const TOPBAR_BIN_KEY: &str = "topbar.bin";
+const TOPBAR_INSPECTOR_KEY: &str = "topbar.inspector";
+const TOPBAR_IMPORT_KEY: &str = "topbar.import";
+const TOPBAR_SPLIT_KEY: &str = "topbar.split";
+const TOPBAR_EXPORT_KEY: &str = "topbar.export";
+
 /// Width the project button takes when the topbar has room for it, and the
 /// least it will accept before being dropped instead. The floor exists
 /// because a name clipped to a few characters states a *different* project
@@ -1988,7 +2011,12 @@ impl VideoEditorApp {
         let layout = self.bin_layout();
         let overlay = layout == SplitLayout::Overlay;
         let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
-        let export_btn = Rect::new(r.x1 - 124.0, r.y0 + 9.0, r.x1 - 14.0, r.y0 + 39.0);
+        let export_btn = Rect::new(
+            r.x1 - 124.0,
+            r.y0 + TOPBAR_CONTROL_Y,
+            r.x1 - TOPBAR_EDGE,
+            r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+        );
         // Directly beneath Export, in the same strip the project notice uses,
         // so the two never share a pixel — see `project_notice_limit`.
         let chip_w = EXPORT_CHIP_W.min((r.width() - 24.0).max(0.0));
@@ -1998,12 +2026,36 @@ impl VideoEditorApp {
             export_btn.x1,
             topbar.y1 + 32.0,
         );
-        let split_btn = Rect::new(r.x1 - 244.0, r.y0 + 9.0, r.x1 - 134.0, r.y0 + 39.0);
-        let import_btn = Rect::new(r.x1 - 366.0, r.y0 + 9.0, r.x1 - 254.0, r.y0 + 39.0);
+        let split_btn = if r.width() < TOPBAR_COMPACT_BREAKPOINT {
+            Rect::ZERO
+        } else {
+            Rect::new(
+                export_btn.x0 - TOPBAR_GAP - 110.0,
+                r.y0 + TOPBAR_CONTROL_Y,
+                export_btn.x0 - TOPBAR_GAP,
+                r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+            )
+        };
+        let import_right = if split_btn.width() > 0.0 {
+            split_btn.x0 - TOPBAR_GAP
+        } else {
+            export_btn.x0 - TOPBAR_GAP
+        };
+        let import_btn = Rect::new(
+            import_right - 112.0,
+            r.y0 + TOPBAR_CONTROL_Y,
+            import_right,
+            r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+        );
         // The hamburger replaces the static app glyph slot when the bin is an
         // overlay, so the user can summon the collapsed bin.
         let menu_btn = if overlay {
-            Rect::new(r.x0 + 12.0, r.y0 + 10.0, r.x0 + 40.0, r.y0 + 38.0)
+            Rect::new(
+                r.x0 + 8.0,
+                r.y0 + TOPBAR_CONTROL_Y,
+                r.x0 + 8.0 + TOPBAR_TOUCH_TARGET,
+                r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+            )
         } else {
             Rect::ZERO
         };
@@ -2013,10 +2065,10 @@ impl VideoEditorApp {
         // and a toggle that does not fit is worse than one on the wrong side.
         let inspector_btn = if self.inspector_split() == SplitLayout::Overlay {
             Rect::new(
-                import_btn.x0 - 42.0,
-                r.y0 + 10.0,
-                import_btn.x0 - 14.0,
-                r.y0 + 38.0,
+                import_btn.x0 - TOPBAR_GAP - TOPBAR_TOUCH_TARGET,
+                r.y0 + TOPBAR_CONTROL_Y,
+                import_btn.x0 - TOPBAR_GAP,
+                r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
             )
         } else {
             Rect::ZERO
@@ -2041,7 +2093,12 @@ impl VideoEditorApp {
         let project_btn = {
             let want = PROJECT_BTN_W.min(leading_limit - project_x0);
             if want >= PROJECT_BTN_MIN_W {
-                Rect::new(project_x0, r.y0 + 9.0, project_x0 + want, r.y0 + 39.0)
+                Rect::new(
+                    project_x0,
+                    r.y0 + TOPBAR_CONTROL_Y,
+                    project_x0 + want,
+                    r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+                )
             } else {
                 Rect::ZERO
             }
@@ -2860,8 +2917,18 @@ impl VideoEditorApp {
     }
 
     /// Reconcile both side flaps with the current width and advance their
-    /// eased reveal using real elapsed time. Called once at the top of `draw`.
+    /// eased reveal using real elapsed time. Kept as the motion-on helper for
+    /// direct geometry tests; live drawing calls [`Self::advance_flap_with_motion`].
+    #[cfg(test)]
     fn advance_flap(&mut self) {
+        self.advance_flap_with_motion(false);
+    }
+
+    /// Advance both side flaps, respecting the host's reduced-motion setting.
+    /// A reduced-motion frame lands at its target immediately rather than
+    /// leaving a half-open panel behind after the host correctly suppresses
+    /// subsequent animation frames.
+    fn advance_flap_with_motion(&mut self, reduce_motion: bool) {
         let layout = self.bin_layout();
         let insp = self.inspector_split();
         self.bin_flap.reconcile(layout);
@@ -2873,6 +2940,13 @@ impl VideoEditorApp {
             self.bin_flap.snap(layout == SplitLayout::Docked);
             self.inspector_flap.snap(insp == SplitLayout::Docked);
             self.flap_settled = true;
+        }
+        if reduce_motion {
+            let bin_open = self.bin_flap.is_open(layout);
+            let inspector_open = self.inspector_flap.is_open(insp);
+            self.bin_flap.snap(bin_open);
+            self.inspector_flap.snap(inspector_open);
+            return;
         }
         let now = Instant::now();
         let dt = now.duration_since(self.flap_tick).as_secs_f64();
@@ -8042,7 +8116,7 @@ impl Widget for VideoEditorApp {
         self.advance_playback();
         #[cfg(any(feature = "gst", feature = "decode"))]
         self.pump_monitor();
-        self.advance_flap();
+        self.advance_flap_with_motion(theme.reduce_motion);
         // Destination round-trip + render progress, every frame.
         self.poll_export();
         // Track the decoded frame to the (possibly advancing) playhead.
@@ -8636,9 +8710,15 @@ impl Widget for VideoEditorApp {
             }
         }
         // Topbar buttons, and the export chip that hangs below them.
-        if [r.import_btn, r.split_btn, r.export_btn, r.menu_btn]
-            .iter()
-            .any(|b| b.contains(point))
+        if [
+            r.import_btn,
+            r.split_btn,
+            r.export_btn,
+            r.menu_btn,
+            r.inspector_btn,
+        ]
+        .iter()
+        .any(|b| b.contains(point))
             || (self.export_chip_is_shown() && r.export_chip.contains(point))
         {
             return Some(CursorIcon::Pointer);
@@ -9030,6 +9110,7 @@ impl Widget for VideoEditorApp {
     /// the user is on rather than on "video editor, canvas".
     fn accessibility(&self) -> Option<AccessNode> {
         let mut kids = vec![
+            self.a11y_topbar(),
             self.a11y_project(),
             self.a11y_bin(),
             self.a11y_transport(),
@@ -9127,6 +9208,9 @@ impl Widget for VideoEditorApp {
                 }
                 return false;
             }
+            if pane_key == hash_key(&TOPBAR_A11Y_KEY) {
+                return self.a11y_topbar_action(action, &key_path[1..], state);
+            }
             if pane_key == hash_key(&"discard") {
                 let Some(&which) = key_path.get(1) else {
                     return false;
@@ -9206,6 +9290,57 @@ const TRANSPORT_NAMES: [(TransportAction, &str); 5] = [
 ];
 
 impl VideoEditorApp {
+    /// Execute a top-bar command through the same helpers the pointer uses.
+    /// Visibility is checked again at activation time so a delayed assistive
+    /// technology event cannot fire Split after a resize hid that button.
+    fn a11y_topbar_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        rest: &[u64],
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::{Action, hash_key};
+        let Some(&key) = rest.first() else {
+            return false;
+        };
+        let r = self.regions();
+        match action {
+            Action::Focus => [
+                (TOPBAR_BIN_KEY, r.menu_btn.width() > 0.0),
+                (TOPBAR_INSPECTOR_KEY, r.inspector_btn.width() > 0.0),
+                (TOPBAR_IMPORT_KEY, r.import_btn.width() > 0.0),
+                (TOPBAR_SPLIT_KEY, r.split_btn.width() > 0.0),
+                (TOPBAR_EXPORT_KEY, r.export_btn.width() > 0.0),
+            ]
+            .iter()
+            .any(|(name, visible)| *visible && hash_key(name) == key),
+            Action::Activate => {
+                if key == hash_key(&TOPBAR_BIN_KEY) && r.menu_btn.width() > 0.0 {
+                    self.toggle_bin();
+                    return true;
+                }
+                if key == hash_key(&TOPBAR_INSPECTOR_KEY) && r.inspector_btn.width() > 0.0 {
+                    self.toggle_inspector();
+                    return true;
+                }
+                if key == hash_key(&TOPBAR_IMPORT_KEY) && r.import_btn.width() > 0.0 {
+                    self.trigger_import();
+                    return true;
+                }
+                if key == hash_key(&TOPBAR_SPLIT_KEY) && r.split_btn.width() > 0.0 {
+                    self.split_selected(state);
+                    return true;
+                }
+                if key == hash_key(&TOPBAR_EXPORT_KEY) && r.export_btn.width() > 0.0 {
+                    self.show_export = true;
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     /// The media rows the bin currently lists, in painted order.
     fn a11y_bin_items(&self) -> Vec<MediaId> {
         // `bin_order`, not the project's own order: that is the order the rows
@@ -10268,6 +10403,77 @@ impl VideoEditorApp {
             node
         };
         node
+    }
+
+    /// The command strip is custom-painted, so it needs an explicit semantic
+    /// toolbar rather than relying on the visible labels. In particular, the
+    /// compact layout hides Split and turns both side panes into icons; a
+    /// reader must get the exact same currently-operable controls as a pointer.
+    fn a11y_topbar(&self) -> AccessNode {
+        let r = self.regions();
+        let mut kids = Vec::new();
+        if r.menu_btn.width() > 0.0 {
+            kids.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Toggle media bin")
+                    .with_value("B")
+                    .with_hashed_key(TOPBAR_BIN_KEY)
+                    .with_state(AccessState {
+                        focusable: true,
+                        checked: Some(self.bin_flap.is_open(self.bin_layout())),
+                        ..Default::default()
+                    }),
+            );
+        }
+        if r.inspector_btn.width() > 0.0 {
+            kids.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Toggle inspector")
+                    .with_value("Ctrl+I")
+                    .with_hashed_key(TOPBAR_INSPECTOR_KEY)
+                    .with_state(AccessState {
+                        focusable: true,
+                        checked: Some(self.inspector_flap.is_open(self.inspector_split())),
+                        ..Default::default()
+                    }),
+            );
+        }
+        kids.push(
+            AccessNode::new(Role::Button)
+                .with_name("Import media")
+                .with_value("Ctrl+Shift+O")
+                .with_hashed_key(TOPBAR_IMPORT_KEY)
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
+        );
+        if r.split_btn.width() > 0.0 {
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Split at playhead")
+                    .with_value("S")
+                    .with_hashed_key(TOPBAR_SPLIT_KEY)
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
+        kids.push(
+            AccessNode::new(Role::Button)
+                .with_name("Export video")
+                .with_value("Ctrl+E")
+                .with_hashed_key(TOPBAR_EXPORT_KEY)
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
+        );
+        AccessNode::new(Role::Toolbar)
+            .with_name("Editor commands")
+            .with_hashed_key(TOPBAR_A11Y_KEY)
+            .with_children(kids)
     }
 
     /// The unsaved-work question, carrying the same three answers the card
@@ -13636,16 +13842,18 @@ impl VideoEditorApp {
             false,
             r.import_btn.contains(self.last_mouse),
         );
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            r.split_btn,
-            "Split (S)",
-            false,
-            r.split_btn.contains(self.last_mouse),
-        );
+        if r.split_btn.width() > 0.0 {
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                r.split_btn,
+                "Split (S)",
+                false,
+                r.split_btn.contains(self.last_mouse),
+            );
+        }
         draw_button(
             scene,
             tf,
@@ -23250,7 +23458,10 @@ mod tests {
         for (w, h) in SIZES {
             let (app, _doc) = app_sized(w, h);
             let r = app.regions();
-            let btns = [r.import_btn, r.split_btn, r.export_btn];
+            let btns: Vec<Rect> = [r.import_btn, r.split_btn, r.export_btn]
+                .into_iter()
+                .filter(|rect| rect.width() > 0.0)
+                .collect();
             for (i, a) in btns.iter().enumerate() {
                 for b in btns.iter().skip(i + 1) {
                     assert!(
@@ -26972,6 +27183,91 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn compact_topbar_keeps_independent_touch_targets_and_semantics() {
+        // At 420px the old 28px menu and inspector icons were exactly on top
+        // of one another. Hiding the redundant Split button leaves room for
+        // both side panes, and the toolbar tree follows the painted layout.
+        let (mut app, mut doc) = app_sized(420.0, 560.0);
+        app.advance_flap();
+        let r = app.regions();
+        assert_eq!(r.split_btn, Rect::ZERO, "Split yields to its S shortcut");
+        let controls = [
+            ("media bin", r.menu_btn),
+            ("inspector", r.inspector_btn),
+            ("import", r.import_btn),
+            ("export", r.export_btn),
+        ];
+        for (name, rect) in controls {
+            assert!(
+                rect.width() >= TOPBAR_TOUCH_TARGET && rect.height() >= TOPBAR_TOUCH_TARGET,
+                "{name} target is too small for touch: {rect:?}",
+            );
+        }
+        for (i, (_, a)) in controls.iter().enumerate() {
+            for (_, b) in controls.iter().skip(i + 1) {
+                assert!(
+                    a.x1 <= b.x0 || b.x1 <= a.x0,
+                    "compact topbar controls overlap: {a:?} vs {b:?}",
+                );
+            }
+        }
+
+        let toolbar = app.a11y_topbar();
+        let names: Vec<&str> = toolbar
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Toggle media bin"));
+        assert!(names.contains(&"Toggle inspector"));
+        assert!(names.contains(&"Import media"));
+        assert!(names.contains(&"Export video"));
+        assert!(
+            !names.contains(&"Split at playhead"),
+            "a hidden button must not stay reachable only to assistive technology",
+        );
+
+        let activate = ui::a11y::Action::Activate;
+        assert!(app.perform_action_at(
+            &activate,
+            &[
+                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
+                ui::a11y::hash_key(&TOPBAR_BIN_KEY),
+            ],
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.bin_flap.is_open(app.bin_layout()));
+        assert!(app.perform_action_at(
+            &activate,
+            &[
+                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
+                ui::a11y::hash_key(&TOPBAR_INSPECTOR_KEY),
+            ],
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.inspector_flap.is_open(app.inspector_split()));
+    }
+
+    #[test]
+    fn reduced_motion_snaps_side_panels_without_requesting_more_frames() {
+        let (mut app, _doc) = app_sized(720.0, 820.0);
+        app.advance_flap();
+        app.toggle_bin();
+        app.toggle_inspector();
+        assert!(app.flap_animating(), "ordinary motion starts eased reveals");
+
+        app.advance_flap_with_motion(true);
+        assert!(app.bin_flap.is_open(app.bin_layout()));
+        assert!(app.inspector_flap.is_open(app.inspector_split()));
+        assert!(
+            !app.flap_animating(),
+            "a reduced-motion frame must not leave an animation owed",
+        );
     }
 
     /// No two inspector rows share an accessible key.
