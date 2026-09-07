@@ -2,9 +2,9 @@
 //!
 //! This is the reference wiring for the shared search framework
 //! ([`ui::search`]): Contacts declares its searchable type by implementing
-//! [`SearchProvider`], turning matching address-book records into typed
-//! [`SearchResult`]s that any search surface can rank and present alongside
-//! every other provider's hits. Each hit addresses the contact resource's
+//! [`SearchProvider`], turning matching address-book records and durable group
+//! names into typed [`SearchResult`]s that any search surface can rank and
+//! present alongside every other provider's hits. Each hit addresses an
 //! exported `open` view action, so pointer, keyboard, assistive technology and
 //! agents all enter through the same brokered operation.
 
@@ -31,6 +31,10 @@ pub const CONTACT_KIND: &str = "Contacts";
 pub struct ContactSearchProvider {
     catalog: SearchCatalog,
     contacts: BTreeMap<ContactId, Contact>,
+    /// Canonical resource id → deterministic display spelling. Keeping this
+    /// separately from contacts means a group resolves even when it was not
+    /// included in the bounded contextual palette page.
+    groups: BTreeMap<String, String>,
 }
 
 impl ContactSearchProvider {
@@ -44,11 +48,18 @@ impl ContactSearchProvider {
                 .cloned()
                 .map(|contact| (contact.id, contact))
                 .collect(),
+            groups: crate::actions::ordered_groups(&store.contacts)
+                .into_iter()
+                .map(|name| (crate::actions::group_resource_id(&name), name))
+                .collect(),
         };
         // Browse pages use insertion order, so seed the catalogue in durable
         // UUID order rather than incidental Automerge/map projection order.
         for contact in provider.contacts.values() {
             provider.index_contact(contact);
+        }
+        for group in provider.groups.values() {
+            provider.index_group(group);
         }
         provider
     }
@@ -62,6 +73,18 @@ impl ContactSearchProvider {
         // layer, so a continuation cursor remains valid when callers switch
         // between canonically equivalent Unicode spellings of the query.
         let searchable = normalize_text(&searchable_fields(contact).join("\0"));
+        let _ = self.catalog.upsert(address.resource, searchable, result);
+    }
+
+    fn index_group(&self, group: &str) {
+        let result = group_result(group);
+        let Some(address) = result.action_address() else {
+            return;
+        };
+        // Prefixing the name helps people discover the filter through generic
+        // queries such as "group work", while the normalised name keeps direct
+        // matching equivalent to the in-app group picker.
+        let searchable = normalize_text(&format!("group {group}"));
         let _ = self.catalog.upsert(address.resource, searchable, result);
     }
 
@@ -145,11 +168,15 @@ impl SearchProvider for ContactSearchProvider {
         &self,
         address: &qos_actions::ActionAddress,
     ) -> Option<qos_actions::Resource> {
-        let raw_id = address.resource.strip_prefix("contacts.contact:")?;
-        let id = raw_id.parse::<ContactId>().ok()?;
-        let contact = self.contacts.get(&id)?;
-        (address == &crate::actions::open_contact_address(id))
-            .then(|| crate::actions::contact_resource(contact))
+        if let Some(raw_id) = address.resource.strip_prefix("contacts.contact:") {
+            let id = raw_id.parse::<ContactId>().ok()?;
+            let contact = self.contacts.get(&id)?;
+            return (address == &crate::actions::open_contact_address(id))
+                .then(|| crate::actions::contact_resource(contact));
+        }
+        let group = self.groups.get(&address.resource)?;
+        (address == &crate::actions::open_group_address(group))
+            .then(|| crate::actions::group_resource(group))
     }
 }
 
@@ -169,6 +196,16 @@ fn contact_result(contact: &Contact) -> SearchResult {
         r = r.with_score(1);
     }
     r
+}
+
+fn group_result(group: &str) -> SearchResult {
+    SearchResult::for_action(
+        CONTACT_KIND,
+        format!("Group: {group}"),
+        crate::actions::open_group_address(group),
+    )
+    .with_subtitle("Filter contacts in this group")
+    .with_icon(Icon::Users)
 }
 
 #[cfg(test)]
@@ -295,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_returns_the_whole_book_as_one_group() {
+    fn empty_query_returns_contacts_and_durable_groups_as_one_result_group() {
         let store = store_with_samples();
         let mut registry = SearchRegistry::new();
         registry.register(Box::new(ContactSearchProvider::new(&store)));
@@ -303,8 +340,33 @@ mod tests {
         assert_eq!(groups.len(), 1, "one Contacts group");
         assert_eq!(
             groups[0].results.len(),
-            store.len(),
-            "every contact is browsable"
+            store.len() + store.all_groups().len(),
+            "every contact and durable group is browsable"
+        );
+    }
+
+    #[test]
+    fn group_search_uses_the_canonical_group_resource_and_resolves_lazily() {
+        let store = store_with_samples();
+        let group = store
+            .all_groups()
+            .into_iter()
+            .find(|group| group == "Work")
+            .expect("the samples include the Work group");
+        let provider = ContactSearchProvider::new(&store);
+        let hit = provider
+            .search("group work")
+            .into_iter()
+            .find(|result| result.title == "Group: Work")
+            .expect("group names are globally searchable");
+        let address = hit.action_address().expect("group result is actionable");
+        assert_eq!(address, crate::actions::open_group_address(&group));
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the group resolves without expanding the palette page");
+        assert!(
+            qos_actions::door::resolve(&[resource], &address).is_some(),
+            "the exact group open action is agent-addressable"
         );
     }
 
