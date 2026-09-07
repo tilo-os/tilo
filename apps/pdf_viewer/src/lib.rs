@@ -65,6 +65,16 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(PdfApp::empty())
 }
 
+/// Screenshot-only owner-worker loading state.
+pub fn app_root_loading() -> Box<dyn Widget> {
+    Box::new(PdfApp::loading_preview())
+}
+
+/// Screenshot-only failed-open state with the persistent accessible error.
+pub fn app_root_error() -> Box<dyn Widget> {
+    Box::new(PdfApp::error_preview())
+}
+
 /// Open a real PDF from `path`.
 pub fn app_root_open(path: impl AsRef<std::path::Path>) -> Box<dyn Widget> {
     Box::new(PdfApp::open(path))
