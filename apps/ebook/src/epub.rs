@@ -31,7 +31,31 @@ use crate::xhtml::parse_xhtml;
 /// decoded footprint of a large source JPEG.
 const COVER_MAX_EDGE: u32 = 480;
 
-type Archive = ZipArchive<Cursor<Vec<u8>>>;
+/// A reader should never try to hold an arbitrarily large file twice in
+/// memory (the ZIP reader owns a copy of the supplied bytes).  This is a
+/// deliberately generous ceiling for image-heavy, illustrated EPUBs while
+/// still making the failure mode of a mistaken disk image or a hostile file
+/// quick and predictable.
+pub const MAX_EPUB_BYTES: usize = 128 * 1024 * 1024;
+
+/// Bounds for decompressed ZIP members. ZIP metadata advertises an
+/// uncompressed length, so check it before allocating a buffer rather than
+/// trusting a compressed member to be small. The aggregate spine budget also
+/// prevents many individually-valid XHTML files from exhausting memory.
+const MAX_CONTAINER_BYTES: usize = 512 * 1024;
+const MAX_PACKAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_NAV_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CHAPTER_BYTES: usize = 4 * 1024 * 1024;
+const MAX_TOTAL_SPINE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COVER_BYTES: usize = 12 * 1024 * 1024;
+const MAX_SPINE_ITEMS: usize = 1_024;
+/// Cover art is eventually downscaled to 480px. These source limits leave
+/// room for a crisp, unusually shaped cover while avoiding a decompression
+/// bomb that allocates tens or hundreds of megabytes before downscaling.
+const MAX_COVER_DIMENSION: u32 = 4_096;
+const MAX_COVER_PIXELS: u64 = 4_000_000;
+
+type Archive<'a> = ZipArchive<Cursor<&'a [u8]>>;
 
 /// A book's stable identity: the BLAKE3 content hash of its EPUB bytes,
 /// prefixed `book:`. Deriving identity from the bytes (not the file path or
@@ -56,10 +80,20 @@ pub fn content_id(bytes: &[u8]) -> String {
 /// metadata cannot be located or parsed, or the spine resolves to no
 /// readable chapters.
 pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book> {
-    let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).context("open epub zip")?;
+    if bytes.len() > MAX_EPUB_BYTES {
+        return Err(anyhow!(
+            "epub is too large ({} MiB; maximum is {} MiB)",
+            bytes.len() / (1024 * 1024),
+            MAX_EPUB_BYTES / (1024 * 1024)
+        ));
+    }
+    // `Cursor<&[u8]>` lets the archive seek through the caller's buffer
+    // directly. A `Cursor<Vec<u8>>` would duplicate even an accepted 128 MiB
+    // book before we had read a single chapter.
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).context("open epub zip")?;
 
     let opf_path = find_opf_path(&mut archive)?;
-    let opf_src = read_entry(&mut archive, &opf_path)?;
+    let opf_src = read_entry(&mut archive, &opf_path, MAX_PACKAGE_BYTES)?;
     let base = parent_dir(&opf_path);
 
     let pkg = OpfPackage::parse(&opf_src, &base)?;
@@ -67,12 +101,28 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
     // Build href -> title map from the TOC (nav doc first, then NCX).
     let toc = read_toc(&mut archive, &pkg, &base);
 
+    if pkg.spine.len() > MAX_SPINE_ITEMS {
+        return Err(anyhow!(
+            "epub has too many spine documents (maximum {MAX_SPINE_ITEMS})"
+        ));
+    }
     let mut chapters = Vec::with_capacity(pkg.spine.len());
+    let mut total_spine_bytes = 0usize;
     for href in &pkg.spine {
         let spine_href = strip_fragment(href);
-        let Ok(src) = read_entry(&mut archive, spine_href) else {
-            continue; // skip an unreadable spine item rather than fail
-        };
+        // A spine is the book's declared reading order. Silently omitting a
+        // member (especially one rejected by a safety limit) would make a
+        // successfully-opened book lie about its contents, so report the
+        // precise chapter instead.
+        let src = read_entry(&mut archive, spine_href, MAX_CHAPTER_BYTES)
+            .with_context(|| format!("read spine document: {spine_href}"))?;
+        total_spine_bytes = total_spine_bytes.saturating_add(src.len());
+        if total_spine_bytes > MAX_TOTAL_SPINE_BYTES {
+            return Err(anyhow!(
+                "epub text is too large (maximum {} MiB)",
+                MAX_TOTAL_SPINE_BYTES / (1024 * 1024)
+            ));
+        }
         let blocks = parse_xhtml(&src);
         let title = toc
             .get(spine_href)
@@ -100,7 +150,7 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
     let cover = pkg
         .cover_href
         .as_deref()
-        .and_then(|href| read_entry_bytes(&mut archive, href).ok())
+        .and_then(|href| read_entry_bytes(&mut archive, href, MAX_COVER_BYTES).ok())
         .and_then(|bytes| decode_cover(&bytes));
 
     // Prefer the book's own subject metadata; the caller's hint is a fallback
@@ -136,11 +186,30 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
 /// Decode raster cover bytes (JPEG/PNG) into downscaled RGBA. Returns `None`
 /// on any decode failure so a broken cover never breaks the shelf.
 fn decode_cover(bytes: &[u8]) -> Option<Cover> {
-    let img = image::load_from_memory(bytes).ok()?;
-    let (w, h) = (img.width(), img.height());
-    if w == 0 || h == 0 {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_COVER_DIMENSION);
+    limits.max_image_height = Some(MAX_COVER_DIMENSION);
+    // The pixel check below is strict for every format. Keep the decoder's
+    // temporary allocation budget aligned with it as an additional guard for
+    // codecs that support allocation limits.
+    limits.max_alloc = Some(MAX_COVER_PIXELS * 4);
+    let dimensions_reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut dimensions_reader = dimensions_reader;
+    dimensions_reader.limits(limits.clone());
+    let (w, h) = dimensions_reader.into_dimensions().ok()?;
+    if w == 0 || h == 0 || u64::from(w) * u64::from(h) > MAX_COVER_PIXELS {
         return None;
     }
+    // Re-create the reader after the header-only dimensions pass. Decoding is
+    // now safe to do because both the member bytes and decoded dimensions were
+    // bounded before an image buffer was allocated.
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    reader.limits(limits);
+    let img = reader.decode().ok()?;
     let scaled = if w.max(h) > COVER_MAX_EDGE {
         let scale = COVER_MAX_EDGE as f32 / w.max(h) as f32;
         let nw = ((w as f32 * scale).round() as u32).max(1);
@@ -162,9 +231,9 @@ fn decode_cover(bytes: &[u8]) -> Option<Cover> {
 // container.xml -> OPF path
 // ---------------------------------------------------------------------------
 
-fn find_opf_path(archive: &mut Archive) -> Result<String> {
-    let xml =
-        read_entry(archive, "META-INF/container.xml").context("read META-INF/container.xml")?;
+fn find_opf_path(archive: &mut Archive<'_>) -> Result<String> {
+    let xml = read_entry(archive, "META-INF/container.xml", MAX_CONTAINER_BYTES)
+        .context("read META-INF/container.xml")?;
     let doc = Document::parse(&xml).context("parse container.xml")?;
     let rootfile = doc
         .descendants()
@@ -319,9 +388,9 @@ impl OpfPackage {
 // Table of contents -> href(no fragment) -> label
 // ---------------------------------------------------------------------------
 
-fn read_toc(archive: &mut Archive, pkg: &OpfPackage, base: &str) -> HashMap<String, String> {
+fn read_toc(archive: &mut Archive<'_>, pkg: &OpfPackage, base: &str) -> HashMap<String, String> {
     if let Some(nav) = &pkg.nav_href
-        && let Ok(src) = read_entry(archive, nav)
+        && let Ok(src) = read_entry(archive, nav, MAX_NAV_BYTES)
     {
         let nav_base = parent_dir(nav);
         let map = parse_nav_doc(&src, &nav_base);
@@ -330,7 +399,7 @@ fn read_toc(archive: &mut Archive, pkg: &OpfPackage, base: &str) -> HashMap<Stri
         }
     }
     if let Some(ncx) = &pkg.ncx_href
-        && let Ok(src) = read_entry(archive, ncx)
+        && let Ok(src) = read_entry(archive, ncx, MAX_NAV_BYTES)
     {
         let ncx_base = parent_dir(ncx);
         let map = parse_ncx(&src, &ncx_base);
@@ -426,24 +495,50 @@ fn first_heading(blocks: &[crate::model::Block]) -> Option<String> {
 // ZIP + path helpers
 // ---------------------------------------------------------------------------
 
-fn read_entry(archive: &mut Archive, name: &str) -> Result<String> {
-    let mut file = archive
+fn read_entry(archive: &mut Archive<'_>, name: &str, limit: usize) -> Result<String> {
+    let file = archive
         .by_name(name)
         .with_context(|| format!("zip entry not found: {name}"))?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)
+    if file.size() > limit as u64 {
+        return Err(anyhow!(
+            "zip entry exceeds the {} MiB limit: {name}",
+            limit / (1024 * 1024)
+        ));
+    }
+    let mut buf = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut buf)
         .with_context(|| format!("read zip entry: {name}"))?;
-    Ok(buf)
+    if buf.len() > limit {
+        return Err(anyhow!(
+            "zip entry streamed beyond the {} MiB limit: {name}",
+            limit / (1024 * 1024)
+        ));
+    }
+    String::from_utf8(buf).with_context(|| format!("zip entry is not UTF-8: {name}"))
 }
 
 /// Read a binary entry (cover images are not UTF-8).
-fn read_entry_bytes(archive: &mut Archive, name: &str) -> Result<Vec<u8>> {
-    let mut file = archive
+fn read_entry_bytes(archive: &mut Archive<'_>, name: &str, limit: usize) -> Result<Vec<u8>> {
+    let file = archive
         .by_name(name)
         .with_context(|| format!("zip entry not found: {name}"))?;
+    if file.size() > limit as u64 {
+        return Err(anyhow!(
+            "zip entry exceeds the {} MiB limit: {name}",
+            limit / (1024 * 1024)
+        ));
+    }
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf)
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut buf)
         .with_context(|| format!("read zip entry: {name}"))?;
+    if buf.len() > limit {
+        return Err(anyhow!(
+            "zip entry streamed beyond the {} MiB limit: {name}",
+            limit / (1024 * 1024)
+        ));
+    }
     Ok(buf)
 }
 
@@ -552,5 +647,29 @@ mod tests {
                 .any(|b| matches!(b, crate::model::Block::Quote { .. }))
         );
         assert!(book.chapters[0].blocks.len() >= 5);
+    }
+
+    #[test]
+    fn zip_member_limit_is_enforced_before_reading() {
+        let mut archive = ZipArchive::new(Cursor::new(crate::content::SAMPLE_EPUB)).unwrap();
+        let error = read_entry(&mut archive, "META-INF/container.xml", 1)
+            .expect_err("the container is larger than one byte");
+        assert!(
+            error.to_string().contains("exceeds"),
+            "the limit is reported instead of allocating the member: {error:#}"
+        );
+    }
+
+    #[test]
+    fn oversized_cover_dimensions_fall_back_without_decoding_the_image() {
+        // This PNG is tiny on disk but declares a source image wider than a
+        // shelf cover can ever need. The preflight dimensions pass rejects it
+        // before `DynamicImage` can allocate its full RGBA buffer.
+        let image = image::RgbImage::new(MAX_COVER_DIMENSION + 1, 1);
+        let mut png = Cursor::new(Vec::new());
+        image
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("a small generated PNG encodes");
+        assert!(decode_cover(&png.into_inner()).is_none());
     }
 }
