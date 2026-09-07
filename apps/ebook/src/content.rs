@@ -2,14 +2,18 @@
 //!
 //! The shelf is app-managed and persisted, not re-derived from a magic
 //! folder every launch. A book enters the library when the reader opens it
-//! or when it turns up in a watched folder; from then on it lives in the
-//! CRDT ([`crate::doc`]) keyed by its content hash, so the shelf survives a
-//! restart and follows the reader across devices. [`load_library`] hydrates
-//! recorded books from disk each launch and auto-imports anything new.
+//! or when it turns up in a watched folder; from then on its identity and
+//! public metadata live in the CRDT ([`crate::doc`]). Source paths and folder
+//! grants remain local. Shared copies resolve from their content-addressed
+//! workspace filename; local copies are rediscovered only through explicitly
+//! supplied watch roots. [`load_library`] hydrates those available books and
+//! auto-imports anything new.
 //!
 //! The bundled EPUB + the multi-book sample library are reserved for the
 //! hermetic `--shots`/test path.
 
+use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -120,7 +124,7 @@ pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, mut book: Book) -
         doc,
         &LibraryEntry {
             id: book.id.clone(),
-            path: path.to_path_buf(),
+            shared: is_shared(path),
             title: book.title.clone(),
             author: book.author.clone(),
             subject: book.subject.clone(),
@@ -180,31 +184,63 @@ pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, Pat
 /// file can't be read right now (e.g. an as-yet-unhydrated workspace book) is
 /// skipped from the shelf but kept in the registry, so it reappears once its
 /// bytes are available.
-pub fn load_library(doc: &mut AutoCommit) -> Vec<LoadedBook> {
+pub fn load_library<S: BuildHasher>(
+    doc: &mut AutoCommit,
+    watched_folders: &[PathBuf],
+    local_books: &HashMap<String, PathBuf, S>,
+) -> Vec<LoadedBook> {
+    // A path used to be replicated alongside this metadata. Remove it before
+    // doing any local discovery: source locations are capabilities, not
+    // collaborative data.
+    BooksDoc::strip_legacy_library_paths(doc);
     // 1. Pull in anything new from the folders the reader watches (and the env
     //    override the OS/tests use to point at a synced library).
-    let watched = scan_watched(doc);
+    let watched = scan_watched(watched_folders);
+    let mut discovered = HashMap::new();
     for path in watched {
-        import_path(doc, &path);
+        if let Some(book) = import_path(doc, &path) {
+            discovered.insert(book.id, path);
+        }
     }
 
     // 2. Hydrate the recorded library. Prefer a shared copy over a local one when
     //    the same content is recorded twice, so the shelf shows it as shared.
     let mut out: Vec<LoadedBook> = Vec::new();
     for entry in BooksDoc::read_library_entries(doc) {
-        let Some(mut book) = open_epub_path(&entry.path) else {
+        let canonical_shared = shared_book_path(&entry.id);
+        let path = if canonical_shared.is_file() {
+            canonical_shared
+        } else if !entry.shared {
+            let Some(path) = local_books
+                .get(&entry.id)
+                .cloned()
+                .or_else(|| discovered.remove(&entry.id))
+                .filter(|path| path.is_file())
+            else {
+                continue;
+            };
+            path
+        } else {
+            continue;
+        };
+        let Some(mut book) = open_epub_path(&path) else {
             continue;
         };
         book.cover_tint = tint_for(&book.id);
-        out.push(LoadedBook {
-            book,
-            path: entry.path,
-        });
+        out.push(LoadedBook { book, path });
         if out.len() >= MAX_LIBRARY {
             break;
         }
     }
     out
+}
+
+/// Resolve the only replicated location hint: a content-addressed workspace
+/// object. The root is local configuration; the document stores neither it nor
+/// any other raw path.
+fn shared_book_path(id: &str) -> PathBuf {
+    let file_id = id.strip_prefix("book:").unwrap_or(id);
+    workspace_books_dir().join(format!("book-{file_id}.epub"))
 }
 
 /// Open a single `.epub` file by path — the entry point used when the OS hands
@@ -244,14 +280,14 @@ fn read_epub_bytes(path: &Path) -> Option<Vec<u8>> {
 /// The `.epub` files under the reader's watched folders (and any
 /// `EBOOK_LIBRARY_DIR` override). Used both by the launch load and by the
 /// on-focus rescan, which imports only the ones not already on the shelf.
-pub fn watched_epub_paths(doc: &AutoCommit) -> Vec<PathBuf> {
-    scan_watched(doc)
+pub fn watched_epub_paths(watched_folders: &[PathBuf]) -> Vec<PathBuf> {
+    scan_watched(watched_folders)
 }
 
 /// The watched folders to scan this launch: the reader's explicit set plus any
 /// `EBOOK_LIBRARY_DIR` override, walked shallowly for `.epub` files.
-fn scan_watched(doc: &AutoCommit) -> Vec<PathBuf> {
-    let mut roots = BooksDoc::read_watched_folders(doc);
+fn scan_watched(watched_folders: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = watched_folders.to_vec();
     if let Ok(v) = std::env::var(LIBRARY_DIR_ENV) {
         roots.extend(v.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
     }
@@ -456,7 +492,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
         let mut doc = AutoCommit::new();
-        let lib = load_library(&mut doc);
+        let lib = load_library(&mut doc, &[], &HashMap::new());
         unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
         assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
     }
@@ -467,6 +503,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("book.epub");
         std::fs::write(&path, SAMPLE_EPUB).unwrap();
+        unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
         let mut doc = AutoCommit::new();
 
         let book = import_path(&mut doc, &path).expect("a real epub imports");
@@ -476,10 +513,17 @@ mod tests {
         );
         // Recorded once, and hydrating the library yields exactly that book.
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
-        let lib = load_library(&mut doc);
+        let lib = load_library(&mut doc, &[], &HashMap::new());
+        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
         assert_eq!(lib.len(), 1, "the imported book is on the shelf");
         assert_eq!(lib[0].book.id, book.id);
         assert_eq!(lib[0].path, path);
+        let bytes = doc.save();
+        let stored = String::from_utf8_lossy(&bytes);
+        assert!(
+            !stored.contains(path.to_string_lossy().as_ref()),
+            "the local source path stays outside shared state"
+        );
 
         // Importing the very same file again does not duplicate the shelf entry.
         import_path(&mut doc, &path).unwrap();
@@ -488,6 +532,22 @@ mod tests {
             1,
             "same file → one entry"
         );
+    }
+
+    #[test]
+    fn device_local_source_rehydrates_a_one_off_import_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("one-off.epub");
+        std::fs::write(&path, SAMPLE_EPUB).unwrap();
+        let mut doc = AutoCommit::new();
+        let book = import_path(&mut doc, &path).unwrap();
+        let mut local_books = HashMap::new();
+        local_books.insert(book.id.clone(), path.clone());
+
+        let restored = load_library(&mut doc, &[], &local_books);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].book.id, book.id);
+        assert_eq!(restored[0].path, path);
     }
 
     #[test]
@@ -501,8 +561,7 @@ mod tests {
         std::fs::write(watched.path().join("readme.txt"), b"not a book").unwrap();
 
         let mut doc = AutoCommit::new();
-        BooksDoc::write_watched_folders(&mut doc, &[watched.path().to_path_buf()]);
-        let lib = load_library(&mut doc);
+        let lib = load_library(&mut doc, &[watched.path().to_path_buf()], &HashMap::new());
         // Both epubs are the *same bytes*, so they share a content id and collapse
         // to a single library entry — the non-epub is ignored.
         assert_eq!(
@@ -550,13 +609,11 @@ mod tests {
             after.id, before.id,
             "identity (and thus annotations/progress) is preserved"
         );
-        // The library now points at the shared copy — one entry, shared home.
+        // The library records canonical shared availability, not a workspace
+        // root that might mean something different on another device.
         let entries = BooksDoc::read_library_entries(&doc);
         assert_eq!(entries.len(), 1);
-        assert!(
-            is_shared(&entries[0].path),
-            "the recorded home is now the workspace"
-        );
+        assert!(entries[0].shared, "the shared copy is discoverable by id");
         unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
