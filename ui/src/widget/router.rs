@@ -45,6 +45,8 @@ pub enum RouteError {
     UnknownInitialRoute(String),
     #[error("route {0:?} is not registered")]
     UnknownRoute(String),
+    #[error("router revision space is exhausted; refusing to reuse a prior route state")]
+    RevisionExhausted,
     #[error("cannot build route {route:?}: {message}")]
     Build { route: String, message: String },
 }
@@ -124,8 +126,8 @@ impl RouteHandle {
         if state.stack.current() == &route {
             return Ok(false);
         }
+        advance_revision(&mut state.revision)?;
         state.stack.push(route);
-        state.revision = state.revision.wrapping_add(1);
         Ok(true)
     }
 
@@ -141,28 +143,28 @@ impl RouteHandle {
         if state.stack.current() == &route {
             return Ok(false);
         }
+        advance_revision(&mut state.revision)?;
         state.stack.replace_current(route);
-        state.revision = state.revision.wrapping_add(1);
         Ok(true)
     }
 
     #[must_use]
     pub fn back(&self) -> bool {
         let mut state = self.state.borrow_mut();
-        if state.stack.back().is_none() {
+        if !state.stack.can_go_back() || advance_revision(&mut state.revision).is_err() {
             return false;
         }
-        state.revision = state.revision.wrapping_add(1);
+        let _ = state.stack.back();
         true
     }
 
     #[must_use]
     pub fn forward(&self) -> bool {
         let mut state = self.state.borrow_mut();
-        if state.stack.forward().is_none() {
+        if !state.stack.can_go_forward() || advance_revision(&mut state.revision).is_err() {
             return false;
         }
-        state.revision = state.revision.wrapping_add(1);
+        let _ = state.stack.forward();
         true
     }
 
@@ -181,8 +183,8 @@ impl RouteHandle {
         {
             return Ok(false);
         }
+        advance_revision(&mut state.revision)?;
         state.stack.reset(route);
-        state.revision = state.revision.wrapping_add(1);
         Ok(true)
     }
 
@@ -221,9 +223,22 @@ impl RouteHandle {
     }
 
     fn restore(&self, mut state: RouteState) {
-        state.revision = self.state.borrow().revision.wrapping_add(1);
-        *self.state.borrow_mut() = state;
+        let mut current = self.state.borrow_mut();
+        // Rollback is part of the same owner-thread transition that already
+        // consumed a revision. Reuse that *new* revision for the prior stack
+        // instead of trying to allocate a second one: at `u64::MAX` the old
+        // child and restored route remain coherent, while future mutations
+        // still fail closed rather than wrapping.
+        state.revision = current.revision;
+        *current = state;
     }
+}
+
+fn advance_revision(revision: &mut u64) -> Result<(), RouteError> {
+    *revision = revision
+        .checked_add(1)
+        .ok_or(RouteError::RevisionExhausted)?;
+    Ok(())
 }
 
 type RouteFactory = dyn FnMut(&str, &Theme, &RouteHandle) -> Result<Element, String>;
@@ -528,6 +543,17 @@ mod tests {
     }
 
     #[test]
+    fn exhausted_revision_refuses_route_mutations_without_reusing_a_snapshot() {
+        let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
+        handle.state.borrow_mut().revision = u64::MAX;
+        let before = handle.history();
+        assert_eq!(handle.push("settings"), Err(RouteError::RevisionExhausted));
+        assert_eq!(handle.history(), before);
+        assert!(!handle.back());
+        assert!(!handle.forward());
+    }
+
+    #[test]
     fn failed_screen_build_restores_the_last_valid_route() {
         let theme = Theme::default();
         let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
@@ -546,6 +572,35 @@ mod tests {
         let root = state.root.clone();
         router.sync(&mut state.doc, &root);
         assert_eq!(handle.current(), "home");
+        assert!(matches!(
+            router.last_error(),
+            Some(RouteError::Build { .. })
+        ));
+        assert!(!router.take_structure_dirty());
+    }
+
+    #[test]
+    fn failed_build_at_final_revision_keeps_route_and_retained_child_coherent() {
+        let theme = Theme::default();
+        let mut router = Router::new("home", ["home", "broken"], &theme, |route, _theme, _| {
+            if route == "broken" {
+                Err("invalid screen".into())
+            } else {
+                Ok(Box::new(
+                    super::super::Text::new(route).with_role(crate::tokens::TextRole::Body),
+                ))
+            }
+        })
+        .unwrap();
+        let handle = router.handle();
+        handle.state.borrow_mut().revision = u64::MAX - 1;
+        assert!(handle.push("broken").unwrap());
+        let mut state = crate::State::new();
+        let root = state.root.clone();
+        router.sync(&mut state.doc, &root);
+        assert_eq!(handle.current(), "home");
+        assert_eq!(router.seen.revision, u64::MAX);
+        assert_eq!(handle.snapshot().revision, u64::MAX);
         assert!(matches!(
             router.last_error(),
             Some(RouteError::Build { .. })
