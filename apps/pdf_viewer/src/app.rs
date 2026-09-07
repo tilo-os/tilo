@@ -100,6 +100,8 @@ struct SearchProjectionRevision {
     heads: Vec<ChangeHash>,
     page_ids: Vec<String>,
     page_sources: Vec<usize>,
+    search_token: String,
+    search_pages: Vec<usize>,
 }
 
 fn pdf_filter() -> FileFilter {
@@ -717,7 +719,6 @@ impl PdfApp {
             id: 0,
             path: "opening.pdf".into(),
         });
-        app.status_note = Some("Opening PDF…".to_string());
         app
     }
 
@@ -1022,6 +1023,13 @@ impl PdfApp {
             signature_date: today_ymd(),
             created_seed: self.created_counter,
             search_query: self.query().to_string(),
+            search_whole_word: self.search_whole_word,
+            search_case_sensitive: self.search_case_sensitive,
+            search_token: crate::actions::search_result_token(
+                self.query(),
+                self.search_whole_word,
+                self.search_case_sensitive,
+            ),
             search_pages: if self.raster_active() {
                 self.raster_matches.iter().map(|hit| hit.page).collect()
             } else {
@@ -1048,6 +1056,8 @@ impl PdfApp {
             heads: state.get_heads(),
             page_ids: ctx.page_ids.clone(),
             page_sources: ctx.page_sources.clone(),
+            search_token: ctx.search_token.clone(),
+            search_pages: ctx.search_pages.clone(),
         };
         if self.search_projection_revision.as_ref() == Some(&revision) {
             return;
@@ -1145,10 +1155,12 @@ impl PdfApp {
                 resolved: false,
                 replies: vec![
                     Reply {
+                        id: Reply::new_id(),
                         author: "Bob".into(),
                         body: "Good catch — folded it into section 1.2.".into(),
                     },
                     Reply {
+                        id: Reply::new_id(),
                         author: "Alice".into(),
                         body: "Perfect, thanks.".into(),
                     },
@@ -1982,6 +1994,40 @@ impl PdfApp {
         if let Some(page) = page {
             self.go_to_page(page);
         }
+    }
+
+    /// Restore and navigate a canonical search-result resource.  An ordinal is
+    /// meaningful only for the query/options that produced it, so this always
+    /// rebuilds that exact bounded result set before accepting the target.
+    fn go_to_search_result(
+        &mut self,
+        query: &str,
+        whole_word: bool,
+        case_sensitive: bool,
+        index: usize,
+        page: usize,
+    ) {
+        self.search_whole_word = whole_word;
+        self.search_case_sensitive = case_sensitive;
+        self.open_search();
+        self.search_input.set_text(query);
+        self.recompute_matches();
+        let matched_page = if self.raster_active() {
+            self.raster_matches.get(index).map(|hit| hit.page)
+        } else {
+            self.matches.get(index).map(|hit| hit.page)
+        };
+        if matched_page == Some(page) {
+            self.active_match = index;
+            self.go_to_page(page);
+        } else {
+            // A progressive worker may not have extracted this page yet, or a
+            // source document may have changed.  Refuse to rebind a stale
+            // ordinal and leave an actionable status rather than navigating to
+            // a potentially unrelated match.
+            self.status_note = Some("Find result is no longer available".into());
+        }
+        self.dirty = true;
     }
 
     fn matched_blocks_for(&self, page: usize) -> (HashSet<usize>, Option<usize>) {
@@ -3681,6 +3727,13 @@ impl Widget for PdfApp {
             PdfOperation::ToggleRail => self.toggle_rail(),
             PdfOperation::OpenSearch => self.open_search(),
             PdfOperation::GoToPage { page } => self.go_to_page(page),
+            PdfOperation::GoToSearchResult {
+                query,
+                whole_word,
+                case_sensitive,
+                index,
+                page,
+            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
             PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
                 return Err("file operations require the lifecycle-capable operation host".into());
             }
@@ -4005,9 +4058,12 @@ impl Widget for PdfApp {
         if !self.has_document {
             let mut children = vec![
                 AccessNode::new(Role::Heading { level: 1 })
-                    .with_name("Open a PDF")
+                    .with_name(if self.pending_open.is_some() {
+                        "Opening PDF"
+                    } else {
+                        "Open a PDF"
+                    })
                     .with_hashed_key("pdf.empty.heading"),
-                button("Open PDF", "pdf.open", self.canvas_rect),
             ];
             if self.pending_open.is_some() {
                 children.push(
@@ -4016,6 +4072,8 @@ impl Widget for PdfApp {
                         .with_hashed_key("pdf.empty.loading")
                         .with_live(Politeness::Polite),
                 );
+            } else {
+                children.push(button("Open PDF", "pdf.open", self.canvas_rect));
             }
             if let Some(error) = &self.load_error {
                 children.push(
@@ -4969,6 +5027,51 @@ mod tests {
                     .any(|action| action.id == address.action)
             );
         }
+        let reply_address = provider
+            .search("folded it")
+            .into_iter()
+            .find_map(|result| result.action_address())
+            .expect("reply text is globally searchable by its canonical action");
+        assert!(reply_address.resource.starts_with("pdf.reply:"));
+        assert!(
+            qos_actions::ResourceProvider::resource(&app, &state.doc, &reply_address.resource)
+                .is_some(),
+            "a reply search hit resolves to the durable reply resource"
+        );
+
+        app.open_search();
+        app.search_input.set_text("sandbox");
+        app.recompute_matches();
+        app.sync(&mut state.doc, &state.root);
+        let find_provider = Widget::search_providers(&app)
+            .into_iter()
+            .next()
+            .expect("find projection is retained in global search");
+        let find_address = find_provider
+            .search("match 1")
+            .into_iter()
+            .filter_map(|result| result.action_address())
+            .find(|address| address.resource.starts_with("pdf.search-result:"))
+            .expect("bounded find result has a canonical global-search action");
+        let find_resource =
+            qos_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
+                .expect("current find-result address resolves");
+        assert!(
+            find_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "open")
+        );
+        app.search_input.set_text("filesystem");
+        app.recompute_matches();
+        assert!(
+            qos_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
+                .is_none(),
+            "a stale find ordinal cannot be rebound to the next query"
+        );
+        // The changed find projection refreshes once; its settled successor
+        // must remain retained without re-walking the corpus every frame.
+        app.sync(&mut state.doc, &state.root);
         let refreshes = app.search_projection_refreshes;
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
@@ -5276,20 +5379,33 @@ mod tests {
     /// assertions still run every time. Regenerate the shots deliberately with
     /// `PDF_SHOTS=1 … cargo test drive_review -- --test-threads=1`.
     fn full_frame(app: &mut PdfApp, st: &mut ui::State, w: f64, h: f64, out: Option<&str>) {
+        use ui::theme::Theme;
+
+        full_frame_with_theme(app, st, w, h, out, &Theme::dark());
+    }
+
+    /// Variant used by the visual-state matrix to exercise real layout and
+    /// paint under high-contrast text/tokens as well as the default theme.
+    fn full_frame_with_theme(
+        app: &mut PdfApp,
+        st: &mut ui::State,
+        w: f64,
+        h: f64,
+        out: Option<&str>,
+        theme: &Theme,
+    ) {
         use std::collections::HashMap;
         use ui::offscreen::OffscreenRenderer;
         use ui::permissions::PermissionContext;
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
-        use ui::theme::Theme;
 
         let want_png = std::env::var("PDF_SHOTS").as_deref() == Ok("1");
-        let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         app.sync(&mut st.doc, &st.root);
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = app.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style {
@@ -5334,7 +5450,7 @@ mod tests {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
-                &theme,
+                theme,
                 &PresenceCtx::empty(),
                 &PermissionContext::permissive(),
             );
@@ -5543,6 +5659,106 @@ mod tests {
             app.annotations.len(),
             loose,
             app.doc.outline.len()
+        );
+    }
+
+    /// A compact visual state matrix for release review.  It deliberately
+    /// covers the simple open/error flow and the power-user reader flow at a
+    /// phone-width viewport, then repeats the latter under high contrast and
+    /// reduced motion.  Set `PDF_SHOTS=1` to retain the PNGs.
+    #[test]
+    fn drive_product_state_matrix_shots() {
+        let shot_dir = std::env::var("PDF_SHOT_DIR")
+            .unwrap_or_else(|_| "/tmp/qos_pdf_product_states".to_string());
+        let shot = |name: &str| format!("{shot_dir}/{name}");
+
+        let mut narrow = PdfApp::sample();
+        let mut narrow_state = ui::State::new();
+        full_frame(
+            &mut narrow,
+            &mut narrow_state,
+            390.0,
+            844.0,
+            Some(&shot("narrow-document.png")),
+        );
+        assert!(narrow.overlay_mode, "compact viewport uses overlay panels");
+
+        narrow.open_search();
+        narrow.search_input.set_text("sandbox");
+        narrow.recompute_matches();
+        full_frame(
+            &mut narrow,
+            &mut narrow_state,
+            390.0,
+            844.0,
+            Some(&shot("narrow-search.png")),
+        );
+        assert!(narrow.match_count() > 0, "find remains usable when compact");
+
+        let mut loading = PdfApp::loading_preview();
+        let mut loading_state = ui::State::new();
+        full_frame(
+            &mut loading,
+            &mut loading_state,
+            1280.0,
+            800.0,
+            Some(&shot("loading.png")),
+        );
+        let loading_a11y = loading.accessibility().expect("loading semantics");
+        assert!(
+            !any_access_node(&loading_a11y, &|node| {
+                node.action_target.as_deref() == Some("pdf.open")
+            }),
+            "a pending open is progress, not a duplicate Open action"
+        );
+        let mut error = PdfApp::error_preview();
+        let mut error_state = ui::State::new();
+        full_frame(
+            &mut error,
+            &mut error_state,
+            1280.0,
+            800.0,
+            Some(&shot("error.png")),
+        );
+        assert!(
+            error.canvas_rect.height() > 700.0,
+            "the persistent error keeps the full empty-state canvas"
+        );
+        let mut narrow_error = PdfApp::error_preview();
+        let mut narrow_error_state = ui::State::new();
+        full_frame(
+            &mut narrow_error,
+            &mut narrow_error_state,
+            390.0,
+            844.0,
+            Some(&shot("narrow-error.png")),
+        );
+
+        let mut contrast = PdfApp::sample();
+        let mut contrast_state = ui::State::new();
+        full_frame_with_theme(
+            &mut contrast,
+            &mut contrast_state,
+            1280.0,
+            800.0,
+            Some(&shot("high-contrast.png")),
+            &ui::theme::Theme::high_contrast(),
+        );
+
+        let mut reduced = PdfApp::sample();
+        let mut reduced_state = ui::State::new();
+        reduced.arm_shots_page_bubble();
+        reduced.set_motion_reduced(true);
+        full_frame(
+            &mut reduced,
+            &mut reduced_state,
+            390.0,
+            844.0,
+            Some(&shot("reduced-motion.png")),
+        );
+        assert!(
+            !reduced.needs_animation_frame(),
+            "reduced motion settles the page bubble without a timer loop"
         );
     }
 
