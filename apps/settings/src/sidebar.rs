@@ -153,6 +153,10 @@ impl RowGeometry {
 /// accent background + bar when it is the active category. Clicking it writes
 /// `settings.select.<slug> = true` into the document — the same key
 /// [`crate::SettingsApp::sync`] consumes to change panes.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "selected, hover, press and focus are independently observable input axes; collapsing them would lose combined visual states"
+)]
 pub struct SidebarRow {
     category: Category,
     /// Whether this row is the currently-selected category — drives the active
