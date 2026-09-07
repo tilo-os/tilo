@@ -10,12 +10,13 @@
 //! The bundled EPUB + the multi-book sample library are reserved for the
 //! hermetic `--shots`/test path.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 
 use crate::doc::BooksDoc;
-use crate::epub::parse_epub;
+use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
 use crate::model::{Book, Chapter, LibraryEntry, now_ms};
 use crate::xhtml::parse_xhtml;
 
@@ -74,14 +75,46 @@ fn tint_for(id: &str) -> usize {
 /// parsed book. The entry is keyed by the book's content hash, so importing the
 /// same file again (from any path) updates one entry rather than duplicating it.
 pub fn import_path(doc: &mut AutoCommit, path: &Path) -> Option<Book> {
-    let bytes = std::fs::read(path).ok()?;
-    let mut book = match parse_epub(&bytes, 0, "") {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "ebook: import skipped");
-            return None;
+    match import_path_detailed(doc, path) {
+        Ok(book) => Some(book),
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "ebook: import skipped");
+            None
         }
-    };
+    }
+}
+
+/// Like [`import_path`], but retain a reader-safe reason for a visible error
+/// state. The UI uses this for a picker or file-association request so a
+/// rejected oversized/corrupt book is never reported as a vague empty shelf.
+///
+/// # Errors
+///
+/// Returns a concise reason when the path cannot be read within the EPUB byte
+/// budget or the EPUB container/content cannot be parsed safely.
+pub fn import_path_detailed(doc: &mut AutoCommit, path: &Path) -> Result<Book, String> {
+    let book = parse_path_detailed(path)?;
+    Ok(record_imported_book(doc, path, book))
+}
+
+/// Parse an EPUB without mutating the shared document. This is deliberately
+/// separate from [`import_path_detailed`] so the potentially expensive file
+/// read/hash/parse can run in the one bounded worker while CRDT writes remain
+/// on the UI thread.
+///
+/// # Errors
+///
+/// Returns a concise reason when the path cannot be read within the EPUB byte
+/// budget or the EPUB container/content cannot be parsed safely.
+pub fn parse_path_detailed(path: &Path) -> Result<Book, String> {
+    let bytes = read_epub_bytes(path)
+        .ok_or_else(|| "the file could not be read or exceeds the 128 MiB limit".to_string())?;
+    parse_epub(&bytes, 0, "").map_err(|error| error.to_string())
+}
+
+/// Commit a previously parsed book to the library CRDT. Call this only on the
+/// UI/document owner after [`parse_path_detailed`] has completed.
+pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, mut book: Book) -> Book {
     book.cover_tint = tint_for(&book.id);
     BooksDoc::upsert_library_entry(
         doc,
@@ -94,7 +127,7 @@ pub fn import_path(doc: &mut AutoCommit, path: &Path) -> Option<Book> {
             added: now_ms(),
         },
     );
-    Some(book)
+    book
 }
 
 /// Copy a local book into the workspace so the reader's peers get it, record the
@@ -104,13 +137,40 @@ pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, Pat
     if is_shared(src) {
         return None;
     }
+    // Read the source once under the same byte budget as imports. Apart from
+    // avoiding an unbounded `copy`, this gives the shared filename a stable
+    // content address: two unrelated `book.epub` files can never overwrite
+    // one another in the collaborative workspace.
+    let bytes = read_epub_bytes(src)?;
+    let id = content_id(&bytes);
     let dir = workspace_books_dir();
     std::fs::create_dir_all(&dir).ok()?;
-    let name = src.file_name()?;
-    let dest = dir.join(name);
+    let file_id = id.strip_prefix("book:").unwrap_or(&id);
+    let dest = dir.join(format!("book-{file_id}.epub"));
     // The content is identical, so the book keeps its id (and all its
     // annotations + progress) — only its home changes from local to shared.
-    std::fs::copy(src, &dest).ok()?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dest)
+    {
+        Ok(mut file) => {
+            if file.write_all(&bytes).is_err() {
+                let _ = std::fs::remove_file(&dest);
+                return None;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // A peer may have uploaded the same content first. Reuse that
+            // exact object, but never replace a different/corrupt file.
+            let existing = read_epub_bytes(&dest)?;
+            if content_id(&existing) != id {
+                tracing::warn!(path = %dest.display(), "ebook: workspace name collision");
+                return None;
+            }
+        }
+        Err(_) => return None,
+    }
     let book = import_path(doc, &dest)?;
     Some((book, dest))
 }
@@ -151,7 +211,7 @@ pub fn load_library(doc: &mut AutoCommit) -> Vec<LoadedBook> {
 /// the reader a book to open (file association / "Open with"), and when
 /// hydrating a recorded library entry.
 pub fn open_epub_path(path: &Path) -> Option<Book> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = read_epub_bytes(path)?;
     match parse_epub(&bytes, 0, "EPUB") {
         Ok(b) => Some(b),
         Err(e) => {
@@ -159,6 +219,26 @@ pub fn open_epub_path(path: &Path) -> Option<Book> {
             None
         }
     }
+}
+
+/// Read one EPUB without trusting its advertised filesystem size. The metadata
+/// check gives a cheap refusal for ordinary huge files; `take` is the actual
+/// guard if the file grows between that check and the read.
+fn read_epub_bytes(path: &Path) -> Option<Vec<u8>> {
+    if std::fs::metadata(path).ok()?.len() > MAX_EPUB_BYTES as u64 {
+        tracing::warn!(path = %path.display(), "ebook: file exceeds size limit");
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_EPUB_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_EPUB_BYTES {
+        tracing::warn!(path = %path.display(), "ebook: file grew beyond size limit");
+        return None;
+    }
+    Some(bytes)
 }
 
 /// The `.epub` files under the reader's watched folders (and any
@@ -481,6 +561,40 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn sharing_never_overwrites_an_unrelated_same_named_workspace_file() {
+        let ws = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("book.epub");
+        std::fs::write(&src, SAMPLE_EPUB).unwrap();
+
+        let books = workspace_books_dir();
+        std::fs::create_dir_all(&books).unwrap();
+        // This is the name older versions of sharing would have used. It must
+        // survive, even though its contents are not an EPUB at all.
+        let old_destination = books.join("book.epub");
+        std::fs::write(&old_destination, b"another reader's file").unwrap();
+
+        let mut doc = AutoCommit::new();
+        let (_book, destination) = share_to_workspace(&mut doc, &src).expect("share succeeds");
+        assert_ne!(
+            destination, old_destination,
+            "share uses a content-addressed name"
+        );
+        assert_eq!(
+            std::fs::read(&old_destination).unwrap(),
+            b"another reader's file",
+            "an unrelated same-named file was not overwritten"
+        );
+        assert!(
+            destination.exists(),
+            "the shared content was written separately"
+        );
+        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
+    }
+
+    #[test]
     fn open_epub_path_reads_a_real_file_and_rejects_junk() {
         let tmp = tempfile::tempdir().unwrap();
         let good = tmp.path().join("book.epub");
@@ -498,6 +612,20 @@ mod tests {
         assert!(
             open_epub_path(&missing).is_none(),
             "a missing file is rejected"
+        );
+    }
+
+    #[test]
+    fn detailed_import_keeps_the_parser_reason_for_the_visible_error_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bad = tmp.path().join("damaged.epub");
+        std::fs::write(&bad, b"definitely not a zip").unwrap();
+
+        let error = import_path_detailed(&mut AutoCommit::new(), &bad)
+            .expect_err("a corrupt EPUB does not import");
+        assert!(
+            error.contains("open epub zip"),
+            "the UI receives the actual parse reason, not a generic failure: {error}"
         );
     }
 }
