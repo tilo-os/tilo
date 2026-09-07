@@ -465,6 +465,7 @@ pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
     tree.active = workspace_id;
     tree.active_strip.insert(workspace_id, strip_id);
     tree.set_active_group(strip_id, group_id);
+    tree.flush_to_disk();
     true
 }
 
@@ -666,6 +667,37 @@ mod tests {
         tree.active_strip.insert(tree.active, strip_id);
         tree.set_active_group(strip_id, group_id);
         (strip_id, group_id)
+    }
+
+    #[test]
+    fn accepted_surface_activation_persists_complete_focus_address() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let path = dir.path().join("workspace.json");
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = Some(path.clone());
+        let original_workspace = tree.active;
+        let surface = 0xabc;
+        let tab = adopt_toplevel(&mut tree, surface, Some("org.example.Activated".into()));
+        let target_strip = tree.active_strip[&original_workspace];
+        let target_group = group_of(&tree, surface).id;
+
+        let other = tree.workspaces[1].id;
+        tree.set_active(other);
+        assert!(activate_surface(&mut tree, surface));
+
+        let restarted = crate::shell::persist::load_tree_from(&path).expect("activation state");
+        assert_eq!(restarted.active, original_workspace);
+        assert_eq!(
+            restarted.active_strip.get(&original_workspace),
+            Some(&target_strip)
+        );
+        assert_eq!(restarted.active_group_for(target_strip), Some(target_group));
+        let group = restarted.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.id == target_group)
+            .expect("activated group");
+        assert_eq!(group.active_tab, tab);
     }
 
     /// A window started for a tab the room already has lands *in* that tab, not in a second one beside it.

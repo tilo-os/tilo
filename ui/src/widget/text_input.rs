@@ -15,9 +15,9 @@ use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
-    TextAffinity, TextPosition, clipboard_copy, clipboard_paste, extend_span_drag,
-    grapheme_boundary_at_or_before, next_char_boundary, next_word_boundary, prev_char_boundary,
-    prev_word_boundary, word_boundaries,
+    TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
+    clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, next_char_boundary,
+    next_word_boundary, prev_char_boundary, prev_word_boundary, word_boundaries,
 };
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -2770,19 +2770,27 @@ impl TextInput {
     /// (normalising `\r\n`/`\r` to `\n`) and tabs.
     fn do_paste(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(paste) = clipboard_paste() {
-            let cleaned: String = if self.multiline {
-                paste
-                    .replace("\r\n", "\n")
-                    .replace('\r', "\n")
-                    .chars()
-                    .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-                    .collect()
-            } else {
-                paste.chars().filter(|c| !c.is_control()).collect()
-            };
+            let cleaned = self.clean_pasted_text(&paste);
             if !cleaned.is_empty() {
                 self.insert_str(&cleaned, state, obj_id);
             }
+        }
+    }
+
+    fn clean_pasted_text(&self, paste: &str) -> String {
+        let cleaned: String = if self.multiline {
+            paste
+                .replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .chars()
+                .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+                .collect()
+        } else {
+            paste.chars().filter(|c| !c.is_control()).collect()
+        };
+        match self.char_filter {
+            Some(filter) => cleaned.chars().filter(|ch| filter(*ch)).collect(),
+            None => cleaned,
         }
     }
 
@@ -3666,6 +3674,13 @@ impl Widget for TextInput {
                     handled,
                 );
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } if self.is_hovered && !self.effectively_disabled() => {
+                self.handle_middle_click(state, root, focus_target, node_id, handled);
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -4460,6 +4475,7 @@ impl TextInput {
         self.drag_unit = DragUnit::Word;
         self.drag_anchor_span = (start, end);
         self.is_dragging = true;
+        self.publish_primary_selection();
     }
 
     fn click_select_all_drag(&mut self) {
@@ -4469,6 +4485,7 @@ impl TextInput {
         self.drag_unit = DragUnit::All;
         self.drag_anchor_span = (0, self.text.len());
         self.is_dragging = true;
+        self.publish_primary_selection();
     }
 
     fn handle_left_press(
@@ -4548,10 +4565,76 @@ impl TextInput {
             }
             ElementState::Released if self.is_dragging => {
                 self.is_dragging = false;
+                self.publish_primary_selection();
                 *handled = true;
             }
             _ => {}
         }
+    }
+
+    /// Linux primary selection is intentionally available only for ordinary
+    /// text. A password must never leave its protected widget merely because
+    /// the user dragged across its bullets; middle click may still paste a
+    /// primary selection *into* a secret field, matching GTK password inputs.
+    fn publish_primary_selection(&self) {
+        if let Some(selected) = self.primary_selection_text() {
+            clipboard_copy_primary(selected);
+        }
+    }
+
+    fn primary_selection_text(&self) -> Option<&str> {
+        (!self.secret).then(|| self.selected_str()).flatten()
+    }
+
+    fn handle_middle_click(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        handled: &mut bool,
+    ) {
+        let primary = clipboard_paste_primary();
+        self.handle_middle_click_with_primary(
+            primary.as_deref(),
+            state,
+            root,
+            focus_target,
+            node_id,
+            handled,
+        );
+    }
+
+    fn handle_middle_click_with_primary(
+        &mut self,
+        primary: Option<&str>,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        handled: &mut bool,
+    ) {
+        if !self.is_focused {
+            *focus_target = Some(node_id);
+        }
+        let position = self.resolve_position(self.last_mouse_pos);
+        self.cursor_pos = position.byte;
+        self.caret_affinity = position.affinity;
+        self.selection_anchor = None;
+        self.goal_x = None;
+
+        let previous_text = self.text.clone();
+        let obj_id = self.resolve_text_obj(state, root);
+        if let Some(paste) = primary {
+            let cleaned = self.clean_pasted_text(&paste);
+            if !cleaned.is_empty() {
+                self.insert_str(&cleaned, state, obj_id.as_ref());
+            }
+        }
+        if obj_id.is_none() {
+            self.persist_first_path_edit(&previous_text, state, root);
+        }
+        *handled = true;
     }
 
     fn handle_arrow_left(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
@@ -6498,13 +6581,25 @@ mod tests {
             button: MouseButton::Left,
         }
     }
+    fn middle_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Middle,
+        }
+    }
+
+    fn test_node() -> (TaffyTree<()>, NodeId) {
+        let mut taffy = TaffyTree::new();
+        let node = taffy.leaf_node(Style::default());
+        (taffy, node)
+    }
 
     /// Uses a throwaway taffy node — the input embeds no children.
     fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
         let mut focus_target = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.leaf_node(Style::default());
+        let (taffy, node) = test_node();
         ti.handle_event(
             ev,
             1.0,
@@ -6924,6 +7019,138 @@ mod tests {
         );
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
         assert!(!ti.is_dragging(), "release ends the drag");
+    }
+
+    #[test]
+    fn mouse_selection_is_eligible_for_primary_publication() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let mut doc = AutoCommit::new();
+        let start = x_for_byte(&ti, 0);
+        let end = x_for_byte(&ti, 5);
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(start, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(end, 20.0),
+            mods(false, false),
+        );
+        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+
+        assert_eq!(ti.primary_selection_text(), Some("hello"));
+    }
+
+    #[test]
+    fn double_and_triple_click_selections_are_eligible_for_primary_publication() {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let mut doc = AutoCommit::new();
+        let at = x_for_byte(&ti, 8);
+        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        assert_eq!(ti.primary_selection_text(), Some("world"));
+        drive(&mut ti, &mut doc, &left_release(), mods(false, false));
+        drive(&mut ti, &mut doc, &left_press(), mods(false, false));
+        assert_eq!(ti.primary_selection_text(), Some("hello world"));
+    }
+
+    #[test]
+    fn middle_click_pastes_primary_at_clicked_caret_and_applies_filter() {
+        let mut ti = TextInput::local()
+            .with_initial_value("leftright")
+            .with_char_filter(|ch| !ch.is_whitespace());
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        ti.set_selection(0, ti.value().len());
+        let mut doc = AutoCommit::new();
+        let at = x_for_byte(&ti, 4);
+        drive(&mut ti, &mut doc, &mouse_move(at, 20.0), mods(false, false));
+        let mut focus_target = None;
+        let mut handled = false;
+        ti.handle_middle_click_with_primary(
+            Some(" P A "),
+            &mut doc,
+            &ObjId::Root,
+            &mut focus_target,
+            test_node().1,
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(ti.value(), "leftPAright");
+        assert_eq!(ti.cursor_pos(), 6);
+        assert_eq!(ti.selection_range(), None);
+    }
+
+    #[test]
+    fn secret_selection_never_publishes_but_middle_paste_is_allowed() {
+        let mut secret = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("secret");
+        secret.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut secret);
+        let mut doc = AutoCommit::new();
+        let start = x_for_byte(&secret, 0);
+        let end = x_for_byte(&secret, 6);
+        drive(
+            &mut secret,
+            &mut doc,
+            &mouse_move(start, 20.0),
+            mods(false, false),
+        );
+        drive(&mut secret, &mut doc, &left_press(), mods(false, false));
+        drive(
+            &mut secret,
+            &mut doc,
+            &mouse_move(end, 20.0),
+            mods(false, false),
+        );
+        drive(&mut secret, &mut doc, &left_release(), mods(false, false));
+        assert_eq!(secret.primary_selection_text(), None);
+
+        drive(
+            &mut secret,
+            &mut doc,
+            &mouse_move(start, 20.0),
+            mods(false, false),
+        );
+        let mut focus_target = None;
+        let mut handled = false;
+        secret.handle_middle_click_with_primary(
+            Some("public"),
+            &mut doc,
+            &ObjId::Root,
+            &mut focus_target,
+            test_node().1,
+            &mut handled,
+        );
+        assert!(handled);
+        assert_eq!(secret.value(), "publicsecret");
+    }
+
+    #[test]
+    fn disabled_input_ignores_middle_click() {
+        let mut ti = TextInput::local()
+            .with_initial_value("unchanged")
+            .disabled(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let mut doc = AutoCommit::new();
+        assert!(!drive(
+            &mut ti,
+            &mut doc,
+            &middle_press(),
+            mods(false, false)
+        ));
+        assert_eq!(ti.value(), "unchanged");
     }
 
     #[test]
