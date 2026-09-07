@@ -2424,21 +2424,83 @@ impl Widget for Pane {
     }
 
     fn tooltip(&self) -> Option<&str> {
-        if self.role != Role::Reader {
-            return None;
-        }
         let point = self.shared.borrow().last_mouse;
+
+        // A compact reader action bar deliberately becomes icon-only on a
+        // phone.  Keep those actions discoverable, and name the two less
+        // obvious reader controls before consulting the ordinary hit list.
+        // The same descriptions are also useful on a wide pointer UI, where
+        // attachment and remote-content policy otherwise have no text label.
+        if self.role == Role::Reader {
+            if self
+                .html_toggle_rect
+                .is_some_and(|rect| rect.contains(point))
+            {
+                return Some("Load or block remote images");
+            }
+            if self
+                .reader_attachment_hits
+                .iter()
+                .any(|(rect, _, _)| rect.contains(point))
+            {
+                return Some("Save attachment");
+            }
+        }
+
         self.hits
             .iter()
             .rev()
             .find(|(rect, _)| rect.contains(point))
-            .and_then(|(_, hit)| match hit {
-                Hit::Reply => Some("Reply (R)"),
-                Hit::Archive => Some("Archive (E)"),
-                Hit::Delete => Some("Delete (Delete)"),
-                Hit::Star => Some("Toggle star (S)"),
-                Hit::Unread => Some("Mark unread (U)"),
-                _ => None,
+            .map(|(_, hit)| match hit {
+                Hit::Compose => "Compose (C)",
+                Hit::Account(_) => "Open account",
+                Hit::AccountToggle(_) => "Expand or collapse account",
+                Hit::AccountSettings(_) => "Account settings",
+                Hit::AddAccount => "Add account",
+                Hit::Folder(_, _) => "Open folder",
+                Hit::Row(id) => {
+                    if self
+                        .shared
+                        .borrow()
+                        .mailbox
+                        .get(*id)
+                        .is_some_and(|message| message.folder == Folder::Drafts)
+                    {
+                        "Edit draft"
+                    } else {
+                        "Open message"
+                    }
+                }
+                Hit::RowStar(id) => {
+                    if self
+                        .shared
+                        .borrow()
+                        .mailbox
+                        .get(*id)
+                        .is_some_and(|message| message.starred)
+                    {
+                        "Unstar (S)"
+                    } else {
+                        "Star (S)"
+                    }
+                }
+                Hit::SearchFocus => "Search mail (/)",
+                Hit::SearchClear => "Clear search",
+                Hit::Refresh => "Refresh (F5)",
+                Hit::Reply => "Reply (R)",
+                Hit::Archive => "Archive (E)",
+                Hit::Delete => "Delete (Delete)",
+                Hit::Star => {
+                    let starred = {
+                        let state = self.shared.borrow();
+                        state
+                            .selected
+                            .and_then(|id| state.mailbox.get(id))
+                            .is_some_and(|message| message.starred)
+                    };
+                    if starred { "Unstar (S)" } else { "Star (S)" }
+                }
+                Hit::Unread => "Mark unread (U)",
             })
     }
 
@@ -2634,6 +2696,31 @@ mod tests {
 
         let (_, title, _) = list_zero_state(true, true, "");
         assert_eq!(title, "No messages in this folder");
+    }
+
+    #[test]
+    fn tooltips_keep_compact_and_icon_only_mail_controls_discoverable() {
+        let sh = shared();
+        let target = Rect::new(10.0, 10.0, 40.0, 40.0);
+        sh.borrow_mut().last_mouse = target.center();
+
+        let mut sidebar = Pane::new(Role::Sidebar, sh.clone());
+        sidebar.hits = vec![(target, Hit::Compose)];
+        assert_eq!(ui::Widget::tooltip(&sidebar), Some("Compose (C)"));
+
+        let mut list = Pane::new(Role::List, sh.clone());
+        list.hits = vec![(target, Hit::Refresh)];
+        assert_eq!(ui::Widget::tooltip(&list), Some("Refresh (F5)"));
+
+        let mut reader = Pane::new(Role::Reader, sh);
+        // On a narrow reader the button itself is an icon, so its tooltip is
+        // the only textual explanation of this privacy-sensitive control.
+        reader.html_toggle_rect = Some(target);
+        reader.hits = vec![(target, Hit::Unread)];
+        assert_eq!(
+            ui::Widget::tooltip(&reader),
+            Some("Load or block remote images")
+        );
     }
 
     fn reader_for(sh: &Shared, id: MessageId, w: f64, h: f64) -> Pane {
