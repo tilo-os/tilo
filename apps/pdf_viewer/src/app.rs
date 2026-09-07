@@ -8,7 +8,7 @@
 //! all durable markup — annotations, comments, signatures — in the shared
 //! CRDT so collaboration and undo come for free.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -41,12 +41,16 @@ use ui::widget::{
     Avatar, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput, ToggleGroup, ViewportState,
 };
 
-use crate::doc::PdfDoc;
+use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{
     self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect, Reply,
     SearchOptions, Signature, SignatureInk, Swatch, Tool,
 };
 use crate::render;
+use crate::source::{
+    ImportRequest, OpenRequest, RasterDocument, RasterEvent, RasterHandle, ReconcileRequest,
+    RenderRequest, SaveRequest, TextRequest,
+};
 use crate::text_layer::{PageText, TextMatch};
 use std::sync::Arc;
 
@@ -85,6 +89,10 @@ const RASTER_SS: f64 = 2.0;
 /// are always drawn (a cache hit is ~free), so steady-state scrolling is
 /// unaffected.
 const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
+/// A second, UI-side bound after the owner worker's result bound.  This keeps
+/// a rapid scroll/zoom sequence from retaining an unbounded history of owned
+/// bitmap results in one viewer window.
+const MAX_UI_RASTER_IMAGES: usize = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
@@ -361,7 +369,22 @@ pub struct PdfApp {
     doc: Document,
     /// Real page rasteriser (pdfium). `None` means the text backend is in use
     /// (or no document is open).
+    #[cfg(test)]
     raster: Option<crate::source::Rasterizer>,
+    /// The session-scoped endpoint for production `PDFium` work.  The backend is
+    /// deliberately owned by its worker; this widget receives only ordinary
+    /// documents, bitmaps and text layers.
+    raster_handle: Option<RasterHandle>,
+    raster_document: Option<RasterDocument>,
+    pending_open: Option<OpenRequest>,
+    /// Bounded in-flight/cached UI-safe worker results.  Keys are the
+    /// zero-based display page and the worker's snapped width bucket.
+    raster_images: HashMap<(usize, u32), PenikoImage>,
+    raster_render_pending: HashSet<(usize, u32)>,
+    raster_text_pending: HashSet<usize>,
+    pending_worker_plan: Option<Vec<PagePlanEntry>>,
+    pending_save: Option<SaveRequest>,
+    pending_import: Option<ImportRequest>,
     /// False until a real file has been loaded — drives the empty state.
     has_document: bool,
     /// The opened file's display name, shown in the chrome.
@@ -623,6 +646,17 @@ impl PdfApp {
     /// state with the error surfaced, rather than crashing.
     pub fn open(path: impl AsRef<std::path::Path>) -> Self {
         let path = path.as_ref();
+        #[cfg(not(test))]
+        {
+            // Launch-with-a-file is still a UI entry point.  Queue it through
+            // the same session owner as the portal rather than parsing before
+            // the first frame; `sync()` installs the matching completion.
+            let mut app = Self::empty();
+            let state = AutoCommit::new();
+            app.load_path(path, &state);
+            app
+        }
+        #[cfg(test)]
         match crate::source::open(path) {
             Ok(loaded) => {
                 let mut app = Self::build(loaded.doc, false);
@@ -672,6 +706,30 @@ impl PdfApp {
     /// Back-compat constructor: the empty state.
     pub fn new() -> Self {
         Self::empty()
+    }
+
+    /// Screenshot-only owner-worker loading state. This exercises the same
+    /// empty-state a11y/live-region and visual affordance used by a real
+    /// accepted open before its terminal worker event arrives.
+    pub fn loading_preview() -> Self {
+        let mut app = Self::empty();
+        app.pending_open = Some(OpenRequest {
+            id: 0,
+            path: "opening.pdf".into(),
+        });
+        app.status_note = Some("Opening PDF…".to_string());
+        app
+    }
+
+    /// Screenshot-only failed initial-open state, including the persistent,
+    /// assertive error that is retained until the next successful open.
+    pub fn error_preview() -> Self {
+        let mut app = Self::empty();
+        app.load_error = Some(
+            "Could not open inaccessible.pdf: the file is unavailable or is not a readable PDF"
+                .to_string(),
+        );
+        app
     }
 
     /// Screenshot-only: arm a live page-rail reorder drag so a still frame shows
@@ -754,7 +812,7 @@ impl PdfApp {
     /// in the rail + canvas. No-op on the text backend.
     pub fn demo_import_image(&mut self) {
         self.show_rail = true;
-        if self.raster.is_none() {
+        if !self.raster_active() {
             return;
         }
         // A recognisable swatch (diagonal split, bright colours) written to a
@@ -791,7 +849,17 @@ impl PdfApp {
             .unwrap_or_else(|| "You".to_string());
         Self {
             doc,
+            #[cfg(test)]
             raster: None,
+            raster_handle: RasterHandle::new().ok(),
+            raster_document: None,
+            pending_open: None,
+            raster_images: HashMap::new(),
+            raster_render_pending: HashSet::new(),
+            raster_text_pending: HashSet::new(),
+            pending_worker_plan: None,
+            pending_save: None,
+            pending_import: None,
             has_document: false,
             markup_record: None,
             doc_name: String::new(),
@@ -954,7 +1022,7 @@ impl PdfApp {
             signature_date: today_ymd(),
             created_seed: self.created_counter,
             search_query: self.query().to_string(),
-            search_pages: if self.raster.is_some() {
+            search_pages: if self.raster_active() {
                 self.raster_matches.iter().map(|hit| hit.page).collect()
             } else {
                 self.matches.iter().map(|hit| hit.page).collect()
@@ -1439,6 +1507,9 @@ impl PdfApp {
         let sources: Vec<usize> = plan.iter().map(|entry| entry.source_page).collect();
         let plan_changed =
             self.resource_page_ids != plan_ids || self.resource_page_sources != sources;
+        #[cfg(test)]
+        #[cfg(test)]
+        #[cfg(test)]
         if let Some(raster) = self.raster.as_mut() {
             if !raster.reconcile_page_plan(&plan) {
                 self.status_note =
@@ -1464,6 +1535,34 @@ impl PdfApp {
                 };
                 if let Some(note) = note {
                     self.status_note = Some(note);
+                }
+            }
+            self.doc.pages = (1..=plan.len())
+                .map(|number| model::Page {
+                    number,
+                    blocks: Vec::new(),
+                })
+                .collect();
+            return;
+        }
+        if let Some(document) = self.raster_document.as_ref() {
+            // Page-plan edits are durable action state, but materialising
+            // them mutates PDFium's local source graph.  Submit that work to
+            // the owner and retain honest page-shaped placeholders until its
+            // matching completion arrives.
+            if self.pending_worker_plan.as_ref() != Some(&plan) {
+                let request = ReconcileRequest {
+                    document_id: document.id,
+                    plan: plan.clone(),
+                };
+                if self
+                    .raster_handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.reconcile_page_plan(request).is_ok())
+                {
+                    self.pending_worker_plan = Some(plan.clone());
+                } else {
+                    self.status_note = Some("PDF page-plan worker is unavailable".to_string());
                 }
             }
             self.doc.pages = (1..=plan.len())
@@ -1530,6 +1629,7 @@ impl PdfApp {
         if from == to || from >= self.doc.page_count() || to >= self.doc.page_count() {
             return;
         }
+        #[cfg(test)]
         if let Some(rz) = self.raster.as_mut() {
             rz.reorder_page(from, to);
         } else {
@@ -1583,7 +1683,49 @@ impl PdfApp {
 
     /// Import content-addressed PDF/image bytes as a shared, replayable page
     /// plan action. The bytes live in qdoc's blob store, never in Automerge.
+    #[allow(
+        clippy::items_after_statements,
+        clippy::too_many_lines,
+        reason = "the test-only legacy fixture and production worker admission are intentionally adjacent"
+    )]
+    #[cfg(test)]
     pub fn import_file(&mut self, path: &std::path::Path, state: &mut AutoCommit) -> bool {
+        // Real files are read and decoded by the session owner. The UI only
+        // receives validated content-address metadata, then emits the normal
+        // collaborative page-plan action on this thread.
+        if self.raster.is_none() && self.worker_raster_active() {
+            if self.pending_import.is_some() {
+                self.status_note = Some("Another page import is already in progress".to_string());
+                self.dirty = true;
+                return false;
+            }
+            let Some(document) = self.raster_document.as_ref() else {
+                return false;
+            };
+            let at = self.current_page;
+            let after = self.resource_page_ids.get(at.saturating_sub(1)).cloned();
+            match self
+                .raster_handle
+                .as_ref()
+                .ok_or_else(|| "the PDF import worker is unavailable".to_string())
+                .and_then(|handle| {
+                    handle
+                        .import_path(document.id, path, at, after)
+                        .map_err(|error| error.to_string())
+                }) {
+                Ok(request) => {
+                    self.pending_import = Some(request);
+                    self.status_note = Some("Preparing pages for shared import…".to_string());
+                    self.dirty = true;
+                    return true;
+                }
+                Err(error) => {
+                    self.status_note = Some(format!("Import failed: {error}"));
+                    self.dirty = true;
+                    return false;
+                }
+            }
+        }
         const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
         const MAX_IMPORT_PAGES: usize = 512;
         let Some(rz) = self.raster.as_ref() else {
@@ -1657,13 +1799,50 @@ impl PdfApp {
         true
     }
 
+    #[cfg(not(test))]
+    pub fn import_file(&mut self, path: &std::path::Path, _state: &mut AutoCommit) -> bool {
+        if self.pending_import.is_some() {
+            self.status_note = Some("Another page import is already in progress".to_string());
+            self.dirty = true;
+            return false;
+        }
+        let Some(document) = self.raster_document.as_ref() else {
+            self.status_note = Some("Importing pages needs the PDF worker".to_string());
+            self.dirty = true;
+            return false;
+        };
+        let at = self.current_page;
+        let after = self.resource_page_ids.get(at.saturating_sub(1)).cloned();
+        match self
+            .raster_handle
+            .as_ref()
+            .ok_or_else(|| "the PDF import worker is unavailable".to_string())
+            .and_then(|handle| {
+                handle
+                    .import_path(document.id, path, at, after)
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(request) => {
+                self.pending_import = Some(request);
+                self.status_note = Some("Preparing pages for shared import…".to_string());
+                self.dirty = true;
+                true
+            }
+            Err(error) => {
+                self.status_note = Some(format!("Import failed: {error}"));
+                self.dirty = true;
+                false
+            }
+        }
+    }
+
     fn request_import_via_portal(&mut self) {
-        if self.raster.is_none() {
+        if !self.raster_active() {
             self.status_note = Some("Importing pages needs the pdfium backend".to_string());
             self.dirty = true;
             return;
         }
-        if self.portal_import_rx.is_some() {
+        if self.portal_import_rx.is_some() || self.pending_import.is_some() {
             return;
         }
         self.portal_import_rx = Some(pdf_import_request().send());
@@ -1713,6 +1892,7 @@ impl PdfApp {
         let opts = self.search_options();
         let query = self.query().to_string();
         self.active_match = 0;
+        #[cfg(test)]
         if let Some(rz) = self.raster.as_mut() {
             // Raster backend: search the real pdfium text layer of every page.
             self.matches.clear();
@@ -1730,6 +1910,42 @@ impl PdfApp {
             if let Some(m) = self.raster_matches.first() {
                 self.go_to_page(m.page);
             }
+            return;
+        }
+        if let Some(document) = self.raster_document.as_ref() {
+            // Searching a worker-backed document is progressive: queue the
+            // bounded text layers and search only layers that have arrived.
+            // No keystroke ever extracts PDFium text on the UI thread.
+            for page in 0..self.doc.page_count() {
+                if !self.raster_text.contains_key(&(page + 1))
+                    && self.raster_text_pending.insert(page)
+                    && !self.raster_handle.as_ref().is_some_and(|handle| {
+                        handle
+                            .request_text(TextRequest {
+                                document_id: document.id,
+                                page,
+                            })
+                            .is_ok()
+                    })
+                {
+                    self.raster_text_pending.remove(&page);
+                    self.status_note = Some("PDF text worker is unavailable".to_string());
+                }
+            }
+            self.matches.clear();
+            let mut hits = Vec::new();
+            for (page, text) in &self.raster_text {
+                let remaining = model::MAX_SEARCH_RESULTS.saturating_sub(hits.len());
+                hits.extend(text.search(*page, &query, opts).into_iter().take(remaining));
+                if hits.len() >= model::MAX_SEARCH_RESULTS {
+                    break;
+                }
+            }
+            hits.sort_by_key(|hit| (hit.page, hit.char_start));
+            self.raster_matches = hits;
+            if let Some(hit) = self.raster_matches.first() {
+                self.go_to_page(hit.page);
+            }
         } else {
             // Text backend: search the reflowed block model.
             self.raster_matches.clear();
@@ -1743,7 +1959,7 @@ impl PdfApp {
 
     /// The number of live search hits, across whichever backend is active.
     fn match_count(&self) -> usize {
-        if self.raster.is_some() {
+        if self.raster_active() {
             self.raster_matches.len()
         } else {
             self.matches.len()
@@ -1759,7 +1975,7 @@ impl PdfApp {
         let mut idx = self.active_match as isize + delta;
         idx = ((idx % n) + n) % n;
         self.active_match = idx as usize;
-        let page = if self.raster.is_some() {
+        let page = if self.raster_active() {
             self.raster_matches.get(self.active_match).map(|m| m.page)
         } else {
             self.matches.get(self.active_match).map(|m| m.page)
@@ -1856,9 +2072,30 @@ impl PdfApp {
         if let Some(layer) = self.raster_text.get(&page) {
             return Some(layer.clone());
         }
-        let layer = self.raster.as_mut()?.page_text(page - 1);
-        self.raster_text.insert(page, layer.clone());
-        Some(layer)
+        #[cfg(test)]
+        if let Some(raster) = self.raster.as_mut() {
+            let layer = raster.page_text(page - 1);
+            self.raster_text.insert(page, layer.clone());
+            return Some(layer);
+        }
+        if let Some(document) = self.raster_document.as_ref()
+            && page > 0
+            && self.raster_text_pending.insert(page - 1)
+        {
+            if !self.raster_handle.as_ref().is_some_and(|handle| {
+                handle
+                    .request_text(TextRequest {
+                        document_id: document.id,
+                        page: page - 1,
+                    })
+                    .is_ok()
+            }) {
+                self.raster_text_pending.remove(&(page - 1));
+                self.status_note = Some("PDF text worker is unavailable".to_string());
+            }
+            self.dirty = true;
+        }
+        None
     }
 
     /// Extend the live selection to the pointer at page-point `pt`. Only tracks
@@ -1954,6 +2191,67 @@ impl PdfApp {
     /// to the clipboard as an image. Raster backend only. Returns true when a
     /// region of usable size was cropped (the clipboard push itself is
     /// best-effort — it silently no-ops in a headless session).
+    #[cfg(test)]
+    fn copy_region(&mut self) -> bool {
+        let Some(region) = self.region else {
+            return false;
+        };
+        let rect = region.rect();
+        if rect.w < 3.0 || rect.h < 3.0 {
+            return false;
+        }
+        let page_idx = region.page.saturating_sub(1);
+        let (pgw, pgh) = self.raster.as_ref().map_or_else(
+            || {
+                self.raster_document
+                    .as_ref()
+                    .and_then(|document| document.page_sizes.get(page_idx).copied())
+                    .unwrap_or_else(|| (self.pw(), self.ph()))
+            },
+            |r| r.page_size(page_idx),
+        );
+        // Render (or reuse) the page at ~2x so the crop is crisp.
+        let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
+        let image_key = (page_idx, crate::source::Rasterizer::bucket_for(bucket));
+        let image = if let Some(raster) = self.raster.as_mut() {
+            raster.render(page_idx, bucket)
+        } else if let Some(image) = self.raster_images.get(&image_key) {
+            Some(image.clone())
+        } else if let Some(document) = self.raster_document.as_ref() {
+            if self.raster_render_pending.insert(image_key)
+                && !self.raster_handle.as_ref().is_some_and(|handle| {
+                    handle
+                        .request_render(RenderRequest {
+                            document_id: document.id,
+                            page: page_idx,
+                            target_width: bucket,
+                        })
+                        .is_ok()
+                })
+            {
+                self.raster_render_pending.remove(&image_key);
+            }
+            self.status_note = Some("Rendering selected region…".to_string());
+            self.dirty = true;
+            return false;
+        } else {
+            return false;
+        };
+        let Some(img) = image else { return false };
+        let Some((w, h, rgba)) = render::crop_page_region(&img, pgw, pgh, rect) else {
+            return false;
+        };
+        let copied = ui::clipboard_copy_image(w, h, &rgba);
+        self.status_note = Some(if copied {
+            format!("Copied a {w}×{h} image region")
+        } else {
+            "Selected a region (clipboard unavailable)".to_string()
+        });
+        self.dirty = true;
+        true
+    }
+
+    #[cfg(not(test))]
     fn copy_region(&mut self) -> bool {
         let Some(region) = self.region else {
             return false;
@@ -1964,24 +2262,37 @@ impl PdfApp {
         }
         let page_idx = region.page.saturating_sub(1);
         let (pgw, pgh) = self
-            .raster
+            .raster_document
             .as_ref()
-            .map_or_else(|| (self.pw(), self.ph()), |r| r.page_size(page_idx));
-        // Render (or reuse) the page at ~2x so the crop is crisp.
+            .and_then(|document| document.page_sizes.get(page_idx).copied())
+            .unwrap_or_else(|| (self.pw(), self.ph()));
         let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
-        let Some(img) = self
-            .raster
-            .as_mut()
-            .and_then(|r| r.render(page_idx, bucket))
-        else {
+        let image_key = (page_idx, crate::source::Rasterizer::bucket_for(bucket));
+        let Some(image) = self.raster_images.get(&image_key).cloned() else {
+            if let Some(document) = self.raster_document.as_ref()
+                && self.raster_render_pending.insert(image_key)
+                && !self.raster_handle.as_ref().is_some_and(|handle| {
+                    handle
+                        .request_render(RenderRequest {
+                            document_id: document.id,
+                            page: page_idx,
+                            target_width: bucket,
+                        })
+                        .is_ok()
+                })
+            {
+                self.raster_render_pending.remove(&image_key);
+            }
+            self.status_note = Some("Rendering selected region…".to_string());
+            self.dirty = true;
             return false;
         };
-        let Some((w, h, rgba)) = render::crop_page_region(&img, pgw, pgh, rect) else {
+        let Some((width, height, rgba)) = render::crop_page_region(&image, pgw, pgh, rect) else {
             return false;
         };
-        let copied = ui::clipboard_copy_image(w, h, &rgba);
+        let copied = ui::clipboard_copy_image(width, height, &rgba);
         self.status_note = Some(if copied {
-            format!("Copied a {w}×{h} image region")
+            format!("Copied a {width}×{height} image region")
         } else {
             "Selected a region (clipboard unavailable)".to_string()
         });
@@ -2007,12 +2318,12 @@ impl PdfApp {
     /// picker). A second request while one is in flight is ignored.
     fn request_save_via_portal(&mut self) {
         // Saving flattens via pdfium; the text backend has no library loaded.
-        if self.raster.is_none() {
+        if !self.raster_active() {
             self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
             self.dirty = true;
             return;
         }
-        if self.portal_save_rx.is_some() {
+        if self.portal_save_rx.is_some() || self.pending_save.is_some() {
             return;
         }
         self.portal_save_rx = Some(pdf_save_request(&self.suggested_save_name()).send());
@@ -2059,10 +2370,15 @@ impl PdfApp {
                     PortalOutcome::Opened(path) => {
                         let path = ensure_pdf_extension(path);
                         let success = self.save_annotated_to(&path);
-                        self.finish_portal_action(
-                            success,
-                            (!success).then(|| "PDF could not be saved".into()),
-                        );
+                        // A worker save remains Accepted through prepare and
+                        // atomic publication; its exact terminal update is
+                        // emitted from `drain_raster_events`.
+                        if self.pending_save.is_none() {
+                            self.finish_portal_action(
+                                success,
+                                (!success).then(|| "PDF could not be saved".into()),
+                            );
+                        }
                     }
                     PortalOutcome::Cancelled => self.finish_portal_action(false, None),
                     PortalOutcome::Failed(reason) => {
@@ -2081,7 +2397,56 @@ impl PdfApp {
 
     /// Flatten the current annotations + signatures onto a fresh copy of the
     /// PDF and write it to `path`. Surfaces success or failure as a toast.
+    #[cfg(test)]
     fn save_annotated_to(&mut self, path: &std::path::Path) -> bool {
+        if self.raster.is_none() && self.worker_raster_active() {
+            if self.pending_worker_plan.is_some() {
+                self.status_note =
+                    Some("Waiting for the shared page plan before saving".to_string());
+                self.dirty = true;
+                return false;
+            }
+            let Some(document) = self.raster_document.as_ref() else {
+                return false;
+            };
+            let id = match crate::source::next_worker_request_id() {
+                Ok(id) => id,
+                Err(error) => {
+                    self.status_note = Some(format!("Save failed: {error}"));
+                    self.dirty = true;
+                    return false;
+                }
+            };
+            let request = SaveRequest {
+                id,
+                document_id: document.id,
+                annotations: self.annotations.clone(),
+                comments: self.comments.clone(),
+                signatures: self.signatures.clone(),
+                path: path.to_path_buf(),
+            };
+            match self
+                .raster_handle
+                .as_ref()
+                .ok_or_else(|| "the PDF save worker is unavailable".to_string())
+                .and_then(|handle| {
+                    handle
+                        .save_annotated(request.clone())
+                        .map_err(|error| error.to_string())
+                }) {
+                Ok(()) => {
+                    self.pending_save = Some(request);
+                    self.status_note = Some("Saving annotated PDF…".to_string());
+                    self.dirty = true;
+                    return true;
+                }
+                Err(error) => {
+                    self.status_note = Some(format!("Save failed: {error}"));
+                    self.dirty = true;
+                    return false;
+                }
+            }
+        }
         let Some(rz) = self.raster.as_ref() else {
             self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
             self.dirty = true;
@@ -2104,6 +2469,57 @@ impl PdfApp {
             }
             Err(e) => {
                 self.status_note = Some(format!("Save failed: {e}"));
+                self.dirty = true;
+                false
+            }
+        }
+    }
+
+    #[cfg(not(test))]
+    fn save_annotated_to(&mut self, path: &std::path::Path) -> bool {
+        if self.pending_worker_plan.is_some() {
+            self.status_note = Some("Waiting for the shared page plan before saving".to_string());
+            self.dirty = true;
+            return false;
+        }
+        let Some(document) = self.raster_document.as_ref() else {
+            self.status_note = Some("Saving annotations needs the PDF worker".to_string());
+            self.dirty = true;
+            return false;
+        };
+        let id = match crate::source::next_worker_request_id() {
+            Ok(id) => id,
+            Err(error) => {
+                self.status_note = Some(format!("Save failed: {error}"));
+                self.dirty = true;
+                return false;
+            }
+        };
+        let request = SaveRequest {
+            id,
+            document_id: document.id,
+            annotations: self.annotations.clone(),
+            comments: self.comments.clone(),
+            signatures: self.signatures.clone(),
+            path: path.to_path_buf(),
+        };
+        match self
+            .raster_handle
+            .as_ref()
+            .ok_or_else(|| "the PDF save worker is unavailable".to_string())
+            .and_then(|handle| {
+                handle
+                    .save_annotated(request.clone())
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(()) => {
+                self.pending_save = Some(request);
+                self.status_note = Some("Saving annotated PDF…".to_string());
+                self.dirty = true;
+                true
+            }
+            Err(error) => {
+                self.status_note = Some(format!("Save failed: {error}"));
                 self.dirty = true;
                 false
             }
@@ -2689,7 +3105,7 @@ impl PdfApp {
     /// request while one is in flight is ignored, so a double-click on the
     /// Open button can't stack two host dialogs.
     fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() {
+        if self.portal_rx.is_some() || self.pending_open.is_some() {
             return;
         }
         self.portal_rx = Some(pdf_open_request().send());
@@ -2710,7 +3126,13 @@ impl PdfApp {
                 match outcome {
                     PortalOutcome::Opened(path) => {
                         self.load_path(&path, state);
-                        self.finish_portal_action(self.has_document, self.load_error.clone());
+                        // The accepted open invocation settles only when its
+                        // matching owner-worker completion arrives.  Treating
+                        // “queued” as a failed open used to strand action
+                        // history and announce a false error.
+                        if self.pending_open.is_none() {
+                            self.finish_portal_action(self.has_document, self.load_error.clone());
+                        }
                     }
                     // A cancel is not an error — leave the current view intact.
                     PortalOutcome::Cancelled => self.finish_portal_action(false, None),
@@ -2755,7 +3177,48 @@ impl PdfApp {
     /// was open. On success the view resets to page one at fit-page and the
     /// reader switches to that document's own markup record; on failure the
     /// empty state surfaces the reason.
+    /// Submit a replacement to the PDF owner.  In normal builds this is the
+    /// only path used by the portal: filesystem reads and `PDFium` parsing never
+    /// run in `sync()` or an input handler.  Unit tests retain the older
+    /// synchronous fixture path so their small, deterministic PDF assertions
+    /// do not need a window frame pump.
+    #[cfg(not(test))]
+    fn load_path(&mut self, path: &std::path::Path, _state: &AutoCommit) {
+        self.queue_worker_open(path);
+    }
+
+    #[cfg(test)]
     fn load_path(&mut self, path: &std::path::Path, state: &AutoCommit) {
+        self.load_path_sync(path, state);
+    }
+
+    fn queue_worker_open(&mut self, path: &std::path::Path) {
+        let Some(handle) = self.raster_handle.as_ref() else {
+            self.record_open_failure(path, "the PDF worker could not be started");
+            return;
+        };
+        match handle.open_path(path) {
+            Ok(request) => {
+                self.pending_open = Some(request);
+                self.status_note = Some("Opening PDF…".to_string());
+                self.dirty = true;
+            }
+            Err(error) => self.record_open_failure(path, &error.to_string()),
+        }
+    }
+
+    fn record_open_failure(&mut self, path: &std::path::Path, error: &str) {
+        let error = format!("Could not open {}: {error}", path.display());
+        if self.has_document {
+            self.status_note = Some(error);
+        } else {
+            self.load_error = Some(error);
+        }
+        self.dirty = true;
+    }
+
+    #[cfg(test)]
+    fn load_path_sync(&mut self, path: &std::path::Path, state: &AutoCommit) {
         match crate::source::open(path) {
             Ok(loaded) => {
                 self.doc = loaded.doc;
@@ -2803,9 +3266,350 @@ impl PdfApp {
                 self.sync_viewport_frame();
             }
             Err(e) => {
-                self.has_document = false;
-                self.load_error = Some(format!("Could not open {}: {e}", path.display()));
+                let error = format!("Could not open {}: {e}", path.display());
+                // Selecting a broken replacement must not discard a readable
+                // document (or its record scope) that is already on screen.
+                // Keep that document active and surface the failed request as
+                // a polite visible status. The empty/error state is reserved
+                // for an initial open with nothing to preserve.
+                if self.has_document {
+                    self.status_note = Some(error);
+                } else {
+                    self.load_error = Some(error);
+                }
             }
+        }
+        self.dirty = true;
+    }
+
+    /// Consume owner-worker completions at the frame boundary.  Request ids
+    /// are authority tokens: an A result delivered after the user chose B is
+    /// inert, including failures.  This keeps the readable old document on
+    /// screen through both stale and failed replacements.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive worker event boundary keeps stale-result filtering auditable"
+    )]
+    fn drain_raster_events(&mut self, state: &mut AutoCommit) {
+        let events = self
+            .raster_handle
+            .as_ref()
+            .map(RasterHandle::drain_events)
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                RasterEvent::Opened {
+                    request,
+                    document,
+                    name,
+                    raster,
+                } if self
+                    .pending_open
+                    .as_ref()
+                    .is_some_and(|pending| pending.id == request.id) =>
+                {
+                    self.pending_open = None;
+                    self.doc = document;
+                    #[cfg(test)]
+                    {
+                        self.raster = None;
+                    }
+                    self.raster_document = raster;
+                    self.raster_images.clear();
+                    self.raster_render_pending.clear();
+                    self.raster_text_pending.clear();
+                    self.pending_worker_plan = None;
+                    self.has_document = true;
+                    self.doc_name = name;
+                    self.source_path = Some(request.path.clone());
+                    self.load_error = None;
+                    self.status_note = None;
+                    self.markup_record = Some(Self::markup_record_for(&request.path));
+                    self.annotations.clear();
+                    self.comments.clear();
+                    self.signatures.clear();
+                    self.reload(state);
+                    self.commit_pending = true;
+                    self.fit = FitMode::Page;
+                    self.viewport.set_scroll(0.0, 0.0);
+                    self.current_page = 1;
+                    self.resource_page_ids = (1..=self.doc.page_count())
+                        .map(|page| format!("source-{page}"))
+                        .collect();
+                    self.resource_page_sources = (1..=self.doc.page_count()).collect();
+                    self.resource_page_imports = vec![None; self.doc.page_count()];
+                    self.source_pages = self.doc.pages.clone();
+                    self.legacy_page_nonce = self.doc.page_count() as u64 + 1;
+                    self.selected_anno = None;
+                    self.selected_sig = None;
+                    self.editing = None;
+                    self.selection = None;
+                    self.close_search();
+                    self.search_input.set_text("");
+                    self.matches.clear();
+                    self.raster_matches.clear();
+                    self.raster_text.clear();
+                    self.text_lines.clear();
+                    self.prev_overlay = None;
+                    self.reconcile_overlay();
+                    self.recompute_regions();
+                    self.sync_viewport_frame();
+                    self.dirty = true;
+                    if let Some(handle) = self.raster_handle.as_ref()
+                        && let Err(error) = handle.activate_document(request.id)
+                    {
+                        self.status_note = Some(format!("PDF source activation failed: {error}"));
+                    }
+                    self.finish_portal_action(true, None);
+                }
+                RasterEvent::OpenFailed { request, error }
+                    if self
+                        .pending_open
+                        .as_ref()
+                        .is_some_and(|pending| pending.id == request.id) =>
+                {
+                    self.pending_open = None;
+                    self.record_open_failure(&request.path, &error);
+                    self.finish_portal_action(false, Some(error));
+                }
+                RasterEvent::OpenSuperseded { request }
+                    if self
+                        .pending_open
+                        .as_ref()
+                        .is_some_and(|pending| pending.id == request.id) =>
+                {
+                    // A newer accepted request owns the loading indicator.
+                    self.pending_open = None;
+                    self.dirty = true;
+                }
+                RasterEvent::Opened { request, .. } => {
+                    // The worker may have completed a cancelled or superseded
+                    // parse. Discard it explicitly; the accepted document's
+                    // backend remains alive until a later activation.
+                    let _ = self
+                        .raster_handle
+                        .as_ref()
+                        .and_then(|handle| handle.discard_document(request.id).ok());
+                }
+                RasterEvent::Rendered { request, image }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    let key = (
+                        request.page,
+                        crate::source::Rasterizer::bucket_for(request.target_width),
+                    );
+                    self.raster_render_pending.remove(&key);
+                    if let Some(image) = image {
+                        if !self.raster_images.contains_key(&key)
+                            && self.raster_images.len() >= MAX_UI_RASTER_IMAGES
+                            && let Some(evicted) = self.raster_images.keys().next().copied()
+                        {
+                            self.raster_images.remove(&evicted);
+                        }
+                        self.raster_images.insert(key, image);
+                    }
+                    self.dirty = true;
+                }
+                RasterEvent::RenderFailed { request, error }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    let key = (
+                        request.page,
+                        crate::source::Rasterizer::bucket_for(request.target_width),
+                    );
+                    self.raster_render_pending.remove(&key);
+                    self.status_note = Some(format!(
+                        "Couldn’t render page {}: {error}",
+                        request.page + 1
+                    ));
+                    self.dirty = true;
+                }
+                RasterEvent::TextExtracted { request, text }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    self.raster_text_pending.remove(&request.page);
+                    self.raster_text.insert(request.page + 1, text);
+                    if self.search_active {
+                        self.recompute_matches();
+                    }
+                    self.dirty = true;
+                }
+                RasterEvent::TextFailed { request, error }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    self.raster_text_pending.remove(&request.page);
+                    self.status_note = Some(format!(
+                        "Couldn’t read text on page {}: {error}",
+                        request.page + 1
+                    ));
+                    self.dirty = true;
+                }
+                RasterEvent::Reconciled {
+                    request,
+                    page_sizes,
+                } if self
+                    .raster_document
+                    .as_ref()
+                    .is_some_and(|doc| doc.id == request.document_id)
+                    && self.pending_worker_plan.as_ref() == Some(&request.plan) =>
+                {
+                    self.pending_worker_plan = None;
+                    self.raster_images.clear();
+                    self.raster_render_pending.clear();
+                    self.raster_text.clear();
+                    self.raster_text_pending.clear();
+                    if let Some((width, height)) = page_sizes.first().copied() {
+                        self.doc.page_w = width;
+                        self.doc.page_h = height;
+                    }
+                    self.dirty = true;
+                }
+                RasterEvent::ReconcileFailed { request, error }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id)
+                        && self.pending_worker_plan.as_ref() == Some(&request.plan) =>
+                {
+                    self.pending_worker_plan = None;
+                    self.status_note = Some(format!("Couldn’t apply shared page plan: {error}"));
+                    self.dirty = true;
+                }
+                RasterEvent::Imported {
+                    request,
+                    hash,
+                    kind,
+                    sizes,
+                } if self
+                    .raster_document
+                    .as_ref()
+                    .is_some_and(|doc| doc.id == request.document_id)
+                    && self.pending_import.as_ref() == Some(&request) =>
+                {
+                    let pages_before = self.doc.page_count();
+                    let pages = sizes
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (width, height))| PagePlanEntry {
+                            id: format!("import-{}", uuid::Uuid::new_v4()),
+                            source_page: index + 1,
+                            imported: Some(crate::doc::ImportedPage {
+                                hash: hash.clone(),
+                                kind: kind.clone(),
+                                page: index + 1,
+                                width_milli: (width * 1000.0).round() as u32,
+                                height_milli: (height * 1000.0).round() as u32,
+                            }),
+                        })
+                        .collect();
+                    self.pending_import = None;
+                    self.perform_action(
+                        state,
+                        &crate::actions::import_pages_action(request.after.as_deref(), pages),
+                    );
+                    self.reconcile_shared_page_plan(state);
+                    self.go_to_page(request.at + 1);
+                    self.status_note = Some(
+                        "Imported pages are shared with collaborators; Save exports a flattened PDF"
+                            .into(),
+                    );
+                    self.pages_dirty = self.doc.page_count() != pages_before;
+                    self.dirty = true;
+                }
+                RasterEvent::ImportFailed { request, error }
+                    if self.pending_import.as_ref() == Some(&request) =>
+                {
+                    self.pending_import = None;
+                    self.status_note = Some(format!("Import failed: {error}"));
+                    self.dirty = true;
+                }
+                RasterEvent::SavePrepared { request, temporary }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id)
+                        && self.pending_save.as_ref() == Some(&request) =>
+                {
+                    if let Err(error) = self
+                        .raster_handle
+                        .as_ref()
+                        .ok_or_else(|| "the PDF save worker is unavailable".to_string())
+                        .and_then(|handle| {
+                            handle
+                                .commit_save(request.clone(), temporary)
+                                .map_err(|error| error.to_string())
+                        })
+                    {
+                        self.pending_save = None;
+                        self.status_note = Some(format!("Save failed: {error}"));
+                        self.dirty = true;
+                        self.finish_portal_action(false, Some(error));
+                    }
+                }
+                RasterEvent::Saved { request }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id)
+                        && self.pending_save.as_ref() == Some(&request) =>
+                {
+                    self.pending_save = None;
+                    let name = request
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("the file");
+                    self.status_note = Some(format!("Saved annotated PDF to {name}"));
+                    self.pages_dirty = false;
+                    self.dirty = true;
+                    self.finish_portal_action(true, None);
+                }
+                RasterEvent::SaveFailed { request, error }
+                    if self.pending_save.as_ref() == Some(&request) =>
+                {
+                    self.pending_save = None;
+                    self.status_note = Some(format!("Save failed: {error}"));
+                    self.dirty = true;
+                    self.finish_portal_action(false, Some(error));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn worker_raster_active(&self) -> bool {
+        self.raster_document.is_some()
+    }
+
+    fn raster_active(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.raster.is_some() || self.worker_raster_active()
+        }
+        #[cfg(not(test))]
+        {
+            self.worker_raster_active()
+        }
+    }
+
+    fn cancel_pending_open(&mut self) {
+        if let Some(request) = self.pending_open.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.discard_document(request.id).ok());
         }
         self.dirty = true;
     }
@@ -2899,27 +3703,48 @@ impl Widget for PdfApp {
         };
         match operation {
             PdfOperation::Open { path: Some(file) } => {
+                if self.portal_action.is_some() || self.pending_open.is_some() {
+                    return Err("another PDF open is already in progress".into());
+                }
+                self.portal_action = Some((invocation, PortalActionKind::Open));
                 self.load_path(std::path::Path::new(&file), doc);
+                if self.pending_open.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
                 if !self.has_document {
+                    self.portal_action = None;
                     return Err(self
                         .load_error
                         .clone()
                         .unwrap_or_else(|| "PDF could not be opened".into()));
                 }
+                self.portal_action = None;
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
                     qos_actions::ActionOutput::default(),
                 )))
             }
             PdfOperation::SaveAs { path: Some(file) } => {
+                if self.portal_action.is_some() || self.pending_save.is_some() {
+                    return Err("another PDF save is already in progress".into());
+                }
                 let file = ensure_pdf_extension(file.into());
+                self.portal_action = Some((invocation, PortalActionKind::Save));
                 if !self.save_annotated_to(&file) {
+                    self.portal_action = None;
                     return Err("PDF could not be saved".into());
                 }
+                if self.pending_save.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                self.portal_action = None;
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
                     qos_actions::ActionOutput::default(),
                 )))
             }
             PdfOperation::Open { path: None } => {
+                if self.portal_action.is_some() || self.pending_open.is_some() {
+                    return Err("another PDF open is already in progress".into());
+                }
                 self.portal_action = Some((invocation, PortalActionKind::Open));
                 self.request_open_via_portal();
                 if self.portal_rx.is_none() {
@@ -2929,6 +3754,9 @@ impl Widget for PdfApp {
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
             PdfOperation::SaveAs { path: None } => {
+                if self.portal_action.is_some() || self.pending_save.is_some() {
+                    return Err("another PDF save is already in progress".into());
+                }
                 self.portal_action = Some((invocation, PortalActionKind::Save));
                 self.request_save_via_portal();
                 if self.portal_save_rx.is_none() {
@@ -2964,6 +3792,13 @@ impl Widget for PdfApp {
             self.portal_action = None;
             self.portal_rx = None;
             self.portal_save_rx = None;
+            self.cancel_pending_open();
+            if let Some(request) = self.pending_save.take() {
+                let _ = self
+                    .raster_handle
+                    .as_ref()
+                    .and_then(|handle| handle.cancel_save(request).ok());
+            }
             return Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file operation cancelled".into()),
@@ -3035,6 +3870,10 @@ impl Widget for PdfApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // Drain the dedicated PDF owner before any portal/action work.  This
+        // is non-blocking and is the sole route by which production PDFium
+        // results enter widget state.
+        self.drain_raster_events(state);
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
@@ -3171,6 +4010,14 @@ impl Widget for PdfApp {
                     .with_hashed_key("pdf.empty.heading"),
                 button("Open PDF", "pdf.open", self.canvas_rect),
             ];
+            if self.pending_open.is_some() {
+                children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name("Opening PDF")
+                        .with_hashed_key("pdf.empty.loading")
+                        .with_live(Politeness::Polite),
+                );
+            }
             if let Some(error) = &self.load_error {
                 children.push(
                     AccessNode::new(Role::StaticText)
@@ -3274,7 +4121,7 @@ impl Widget for PdfApp {
             let count = self.match_count();
             let result_nodes = (0..count.min(100))
                 .map(|index| {
-                    let page = if self.raster.is_some() {
+                    let page = if self.raster_active() {
                         self.raster_matches.get(index).map_or(1, |m| m.page)
                     } else {
                         self.matches.get(index).map_or(1, |m| m.page)
@@ -3542,7 +4389,7 @@ impl Widget for PdfApp {
                 return false;
             }
             self.active_match = index;
-            let page = if self.raster.is_some() {
+            let page = if self.raster_active() {
                 self.raster_matches.get(index).map(|hit| hit.page)
             } else {
                 self.matches.get(index).map(|hit| hit.page)
@@ -3906,6 +4753,82 @@ mod tests {
             app.annotations.len(),
             on_a,
             "and the reader shows them again"
+        );
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn failed_replacement_open_keeps_the_previous_document_context() {
+        let (dir, a, _b) = two_documents();
+        let mut app = PdfApp::open(&a);
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        annotate(&mut app, &mut st);
+        assert!(app.markup_record.is_some());
+        assert!(!app.annotations.is_empty());
+
+        app.load_path(&dir.path().join("not-a-pdf.pdf"), &st.doc);
+
+        assert!(app.has_document);
+        assert!(app.markup_record.is_some());
+        assert!(!app.annotations.is_empty());
+        assert!(!app.resource_page_ids.is_empty());
+        assert!(app.load_error.is_none());
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.contains("Could not open"))
+        );
+    }
+
+    #[test]
+    fn owner_worker_failure_settles_the_matching_open_without_blocking() {
+        let mut app = PdfApp::empty();
+        let mut state = AutoCommit::new();
+        app.queue_worker_open(std::path::Path::new("/definitely/not/a/qos-pdf.pdf"));
+        assert!(
+            app.pending_open.is_some(),
+            "the accepted request is loading"
+        );
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(5));
+            app.drain_raster_events(&mut state);
+            if app.pending_open.is_none() {
+                break;
+            }
+        }
+        assert!(
+            app.pending_open.is_none(),
+            "a worker failure settles loading"
+        );
+        assert!(!app.has_document);
+        assert!(
+            app.load_error
+                .as_deref()
+                .is_some_and(|error| error.contains("Could not open"))
+        );
+    }
+
+    #[test]
+    fn owner_worker_stale_open_result_cannot_replace_the_latest_request() {
+        let mut app = PdfApp::empty();
+        let mut state = AutoCommit::new();
+        let first = std::path::Path::new("/definitely/not/a/qos-pdf-a.pdf");
+        let latest = std::path::Path::new("/definitely/not/a/qos-pdf-b.pdf");
+        app.queue_worker_open(first);
+        app.queue_worker_open(latest);
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(5));
+            app.drain_raster_events(&mut state);
+            if app.pending_open.is_none() {
+                break;
+            }
+        }
+        assert!(app.pending_open.is_none());
+        assert!(
+            app.load_error
+                .as_deref()
+                .is_some_and(|error| error.contains("qos-pdf-b.pdf"))
         );
     }
 

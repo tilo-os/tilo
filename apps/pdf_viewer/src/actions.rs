@@ -948,6 +948,10 @@ pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
     root
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resource projection keeps the document, page, annotation, comment, signature, outline, and search subtrees in one auditable traversal"
+)]
 pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = document_root(ctx);
     for (page, page_id) in contextual_pages(ctx) {
