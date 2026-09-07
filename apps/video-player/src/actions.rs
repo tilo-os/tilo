@@ -72,7 +72,6 @@ impl PlayerOperation {
                 | Self::Restart
                 | Self::SeekToEnd
                 | Self::SetVolume(_)
-                | Self::SetLoop(_)
                 | Self::SelectAudioTrack { .. }
                 | Self::SelectSubtitleTrack { .. }
                 | Self::JumpToChapter { .. }
@@ -440,9 +439,7 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         settings_label,
     )
     .with_action(autoplay)
-    .with_action(if !ctx.media.has_media {
-        loop_action.unavailable("no_media", "Open a video before enabling repeat")
-    } else if ctx.media.can_control_transport {
+    .with_action(if ctx.media.can_control_transport {
         loop_action
     } else {
         loop_action.unavailable(
@@ -844,6 +841,19 @@ mod tests {
                 .contract
                 .availability
                 .is_available()
+        );
+        let idle_loop = idle_media.children[5]
+            .actions
+            .iter()
+            .find(|action| action.id == "set-loop")
+            .expect("repeat preference action");
+        assert!(
+            idle_loop.contract.availability.is_available(),
+            "repeat is a persisted preference and is meaningful before a video opens"
+        );
+        assert!(
+            !PlayerOperation::SetLoop(true).requires_media(),
+            "out-of-band callers may configure repeat before opening media"
         );
 
         let loaded = resources(&ctx(true), &AutoCommit::new());
