@@ -5,13 +5,14 @@ use crate::document::{DocError, MarkSpan};
 use crate::schema::{
     ATTR_BLOB_BYTES, ATTR_BLOB_H, ATTR_BLOB_MIME, ATTR_BLOB_W, BLOB_H, BLOB_LEN, BLOB_MIME, BLOB_W,
     BLOCK_ATTRS, BLOCK_CHILDREN, BLOCK_KIND, BLOCK_ORDER, BLOCK_TEXT, CHANGE_AUTHOR, CHANGE_DATE,
-    CHANGE_KIND, COMMENT_AUTHOR, COMMENT_BLOCKS, COMMENT_DATE, CROSS_REF_PREFIX, DEFAULT_COLUMNS,
-    FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, HEADING_REF_PREFIX, KEY_BLOBS, KEY_BLOCKS, KEY_CHANGES,
-    KEY_COMMENTS, KEY_FOOTER, KEY_HEADER, KEY_META, KEY_NOTES, KEY_PRESERVED, KEY_PROPS,
-    KEY_SCHEMA, KEY_SCHEMA_VERSION, KEY_STYLES, MARK_BOOKMARK, MARK_COMMENT, MARK_DEL, MARK_FIELD,
-    MARK_INS, MARK_LINK, MARK_NOTE_REF, META_COLUMN_GAP, META_COLUMNS, META_LANGUAGE, NOTE_BLOCKS,
-    NOTE_KIND, NOTE_KIND_ENDNOTE, NOTE_KIND_FOOTNOTE, PRESERVED_SEG_BYTES, PRESERVED_SEG_ORD,
-    SCHEMA_ID, SCHEMA_VERSION,
+    CHANGE_KIND, COMMENT_AUTHOR, COMMENT_BLOCKS, COMMENT_DATE, COMMENT_REPLY_AUTHOR,
+    COMMENT_REPLY_BLOCKS, COMMENT_REPLY_DATE, COMMENT_REPLY_PARENT, CROSS_REF_PREFIX,
+    DEFAULT_COLUMNS, FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, HEADING_REF_PREFIX, KEY_BLOBS,
+    KEY_BLOCKS, KEY_CHANGES, KEY_COMMENTS, KEY_FOOTER, KEY_HEADER, KEY_META, KEY_NOTES,
+    KEY_PRESERVED, KEY_PROPS, KEY_SCHEMA, KEY_SCHEMA_VERSION, KEY_STYLES, MARK_BOOKMARK,
+    MARK_COMMENT, MARK_DEL, MARK_FIELD, MARK_INS, MARK_LINK, MARK_NOTE_REF, META_COLUMN_GAP,
+    META_COLUMNS, META_LANGUAGE, NOTE_BLOCKS, NOTE_KIND, NOTE_KIND_ENDNOTE, NOTE_KIND_FOOTNOTE,
+    PRESERVED_SEG_BYTES, PRESERVED_SEG_ORD, SCHEMA_ID, SCHEMA_VERSION,
 };
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
@@ -240,6 +241,12 @@ pub fn next_counter_for(
         bump(&cid);
         for bid in comment_blocks_in_order(doc, c, &cid) {
             bump(&bid);
+        }
+        for rid in comment_reply_ids(doc, c, &cid) {
+            bump(&rid);
+            for bid in comment_reply_blocks_in_order(doc, c, &cid, &rid) {
+                bump(&bid);
+            }
         }
     }
     // Tracked-change ids draw from the same generator too, for the same reason.
@@ -649,6 +656,37 @@ fn comment_blocks_obj(doc: &AutoCommit, c: &Containers, id: &str) -> Option<ObjI
     }
 }
 
+fn comment_reply_obj(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_id: &str,
+) -> Option<ObjId> {
+    let comments = comments_obj(doc, c)?;
+    match doc.get(&comments, reply_id) {
+        Ok(Some((Value::Object(ObjType::Map), reply))) => {
+            match doc.get(&reply, COMMENT_REPLY_PARENT) {
+                Ok(Some((parent, _))) if parent.to_str() == Some(comment_id) => Some(reply),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn comment_reply_blocks_obj(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_id: &str,
+) -> Option<ObjId> {
+    let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
+    match doc.get(&reply, COMMENT_REPLY_BLOCKS) {
+        Ok(Some((Value::Object(ObjType::Map), blocks))) => Some(blocks),
+        _ => None,
+    }
+}
+
 /// The comment ids present in the document, in a stable (sorted) order so two replicas that merged
 /// in different orders materialize byte-identically; anchored ranges are recovered from the `comment` marks.
 pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
@@ -657,10 +695,7 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
             let mut ids: Vec<String> = doc
                 .keys(&comments)
                 .filter(|id| {
-                    matches!(
-                        doc.get(&comments, id),
-                        Ok(Some((Value::Object(ObjType::Map), _)))
-                    )
+                    matches!(doc.get(&comments, id), Ok(Some((Value::Object(ObjType::Map), oid))) if !matches!(doc.get(&oid, COMMENT_REPLY_PARENT), Ok(Some(_))))
                 })
                 .collect();
             ids.sort();
@@ -707,6 +742,93 @@ pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) ->
     }
 }
 
+/// Stable ids of every reply belonging to a comment. Missing thread maps are
+/// treated as empty to keep old documents readable without migration writes.
+pub fn comment_reply_ids(doc: &AutoCommit, c: &Containers, comment_id: &str) -> Vec<String> {
+    let Some(replies) = comments_obj(doc, c) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = doc
+        .keys(&replies)
+        .filter(|id| {
+            matches!(
+                doc.get(&replies, id),
+                Ok(Some((Value::Object(ObjType::Map), reply)))
+                    if matches!(doc.get(&reply, COMMENT_REPLY_PARENT), Ok(Some((parent, _))) if parent.to_str() == Some(comment_id))
+            )
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+pub fn comment_reply_author(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_id: &str,
+) -> Option<String> {
+    let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
+    match doc.get(&reply, COMMENT_REPLY_AUTHOR) {
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        _ => None,
+    }
+}
+
+pub fn comment_reply_date(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_id: &str,
+) -> Option<String> {
+    let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
+    match doc.get(&reply, COMMENT_REPLY_DATE) {
+        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        _ => None,
+    }
+}
+
+pub fn comment_reply_blocks_in_order(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_id: &str,
+) -> Vec<String> {
+    comment_reply_blocks_obj(doc, c, comment_id, reply_id)
+        .map_or_else(Vec::new, |blocks| ordered_keys(doc, &blocks))
+}
+
+pub fn materialize_comment_reply_blocks(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_id: &str,
+) -> Vec<BlockView> {
+    let Some(blocks) = comment_reply_blocks_obj(doc, c, comment_id, reply_id) else {
+        return Vec::new();
+    };
+    ordered_keys(doc, &blocks)
+        .into_iter()
+        .map(|id| materialize_block(doc, &blocks, &id))
+        .collect()
+}
+
+pub fn materialize_comment_replies(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+) -> Vec<crate::snapshot::CommentReplyView> {
+    comment_reply_ids(doc, c, comment_id)
+        .into_iter()
+        .map(|id| crate::snapshot::CommentReplyView {
+            author: comment_reply_author(doc, c, comment_id, &id).unwrap_or_default(),
+            date: comment_reply_date(doc, c, comment_id, &id).unwrap_or_default(),
+            blocks: materialize_comment_reply_blocks(doc, c, comment_id, &id),
+            id,
+        })
+        .collect()
+}
+
 /// The anchored body range `(block_id, start, end)` of a comment, recovered from the `comment` mark
 /// covering text valued with the comment id. `None` if absent (e.g. the commented text was deleted).
 pub fn comment_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(String, usize, usize)> {
@@ -729,6 +851,7 @@ pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snap
             author: comment_author(doc, c, &id).unwrap_or_default(),
             date: comment_date(doc, c, &id).unwrap_or_default(),
             blocks: materialize_comment_blocks(doc, c, &id),
+            replies: materialize_comment_replies(doc, c, &id),
             range: comment_range(doc, c, &id),
             id,
         })
@@ -2023,6 +2146,123 @@ impl DocMut<'_> {
         id
     }
 
+    /// Create one durable reply below `comment_id`. The reply and its blocks
+    /// live in the already-eager comments root, making ids stable under action
+    /// replay and collision-free under concurrent authors (including legacy
+    /// comments that predate threaded replies).
+    pub fn insert_comment_reply(
+        &mut self,
+        comment_id: &str,
+        author: &str,
+        date: &str,
+    ) -> Option<String> {
+        // Refuse a stale/deleted parent before minting an id. The comments root
+        // is shared from schema creation onward, so concurrent reply inserts
+        // never contend on a lazily-created nested object.
+        comment_obj(self.doc, self.c, comment_id)?;
+        let replies = self.comments_container();
+        let id = self.ids.mint();
+        let reply = self
+            .doc
+            .put_object(&replies, id.as_str(), ObjType::Map)
+            .ok()?;
+        self.doc.put(&reply, COMMENT_REPLY_AUTHOR, author).ok()?;
+        self.doc.put(&reply, COMMENT_REPLY_DATE, date).ok()?;
+        self.doc
+            .put(&reply, COMMENT_REPLY_PARENT, comment_id)
+            .ok()?;
+        self.doc
+            .put_object(&reply, COMMENT_REPLY_BLOCKS, ObjType::Map)
+            .ok()?;
+        Some(id)
+    }
+
+    /// Resolve-or-create the block map for a reply. As with comment bodies,
+    /// this accepts older/incomplete data and only writes when editing it.
+    fn comment_reply_blocks_container(
+        &mut self,
+        comment_id: &str,
+        reply_id: &str,
+    ) -> Option<ObjId> {
+        let reply = comment_reply_obj(self.doc, self.c, comment_id, reply_id)?;
+        match self.doc.get(&reply, COMMENT_REPLY_BLOCKS) {
+            Ok(Some((Value::Object(ObjType::Map), blocks))) => Some(blocks),
+            _ => self
+                .doc
+                .put_object(&reply, COMMENT_REPLY_BLOCKS, ObjType::Map)
+                .ok(),
+        }
+    }
+
+    /// Insert a rich-text block into a reply, returning `None` only when the
+    /// addressed comment/reply no longer exists.
+    pub fn insert_comment_reply_block(
+        &mut self,
+        comment_id: &str,
+        reply_id: &str,
+        after: Option<&str>,
+        kind: &str,
+    ) -> Option<String> {
+        let container = self.comment_reply_blocks_container(comment_id, reply_id)?;
+        let key = self.order_after_in(&container, after);
+        let id = self.ids.mint();
+        let obj = self
+            .doc
+            .put_object(&container, id.as_str(), ObjType::Map)
+            .ok()?;
+        self.doc
+            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
+            .ok()?;
+        self.doc.put(&obj, BLOCK_KIND, kind).ok()?;
+        self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).ok()?;
+        self.record_order(&container, &id, &key);
+        Some(id)
+    }
+
+    fn comment_reply_text_obj(
+        &mut self,
+        comment_id: &str,
+        reply_id: &str,
+        block_id: &str,
+    ) -> Option<ObjId> {
+        let container = self.comment_reply_blocks_container(comment_id, reply_id)?;
+        let obj = block_obj(self.doc, &container, block_id)?;
+        match self.doc.get(&obj, BLOCK_TEXT) {
+            Ok(Some((Value::Object(ObjType::Text), text))) => Some(text),
+            _ => self.doc.put_object(&obj, BLOCK_TEXT, ObjType::Text).ok(),
+        }
+    }
+
+    /// Splice text into one reply block.
+    pub fn splice_comment_reply_text(
+        &mut self,
+        comment_id: &str,
+        reply_id: &str,
+        block_id: &str,
+        idx: usize,
+        del: isize,
+        ins: &str,
+    ) {
+        if let Some(text) = self.comment_reply_text_obj(comment_id, reply_id, block_id) {
+            let _ = self.doc.splice_text(&text, idx, del, ins);
+        }
+    }
+
+    /// Add a one-paragraph reply, the common authoring path. Multi-paragraph
+    /// replies can use `insert_comment_reply` plus the block methods above.
+    pub fn add_comment_reply(
+        &mut self,
+        comment_id: &str,
+        author: &str,
+        date: &str,
+        text: &str,
+    ) -> Option<String> {
+        let id = self.insert_comment_reply(comment_id, author, date)?;
+        let block = self.insert_comment_reply_block(comment_id, &id, None, "paragraph")?;
+        self.splice_comment_reply_text(comment_id, &id, &block, 0, 0, text);
+        Some(id)
+    }
+
     /// Resolve-or-create a comment's block container (`comment.blocks`).
     fn comment_blocks_container(&mut self, comment_id: &str) -> Option<ObjId> {
         let comment = comment_obj(self.doc, self.c, comment_id)?;
@@ -3154,6 +3394,77 @@ mod region_tests {
             2,
             "both comments survive (no overwrite): {:?}",
             snap.comments
+        );
+    }
+
+    #[test]
+    fn comment_threads_are_lazy_backward_compatible_and_canonical() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let (paragraph, comment, reply_a, reply_b);
+        {
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            paragraph = dm.insert_block(None, "paragraph");
+            dm.splice_text(&paragraph, 0, 0, "review this");
+            comment = dm.add_comment(&paragraph, 0, 6, "Ada", "Initial note");
+            // A legacy-shaped comment has no `replies` map until the first
+            // reply; materializing it must not create one.
+            assert!(comment_reply_ids(dm.doc, dm.c, &comment).is_empty());
+            reply_a = dm
+                .add_comment_reply(&comment, "Bea", "2026-09-07", "First reply")
+                .expect("parent comment exists");
+            reply_b = dm
+                .add_comment_reply(&comment, "Cy", "2026-09-08", "Second reply")
+                .expect("parent comment exists");
+        }
+        let replies = materialize_comment_replies(&doc, &c, &comment);
+        assert_eq!(replies.len(), 2);
+        assert_eq!(
+            replies
+                .iter()
+                .map(|reply| reply.id.clone())
+                .collect::<Vec<_>>(),
+            vec![reply_a, reply_b],
+            "reply ids are sorted canonically rather than by merge arrival"
+        );
+        assert_eq!(replies[0].blocks[0].text, "First reply");
+        assert_eq!(replies[1].blocks[0].text, "Second reply");
+
+        let saved = doc.save();
+        let reloaded = AutoCommit::load(&saved).expect("reload threaded comments");
+        let c2 = open(&reloaded, &ROOT).expect("open reloaded schema");
+        assert_eq!(
+            materialize_comments(&reloaded, &c2)[0].replies,
+            replies,
+            "thread survives reload unchanged"
+        );
+
+        // A legacy comment is simply a root comment without any reply records;
+        // materializing it is empty and performs no migration write.
+        let mut old = AutoCommit::new();
+        let old_c = init(&mut old, &ROOT);
+        let mut old_ids = IdGen::new(old.get_actor().to_hex_string());
+        let legacy;
+        {
+            let mut dm = DocMut {
+                doc: &mut old,
+                c: &old_c,
+                ids: &mut old_ids,
+            };
+            let p = dm.insert_block(None, "paragraph");
+            dm.splice_text(&p, 0, 0, "legacy");
+            legacy = dm.add_comment(&p, 0, 6, "D", "old comment");
+        }
+        assert!(
+            materialize_comments(&old, &old_c)
+                .into_iter()
+                .find(|entry| entry.id == legacy)
+                .is_some_and(|entry| entry.replies.is_empty())
         );
     }
 
