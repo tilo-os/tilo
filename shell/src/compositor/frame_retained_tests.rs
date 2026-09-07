@@ -275,10 +275,9 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
 
 fn rect_scene() -> Scene {
     let mut scene = Scene::new();
-    // Fixed fixture ink: the retained-scene tests compare composition and
-    // damage behavior, not application styling or theme selection.
-    #[allow(clippy::disallowed_methods)]
-    let fixture_color = Color::from_rgb8(0x2A, 0x80, 0xC4);
+    // Use the product accent token so the fixture remains within the same
+    // palette contract as the scenes whose retained composition it probes.
+    let fixture_color = Theme::dark().tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
