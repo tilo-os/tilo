@@ -62,7 +62,7 @@ pub const READER_VOICE_KEY: &str = "a11y.reader_voice";
 const OSK_PACKAGE_ID: &str = "dev.qos.osk";
 const OSK_PACKAGE_KIND: &str = "service";
 
-fn osk_service_installed() -> bool {
+pub(crate) fn osk_service_available() -> bool {
     launcher::registry::list_installed()
         .unwrap_or_default()
         .into_iter()
@@ -91,6 +91,13 @@ fn tts_capability() -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Whether the screen-reader controls can produce spoken output on this
+/// device. Keep this separate from the display label so the resource tree can
+/// omit an effect that would otherwise be an inert promise.
+pub(crate) fn screen_reader_available() -> bool {
+    tts_capability().is_some()
 }
 
 pub struct AccessibilityPane {
@@ -135,8 +142,24 @@ impl AccessibilityPane {
         &self.appearance
     }
 
-    fn toggle(id: &str, key: &str) -> El {
-        Box::new(Toggle::new(id, key).with_id(id))
+    fn toggle(id: &str, key: &str, action_id: &str) -> El {
+        let toggle = Toggle::new(id, key).with_id(id);
+        let toggle = match crate::actions::accessibility_bool_binding(action_id) {
+            Some(binding) => toggle.on_action(binding),
+            // A capability or resource can disappear between composition and
+            // dispatch. Keep the current value legible but never fall back to
+            // a raw document write when that happens.
+            None => toggle.with_enabled(false),
+        };
+        Box::new(toggle)
+    }
+
+    fn choice(options: Vec<String>, key: &str, action_id: &str) -> Dropdown {
+        let dropdown = Dropdown::new(options, key);
+        match crate::actions::accessibility_text_binding(action_id) {
+            Some(binding) => dropdown.on_action(binding),
+            None => dropdown.with_enabled(false),
+        }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -152,7 +175,7 @@ impl AccessibilityPane {
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> Box<dyn Widget> {
         let size_opts: Vec<String> = TEXT_SIZES.iter().map(|(l, _)| l.to_string()).collect();
-        let size = Dropdown::new(size_opts, TEXT_SIZE_KEY)
+        let size = Self::choice(size_opts, TEXT_SIZE_KEY, "text-size")
             .with_id("a11y.text_size")
             .with_placeholder(text_size_label(self.appearance.text_scale));
         card(
@@ -161,23 +184,24 @@ impl AccessibilityPane {
                 setting_row_described(
                     "High contrast",
                     "Maximise contrast for low-vision comfort",
-                    Self::toggle("a11y.high_contrast", HIGH_CONTRAST_KEY),
+                    Self::toggle("a11y.high_contrast", HIGH_CONTRAST_KEY, "high-contrast"),
                 ),
                 setting_row_described(
                     "Reduce motion",
                     "Skip animations and transitions",
-                    Self::toggle("a11y.reduce_motion", REDUCE_MOTION_KEY),
+                    Self::toggle("a11y.reduce_motion", REDUCE_MOTION_KEY, "reduce-motion"),
                 ),
                 choice_row("Text size", Box::new(size)),
                 choice_row(
                     "Colour filter",
                     Box::new(
-                        Dropdown::new(
+                        Self::choice(
                             ColorFilter::OPTIONS
                                 .iter()
                                 .map(|s| (*s).to_string())
                                 .collect(),
                             COLOR_FILTER_KEY,
+                            "colour-filter",
                         )
                         .with_id("a11y.color_filter")
                         .with_placeholder(self.access.color_filter.label()),
@@ -186,13 +210,19 @@ impl AccessibilityPane {
                 choice_row(
                     "Magnifier lens",
                     Box::new(
-                        Dropdown::new(vec!["Off".into(), "2×".into(), "3×".into()], MAGNIFIER_KEY)
-                            .with_id("a11y.magnifier")
-                            .with_placeholder(match self.access.magnifier_zoom {
+                        Self::choice(
+                            vec!["Off".into(), "2×".into(), "3×".into()],
+                            MAGNIFIER_KEY,
+                            "magnifier",
+                        )
+                        .with_id("a11y.magnifier")
+                        .with_placeholder(
+                            match self.access.magnifier_zoom {
                                 2 => "2×",
                                 3 => "3×",
                                 _ => "Off",
-                            }),
+                            },
+                        ),
                     ),
                 ),
             ]),
@@ -205,7 +235,7 @@ impl AccessibilityPane {
             .iter()
             .map(|(l, _)| l.to_string())
             .collect();
-        let cursor = Dropdown::new(cursor_opts, CURSOR_SIZE_KEY)
+        let cursor = Self::choice(cursor_opts, CURSOR_SIZE_KEY, "cursor-size")
             .with_id("a11y.cursor_size")
             .with_placeholder(AccessibilityPrefs::cursor_size_label(
                 self.access.cursor_size,
@@ -216,18 +246,22 @@ impl AccessibilityPane {
                 setting_row_described(
                     "Large cursor",
                     "Enlarge the mouse pointer so it is easy to find",
-                    Self::toggle("a11y.large_cursor", LARGE_CURSOR_KEY),
+                    Self::toggle("a11y.large_cursor", LARGE_CURSOR_KEY, "large-cursor"),
                 ),
                 choice_row("Cursor size", Box::new(cursor)),
                 setting_row_described(
                     "Pointer crosshair",
                     "Draw high-contrast guide lines through the pointer",
-                    Self::toggle("a11y.cursor_crosshair", CURSOR_CROSSHAIR_KEY),
+                    Self::toggle(
+                        "a11y.cursor_crosshair",
+                        CURSOR_CROSSHAIR_KEY,
+                        "pointer-crosshair",
+                    ),
                 ),
                 setting_row_described(
                     "Thicker text cursor",
                     "Use a wider insertion caret in qOS applications",
-                    Self::toggle("a11y.thick_text_caret", THICK_CARET_KEY),
+                    Self::toggle("a11y.thick_text_caret", THICK_CARET_KEY, "thick-text-caret"),
                 ),
             ]),
         )
@@ -235,11 +269,11 @@ impl AccessibilityPane {
 
     // --- Typing.
     fn build_typing_card(&self) -> Box<dyn Widget> {
-        let osk_row = if osk_service_installed() {
+        let osk_row = if osk_service_available() {
             setting_row_described(
                 "On-screen keyboard",
                 "Show the keyboard automatically for focused text fields",
-                Self::toggle("a11y.on_screen_keyboard", OSK_KEY),
+                Self::toggle("a11y.on_screen_keyboard", OSK_KEY, "on-screen-keyboard"),
             )
         } else {
             value_row(
@@ -253,28 +287,29 @@ impl AccessibilityPane {
                 setting_row_described(
                     "Sticky keys",
                     "Type shortcuts one key at a time instead of holding a chord",
-                    Self::toggle("a11y.sticky_keys", STICKY_KEYS_KEY),
+                    Self::toggle("a11y.sticky_keys", STICKY_KEYS_KEY, "sticky-keys"),
                 ),
                 setting_row_described(
                     "Slow keys",
                     "Ignore brief, accidental key presses",
-                    Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY),
+                    Self::toggle("a11y.slow_keys", SLOW_KEYS_KEY, "slow-keys"),
                 ),
                 osk_row,
                 setting_row_described(
                     "Switch control",
                     "Translate a hardware switch pair into standard Tab and Enter actions",
-                    Self::toggle("a11y.switch_control", SWITCH_CONTROL_KEY),
+                    Self::toggle("a11y.switch_control", SWITCH_CONTROL_KEY, "switch-control"),
                 ),
                 choice_row(
                     "Switch keys (next / activate)",
                     Box::new(
-                        Dropdown::new(
+                        Self::choice(
                             SwitchKeyPair::OPTIONS
                                 .iter()
                                 .map(|s| (*s).to_string())
                                 .collect(),
                             SWITCH_KEYS_KEY,
+                            "switch-keys",
                         )
                         .with_id("a11y.switch_keys")
                         .with_placeholder(self.access.switch_key_pair.label()),
@@ -283,7 +318,7 @@ impl AccessibilityPane {
                 choice_row(
                     "Automatic scan",
                     Box::new(
-                        Dropdown::new(
+                        Self::choice(
                             vec![
                                 "Manual".into(),
                                 "1 second".into(),
@@ -291,6 +326,7 @@ impl AccessibilityPane {
                                 "3 seconds".into(),
                             ],
                             SWITCH_SCAN_KEY,
+                            "switch-scan",
                         )
                         .with_id("a11y.switch_scan")
                         .with_placeholder(
@@ -316,13 +352,13 @@ impl AccessibilityPane {
                 setting_row_described(
                     "Screen reader",
                     "Read focused controls and live announcements aloud",
-                    Self::toggle("a11y.screen_reader", SCREEN_READER_KEY),
+                    Self::toggle("a11y.screen_reader", SCREEN_READER_KEY, "screen-reader"),
                 ),
                 value_row("Speech engine", backend),
                 choice_row(
                     "Speech rate",
                     Box::new(
-                        Dropdown::new(
+                        Self::choice(
                             vec![
                                 "Slow".into(),
                                 "Default".into(),
@@ -330,6 +366,7 @@ impl AccessibilityPane {
                                 "Very fast".into(),
                             ],
                             READER_RATE_KEY,
+                            "speech-rate",
                         )
                         .with_id("a11y.reader_rate")
                         .with_placeholder(
@@ -345,12 +382,13 @@ impl AccessibilityPane {
                 choice_row(
                     "Voice",
                     Box::new(
-                        Dropdown::new(
+                        Self::choice(
                             ScreenReaderVoice::OPTIONS
                                 .iter()
                                 .map(|s| (*s).to_string())
                                 .collect(),
                             READER_VOICE_KEY,
+                            "speech-voice",
                         )
                         .with_id("a11y.reader_voice")
                         .with_placeholder(self.access.screen_reader_voice.label()),
@@ -372,7 +410,7 @@ impl AccessibilityPane {
                         setting_row_described(
                             "Visual alerts",
                             "Flash a clear screen-edge alert when a notification arrives",
-                            Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY),
+                            Self::toggle("a11y.visual_alerts", VISUAL_ALERTS_KEY, "visual-alerts"),
                         ),
                         value_row(
                             "Application focus highlight",
@@ -440,70 +478,71 @@ impl AccessibilityPane {
         }
     }
 
+    /// Hydrate the live document from the durable preferences only when a
+    /// key is genuinely absent. This is model initialization, not a user
+    /// action: it never enters action history and it never overwrites a value
+    /// that arrived from another replica before this pane was opened.
     fn seed_if_needed(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if !self.needs_seed {
             return;
         }
-        let seed_bool = |state: &mut AutoCommit, key: &str, v: bool| {
-            let _ = state.put(root, key, automerge::ScalarValue::Boolean(v));
-        };
-        seed_bool(state, HIGH_CONTRAST_KEY, self.appearance.high_contrast);
-        seed_bool(state, REDUCE_MOTION_KEY, self.appearance.reduce_motion);
-        let _ = state.put(
-            root,
-            TEXT_SIZE_KEY,
-            text_size_label(self.appearance.text_scale),
-        );
-        seed_bool(state, LARGE_CURSOR_KEY, self.access.large_cursor);
-        let _ = state.put(
-            root,
-            CURSOR_SIZE_KEY,
-            AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
-        );
-        seed_bool(state, STICKY_KEYS_KEY, self.access.sticky_keys);
-        seed_bool(state, SLOW_KEYS_KEY, self.access.slow_keys);
-        seed_bool(state, OSK_KEY, self.access.on_screen_keyboard);
-        seed_bool(state, VISUAL_ALERTS_KEY, self.access.visual_alerts);
-        seed_bool(state, SCREEN_READER_KEY, self.access.screen_reader);
-        let _ = state.put(root, COLOR_FILTER_KEY, self.access.color_filter.label());
-        let _ = state.put(
-            root,
-            MAGNIFIER_KEY,
-            match self.access.magnifier_zoom {
-                2 => "2×",
-                3 => "3×",
-                _ => "Off",
-            },
-        );
-        seed_bool(state, CURSOR_CROSSHAIR_KEY, self.access.cursor_crosshair);
-        seed_bool(state, THICK_CARET_KEY, self.access.thick_text_caret);
-        seed_bool(state, SWITCH_CONTROL_KEY, self.access.switch_control);
-        let _ = state.put(root, SWITCH_KEYS_KEY, self.access.switch_key_pair.label());
-        let _ = state.put(
-            root,
-            SWITCH_SCAN_KEY,
-            match self.access.switch_scan_ms {
-                1000 => "1 second",
-                2000 => "2 seconds",
-                3000 => "3 seconds",
-                _ => "Manual",
-            },
-        );
-        let _ = state.put(
-            root,
-            READER_RATE_KEY,
-            match self.access.screen_reader_rate {
-                0..=75 => "Slow",
-                76..=115 => "Default",
-                116..=160 => "Fast",
-                _ => "Very fast",
-            },
-        );
-        let _ = state.put(
-            root,
-            READER_VOICE_KEY,
-            self.access.screen_reader_voice.label(),
-        );
+        for (key, value) in [
+            (HIGH_CONTRAST_KEY, self.appearance.high_contrast),
+            (REDUCE_MOTION_KEY, self.appearance.reduce_motion),
+            (LARGE_CURSOR_KEY, self.access.large_cursor),
+            (STICKY_KEYS_KEY, self.access.sticky_keys),
+            (SLOW_KEYS_KEY, self.access.slow_keys),
+            (OSK_KEY, self.access.on_screen_keyboard),
+            (VISUAL_ALERTS_KEY, self.access.visual_alerts),
+            (SCREEN_READER_KEY, self.access.screen_reader),
+            (CURSOR_CROSSHAIR_KEY, self.access.cursor_crosshair),
+            (THICK_CARET_KEY, self.access.thick_text_caret),
+            (SWITCH_CONTROL_KEY, self.access.switch_control),
+        ] {
+            if state.get(root, key).ok().flatten().is_none() {
+                let _ = state.put(root, key, automerge::ScalarValue::Boolean(value));
+            }
+        }
+        for (key, value) in [
+            (TEXT_SIZE_KEY, text_size_label(self.appearance.text_scale)),
+            (
+                CURSOR_SIZE_KEY,
+                AccessibilityPrefs::cursor_size_label(self.access.cursor_size),
+            ),
+            (COLOR_FILTER_KEY, self.access.color_filter.label()),
+            (
+                MAGNIFIER_KEY,
+                match self.access.magnifier_zoom {
+                    2 => "2×",
+                    3 => "3×",
+                    _ => "Off",
+                },
+            ),
+            (SWITCH_KEYS_KEY, self.access.switch_key_pair.label()),
+            (
+                SWITCH_SCAN_KEY,
+                match self.access.switch_scan_ms {
+                    1000 => "1 second",
+                    2000 => "2 seconds",
+                    3000 => "3 seconds",
+                    _ => "Manual",
+                },
+            ),
+            (
+                READER_RATE_KEY,
+                match self.access.screen_reader_rate {
+                    0..=75 => "Slow",
+                    76..=115 => "Default",
+                    116..=160 => "Fast",
+                    _ => "Very fast",
+                },
+            ),
+            (READER_VOICE_KEY, self.access.screen_reader_voice.label()),
+        ] {
+            if state.get(root, key).ok().flatten().is_none() {
+                let _ = state.put(root, key, value);
+            }
+        }
         self.needs_seed = false;
     }
 
@@ -841,6 +880,65 @@ mod tests {
             AccessibilityPane::read_bool(&doc, &root, SCREEN_READER_KEY),
             Some(true)
         );
+    }
+
+    #[test]
+    fn initial_hydration_is_not_a_user_action_or_a_replicated_draft() {
+        let mut pane = AccessibilityPane::with_prefs(
+            AppearancePrefs {
+                high_contrast: true,
+                ..AppearancePrefs::default()
+            },
+            AccessibilityPrefs::default(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+
+        assert!(
+            pane.take_commit_context().is_none(),
+            "hydration is not undoable user intent"
+        );
+        for key in [
+            HIGH_CONTRAST_KEY,
+            TEXT_SIZE_KEY,
+            LARGE_CURSOR_KEY,
+            SWITCH_SCAN_KEY,
+        ] {
+            assert!(
+                doc.get(&root, format!("{key}.edit")).unwrap().is_none(),
+                "no presentation draft for {key} is replicated"
+            );
+        }
+    }
+
+    #[test]
+    fn hydration_never_overwrites_a_value_already_received_from_a_peer() {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        doc.put(
+            &root,
+            HIGH_CONTRAST_KEY,
+            automerge::ScalarValue::Boolean(true),
+        )
+        .unwrap();
+        doc.put(&root, CURSOR_SIZE_KEY, "Largest").unwrap();
+        let mut pane = AccessibilityPane::with_prefs(
+            AppearancePrefs::default(),
+            AccessibilityPrefs::default(),
+        );
+        pane.sync(&mut doc, &root);
+
+        assert_eq!(
+            AccessibilityPane::read_bool(&doc, &root, HIGH_CONTRAST_KEY),
+            Some(true)
+        );
+        assert_eq!(
+            AccessibilityPane::read_str(&doc, &root, CURSOR_SIZE_KEY).as_deref(),
+            Some("Largest")
+        );
+        assert!(pane.appearance().high_contrast);
+        assert_eq!(pane.access().cursor_size, 64);
     }
 
     #[test]
