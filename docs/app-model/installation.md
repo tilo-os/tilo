@@ -150,7 +150,7 @@ overwrite the same directory. If you need side-by-side versions (multiple
 
 ```
 qos-install install <qpkg>
-    [--pinned]                      # never GC'd (GC not implemented yet)
+    [--pinned]                      # retained across size-pressure GC
     [--force]                       # overwrite same-id install
     [--require-package-root <hex>]  # bind to a signed registry version
     [--require-publisher <hex>]     # bind to that registry's publisher
