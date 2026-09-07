@@ -817,7 +817,10 @@ mod tests {
             if supervisor.keyboard_update.is_none() {
                 break;
             }
-            std::thread::yield_now();
+            // `/usr/bin/true` still needs a scheduler turn to reap on a
+            // busy CI host; yielding alone can repeatedly select this test
+            // thread before the child has reached its terminal state.
+            std::thread::sleep(Duration::from_millis(1));
         }
         assert!(supervisor.keyboard_update.is_none());
         assert_eq!(supervisor.keyboard, requested);
@@ -1007,9 +1010,10 @@ mod tests {
             published: true,
         };
         let status = (0..50)
-            .find_map(|_| match bridge.poll_exit().unwrap() {
-                Some(status) => Some(status),
-                None => {
+            .find_map(|_| {
+                if let Some(status) = bridge.poll_exit().unwrap() {
+                    Some(status)
+                } else {
                     std::thread::sleep(Duration::from_millis(10));
                     None
                 }
