@@ -42,7 +42,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     let legacy = std::env::var("SLIDES_SHOT").ok();
     match args.scenario.as_deref().or(legacy.as_deref()) {
-        Some("narrow" | "narrow_closed" | "inspector" | "many_rail") => NARROW_VIEWPORT,
+        Some(
+            "narrow" | "narrow_closed" | "inspector" | "many_rail" | "toolbar_menu"
+            | "inspector_widgets",
+        ) => NARROW_VIEWPORT,
         _ => ui::launch::DEFAULT_VIEWPORT,
     }
 }
@@ -57,7 +60,11 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("light") => ui::Theme::light(),
         Some("high-contrast") => ui::Theme::high_contrast(),
         _ => ui::Theme::dark(),
-    };
+    }
+    .with_reduce_motion(matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ));
     ui::headless::FrameHarness::new_with_theme(ui::State::new(), shot_root(args)?, viewport, theme)
         .render_png(out);
     println!("dev.qos.slides: wrote shot to {}", out.display());
@@ -96,6 +103,9 @@ pub fn main() {
                 "element_menu",
                 "slide_menu",
                 "reorder",
+                "edit_text",
+                "delete_zone",
+                "inspector_widgets",
             ])
             .configure_app(|app| slides::actions::register(app.action_registry_mut())),
     );
