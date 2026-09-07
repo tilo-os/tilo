@@ -141,233 +141,221 @@ impl RecordingControl {
 }
 
 pub struct CameraWorker {
-    tx: Option<SyncSender<PhotoJob>>,
+    tx: Option<SyncSender<WorkerJob>>,
     rx: Receiver<PhotoResult>,
-    recording_wake_tx: Option<SyncSender<()>>,
     video_rx: Receiver<VideoResult>,
     recording: Arc<Mutex<RecordingControl>>,
-    thumb_tx: Option<SyncSender<ThumbnailJob>>,
     thumb_rx: Receiver<ThumbnailResult>,
-    library_tx: Option<SyncSender<LibraryJob>>,
     library_rx: Receiver<LibraryResult>,
-    scan_tx: Option<SyncSender<ScanJob>>,
     scan_rx: Receiver<ScanResult>,
 }
 
-impl CameraWorker {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all bounded worker channels are initialized together so their capacities and failure handling stay auditable"
-    )]
-    pub fn new() -> Self {
-        let (tx, jobs) = std::sync::mpsc::sync_channel::<PhotoJob>(1);
-        let (results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(1);
-        let tx = std::thread::Builder::new()
-            .name("camera-media-io".into())
-            .spawn(move || {
-                while let Ok(job) = jobs.recv() {
-                    let result = crate::library::write_photo(&job.dir, &job.frame, job.format)
-                        .map_err(|error| error.to_string())
-                        .and_then(|name| {
-                            let local_path = job.dir.join(&name);
-                            let saved_path = local_path.clone();
-                            crate::media::store_file(&local_path)
-                                .map(|media_id| PhotoSaved {
-                                    name,
-                                    local_path: saved_path,
-                                    media_id,
-                                    w: job.frame.w,
-                                    h: job.frame.h,
-                                    facing: job.facing,
-                                })
-                                .ok_or_else(|| {
-                                    let _ = std::fs::remove_file(&local_path);
-                                    "couldn't verify portable media bytes".into()
-                                })
-                        });
-                    if results
-                        .send(PhotoResult {
-                            invocation: job.invocation,
-                            generation: job.generation,
-                            result,
+enum WorkerJob {
+    Photo(PhotoJob),
+    RecordingWake,
+    Thumbnail(ThumbnailJob),
+    Library(LibraryJob),
+    Scan(ScanJob),
+}
+
+struct WorkerLoop {
+    recording: Arc<Mutex<RecordingControl>>,
+    recorder: Option<crate::video::Recorder>,
+    photo_results: SyncSender<PhotoResult>,
+    video_results: SyncSender<VideoResult>,
+    thumbnail_results: SyncSender<ThumbnailResult>,
+    library_results: SyncSender<LibraryResult>,
+    scan_results: SyncSender<ScanResult>,
+}
+
+impl WorkerLoop {
+    fn process_recording_control(&mut self) -> bool {
+        let (start, frame, finish) = match self.recording.lock() {
+            Ok(mut control) => control.take_pending(),
+            Err(_) => return false,
+        };
+        if start {
+            self.recorder = Some(crate::video::Recorder::new(crate::video::FPS));
+        }
+        if let (Some(recorder), Some(frame)) = (&mut self.recorder, frame) {
+            // This is deliberately the only Recorder::push call: RGBA
+            // conversion and JPEG encode never touch UI.
+            recorder.push(&frame);
+        }
+        let Some(job) = finish else {
+            return true;
+        };
+        let (w, h, dur_ms) = self.recorder.as_ref().map_or((0, 0, 0), |recorder| {
+            let (w, h) = recorder.dimensions();
+            (w, h, recorder.duration_ms())
+        });
+        let result = self
+            .recorder
+            .take()
+            .and_then(crate::video::Recorder::finish)
+            .ok_or_else(|| "nothing recorded".to_string())
+            .and_then(|bytes| {
+                crate::media::store(&bytes)
+                    .ok_or_else(|| "couldn't verify portable clip bytes".to_string())
+                    .and_then(|media_id| {
+                        let name = match job.dir.as_ref() {
+                            Some(dir) => crate::video::write_clip(
+                                dir,
+                                &bytes,
+                                &crate::library::timestamp_name(),
+                            )
+                            .map_err(|error| error.to_string())?,
+                            None => format!("VID_{}.avi", crate::library::timestamp_name()),
+                        };
+                        Ok(VideoSaved {
+                            local_path: job.dir.as_ref().map(|dir| dir.join(&name)),
+                            name,
+                            media_id,
+                            w,
+                            h,
+                            dur_ms,
+                            facing: job.facing,
                         })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+                    })
+            });
+        self.video_results
+            .send(VideoResult {
+                invocation: job.invocation,
+                generation: job.generation,
+                result,
             })
-            .ok()
-            .map(|_| tx);
-        let (recording_wake_tx, recording_wakes) = std::sync::mpsc::sync_channel::<()>(1);
+            .is_ok()
+    }
+
+    fn process_job(&self, job: WorkerJob) -> bool {
+        match job {
+            WorkerJob::Photo(job) => {
+                let result = crate::library::write_photo(&job.dir, &job.frame, job.format)
+                    .map_err(|error| error.to_string())
+                    .and_then(|name| {
+                        let local_path = job.dir.join(&name);
+                        let saved_path = local_path.clone();
+                        crate::media::store_file(&local_path)
+                            .map(|media_id| PhotoSaved {
+                                name,
+                                local_path: saved_path,
+                                media_id,
+                                w: job.frame.w,
+                                h: job.frame.h,
+                                facing: job.facing,
+                            })
+                            .ok_or_else(|| {
+                                let _ = std::fs::remove_file(&local_path);
+                                "couldn't verify portable media bytes".into()
+                            })
+                    });
+                self.photo_results
+                    .send(PhotoResult {
+                        invocation: job.invocation,
+                        generation: job.generation,
+                        result,
+                    })
+                    .is_ok()
+            }
+            WorkerJob::RecordingWake => true,
+            WorkerJob::Thumbnail(job) => {
+                let result = match job.source {
+                    ThumbnailSource::Path(path) => {
+                        crate::library::load_thumb(&path, job.width, job.height)
+                    }
+                    ThumbnailSource::Media(id) => crate::media::read(&id).and_then(|bytes| {
+                        crate::library::load_thumb_bytes(&bytes, job.width, job.height)
+                    }),
+                };
+                self.thumbnail_results
+                    .send(ThumbnailResult {
+                        generation: job.generation,
+                        id: job.id,
+                        result,
+                    })
+                    .is_ok()
+            }
+            WorkerJob::Library(job) => self
+                .library_results
+                .send(LibraryResult {
+                    generation: job.generation,
+                    result: Ok(crate::library::scan(&job.dir, &job.favorites)),
+                })
+                .is_ok(),
+            WorkerJob::Scan(job) => {
+                let luma = match job.source {
+                    ScanSource::Path(path) => crate::library::load_luma(&path, 1024),
+                    ScanSource::Media(id) => crate::media::read(&id)
+                        .and_then(|bytes| crate::library::load_luma_bytes(&bytes, 1024)),
+                    ScanSource::Frame(frame) => Some((
+                        crate::frame::luma(&frame),
+                        frame.w as usize,
+                        frame.h as usize,
+                    )),
+                };
+                let result = luma
+                    .and_then(|(luma, w, h)| crate::scan::decode_and_classify(&luma, w, h, |p| p));
+                self.scan_results
+                    .send(ScanResult {
+                        generation: job.generation,
+                        id: job.id,
+                        record_history: job.record_history,
+                        result: Ok(result),
+                    })
+                    .is_ok()
+            }
+        }
+    }
+}
+
+impl CameraWorker {
+    pub fn new() -> Self {
+        // Every ingress and result queue is bounded. One sleeping event loop
+        // replaces the former eager per-feature worker set.
+        let (tx, jobs) = std::sync::mpsc::sync_channel::<WorkerJob>(1);
+        let (photo_results, rx) = std::sync::mpsc::sync_channel::<PhotoResult>(1);
         let (video_results, video_rx) = std::sync::mpsc::sync_channel::<VideoResult>(1);
+        let (thumbnail_results, thumb_rx) = std::sync::mpsc::sync_channel::<ThumbnailResult>(1);
+        let (library_results, library_rx) = std::sync::mpsc::sync_channel::<LibraryResult>(1);
+        let (scan_results, scan_rx) = std::sync::mpsc::sync_channel::<ScanResult>(1);
         let recording = Arc::new(Mutex::new(RecordingControl {
             start: false,
             finish: None,
             latest: None,
         }));
-        let recording_for_worker = Arc::clone(&recording);
-        let recording_wake_tx = std::thread::Builder::new()
-            .name("camera-video-encoder".into())
+        let worker_recording = Arc::clone(&recording);
+        let started = std::thread::Builder::new()
+            .name("camera-bounded-worker".into())
             .spawn(move || {
-                let mut recorder = None;
-                while recording_wakes.recv().is_ok() {
-                    let (start, frame, finish) = match recording_for_worker.lock() {
-                        Ok(mut control) => control.take_pending(),
-                        Err(_) => break,
+                let mut worker = WorkerLoop {
+                    recording: worker_recording,
+                    recorder: None,
+                    photo_results,
+                    video_results,
+                    thumbnail_results,
+                    library_results,
+                    scan_results,
+                };
+                // Inspect recording state before blocking and after all jobs.
+                // A full unified queue can coalesce a recording wake, so this
+                // makes the slot observable even without a queued wake event.
+                while worker.process_recording_control() {
+                    let Ok(job) = jobs.recv() else {
+                        break;
                     };
-                    if start {
-                        recorder = Some(crate::video::Recorder::new(crate::video::FPS));
-                    }
-                    if let (Some(recorder), Some(frame)) = (&mut recorder, frame) {
-                        // This is deliberately the only Recorder::push call:
-                        // RGBA conversion and JPEG encode never touch UI.
-                        recorder.push(&frame);
-                    }
-                    let Some(job) = finish else {
-                        continue;
-                    };
-                    let (w, h, dur_ms) = recorder.as_ref().map_or((0, 0, 0), |recorder| {
-                        let (w, h) = recorder.dimensions();
-                        (w, h, recorder.duration_ms())
-                    });
-                    let result = recorder
-                        .take()
-                        .and_then(crate::video::Recorder::finish)
-                        .ok_or_else(|| "nothing recorded".to_string())
-                        .and_then(|bytes| {
-                            crate::media::store(&bytes)
-                                .ok_or_else(|| "couldn't verify portable clip bytes".to_string())
-                                .and_then(|media_id| {
-                                    let name = match job.dir.as_ref() {
-                                        Some(dir) => crate::video::write_clip(
-                                            dir,
-                                            &bytes,
-                                            &crate::library::timestamp_name(),
-                                        )
-                                        .map_err(|error| error.to_string())?,
-                                        None => {
-                                            format!("VID_{}.avi", crate::library::timestamp_name())
-                                        }
-                                    };
-                                    Ok(VideoSaved {
-                                        local_path: job.dir.as_ref().map(|dir| dir.join(&name)),
-                                        name,
-                                        media_id,
-                                        w,
-                                        h,
-                                        dur_ms,
-                                        facing: job.facing,
-                                    })
-                                })
-                        });
-                    if video_results
-                        .send(VideoResult {
-                            invocation: job.invocation,
-                            generation: job.generation,
-                            result,
-                        })
-                        .is_err()
-                    {
+                    if !worker.process_job(job) || !worker.process_recording_control() {
                         break;
                     }
                 }
             })
-            .ok()
-            .map(|_| recording_wake_tx);
-        let (thumb_tx, thumb_jobs) = std::sync::mpsc::sync_channel::<ThumbnailJob>(1);
-        let (thumb_results, thumb_rx) = std::sync::mpsc::sync_channel::<ThumbnailResult>(1);
-        let thumb_tx = std::thread::Builder::new()
-            .name("camera-thumbnail-decode".into())
-            .spawn(move || {
-                while let Ok(job) = thumb_jobs.recv() {
-                    let result = match job.source {
-                        ThumbnailSource::Path(path) => {
-                            crate::library::load_thumb(&path, job.width, job.height)
-                        }
-                        ThumbnailSource::Media(id) => crate::media::read(&id).and_then(|bytes| {
-                            crate::library::load_thumb_bytes(&bytes, job.width, job.height)
-                        }),
-                    };
-                    if thumb_results
-                        .send(ThumbnailResult {
-                            generation: job.generation,
-                            id: job.id,
-                            result,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .ok()
-            .map(|_| thumb_tx);
-        let (library_tx, library_jobs) = std::sync::mpsc::sync_channel::<LibraryJob>(1);
-        let (library_results, library_rx) = std::sync::mpsc::sync_channel::<LibraryResult>(1);
-        let library_tx = std::thread::Builder::new()
-            .name("camera-library-index".into())
-            .spawn(move || {
-                while let Ok(job) = library_jobs.recv() {
-                    let result = Ok(crate::library::scan(&job.dir, &job.favorites));
-                    if library_results
-                        .send(LibraryResult {
-                            generation: job.generation,
-                            result,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .ok()
-            .map(|_| library_tx);
-        let (scan_tx, scan_jobs) = std::sync::mpsc::sync_channel::<ScanJob>(1);
-        let (scan_results, scan_rx) = std::sync::mpsc::sync_channel::<ScanResult>(1);
-        let scan_tx = std::thread::Builder::new()
-            .name("camera-code-decode".into())
-            .spawn(move || {
-                while let Ok(job) = scan_jobs.recv() {
-                    let luma = match job.source {
-                        ScanSource::Path(path) => crate::library::load_luma(&path, 1024),
-                        ScanSource::Media(id) => crate::media::read(&id)
-                            .and_then(|bytes| crate::library::load_luma_bytes(&bytes, 1024)),
-                        ScanSource::Frame(frame) => {
-                            let w = frame.w as usize;
-                            let h = frame.h as usize;
-                            Some((crate::frame::luma(&frame), w, h))
-                        }
-                    };
-                    let result = luma.and_then(|(luma, w, h)| {
-                        crate::scan::decode_and_classify(&luma, w, h, |p| p)
-                    });
-                    if scan_results
-                        .send(ScanResult {
-                            generation: job.generation,
-                            id: job.id,
-                            record_history: job.record_history,
-                            result: Ok(result),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            })
-            .ok()
-            .map(|_| scan_tx);
+            .is_ok();
         Self {
-            tx,
+            tx: started.then_some(tx),
             rx,
-            recording_wake_tx,
             video_rx,
             recording,
-            thumb_tx,
             thumb_rx,
-            library_tx,
             library_rx,
-            scan_tx,
             scan_rx,
         }
     }
@@ -381,7 +369,7 @@ impl CameraWorker {
             .tx
             .as_ref()
             .ok_or_else(|| "Camera background worker couldn't start".to_string())?
-            .try_send(job)
+            .try_send(WorkerJob::Photo(job))
         {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err("Camera is still saving the previous photo".into()),
@@ -399,13 +387,13 @@ impl CameraWorker {
     ///
     fn wake_recording(&self) -> Result<(), String> {
         match self
-            .recording_wake_tx
+            .tx
             .as_ref()
             .ok_or_else(|| "Camera video worker couldn't start".to_string())?
-            .try_send(())
+            .try_send(WorkerJob::RecordingWake)
         {
-            Ok(()) | Err(TrySendError::Full(())) => Ok(()),
-            Err(TrySendError::Disconnected(())) => Err("Camera video worker disconnected".into()),
+            Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => Err("Camera video worker disconnected".into()),
         }
     }
 
@@ -475,10 +463,10 @@ impl CameraWorker {
     /// Returns a visible error if the bounded queue is full or its worker ended.
     pub fn submit_thumbnail(&self, job: ThumbnailJob) -> Result<(), String> {
         match self
-            .thumb_tx
+            .tx
             .as_ref()
             .ok_or_else(|| "Camera thumbnail worker couldn't start".to_string())?
-            .try_send(job)
+            .try_send(WorkerJob::Thumbnail(job))
         {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err("Thumbnail queue is busy".into()),
@@ -497,10 +485,10 @@ impl CameraWorker {
     /// Returns a visible error if the bounded queue is full or its worker ended.
     pub fn submit_library(&self, job: LibraryJob) -> Result<(), String> {
         match self
-            .library_tx
+            .tx
             .as_ref()
             .ok_or_else(|| "Camera library worker couldn't start".to_string())?
-            .try_send(job)
+            .try_send(WorkerJob::Library(job))
         {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err("Camera library is already refreshing".into()),
@@ -517,10 +505,10 @@ impl CameraWorker {
     /// Returns a visible error if the bounded queue is full or its worker ended.
     pub fn submit_scan(&self, job: ScanJob) -> Result<(), String> {
         match self
-            .scan_tx
+            .tx
             .as_ref()
             .ok_or_else(|| "Camera code scanner couldn't start".to_string())?
-            .try_send(job)
+            .try_send(WorkerJob::Scan(job))
         {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err("A code scan is already running".into()),
