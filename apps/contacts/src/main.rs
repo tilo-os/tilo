@@ -82,6 +82,9 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
         Some("context") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_context_menu()),
         Some("confirm") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_confirm_delete()),
+        Some("import-conflict") => {
+            Box::new(|a: &mut contacts::ContactsApp| a.shots_show_import_conflict())
+        }
         Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
         _ => Box::new(|_: &mut contacts::ContactsApp| {}),
     };
@@ -114,6 +117,7 @@ pub fn main() {
                 "unsaved",
                 "context",
                 "confirm",
+                "import-conflict",
                 "empty",
             ])
             .open_state(open_state)
