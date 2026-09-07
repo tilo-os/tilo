@@ -673,7 +673,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 struct PendingPlacement {
-    /// Package id, or desktop-file id for a host app; keys replacement.
+    /// Package id, or desktop-file id for a host app; identifies one launch
+    /// within the FIFO queue for that application.
     key: String,
     /// Every string the window might announce itself as (package id +
     /// trailing component, or a host app's `.desktop` identities) —
@@ -1918,7 +1919,8 @@ pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
 }
 
 /// Record where the window of the launch about to start should land.
-/// Replaces any note for the same package — the newer intent wins.
+/// Multiple launches of the same package remain FIFO: each arriving surface
+/// consumes the destination chosen by its own user action.
 pub fn set_pending_placement(
     package_id: &str,
     placement: crate::compositor::tab_binding::Placement,
@@ -1940,7 +1942,6 @@ pub fn set_pending_placement_for_identities(
     placement: crate::compositor::tab_binding::Placement,
 ) {
     let mut pending = lock(&PENDING_PLACEMENT);
-    pending.retain(|p| p.key != key);
     pending.push(PendingPlacement {
         key: key.to_string(),
         identities: identities.to_vec(),
@@ -2053,11 +2054,17 @@ pub(crate) fn take_staged_resume_for_package(
     take_staged_resume(placement, room)
 }
 
-/// Drop the placement note for `package_id`, if any — undoes a
-/// [`set_pending_placement`] whose launch then failed to start.
+/// Drop the newest unclaimed placement note for `package_id`, if any —
+/// undoing the most recently staged launch that failed before a surface was
+/// created without destroying older concurrent launches' destinations.
 pub fn clear_pending_placement(package_id: &str) {
     let mut pending = lock(&PENDING_PLACEMENT);
-    pending.retain(|p| p.key != package_id);
+    if let Some(index) = pending
+        .iter()
+        .rposition(|p| p.key == package_id && p.claimed_by.is_none())
+    {
+        pending.remove(index);
+    }
 }
 
 /// Drop every placement note. Used by tests, which share this
@@ -2191,6 +2198,53 @@ mod tests {
             take_staged_resume_for_package("dev.qos.browser", room),
             Some((None, 0xdead_beef))
         );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn same_app_launch_placements_are_claimed_fifo() {
+        clear_pending_placements();
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(11),
+        );
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(22),
+        );
+
+        assert_eq!(
+            placement_for_toplevel("same-app", 101),
+            Some(crate::compositor::tab_binding::Placement::IntoTab(11))
+        );
+        assert_eq!(
+            placement_for_toplevel("same-app", 202),
+            Some(crate::compositor::tab_binding::Placement::IntoTab(22))
+        );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn failed_newest_same_app_launch_keeps_older_destination() {
+        clear_pending_placements();
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(11),
+        );
+        set_pending_placement(
+            "dev.qos.same-app",
+            crate::compositor::tab_binding::Placement::IntoTab(22),
+        );
+        clear_pending_placement("dev.qos.same-app");
+
+        assert_eq!(
+            placement_for_toplevel("same-app", 101),
+            Some(crate::compositor::tab_binding::Placement::IntoTab(11)),
+            "clearing the failed second launch must not erase the first launch's placement"
+        );
+        assert_eq!(placement_for_toplevel("same-app", 202), None);
         clear_pending_placements();
     }
 

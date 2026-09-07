@@ -2525,7 +2525,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, reason = "end-to-end retained renderer oracle")]
     fn retained_damage_matches_full_with_clips_overlaps_and_image_updates() {
         const W: u32 = 256;
         const H: u32 = 192;
@@ -2654,6 +2654,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "local fixed dimensions document the second phase of this renderer oracle"
+    )]
     fn sparse_damage_masks_same_tile_and_handles_a_tall_native_prefix() {
         const W: u32 = 256;
         const H: u32 = 192;
@@ -2737,7 +2741,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::items_after_statements, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "end-to-end sparse renderer oracle with local fixed geometry"
+    )]
     fn sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames() {
         if !matches!(std::env::var("VELLO_SPARSE_COARSE").as_deref(), Ok("1")) {
             eprintln!("skipping sparse coarse test: coarse selection is not requested");
@@ -3414,7 +3422,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::items_after_statements, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "end-to-end CPU/GPU path equivalence oracle with local fixed geometry"
+    )]
     fn cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled() {
         if !env_enabled_by_default("VELLO_CPU_PATHTAG") {
             eprintln!("skipping CPU path-tag test: selective path tags are not requested");
@@ -3777,7 +3789,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::items_after_statements, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "end-to-end direct/indirect renderer equivalence oracle"
+    )]
     fn direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages() {
         if !env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH") {
             eprintln!("skipping direct path-dispatch test: experiment is not requested");
@@ -3924,7 +3940,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::items_after_statements, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::items_after_statements,
+        reason = "end-to-end sparse upload allocation and pixel oracle"
+    )]
     fn sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle() {
         if !env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE") {
             eprintln!("skipping sparse upload reuse test: reuse is not requested");
@@ -4058,7 +4078,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::items_after_statements)]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "local fixed dimensions document the renderer recovery geometry"
+    )]
     fn gpu_path_experiments_keep_overflow_recovery_complete() {
         let deferred_bump_requested = matches!(
             std::env::var("VELLO_DEFER_BUMP_READBACK").as_deref(),
@@ -4125,7 +4148,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "end-to-end geometric damage capacity oracle"
+    )]
     fn geometric_damage_capacity_grows_and_shrinks_without_changing_native_pixels() {
         const W: u32 = 512;
         const H: u32 = 128;

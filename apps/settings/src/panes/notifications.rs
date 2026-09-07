@@ -1022,7 +1022,7 @@ mod tests {
         )
         .entries;
 
-        let apps = installed_notification_apps_from(&Default::default(), &entries);
+        let apps = installed_notification_apps_from(&BTreeMap::default(), &entries);
         assert_eq!(
             apps.iter()
                 .find(|app| app.id == "org.example.Chat")

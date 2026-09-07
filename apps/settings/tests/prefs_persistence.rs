@@ -221,13 +221,10 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     pane.set_form_fields_for_test("Test User", "test@gmail.com", "test@gmail.com", "");
     pane.set_form_password_for_test("s3cret-pw");
     pane.submit_form_for_test();
-    for _ in 0..100 {
-        pane.sync(&mut doc, &root);
-        if !pane.form_open() {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    assert!(
+        pane.finish_form_submission_for_test(&mut doc, &root),
+        "bounded account probe and disk transaction complete"
+    );
 
     // The account is now in the shared on-disk store Mail loads, auto-configured.
     let dir = AccountDirectory::load();

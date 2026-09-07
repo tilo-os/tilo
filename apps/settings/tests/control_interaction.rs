@@ -30,7 +30,9 @@ use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
 const W: f32 = 1200.0;
-const H: f32 = 760.0;
+// Wide navigation tests address every category directly; keep each target
+// visible. Short-viewport sidebar scrolling is exercised separately.
+const H: f32 = 1280.0;
 
 /// Run the host's per-frame `build_layout → compute_layout(measure) →
 /// apply_layout` cycle at the default wide viewport, returning the live tree
