@@ -682,6 +682,7 @@ impl PdfDoc {
             let Ok(rm) = doc.insert_object(&replies, ri, ObjType::Map) else {
                 continue;
             };
+            let _ = doc.put(&rm, "id", r.id.as_str());
             let _ = doc.put(&rm, "author", r.author.as_str());
             let _ = doc.put(&rm, "body", r.body.as_str());
         }
@@ -708,9 +709,20 @@ impl PdfDoc {
             let resolved = Self::get_bool(doc, &m, "resolved").unwrap_or(false);
             let mut replies = Vec::new();
             if let Ok(Some((Value::Object(ObjType::List), rl))) = doc.get(&m, "replies") {
+                let mut seen_reply_ids = HashSet::new();
                 for j in 0..doc.length(&rl) {
                     if let Ok(Some((Value::Object(ObjType::Map), rm))) = doc.get(&rl, j) {
+                        // Old documents predate reply ids.  Give their
+                        // read-only projection a deterministic legacy key;
+                        // newly-authored replies always persist their UUID and
+                        // are never renumbered when siblings arrive.
+                        let id = Self::get_str(doc, &rm, "id")
+                            .unwrap_or_else(|| Self::legacy_reply_id(&id, &rm));
+                        if !seen_reply_ids.insert(id.clone()) {
+                            continue;
+                        }
                         replies.push(Reply {
+                            id,
                             author: Self::get_str(doc, &rm, "author").unwrap_or_default(),
                             body: Self::get_str(doc, &rm, "body").unwrap_or_default(),
                         });
@@ -765,6 +777,9 @@ impl PdfDoc {
     }
 
     pub fn add_reply(doc: &mut AutoCommit, comment_id: &str, reply: &Reply) {
+        if reply.id.trim().is_empty() {
+            return;
+        }
         let Some(list) = Self::list(doc, "comments") else {
             return;
         };
@@ -778,13 +793,32 @@ impl PdfDoc {
             let Some(replies) = replies else {
                 return;
             };
+            // Action envelopes can be delivered more than once after a retry
+            // or peer merge.  The durable reply id makes this idempotent.
+            for index in 0..doc.length(&replies) {
+                if let Ok(Some((Value::Object(ObjType::Map), existing))) = doc.get(&replies, index)
+                    && Self::get_str(doc, &existing, "id").as_deref() == Some(reply.id.as_str())
+                {
+                    return;
+                }
+            }
             let idx = doc.length(&replies);
             let Ok(rm) = doc.insert_object(&replies, idx, ObjType::Map) else {
                 return;
             };
+            let _ = doc.put(&rm, "id", reply.id.as_str());
             let _ = doc.put(&rm, "author", reply.author.as_str());
             let _ = doc.put(&rm, "body", reply.body.as_str());
         }
+    }
+
+    /// Stable projection for old reply maps which had no id on disk.  This is
+    /// deliberately read-only: writing a generated id while listing would
+    /// create a surprising local edit.  The map's Automerge object id remains
+    /// stable through insertions and merges, so legacy siblings do not get
+    /// renumbered merely because a new reply is added.
+    fn legacy_reply_id(comment_id: &str, reply: &ObjId) -> String {
+        format!("legacy:{comment_id}:{reply}")
     }
 
     // ---- signatures -------------------------------------------------
@@ -1010,6 +1044,7 @@ mod tests {
             created: 5,
             resolved: false,
             replies: vec![Reply {
+                id: Reply::new_id(),
                 author: "Bob".into(),
                 body: "Yes, verified.".into(),
             }],
@@ -1021,11 +1056,13 @@ mod tests {
         assert_eq!(got[0].anno_id.as_deref(), Some("anno-1"));
         assert_eq!(got[0].replies.len(), 1);
         assert_eq!(got[0].replies[0].author, "Bob");
+        assert_eq!(got[0].replies[0].id, c.replies[0].id);
 
         PdfDoc::add_reply(
             &mut doc,
             &cid,
             &Reply {
+                id: Reply::new_id(),
                 author: "Carol".into(),
                 body: "Agreed.".into(),
             },
@@ -1036,6 +1073,53 @@ mod tests {
         assert_eq!(got[0].replies.len(), 2);
         assert!(got[0].resolved);
         assert_eq!(got[0].body, "Edited: confirmed accurate.");
+    }
+
+    #[test]
+    fn reply_ids_survive_reload_retries_and_concurrent_merges() {
+        let mut base = AutoCommit::new();
+        let comment = Comment {
+            id: "thread-1".into(),
+            anno_id: None,
+            page: 1,
+            author: "Ada".into(),
+            body: "Please review this.".into(),
+            created: 1,
+            resolved: false,
+            replies: Vec::new(),
+        };
+        PdfDoc::add_comment(&mut base, &comment);
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).unwrap();
+        let mut right = AutoCommit::load(&bytes).unwrap();
+        let left_reply = Reply {
+            id: "reply-left".into(),
+            author: "Grace".into(),
+            body: "Looks good.".into(),
+        };
+        let right_reply = Reply {
+            id: "reply-right".into(),
+            author: "Lin".into(),
+            body: "One small change.".into(),
+        };
+        PdfDoc::add_reply(&mut left, &comment.id, &left_reply);
+        // A retried delivery has the same id and must remain exactly one reply.
+        PdfDoc::add_reply(&mut left, &comment.id, &left_reply);
+        PdfDoc::add_reply(&mut right, &comment.id, &right_reply);
+        left.merge(&mut right).unwrap();
+        let replies = &PdfDoc::list_comments(&left)[0].replies;
+        assert_eq!(replies.len(), 2);
+        assert!(replies.iter().any(|reply| reply.id == "reply-left"));
+        assert!(replies.iter().any(|reply| reply.id == "reply-right"));
+
+        let reloaded = AutoCommit::load(&left.save()).unwrap();
+        let reloaded_comments = PdfDoc::list_comments(&reloaded);
+        let ids: Vec<&str> = reloaded_comments[0]
+            .replies
+            .iter()
+            .map(|reply| reply.id.as_str())
+            .collect();
+        assert!(ids.contains(&"reply-left") && ids.contains(&"reply-right"));
     }
 
     #[test]
