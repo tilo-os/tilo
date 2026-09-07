@@ -312,12 +312,10 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
         ids.len() >= 3,
         "need a few sample videos to build a results list"
     );
-    let first = ids[0].clone();
-
     let app = tube::TubeApp::new()
         .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_model_for_test(sample)
-        .with_search_for_test(query, ids);
+        .with_search_for_test(query, ids.clone());
     let mut h = Harness::new(app, VIEWPORT);
     assert_eq!(h.app.route_for_test(), &Route::Search(query.into()));
     assert!(
@@ -332,10 +330,26 @@ fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved
         .expect("results grid laid out")
         .y0;
 
-    // Open the first result via a real click on its card.
-    h.click_id(&format!("video_card_{first}"));
+    // Open a *visible* result via a real click. The first result is now above
+    // the clipped viewport, so activating it would be a synthetic off-screen
+    // click rather than a user-visible search interaction.
+    let opened = ids
+        .iter()
+        .find(|id| {
+            h.rect_by_id(&format!("video_card_{id}"))
+                .is_some_and(|rect| {
+                    let center = rect.center();
+                    center.x >= 0.0
+                        && center.x < f64::from(VIEWPORT.0)
+                        && center.y >= 0.0
+                        && center.y < f64::from(VIEWPORT.1)
+                })
+        })
+        .expect("a scrolled search result remains visible and clickable")
+        .clone();
+    h.click_id(&format!("video_card_{opened}"));
     assert!(
-        matches!(h.app.route_for_test(), Route::Watch(id) if *id == first),
+        matches!(h.app.route_for_test(), Route::Watch(id) if *id == opened),
         "clicking a result opens its watch page"
     );
 
