@@ -24,6 +24,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::thread;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -67,6 +69,144 @@ use crate::reading_settings::{ReadingSettings, ReadingSettingsAction};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
+
+/// Whether a parsed book should replace the reader's current content or only
+/// join a watched shelf. The worker carries this presentation intent but never
+/// touches the document.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ImportKind {
+    Open,
+    Watch,
+}
+
+struct ImportRequest {
+    generation: u64,
+    path: PathBuf,
+    kind: ImportKind,
+    #[cfg(test)]
+    delay: Duration,
+}
+
+struct ImportResult {
+    generation: u64,
+    path: PathBuf,
+    kind: ImportKind,
+    result: Result<Book, String>,
+}
+
+/// A bounded, latest-wins worker mailbox. At most one EPUB is being parsed and
+/// one newer request is retained; a burst of watched files cannot create an
+/// unbounded queue or block an event handler.
+struct ImportMailbox {
+    pending: Option<ImportRequest>,
+    closed: bool,
+}
+
+struct ImportWorker {
+    mailbox: Arc<(Mutex<ImportMailbox>, Condvar)>,
+    results: mpsc::Receiver<ImportResult>,
+}
+
+impl ImportWorker {
+    fn new() -> Result<Self, String> {
+        let mailbox = Arc::new((
+            Mutex::new(ImportMailbox {
+                pending: None,
+                closed: false,
+            }),
+            Condvar::new(),
+        ));
+        let (result_tx, results) = mpsc::sync_channel(1);
+        let worker_mailbox = Arc::clone(&mailbox);
+        thread::Builder::new()
+            .name("ebook-import-worker".into())
+            .spawn(move || {
+                loop {
+                    let request = {
+                        let (lock, wake) = &*worker_mailbox;
+                        let mut state = lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        while state.pending.is_none() && !state.closed {
+                            state = wake
+                                .wait(state)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        }
+                        if state.closed {
+                            return;
+                        }
+                        state.pending.take()
+                    };
+                    let Some(request) = request else { continue };
+                    #[cfg(test)]
+                    thread::sleep(request.delay);
+                    let result = content::parse_path_detailed(&request.path);
+                    if result_tx
+                        .send(ImportResult {
+                            generation: request.generation,
+                            path: request.path,
+                            kind: request.kind,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            })
+            .map_err(|error| format!("couldn't start the book importer: {error}"))?;
+        Ok(Self { mailbox, results })
+    }
+
+    fn request(&self, request: ImportRequest) -> Result<(), String> {
+        let (lock, wake) = &*self.mailbox;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.closed {
+            return Err("the book importer stopped".into());
+        }
+        state.pending = Some(request);
+        drop(state);
+        wake.notify_one();
+        Ok(())
+    }
+
+    fn try_recv(&self) -> Result<ImportResult, mpsc::TryRecvError> {
+        self.results.try_recv()
+    }
+
+    #[cfg(test)]
+    fn close_for_test(&self) {
+        let (lock, wake) = &*self.mailbox;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed = true;
+        state.pending = None;
+        drop(state);
+        wake.notify_one();
+    }
+}
+
+impl Drop for ImportWorker {
+    fn drop(&mut self) {
+        let (lock, wake) = &*self.mailbox;
+        let mut state = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed = true;
+        state.pending = None;
+        drop(state);
+        wake.notify_one();
+    }
+}
+
+struct LoadingImport {
+    generation: u64,
+    path: PathBuf,
+    kind: ImportKind,
+}
 
 fn book_open_request() -> PickRequest {
     PickRequest::open("Open a book", "Open")
@@ -416,6 +556,14 @@ pub struct BooksApp {
     resource_open_path: Option<PathBuf>,
     resource_invocation: Option<qos_actions::InvocationId>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
+    /// The sole background parser. It owns no document state; completed books
+    /// are committed only by [`Self::drain_import_worker`] on the UI thread.
+    import_worker: Option<ImportWorker>,
+    /// Spawn failures are deferred into an honest error only if the reader
+    /// actually asks to import, rather than failing app startup outright.
+    import_worker_error: Option<String>,
+    import_generation: u64,
+    import_loading: Option<LoadingImport>,
     /// Empty-state message when opening a book failed.
     load_error: Option<String>,
 
@@ -663,6 +811,10 @@ impl BooksApp {
                   inner literal setting every field itself"
     )]
     fn blank_view_state() -> Self {
+        let (import_worker, import_worker_error) = match ImportWorker::new() {
+            Ok(worker) => (Some(worker), None),
+            Err(error) => (None, Some(error)),
+        };
         Self {
             library: Vec::new(),
             library_paths: HashMap::new(),
@@ -674,6 +826,10 @@ impl BooksApp {
             resource_open_path: None,
             resource_invocation: None,
             completed_resource_invocation: None,
+            import_worker,
+            import_worker_error,
+            import_generation: 0,
+            import_loading: None,
             load_error: None,
             rect: Rect::ZERO,
             dirty: true,
@@ -930,6 +1086,23 @@ impl BooksApp {
                 // the scrimmed flap reads clearly against the page.
                 self.toc_flap.snap(true);
                 self.notes_flap.snap(false);
+            }
+            "import-error" => {
+                self.view = View::Reader;
+                // Exercise the same persistent, visible error surface used by
+                // a real failed picker/import without fabricating a book into
+                // the live library.
+                self.load_error = Some(
+                    "Couldn’t open damaged.epub: epub text is too large (maximum 64 MiB)".into(),
+                );
+            }
+            "import-loading" => {
+                self.view = View::Reader;
+                self.import_loading = Some(LoadingImport {
+                    generation: 1,
+                    path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
+                    kind: ImportKind::Open,
+                });
             }
             "type" => {
                 self.view = View::Reader;
@@ -1406,11 +1579,9 @@ impl BooksApp {
         }
         self.library_loaded = true;
 
-        // Import a handed-over book first, so it is part of the loaded set.
-        let open_id = self
-            .pending_open_path
-            .take()
-            .and_then(|p| content::import_path(doc, &p).map(|b| b.id));
+        // A handed-over book joins the same bounded worker as a picker result;
+        // startup never parses an arbitrary file on the first UI frame.
+        let pending_open = self.pending_open_path.take();
 
         self.library.clear();
         self.library_paths.clear();
@@ -1419,9 +1590,12 @@ impl BooksApp {
             self.library.push(lb.book);
         }
 
-        match open_id.and_then(|id| self.library.iter().position(|b| b.id == id)) {
-            Some(i) => self.open_book_at(doc, i),
-            None => self.view = View::Library,
+        if let Some(path) = pending_open {
+            if let Err(error) = self.begin_import(path, ImportKind::Open) {
+                self.settle_import_failure(error, "ebook.importer_unavailable");
+            }
+        } else {
+            self.view = View::Library;
         }
     }
 
@@ -1464,7 +1638,7 @@ impl BooksApp {
 
     /// Drain a completed picker request, if any. Never blocks — a
     /// still-pending picker stays installed for the next frame.
-    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+    fn drain_portal(&mut self) {
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
@@ -1473,25 +1647,8 @@ impl BooksApp {
                 self.portal_rx = None;
                 match outcome {
                     PortalOutcome::Opened(path) => {
-                        self.import_and_open(doc, &path);
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.completed_resource_invocation =
-                                Some(if self.load_error.is_none() {
-                                    qos_actions::InvocationUpdate::Succeeded {
-                                        invocation,
-                                        output: qos_actions::ActionOutput::default(),
-                                    }
-                                } else {
-                                    qos_actions::InvocationUpdate::Failed {
-                                        invocation,
-                                        error: qos_actions::ActionFailure {
-                                            code: "ebook.open_failed".into(),
-                                            message: self.load_error.clone().unwrap_or_default(),
-                                            details: None,
-                                            retryable: false,
-                                        },
-                                    }
-                                });
+                        if let Err(error) = self.begin_import(path, ImportKind::Open) {
+                            self.settle_import_failure(error, "ebook.importer_unavailable");
                         }
                     }
                     // A cancel is not an error — leave the current view intact.
@@ -1529,48 +1686,202 @@ impl BooksApp {
         }
     }
 
-    /// Import the `.epub` at `path` into the library and open it in the reader.
-    /// Re-opening a book already on the shelf just re-opens it (no duplicate).
-    fn import_and_open(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        if let Some(book) = content::import_path(doc, path) {
-            let id = book.id.clone();
-            self.library_paths.insert(id.clone(), path.to_path_buf());
-            let i = if let Some(i) = self.library.iter().position(|b| b.id == id) {
-                i
-            } else {
-                self.library.push(book);
-                self.library.len() - 1
+    /// Put one EPUB on the latest-wins worker mailbox. This only changes local
+    /// loading state; all document mutation happens in [`Self::drain_import_worker`].
+    fn begin_import(&mut self, path: PathBuf, kind: ImportKind) -> Result<(), String> {
+        // A background shelf refresh must never replace an explicit user open.
+        // Watch requests coalesce with one another; after a successful receipt
+        // we schedule the next unseen file.
+        if self.import_loading.is_some() && kind == ImportKind::Watch {
+            return Ok(());
+        }
+        let generation = self
+            .import_generation
+            .checked_add(1)
+            .ok_or_else(|| "book import generation exhausted; restart Books".to_string())?;
+        let worker = self.import_worker.as_ref().ok_or_else(|| {
+            self.import_worker_error
+                .clone()
+                .unwrap_or_else(|| "the book importer is unavailable".into())
+        })?;
+        worker.request(ImportRequest {
+            generation,
+            path: path.clone(),
+            kind,
+            #[cfg(test)]
+            delay: Duration::ZERO,
+        })?;
+        self.import_generation = generation;
+        self.import_loading = Some(LoadingImport {
+            generation,
+            path,
+            kind,
+        });
+        self.load_error = None;
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn settle_import_failure(&mut self, message: String, code: &str) {
+        self.import_loading = None;
+        self.load_error = Some(message.clone());
+        if let Some(invocation) = self.resource_invocation.take() {
+            self.completed_resource_invocation = Some(qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: code.into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            });
+        }
+        self.dirty = true;
+    }
+
+    /// Accept worker results on the UI thread. Older generations have been
+    /// superseded by a later request and are discarded before they can mutate
+    /// the shelf, reader, or CRDT.
+    fn drain_import_worker(&mut self, doc: &mut AutoCommit) {
+        while let Some(outcome) = self.import_worker.as_ref().map(ImportWorker::try_recv) {
+            let completed = match outcome {
+                Ok(completed) => completed,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.import_worker = None;
+                    if self.import_loading.is_some() {
+                        self.settle_import_failure(
+                            "The book importer stopped.".into(),
+                            "ebook.importer_stopped",
+                        );
+                    }
+                    break;
+                }
             };
-            self.load_error = None;
-            self.open_book_at(doc, i);
-        } else {
-            self.load_error = Some("That file couldn't be opened as a book.".into());
+            let current = self.import_loading.as_ref().is_some_and(|loading| {
+                loading.generation == completed.generation
+                    && loading.path == completed.path
+                    && loading.kind == completed.kind
+            });
+            if !current {
+                continue;
+            }
+            self.import_loading = None;
+            match completed.result {
+                Ok(book) => {
+                    let book = content::record_imported_book(doc, &completed.path, book);
+                    let id = book.id.clone();
+                    self.library_paths.insert(id.clone(), completed.path);
+                    let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
+                        index
+                    } else {
+                        self.library.push(book);
+                        self.library.len() - 1
+                    };
+                    self.load_error = None;
+                    if completed.kind == ImportKind::Open {
+                        self.open_book_at(doc, index);
+                    }
+                    if let Some(invocation) = self.resource_invocation.take() {
+                        self.completed_resource_invocation =
+                            Some(qos_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: qos_actions::ActionOutput::default(),
+                            });
+                    }
+                    // A watched-folder refresh advances one book at a time.
+                    // A failed file is not immediately retried in a loop.
+                    if completed.kind == ImportKind::Watch {
+                        self.rescan_watched(doc);
+                    }
+                }
+                Err(error) => {
+                    let name = completed
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("book");
+                    self.load_error = Some(format!("Couldn’t open {name}: {error}"));
+                    if let Some(invocation) = self.resource_invocation.take() {
+                        self.completed_resource_invocation =
+                            Some(qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "ebook.open_failed".into(),
+                                    message: self.load_error.clone().unwrap_or_default(),
+                                    details: None,
+                                    retryable: false,
+                                },
+                            });
+                    }
+                }
+            }
             self.dirty = true;
         }
     }
 
-    /// Re-scan the reader's watched folders and pull in any book not already
-    /// on the shelf. Cheap when nothing is new, so it is safe to run on
-    /// window focus.
-    fn rescan_watched(&mut self, doc: &mut AutoCommit) {
+    #[cfg(test)]
+    fn begin_import_with_delay(
+        &mut self,
+        path: &std::path::Path,
+        kind: ImportKind,
+        delay: Duration,
+    ) -> Result<(), String> {
+        if self.import_loading.is_some() && kind == ImportKind::Watch {
+            return Ok(());
+        }
+        let generation = self
+            .import_generation
+            .checked_add(1)
+            .ok_or_else(|| "book import generation exhausted; restart Books".to_string())?;
+        let worker = self
+            .import_worker
+            .as_ref()
+            .ok_or_else(|| "the book importer is unavailable".to_string())?;
+        worker.request(ImportRequest {
+            generation,
+            path: path.to_path_buf(),
+            kind,
+            delay,
+        })?;
+        self.import_generation = generation;
+        self.import_loading = Some(LoadingImport {
+            generation,
+            path: path.to_path_buf(),
+            kind,
+        });
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn import_and_open_for_test(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        let book = content::parse_path_detailed(path).expect("test EPUB parses");
+        let book = content::record_imported_book(doc, path, book);
+        let id = book.id.clone();
+        self.library_paths.insert(id.clone(), path.to_path_buf());
+        let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
+            index
+        } else {
+            self.library.push(book);
+            self.library.len() - 1
+        };
+        self.open_book_at(doc, index);
+    }
+
+    /// Queue at most one unseen watched EPUB. The work is deferred so focus
+    /// events remain responsive even for a large library.
+    fn rescan_watched(&mut self, doc: &AutoCommit) {
+        if self.import_loading.is_some() {
+            return;
+        }
         let known: std::collections::HashSet<PathBuf> =
             self.library_paths.values().cloned().collect();
-        let mut changed = false;
-        for path in content::watched_epub_paths(doc) {
-            if known.contains(&path) {
-                continue;
-            }
-            if let Some(book) = content::import_path(doc, &path) {
-                let id = book.id.clone();
-                if !self.library.iter().any(|b| b.id == id) {
-                    self.library.push(book);
-                    changed = true;
-                }
-                self.library_paths.insert(id, path);
-            }
-        }
-        if changed {
-            self.dirty = true;
+        if let Some(path) = content::watched_epub_paths(doc)
+            .into_iter()
+            .find(|path| !known.contains(path))
+            && let Err(error) = self.begin_import(path, ImportKind::Watch)
+        {
+            self.settle_import_failure(error, "ebook.importer_unavailable");
         }
     }
 
@@ -3361,6 +3672,32 @@ impl BooksApp {
                 .with_children(children),
         )
     }
+
+    fn draw_load_toast(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        message: &str,
+        border: Color,
+    ) {
+        let r = self.rect;
+        let width = r.width().clamp(220.0, 460.0);
+        let x1 = r.x1 - 18.0;
+        let toast = Rect::new(x1 - width, r.y0 + TOP_BAR + 14.0, x1, r.y0 + TOP_BAR + 62.0);
+        paint::fill_round(scene, t, toast, 10.0, theme.tokens.colors.surfaces.raised);
+        paint::stroke_round(scene, t, toast, 10.0, border.with_alpha_factor(0.8), 1.0);
+        let text: String = message.chars().take(180).collect();
+        tr.draw_text(
+            scene,
+            &text,
+            12.5,
+            theme.tokens.colors.text_primary,
+            t * Affine::translate((toast.x0 + 14.0, toast.y0 + 16.0)),
+            Some((toast.width() - 28.0) as f32),
+        );
+    }
 }
 
 impl Widget for BooksApp {
@@ -3569,6 +3906,11 @@ impl Widget for BooksApp {
             self.resource_invocation = None;
             self.resource_open_path = None;
             self.portal_rx = None;
+            // Parsing cannot be safely interrupted mid-ZIP member, but its
+            // eventual result is no longer authoritative and will be rejected
+            // by the missing loading generation.
+            self.import_loading = None;
+            self.dirty = true;
             return Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("book open cancelled".into()),
@@ -3610,28 +3952,13 @@ impl Widget for BooksApp {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
-        if let Some(path) = self.resource_open_path.take() {
-            self.import_and_open(doc, &path);
-            if let Some(invocation) = self.resource_invocation.take() {
-                self.completed_resource_invocation = Some(if self.load_error.is_none() {
-                    qos_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: qos_actions::ActionOutput::default(),
-                    }
-                } else {
-                    qos_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: qos_actions::ActionFailure {
-                            code: "ebook.open_failed".into(),
-                            message: self.load_error.clone().unwrap_or_default(),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
-                });
-            }
+        if let Some(path) = self.resource_open_path.take()
+            && let Err(error) = self.begin_import(path, ImportKind::Open)
+        {
+            self.settle_import_failure(error, "ebook.importer_unavailable");
         }
-        self.drain_portal(doc);
+        self.drain_portal();
+        self.drain_import_worker(doc);
         if let Some(s) = self.shot_settings.take() {
             BooksDoc::write_settings(doc, &s);
         }
@@ -3786,6 +4113,35 @@ impl Widget for BooksApp {
             View::Library => self.draw_library(scene, transform, tr, theme),
             View::Reader => self.draw_reader(scene, transform, tr, theme),
             View::Settings => self.draw_settings(scene, transform, tr, theme),
+        }
+        // The empty shelf has a dedicated error position beneath its primary
+        // action. Every other view needs an honest loading/result surface:
+        // parsing happens off-thread, so the previous book stays interactive.
+        if self.view != View::Library || !self.library.is_empty() {
+            if let Some(loading) = &self.import_loading {
+                let name = loading
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("book");
+                self.draw_load_toast(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &format!("Opening {name}…"),
+                    theme.tokens.colors.semantic.info,
+                );
+            } else if let Some(error) = self.load_error.as_deref() {
+                self.draw_load_toast(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    error,
+                    theme.tokens.colors.semantic.danger,
+                );
+            }
         }
         if let Some(focused) = self.semantic_focus.as_deref()
             && let Some(hit) = self
@@ -10135,6 +10491,17 @@ mod interaction_tests {
         BooksApp::with_library(load_sample_library())
     }
 
+    fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
+        for _ in 0..80 {
+            app.sync(doc, &automerge::ROOT);
+            if app.import_loading.is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("book import did not finish in time");
+    }
+
     fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node);
@@ -12069,6 +12436,7 @@ mod interaction_tests {
         let mut app = BooksApp::open_path(&path);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
+        wait_for_import(&mut app, &mut doc);
 
         assert_eq!(
             app.view,
@@ -12103,12 +12471,92 @@ mod interaction_tests {
 
         app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(path)));
         app.sync(&mut doc, &automerge::ROOT);
+        wait_for_import(&mut app, &mut doc);
 
         assert_eq!(app.library.len(), 1, "the picked book joined the library");
         assert_eq!(app.view, View::Reader, "and opened in the reader");
         assert!(
             app.portal_rx.is_none(),
             "the portal channel clears after delivering"
+        );
+    }
+
+    #[test]
+    fn import_worker_never_blocks_and_rejects_a_stale_result() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let pa = a.path().join("slow-a.epub");
+        let pb = b.path().join("new-b.epub");
+        std::fs::write(&pa, crate::content::SAMPLE_EPUB).unwrap();
+        std::fs::write(&pb, crate::content::SAMPLE_EPUB).unwrap();
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+
+        let start = Instant::now();
+        app.begin_import_with_delay(&pa, ImportKind::Open, Duration::from_millis(180))
+            .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(40),
+            "queueing a slow parse stays on the UI budget"
+        );
+        // Let A leave the latest-wins mailbox and enter the worker, then B
+        // supersedes it. A may still finish, but its generation must be ignored.
+        std::thread::sleep(Duration::from_millis(20));
+        app.begin_import(pb.clone(), ImportKind::Open).unwrap();
+        assert_eq!(app.import_loading.as_ref().map(|l| &l.path), Some(&pb));
+
+        wait_for_import(&mut app, &mut doc);
+        let book = app.open_book().expect("new request opened");
+        assert_eq!(app.library_paths.get(&book.id), Some(&pb));
+        assert_eq!(
+            BooksDoc::read_library_entries(&doc)[0].path,
+            pb,
+            "stale A never rewrites the shared library entry"
+        );
+    }
+
+    #[test]
+    fn watch_scan_cannot_replace_an_explicit_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let open = tmp.path().join("open.epub");
+        let watched = tmp.path().join("watched.epub");
+        std::fs::write(&open, crate::content::SAMPLE_EPUB).unwrap();
+        std::fs::write(&watched, crate::content::SAMPLE_EPUB).unwrap();
+        let mut app = BooksApp::with_library(Vec::new());
+
+        app.begin_import_with_delay(&open, ImportKind::Open, Duration::from_millis(100))
+            .unwrap();
+        app.begin_import(watched, ImportKind::Watch).unwrap();
+        let loading = app.import_loading.as_ref().expect("open remains pending");
+        assert_eq!(loading.kind, ImportKind::Open);
+        assert_eq!(loading.path, open);
+    }
+
+    #[test]
+    fn importer_disconnect_and_generation_exhaustion_are_visible_failures() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let path = PathBuf::from("/tmp/book.epub");
+        app.import_worker.as_ref().unwrap().close_for_test();
+        std::thread::sleep(Duration::from_millis(10));
+        let error = app
+            .begin_import(path.clone(), ImportKind::Open)
+            .unwrap_err();
+        app.settle_import_failure(error, "ebook.importer_unavailable");
+        assert!(
+            app.load_error
+                .as_deref()
+                .is_some_and(|s| s.contains("importer"))
+        );
+
+        let mut exhausted = BooksApp::with_library(Vec::new());
+        exhausted.import_generation = u64::MAX;
+        let error = exhausted.begin_import(path, ImportKind::Open).unwrap_err();
+        exhausted.settle_import_failure(error, "ebook.importer_exhausted");
+        assert!(
+            exhausted
+                .load_error
+                .as_deref()
+                .is_some_and(|s| s.contains("generation exhausted"))
         );
     }
 
@@ -12128,14 +12576,14 @@ mod interaction_tests {
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
-        app.import_and_open(&mut doc, &pa);
+        app.import_and_open_for_test(&mut doc, &pa);
         let id = app.library[0].id.clone();
         // A highlight made while reading the first copy.
         BooksDoc::upsert_annotation(&mut doc, &Annotation::new(&id, AnnoKind::Highlight, 0, 1));
         assert_eq!(BooksDoc::annotations_for(&doc, &id).len(), 1);
 
         // Open the *same bytes* from a completely different path.
-        app.import_and_open(&mut doc, &pb);
+        app.import_and_open_for_test(&mut doc, &pb);
         assert_eq!(
             app.library.len(),
             1,
@@ -12172,7 +12620,7 @@ mod interaction_tests {
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
-        app.import_and_open(&mut doc, &shared_path);
+        app.import_and_open_for_test(&mut doc, &shared_path);
         let shared_idx = app
             .library
             .iter()
@@ -12201,7 +12649,7 @@ mod interaction_tests {
         let mut app = BooksApp::with_library(Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
-        app.import_and_open(&mut doc, &src);
+        app.import_and_open_for_test(&mut doc, &src);
         assert!(!app.book_is_shared(0), "starts local");
 
         app.dispatch(Action::ShareToWorkspace(0), &mut doc);
@@ -12220,7 +12668,7 @@ mod interaction_tests {
         let mut app = BooksApp::with_library(Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
-        app.import_and_open(&mut doc, &path);
+        app.import_and_open_for_test(&mut doc, &path);
         assert_eq!(app.library.len(), 1);
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
 
