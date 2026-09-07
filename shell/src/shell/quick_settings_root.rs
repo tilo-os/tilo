@@ -103,6 +103,13 @@ impl QuickSettingsRoot {
     const EDIT_HELP: f64 = 22.0;
     const EDIT_FOOTER: f64 = 38.0;
 
+    fn header_baseline_offset(&self) -> f64 {
+        // Spatial chrome may compact below 1× on a short display, but the
+        // title keeps the user's full text scale. Preserve a font-aware
+        // baseline so large text never collides with the action row.
+        (Self::PAD + 23.0) * self.layout_scale.max(1.0)
+    }
+
     pub fn load_persisted() -> Self {
         Self::from_config(QuickSettingsConfig::load(), true)
     }
@@ -125,7 +132,11 @@ impl QuickSettingsRoot {
         }
     }
     pub fn reset_focus(&mut self) {
-        self.keyboard_focus = Some(0);
+        // Opening the popover does not itself move keyboard focus. The first
+        // Tab selects the first visible control (Edit), matching ordinary
+        // desktop traversal instead of silently preselecting it and making
+        // that same Tab skip to Settings.
+        self.keyboard_focus = None;
     }
     pub fn set_layout_text_scale(&mut self, scale: f32) {
         // Text itself follows the user's full scale.  The surrounding shell
@@ -135,6 +146,22 @@ impl QuickSettingsRoot {
         // retained 20% row headroom keeps the two-line cards legible while
         // preserving the whole popover as a single, usable panel.
         self.layout_scale = f64::from(scale).clamp(1.0, 1.2);
+    }
+    /// Fit root-page spatial chrome to the available popover height while
+    /// leaving text itself at the user's full theme scale. The same effective
+    /// factor drives drawing and hit testing through every geometry helper.
+    pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
+        let controls = self.visible_controls(state).len();
+        let rows = controls.div_ceil(2);
+        let unscaled = Self::PAD * 2.0
+            + Self::HEADER
+            + Self::ACTIONS
+            + Self::SLIDERS
+            + Self::POWER
+            + Self::GAP * 4.0
+            + n(rows) * Self::CARD
+            + n(rows.saturating_sub(1)) * Self::GAP;
+        self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.88, 1.2));
     }
     fn scaled(&self, value: f64) -> f64 {
         value * self.layout_scale
@@ -586,6 +613,10 @@ impl QuickSettingsRoot {
         }
         if i == 0 {
             self.edit_mode = true;
+            // The normal root's index 0 is the Edit action; after the
+            // structural transition there is no longer an Edit control.
+            // Clear it so the next Tab starts at the first editable row.
+            self.keyboard_focus = None;
             return RootAction::LayoutChanged;
         }
         if let Some(action) = match i {
@@ -623,17 +654,31 @@ impl QuickSettingsRoot {
         let Some(from) = self.config.controls.iter().position(|x| *x == c) else {
             return false;
         };
-        let to = if direction < 0 {
-            from.checked_sub(1)
+        // `all` also contains available-but-disabled controls. Reorder against
+        // the adjacent visible row, not the numeric row index: otherwise a
+        // disabled control before the focused item can make the persisted
+        // order diverge from what the person sees and what accessibility
+        // publishes.
+        let neighbour = if direction < 0 {
+            i.checked_sub(1)
         } else {
-            (from + 1 < self.config.controls.len()).then_some(from + 1)
+            (i + 1 < all.len()).then_some(i + 1)
         };
-        let Some(to) = to else {
+        let Some(neighbour) = neighbour else {
+            return false;
+        };
+        let neighbour_control = all[neighbour];
+        let Some(to) = self
+            .config
+            .controls
+            .iter()
+            .position(|candidate| *candidate == neighbour_control)
+        else {
             return false;
         };
         let c = self.config.controls.remove(from);
         self.config.controls.insert(to, c);
-        self.keyboard_focus = Some(to);
+        self.keyboard_focus = Some(neighbour);
         self.save_config();
         true
     }
@@ -886,7 +931,7 @@ impl QuickSettingsRoot {
             transform.pre_translate(
                 (
                     self.panel.x0 + self.scaled(Self::PAD),
-                    self.panel.y0 + self.scaled(Self::PAD + 23.),
+                    self.panel.y0 + self.header_baseline_offset(),
                 )
                     .into(),
             ),
@@ -1698,6 +1743,23 @@ mod tests {
         );
     }
     #[test]
+    fn opening_has_no_hidden_focus_and_first_tab_selects_edit() {
+        let mut root = QuickSettingsRoot::default();
+        let state = QuickSettingsState::default();
+        root.keyboard_focus = Some(4);
+
+        root.reset_focus();
+        assert_eq!(root.keyboard_focus, None);
+        assert!(root.focus_next(&state, false));
+        assert_eq!(root.keyboard_focus, Some(0));
+        assert_eq!(
+            root.activate_focused(PANEL, &mut QuickSettingsState::default()),
+            RootAction::LayoutChanged
+        );
+        assert!(root.edit_mode());
+        assert_eq!(root.keyboard_focus, None);
+    }
+    #[test]
     fn edit_add_remove_and_keyboard_reorder_change_model() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
@@ -1789,6 +1851,27 @@ mod tests {
         assert!(root.preferred_height(&state) <= 536.);
         let panel = Rect::new(0., 48., 400., 48. + root.preferred_height(&state));
         assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
+    }
+    #[test]
+    fn large_text_fits_every_root_control_on_a_960_by_540_desktop() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        root.set_layout_text_scale(1.3);
+        let available = 540.0 - 48.0 - 16.0;
+        root.fit_root_layout_to_height(&state, available);
+        let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + available);
+
+        assert!(root.preferred_height(&state) <= available + f64::EPSILON);
+        assert!(root.power_geometry(panel, &state).y1 <= panel.y1 + f64::EPSILON);
+        for i in 0..root.visible_controls(&state).len() {
+            assert!(
+                root.control_card(panel, i, root.visible_controls(&state).len())
+                    .y1
+                    <= panel.y1
+            );
+        }
     }
     #[test]
     fn edit_catalogue_does_not_offer_unavailable_mobile_data() {

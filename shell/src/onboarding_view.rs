@@ -63,6 +63,8 @@ const FOOTER_HEIGHT: f32 = 57.0;
 /// acknowledgement above the ordinary action row so large text and compact
 /// displays never hide the gate inside scrolling explanatory copy.
 const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
+/// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
+const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
@@ -767,10 +769,7 @@ impl OnboardingView {
                         format!("Identity setup, step {step} of 4: {stage}"),
                     ))),
             ));
-        let mut content = Column::new()
-            .with_intrinsic_height()
-            .with_gap(spacing.s4)
-            .push(Box::new(progress));
+        let mut content = Column::new().with_intrinsic_height().with_gap(spacing.s4);
         if let Some(notice) = self.progress_notice(theme) {
             content = content.push(notice);
         }
@@ -794,7 +793,8 @@ impl OnboardingView {
                     0.0
                 }
         };
-        let scroll_height = (panel_height - footer_height - footer_gap).max(120.0);
+        let scroll_height =
+            (panel_height - PROGRESS_HEADER_HEIGHT - footer_height - footer_gap).max(120.0);
         let fill_panel = theme.text_scale > 1.0
             || theme.name.eq_ignore_ascii_case("high contrast")
             || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
@@ -828,6 +828,7 @@ impl OnboardingView {
         let composition = Column::new()
             .with_no_padding()
             .with_gap(spacing.s3)
+            .push(Box::new(progress))
             .push(Box::new(scroll));
         if backup_in_scroll {
             Box::new(composition)
@@ -981,8 +982,7 @@ impl OnboardingView {
             ));
         let mut content = Column::new()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s6)
-            .push(Box::new(progress));
+            .with_gap(theme.tokens.spacing.s6);
         if let Some(notice) = self.progress_notice(theme) {
             content = content.push(notice);
         }
@@ -993,11 +993,13 @@ impl OnboardingView {
         // to discover scrolling before they could finish the introduction.
         // The identity Done screen uses the same sticky-footer contract.
         let footer_gap = theme.tokens.spacing.s3;
-        let scroll_height = (panel_height - FOOTER_HEIGHT - footer_gap).max(120.0);
+        let scroll_height =
+            (panel_height - PROGRESS_HEADER_HEIGHT - FOOTER_HEIGHT - footer_gap).max(120.0);
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_gap(footer_gap)
+                .push(Box::new(progress))
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)

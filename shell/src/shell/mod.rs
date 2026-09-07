@@ -189,7 +189,7 @@ impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
     /// (real PTY, falls back to a `Stub`), Files, Notes, Editor, and a
     /// Browser chrome. Production launches the packaged WPE-backed browser;
-    /// this in-process workspace mirror uses the same BrowserWidget contract.
+    /// this in-process workspace mirror uses the same `BrowserWidget` contract.
     pub fn new_with_default_demo_workspace() -> Self {
         let DemoTabs {
             tabs,

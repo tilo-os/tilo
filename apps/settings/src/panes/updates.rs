@@ -298,6 +298,8 @@ pub trait UpdateControl: Send + Sync {
     fn check_now(&self) -> Result<(), String> {
         Err("checking for updates is unavailable on this machine".into())
     }
+    /// # Errors
+    /// Returns an error when firmware metadata or history cannot be refreshed.
     fn refresh_firmware(
         &self,
     ) -> Result<

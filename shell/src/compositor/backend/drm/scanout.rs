@@ -72,7 +72,7 @@ impl Card {
 /// already-open [`CardHandle`]. Keeping the conversion here makes those two
 /// independently-produced identities deliberately identical.
 pub(crate) fn device_id_from_dev_t(device: libc::dev_t) -> u64 {
-    u64::try_from(device).unwrap_or_default()
+    device
 }
 
 fn valid_config_identity(identity: &str) -> bool {
@@ -173,13 +173,14 @@ pub(crate) fn resolve_connector_config_keys<'a>(
     let candidates: Vec<_> = candidates.into_iter().collect();
     let mut label_counts = BTreeMap::<&str, usize>::new();
     for candidate in &candidates {
-        *label_counts.entry(candidate.connector_name).or_default() += 1;
+        let count = label_counts.entry(candidate.connector_name).or_default();
+        *count = count.saturating_add(1);
     }
     candidates
         .into_iter()
         .map(|candidate| {
             let qualified = format!("{}/{}", candidate.card_identity, candidate.connector_name);
-            let key = if label_counts[candidate.connector_name] == 1
+            let key = if label_counts.get(candidate.connector_name).copied() == Some(1)
                 && config.output_for(&qualified).is_none()
             {
                 candidate.connector_name.to_owned()
@@ -247,7 +248,7 @@ impl CardHandle {
     }
 
     /// Whether a prospective udev node is this physical card. A new `cardN`
-    /// path and dev_t can still resolve to the same canonical sysfs device.
+    /// path and `dev_t` can still resolve to the same canonical sysfs device.
     pub fn same_physical_node(&self, path: &Path) -> bool {
         self.card_path == path
             || same_physical_card_identity(
@@ -335,7 +336,7 @@ impl CardHandle {
         config: &settings_store::hardware::DisplayConfig,
     ) {
         let output_config = config.output_for(&config_key);
-        snapshot.enabled = !output_config.is_some_and(|output| !output.enabled);
+        snapshot.enabled = output_config.is_none_or(|output| output.enabled);
         snapshot.mode = pick_configured_mode(
             &snapshot.modes,
             output_config.and_then(|output| output.mode),

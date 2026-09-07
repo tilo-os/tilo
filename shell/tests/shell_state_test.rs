@@ -106,13 +106,19 @@ fn _type_refs() {
 fn persistence_roundtrip_atomic() {
     use shell::shell::persist::{load_tree_from, save_tree_to};
     use shell::shell::state::WorkspaceTree;
-    let tmp = std::env::temp_dir().join(format!("qd-test-{}.json", std::process::id()));
-    let t = WorkspaceTree::bootstrap_demo();
+    let dir = tempfile::tempdir().expect("temporary state directory");
+    let tmp = dir.path().join("state.json");
+    // `bootstrap_demo` is an intentionally recognised legacy seed and loading
+    // it correctly migrates to the clean first-boot layout. Exercise atomic
+    // persistence with ordinary user state instead of accidentally testing
+    // against that migration contract.
+    let mut t = WorkspaceTree::bootstrap_default();
+    t.workspaces[0].name = "Round-trip workspace".into();
     save_tree_to(&t, &tmp).expect("save");
     let loaded = load_tree_from(&tmp).expect("load");
     assert_eq!(loaded.workspaces.len(), t.workspaces.len());
     assert_eq!(loaded.active, t.active);
-    let _ = std::fs::remove_file(&tmp);
+    assert_eq!(loaded.workspaces[0].name, t.workspaces[0].name);
 }
 
 #[test]

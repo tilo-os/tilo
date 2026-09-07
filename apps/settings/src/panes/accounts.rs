@@ -301,6 +301,26 @@ impl AccountsPane {
         self.commands.set(Some(AccountViewCommand::Submit));
     }
 
+    /// Drive the same nonblocking sync polling the live host uses until the
+    /// pending account probe and its synchronous disk transaction finish.
+    /// Bounded by the probe's production deadline; unlike a fixed number of
+    /// scheduler yields this remains reliable when the test suite is busy.
+    #[doc(hidden)]
+    pub fn finish_form_submission_for_test(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
+        while self.form_open() && std::time::Instant::now() < deadline {
+            self.sync(state, root);
+            if self.form_open() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        !self.form_open()
+    }
+
     #[must_use]
     pub fn with_command_state(
         mut self,

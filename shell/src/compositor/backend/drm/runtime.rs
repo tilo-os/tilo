@@ -195,7 +195,7 @@ pub struct DrmDispatchState {
     /// compositor/libseat session may safely recover it.
     failed_card_close_paths: BTreeSet<PathBuf>,
     /// Same fail-closed guard for a physical card which re-enumerates under
-    /// another `cardN` path and dev_t before a session restart.
+    /// another `cardN` path and `dev_t` before a session restart.
     failed_card_close_identities: BTreeSet<String>,
     /// Without a stable physical identity, no later card node can be proven
     /// distinct from the failed lease. Block all new opens until restart.
@@ -372,7 +372,7 @@ impl DirectTouchOwnership {
         contact.moved |= distance(contact.start, position) > Self::TAP_SLOP;
         if self.client_stream_active {
             self.client_frame_pending = true;
-        };
+        }
         Some((contact.id, self.client_stream_active))
     }
 
@@ -410,7 +410,7 @@ impl DirectTouchOwnership {
 
     pub(crate) fn cancel(&mut self) -> Vec<(u32, (f64, f64))> {
         let forward_cancel = self.client_stream_active;
-        let contacts: Vec<_> = std::mem::take(&mut self.contacts).into_iter().collect();
+        let contacts = std::mem::take(&mut self.contacts);
         self.reset();
         if forward_cancel {
             // `wl_touch.cancel` completes the sequence; unlike Up it is not
@@ -418,8 +418,8 @@ impl DirectTouchOwnership {
             self.client_frame_pending = false;
         }
         contacts
-            .into_iter()
-            .map(|(_, contact)| (contact.id, contact.current))
+            .into_values()
+            .map(|contact| (contact.id, contact.current))
             .collect()
     }
 
@@ -552,10 +552,11 @@ impl CardLeaseLifecycle {
     }
 
     fn presenter_detached(&self, device_id: u64) -> CardLeaseAction {
-        self.retiring
-            .contains(&device_id)
-            .then_some(CardLeaseAction::CloseSessionFd)
-            .unwrap_or(CardLeaseAction::Noop)
+        if self.retiring.contains(&device_id) {
+            CardLeaseAction::CloseSessionFd
+        } else {
+            CardLeaseAction::Noop
+        }
     }
 
     fn session_close_finished(&mut self, device_id: u64, succeeded: bool) -> CardLeaseAction {
@@ -1601,8 +1602,7 @@ impl DrmDispatchState {
         self.retiring_cards.insert(device_id, card);
         let removal_ack = self
             .card_removal_ack_sender
-            .as_ref()
-            .cloned()
+            .clone()
             .map(|ack| (device_id, ack));
         self.rescan_outputs_with_removal_ack("udev device removed", removal_ack);
     }
@@ -1638,12 +1638,11 @@ impl DrmDispatchState {
         physical_identity: Option<&str>,
         context: &str,
     ) -> bool {
-        let result = match self.seat.as_mut() {
-            Some(seat) => seat.close(fd).map_err(|error| error.to_string()),
-            None => {
-                drop(fd);
-                Err("no libseat session clone".into())
-            }
+        let result = if let Some(seat) = self.seat.as_mut() {
+            seat.close(fd).map_err(|error| error.to_string())
+        } else {
+            drop(fd);
+            Err("no libseat session clone".into())
         };
         match result {
             Ok(()) => {
@@ -1820,7 +1819,7 @@ impl DrmDispatchState {
                 tracing::info!(device = %path.display(), device_id, "DRM: retained newly added KMS card");
             }
             Err(error) => {
-                tracing::warn!(device = %path.display(), %error, "DRM: cannot open added KMS card")
+                tracing::warn!(device = %path.display(), %error, "DRM: cannot open added KMS card");
             }
         }
     }
@@ -2044,13 +2043,13 @@ impl DrmDispatchState {
             InputEvent::TouchMotion { event } => {
                 let (x, y) = touch_position(self, &event);
                 self.handle_direct_touch_motion(
-                    touch_contact_key(event.device().id(), touch_slot(event.slot())),
+                    &touch_contact_key(event.device().id(), touch_slot(event.slot())),
                     x,
                     y,
                 );
             }
             InputEvent::TouchUp { event } => {
-                self.handle_direct_touch_up(touch_contact_key(
+                self.handle_direct_touch_up(&touch_contact_key(
                     event.device().id(),
                     touch_slot(event.slot()),
                 ));
@@ -2108,10 +2107,10 @@ impl DrmDispatchState {
         }
     }
 
-    fn handle_direct_touch_motion(&mut self, key: TouchContactKey, x: f64, y: f64) {
+    fn handle_direct_touch_motion(&mut self, key: &TouchContactKey, x: f64, y: f64) {
         self.pointer = (x, y);
         self.hw_cursor.move_to(x, y);
-        if let Some((id, forward_to_client)) = self.direct_touch.motion(&key, (x, y)) {
+        if let Some((id, forward_to_client)) = self.direct_touch.motion(key, (x, y)) {
             self.push(BackendEvent::Input(touch_input_event(
                 id,
                 x,
@@ -2128,8 +2127,8 @@ impl DrmDispatchState {
         }
     }
 
-    fn handle_direct_touch_up(&mut self, key: TouchContactKey) {
-        let Some(((x, y), id, forward_to_client, emulate_pointer)) = self.direct_touch.up(&key)
+    fn handle_direct_touch_up(&mut self, key: &TouchContactKey) {
+        let Some(((x, y), id, forward_to_client, emulate_pointer)) = self.direct_touch.up(key)
         else {
             return;
         };
@@ -3059,7 +3058,7 @@ fn map_mouse_button(code: u32) -> Option<MouseButton> {
 pub struct KeyboardXkb {
     // Held for the lifetime of `state`. xkbcommon refcounts internally, but keeping ownership explicit makes the lifetime obvious (never read after construction, hence the underscore).
     _context: xkb::Context,
-    _keymap: xkb::Keymap,
+    keymap: xkb::Keymap,
     state: xkb::State,
     /// Last modifier mask we emitted — we only push `ModifiersChanged` when it actually flips, matching winit's behaviour.
     mods: ModifiersState,
@@ -3102,21 +3101,21 @@ impl KeyboardXkb {
         let _ = state.update_mask(0, 0, 0, 0, 0, active);
         Some(Self {
             _context: context,
-            _keymap: keymap,
+            keymap,
             state,
             mods: ModifiersState::empty(),
         })
     }
 
     fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
-        self._keymap.key_repeats(keycode)
+        self.keymap.key_repeats(keycode)
     }
 
     /// Forget keys and modifiers which may have been released while input
     /// delivery was suspended, while preserving the user's active layout.
     fn reset_state(&mut self) {
         let active_layout = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
-        self.state = xkb::State::new(&self._keymap);
+        self.state = xkb::State::new(&self.keymap);
         let _ = self.state.update_mask(0, 0, 0, 0, 0, active_layout);
         self.mods = ModifiersState::empty();
     }
@@ -4830,10 +4829,10 @@ mod tests {
             state.handle_direct_touch_down(test_touch_key("panel", slot), x, 80.0);
         }
         for (slot, x) in [(1, 40.0), (2, 80.0), (3, 120.0)] {
-            state.handle_direct_touch_motion(test_touch_key("panel", slot), x, 80.0);
+            state.handle_direct_touch_motion(&test_touch_key("panel", slot), x, 80.0);
         }
         for slot in [1, 2, 3] {
-            state.handle_direct_touch_up(test_touch_key("panel", slot));
+            state.handle_direct_touch_up(&test_touch_key("panel", slot));
         }
 
         let client_touch: Vec<_> = state
@@ -4900,8 +4899,8 @@ mod tests {
         let mut state = DrmDispatchState::default();
         let key = test_touch_key("panel", 7);
         state.handle_direct_touch_down(key.clone(), 320.0, 240.0);
-        state.handle_direct_touch_motion(key.clone(), 324.0, 242.0);
-        state.handle_direct_touch_up(key);
+        state.handle_direct_touch_motion(&key, 324.0, 242.0);
+        state.handle_direct_touch_up(&key);
 
         let client_touch: Vec<_> = state
             .events
@@ -4993,7 +4992,7 @@ mod tests {
         let key = test_touch_key("panel", 0);
         state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
         state.flush_direct_touch_frame();
-        state.handle_direct_touch_up(key);
+        state.handle_direct_touch_up(&key);
         state.flush_direct_touch_frame();
         let client_events: Vec<_> = state
             .events
@@ -5101,8 +5100,8 @@ mod tests {
         let mut state = DrmDispatchState::default();
         let key = test_touch_key("panel", 0);
         state.handle_direct_touch_down(key.clone(), 10.0, 20.0);
-        state.handle_direct_touch_motion(key.clone(), 80.0, 20.0);
-        state.handle_direct_touch_up(key);
+        state.handle_direct_touch_motion(&key, 80.0, 20.0);
+        state.handle_direct_touch_up(&key);
         assert!(
             !state.events.iter().any(|event| matches!(
                 event,
