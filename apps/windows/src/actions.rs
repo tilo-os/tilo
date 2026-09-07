@@ -272,7 +272,11 @@ fn add_maintenance_actions(mut resource: Resource, app: &crate::model::WindowsAp
 }
 
 fn add_open_file_action(resource: Resource, app: &crate::model::WindowsApp) -> Resource {
-    if app.route != Route::Vm || !app.launch_available {
+    // Keep the operation discoverable for every published guest application,
+    // including app-focused SPICE entries where it is deliberately disabled.
+    // Omitting its availability contract made search and agents advertise a
+    // file bridge that the rendered control correctly refused.
+    if app.route != Route::Vm {
         return resource;
     }
     let app_id = app.id.clone();
@@ -299,8 +303,19 @@ fn add_open_file_action(resource: Resource, app: &crate::model::WindowsApp) -> R
                 })
             },
         )
-        .execution(ExecutionMode::Background { cancellable: false })
-        .returns(ResultSpec::Job),
+        .with_contract(ActionContract {
+            availability: availability(
+                app.launch_available && app.portal_file_open_available,
+                app.portal_file_open_unavailable_reason
+                    .as_deref()
+                    .or(app.launch_unavailable_reason.as_deref()),
+            ),
+            permission: PermissionRequirement::Read,
+            retry: RetryPolicy::AtMostOnce,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..ActionContract::default()
+        }),
     )
 }
 
@@ -573,5 +588,26 @@ mod tests {
                 .any(|action| action.id == "delete-data")
         );
         assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
+    }
+
+    #[test]
+    fn unavailable_guest_file_bridge_is_not_advertised_as_actionable() {
+        let resources = provide_resources(&crate::provider::SampleProvider::new().catalogue());
+        let manager = resources.first().expect("manager root");
+        let studio = manager
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "windows.app:visual-studio")
+            .expect("Visual Studio resource");
+        let open_file = studio
+            .actions
+            .iter()
+            .find(|action| action.id == "open-file")
+            .expect("file operation is published for the guest application");
+        assert!(matches!(
+            open_file.contract.availability,
+            Availability::Unavailable { .. }
+        ));
+        assert_eq!(open_file.contract.permission, PermissionRequirement::Read);
     }
 }
