@@ -131,7 +131,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<ChatOper
     clippy::expect_used,
     reason = "ChatOperation is serde-derived from only serializable fields; ActionSpec requires an immediate value rather than a fallible builder"
 )]
-fn view_operation(id: &str, label: &str, operation: &ChatOperation) -> ActionSpec {
+pub(crate) fn view_operation(id: &str, label: &str, operation: &ChatOperation) -> ActionSpec {
     ActionSpec::operation(
         id,
         label,
@@ -948,6 +948,13 @@ pub struct ChatResourceCtx {
     pub participants: Vec<crate::mention::Participant>,
 }
 
+/// Keep the ordinary palette snapshot cheap even for a very large shared
+/// organisation. Global search owns the complete paged catalogue and
+/// [`ResourceProvider::resource`] resolves any omitted row on demand.
+pub const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+const EAGER_WORKSPACE_LIMIT: usize = 8;
+const EAGER_PEOPLE_LIMIT: usize = 23;
+
 /// # Panics
 /// Never in practice: `ActionSpec::immediate` only fails if encoding `action`
 /// fails, and — as with [`encode`] — a `ChatAction` is always encodable.
@@ -1015,25 +1022,17 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         .collect();
     let all_channels = ChatDoc::list_channels(doc);
     let mut forest = Vec::new();
-    for ws in ChatDoc::list_workspaces(doc) {
-        let mut workspace = Resource::new(
-            format!("chat.workspace:{}", ws.id),
-            "chat.workspace",
-            if ws.name.trim().is_empty() {
-                "Workspace"
-            } else {
-                &ws.name
-            },
-        )
-        .with_action(view_operation(
-            "open",
-            "Open workspace",
-            &ChatOperation::OpenWorkspace {
-                workspace: ws.id.clone(),
-            },
-        ))
-        .with_action(new_channel_action_spec(&ws.id))
-        .with_action(new_category_action_spec(&ws.id));
+    let mut remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(1 + EAGER_PEOPLE_LIMIT);
+    let mut workspaces = ChatDoc::list_workspaces(doc);
+    // Context first: the open room's siblings are more useful than an
+    // arbitrary early workspace when only one bounded page is materialised.
+    workspaces.sort_by_key(|workspace| workspace.id != ctx.workspace_id);
+    for ws in workspaces.into_iter().take(EAGER_WORKSPACE_LIMIT) {
+        if remaining == 0 {
+            break;
+        }
+        let mut workspace = workspace_resource(&ws.id, &ws.name);
+        remaining = remaining.saturating_sub(1);
 
         let mut channels = all_channels
             .iter()
@@ -1041,7 +1040,7 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             .cloned()
             .collect::<Vec<_>>();
         channels.sort_by_key(|channel| channel.order);
-        for channel in channels {
+        for channel in channels.into_iter().take(remaining) {
             let ch = ChannelResource {
                 id: channel.id.clone(),
                 name: channel.name,
@@ -1050,26 +1049,28 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             };
             workspace =
                 workspace.with_child(build_channel_resource(&resource_ctx, doc, &ws.id, &ch, &[]));
+            remaining = remaining.saturating_sub(1);
         }
         let mut categories = ChatDoc::list_categories(doc)
             .into_iter()
             .filter(|category| category.workspace == ws.id)
             .collect::<Vec<_>>();
         categories.sort_by_key(|category| category.order);
-        for category in categories {
+        for category in categories.into_iter().take(remaining) {
             let category = CategoryResource {
                 id: category.id,
                 name: category.name,
                 collapsed: category.collapsed,
             };
             workspace = workspace.with_child(build_category_resource(&ws.id, &category));
+            remaining = remaining.saturating_sub(1);
         }
         annotate_contracts(&mut workspace);
         forest.push(workspace);
     }
 
     let mut people = Resource::new("chat.people", "chat.people", "People");
-    for user in users {
+    for user in users.into_iter().take(EAGER_PEOPLE_LIMIT) {
         people = people.with_child(
             Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
                 .with_action(view_operation(
@@ -1081,6 +1082,119 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
     }
     forest.push(people);
     forest
+}
+
+fn workspace_resource(id: &str, name: &str) -> Resource {
+    Resource::new(
+        format!("chat.workspace:{id}"),
+        "chat.workspace",
+        if name.trim().is_empty() {
+            "Workspace"
+        } else {
+            name
+        },
+    )
+    .with_action(view_operation(
+        "open",
+        "Open workspace",
+        &ChatOperation::OpenWorkspace {
+            workspace: id.to_string(),
+        },
+    ))
+    .with_action(new_channel_action_spec(id))
+    .with_action(new_category_action_spec(id))
+}
+
+/// Resolve a stable resource from the complete document without expanding the
+/// bounded contextual page. Stale ids intentionally fail closed.
+pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    if id == "chat.people" {
+        return Some(Resource::new("chat.people", "chat.people", "People"));
+    }
+    if let Some(workspace_id) = id.strip_prefix("chat.workspace:") {
+        let workspace = ChatDoc::list_workspaces(doc)
+            .into_iter()
+            .find(|workspace| workspace.id == workspace_id)?;
+        let mut resource = workspace_resource(&workspace.id, &workspace.name);
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    if let Some(channel_id) = id.strip_prefix("chat.channel:") {
+        let channel = ChatDoc::list_channels(doc)
+            .into_iter()
+            .find(|channel| channel.id == channel_id)?;
+        let workspace_id = channel.workspace.clone();
+        let model = ChannelResource {
+            id: channel.id,
+            name: channel.name,
+            kind: channel.kind,
+            archived: channel.archived,
+        };
+        let mut resource = build_channel_resource(ctx, doc, &workspace_id, &model, &[]);
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    if let Some(category_id) = id.strip_prefix("chat.category:") {
+        let category = ChatDoc::list_categories(doc)
+            .into_iter()
+            .find(|category| category.id == category_id)?;
+        let workspace_id = category.workspace.clone();
+        let model = CategoryResource {
+            id: category.id,
+            name: category.name,
+            collapsed: category.collapsed,
+        };
+        let mut resource = build_category_resource(&workspace_id, &model);
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    if let Some(user_id) = id.strip_prefix("chat.person:") {
+        let user = ChatDoc::list_users(doc)
+            .into_iter()
+            .find(|user| user.id == user_id)?;
+        return Some(
+            Resource::new(format!("chat.person:{}", user.id), "chat.person", user.name)
+                .with_action(view_operation(
+                    "open",
+                    "Open person",
+                    &ChatOperation::OpenPerson { user: user.id },
+                )),
+        );
+    }
+    let message_id = id.strip_prefix("chat.message:")?;
+    let message = ChatDoc::list_channels(doc)
+        .into_iter()
+        .find_map(|channel| {
+            ChatDoc::list_messages(doc, &channel.id)
+                .into_iter()
+                .find(|message| message.id == message_id)
+                .map(|message| (channel, message))
+        })?;
+    let (channel, message) = message;
+    let workspace = ChatDoc::list_workspaces(doc)
+        .into_iter()
+        .find(|workspace| workspace.id == channel.workspace)?;
+    let channel_model = ChannelResource {
+        id: channel.id,
+        name: channel.name,
+        kind: channel.kind,
+        archived: channel.archived,
+    };
+    let users = ChatDoc::list_users(doc);
+    let message_model = MessageResource {
+        id: message.id,
+        label: message_label(
+            &message.author,
+            &message.text,
+            message.attachment.as_ref(),
+            &users,
+        ),
+        pinned: message.pinned,
+        parent: message.parent,
+    };
+    let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
+    annotate_contracts(&mut resource);
+    Some(resource)
 }
 
 /// Workspace-level: create a new text channel in the uncategorised group. The
@@ -1430,40 +1544,7 @@ impl ResourceProvider for crate::app::ChatApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let message_id = id.strip_prefix("chat.message:")?;
-        let message = self
-            .search_messages
-            .iter()
-            .find(|message| message.id == message_id)?;
-        let channel = self
-            .channels
-            .iter()
-            .find(|channel| channel.id == message.channel)?;
-        let ch = ChannelResource {
-            id: channel.id.clone(),
-            name: channel.name.clone(),
-            kind: channel.kind,
-            archived: channel.archived,
-        };
-        let ws = self
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == channel.workspace)?;
-        let users = ChatDoc::list_users(doc);
-        let model = MessageResource {
-            id: message.id.clone(),
-            label: message_label(
-                &message.author,
-                &message.text,
-                message.attachment.as_ref(),
-                &users,
-            ),
-            pinned: message.pinned,
-            parent: message.parent.clone(),
-        };
-        let mut resource = build_message_resource(&self.chat_resource_ctx(), &ws.id, &ch, &model);
-        annotate_contracts(&mut resource);
-        Some(resource)
+        resolve_resource(&self.chat_resource_ctx(), doc, id)
     }
 }
 
@@ -1648,6 +1729,42 @@ mod tests {
                 .filter(|resource| resource.kind == "chat.channel")
                 .all(|channel| channel.children.is_empty())
         );
+    }
+
+    #[test]
+    fn large_organisation_keeps_context_bounded_and_resolves_omitted_room() {
+        fn resource_count(resources: &[Resource]) -> usize {
+            resources
+                .iter()
+                .map(|resource| 1 + resource_count(&resource.children))
+                .sum()
+        }
+
+        let mut doc = seeded();
+        for index in 0..(EAGER_RESOURCE_SNAPSHOT_LIMIT + 12) {
+            ChatDoc::insert_channel(
+                &mut doc,
+                &format!("c_late_{index:03}"),
+                "ws_acme",
+                "cat_acme_main",
+                &format!("room-{index:03}"),
+                ChannelKind::Text,
+            );
+        }
+        let ctx = ctx_from(&doc);
+        let resources = provide_resources(&ctx, &doc);
+        assert!(resource_count(&resources) <= EAGER_RESOURCE_SNAPSHOT_LIMIT);
+        assert!(
+            resources
+                .iter()
+                .flat_map(|resource| &resource.children)
+                .all(|resource| resource.id.as_str() != "chat.channel:c_late_107")
+        );
+        let lazy = resolve_resource(&ctx, &doc, "chat.channel:c_late_107")
+            .expect("an omitted room remains directly addressable");
+        assert_eq!(lazy.kind, "chat.channel");
+        assert!(lazy.actions.iter().any(|action| action.id == "open"));
+        assert!(lazy.actions.iter().any(|action| action.id == "post"));
     }
 
     /// Sending a message through the action appends a row carrying the payload's

@@ -86,6 +86,23 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        if matches!(
+            event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+                | WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+        ) {
+            let _ = self.tooltips.dismiss();
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let last_mouse = Point::new(position.x / scale, position.y / scale);
@@ -157,6 +174,13 @@ impl ChatApp {
         handled: &mut bool,
     ) {
         self.last_mouse = last_mouse;
+        let tooltip_target = self.hover_tooltip_target(last_mouse);
+        if self
+            .tooltips
+            .on_pointer(tooltip_target, std::time::Instant::now())
+        {
+            *handled = true;
+        }
         // Live-drag the floating call overlay.
         if self.call.placement.is_dragging() {
             // Freeze the complete last in-app presentation, including its
@@ -2941,6 +2965,52 @@ mod tests {
             .find(|node| node.name.as_deref() == Some("Messages"))
             .expect("conversation content is exposed as a list");
         assert!(!messages.children.is_empty());
+        let channel = app.channel(&app.active_channel).expect("active channel");
+        let heading = root
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Heading { level: 1 })
+            .expect("the conversation header remains semantic when paint elides it");
+        assert!(
+            heading
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains(&channel.name))
+        );
+        assert_eq!(heading.description.as_deref(), Some(channel.topic.as_str()));
+    }
+
+    #[test]
+    fn narrow_elided_header_and_icon_controls_publish_hover_help() {
+        let (mut app, _doc) = app_with_doc();
+        app.seed_shot_scenario("narrow");
+        render_frame(&mut app, 390.0, 844.0);
+        let channel = app.channel(&app.active_channel).expect("active channel");
+        let (_, header_tip) = app
+            .hover_tooltip_target(app.header_rect().center())
+            .expect("the elided header has a full hover label");
+        assert!(header_tip.contains(&channel.name));
+        assert!(header_tip.contains(&channel.topic));
+
+        let (rect, _) = app
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::ToggleLeftFlap))
+            .expect("narrow navigation button");
+        assert_eq!(
+            app.hover_tooltip_target(rect.center())
+                .map(|(_, label)| label),
+            Some("Show conversation navigation".into())
+        );
+        let (call_rect, _) = app
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::StartCall))
+            .expect("labelled call button");
+        assert!(
+            app.hover_tooltip_target(call_rect.center()).is_none(),
+            "the header title must not leak through a foreground control"
+        );
     }
 
     #[test]
