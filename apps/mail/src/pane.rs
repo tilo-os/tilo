@@ -2086,10 +2086,9 @@ impl Pane {
                     };
                     let mut st = self.shared.borrow_mut();
                     if !account.email.is_empty() {
-                        st.push_intent(Intent::Engine(crate::engine::EngineRequest::Fetch {
-                            account,
-                            folder,
-                        }));
+                        st.push_intent(Intent::Engine(crate::engine::EngineRequest::fetch(
+                            account, folder,
+                        )));
                     }
                     st.status = Some(format!("Syncing {}…", folder.title()));
                     st.dirty = true;
