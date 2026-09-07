@@ -10586,7 +10586,7 @@ mod semantic_tree_app_tests {
     }
 
     impl crate::search::SearchProvider for LargeDirectoryProvider {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "Large directory"
         }
 
@@ -11643,13 +11643,8 @@ mod semantic_tree_app_tests {
         assert!(root.rows[0].action.is_none());
         assert!(root.rows[0].has_children);
 
-        let actions = app.action_directory_page(directory_query(
-            root.revision.clone(),
-            "test.counter",
-            8,
-            8_192,
-            8,
-        ));
+        let actions =
+            app.action_directory_page(directory_query(root.revision, "test.counter", 8, 8_192, 8));
         assert!(actions.rows.len() >= 5, "parent exposes its action rows");
         assert!(actions.rows.iter().all(|row| row.action.is_some()));
         assert!(matches!(
@@ -11831,7 +11826,7 @@ mod damage_lifecycle_tests {
         ) {
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "DrawUpdatedDamage"
         }
 
