@@ -11,7 +11,7 @@
 //! transport.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -43,6 +43,25 @@ const OVERLAY_MARGIN: f64 = 14.0;
 const OPEN_BTN_H: f64 = 32.0;
 /// Width (logical px) of the floating Open pill.
 const OPEN_BTN_W: f64 = 84.0;
+/// One file-picker request at a time.  A portal response is asynchronous and
+/// cannot be cancelled at the protocol level, so the app owns the receiver and
+/// drops it when a newer direct open supersedes the request.  `generation` is
+/// deliberately separate from the media generation: it identifies *this
+/// chooser* rather than the media that may eventually be selected.
+struct PendingPortalOpen {
+    channel: PortalChannel,
+    generation: u64,
+    invocation: Option<qos_actions::InvocationId>,
+}
+
+/// A terminal response paired with the request identity and optional action
+/// caller that owns it. Keeping this named makes `drain_portal`'s stale-result
+/// guard readable without a deeply nested tuple type.
+type PortalOpenOutcome = (
+    u64,
+    Option<qos_actions::InvocationId>,
+    Result<PathBuf, Option<String>>,
+);
 
 fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
     let mut player = VideoPlayer::new()
@@ -135,10 +154,12 @@ pub struct PlayerApp {
     /// while the overlay is shown.
     open_button_rect: Rect,
     last_cursor: Point,
-    /// A file-open portal request in flight, drained each `sync`.
-    portal_rx: Option<PortalChannel>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    /// A file-open portal request in flight, drained each `sync`. Requests are
+    /// never replaced: doing so would let an old chooser response unexpectedly
+    /// open a file after the user chose a newer source.
+    portal_open: Option<PendingPortalOpen>,
+    portal_generation: u64,
+    resource_results: VecDeque<qos_actions::InvocationUpdate>,
     open_action: Option<ActionEmitter<()>>,
     open_focused: bool,
     /// Collaborative playback state (host/follower). `None` for a local-only
@@ -157,6 +178,10 @@ pub struct PlayerApp {
     search_catalog_builds: Cell<u64>,
     metadata_revision: u64,
     search_metadata: DecoderMetadata,
+    /// A human-readable failure from the latest open request. It is only
+    /// painted in the no-frame state, preserving a successfully playing video
+    /// when a later picker request fails.
+    open_error: Option<String>,
     dirty: bool,
 }
 
@@ -267,8 +292,7 @@ impl PlayerApp {
             return;
         }
         self.search_metadata = metadata;
-        self.metadata_revision = self.metadata_revision.wrapping_add(1);
-        self.search_cache.get_mut().take();
+        self.invalidate_search_cache();
         let audio_limit = audio_tracks
             .len()
             .min(crate::actions::CONTEXTUAL_CHILD_LIMIT);
@@ -369,9 +393,9 @@ impl PlayerApp {
             rect: Rect::ZERO,
             open_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            portal_rx: None,
-            resource_invocation: None,
-            resource_result: None,
+            portal_open: None,
+            portal_generation: 0,
+            resource_results: VecDeque::new(),
             open_action,
             open_focused: false,
             collab: None,
@@ -384,6 +408,7 @@ impl PlayerApp {
             search_catalog_builds: Cell::new(0),
             metadata_revision: 0,
             search_metadata: DecoderMetadata::default(),
+            open_error: None,
             dirty: true,
         }
     }
@@ -392,7 +417,7 @@ impl PlayerApp {
     /// portal outcome). Autoplays.
     #[must_use]
     pub fn with_open_path(mut self, path: &Path) -> Self {
-        self.open_path(path);
+        let _ = self.open_path(path);
         self
     }
 
@@ -413,7 +438,7 @@ impl PlayerApp {
         let mut app = Self::new();
         if !matches!(scenario, Some("empty")) {
             if let Some(path) = open {
-                app.open_path(&path);
+                let _ = app.open_path(&path);
             } else {
                 // The demo shot must stay hermetic: pin the deterministic
                 // synthesized-frame engine so no real GStreamer pipeline is
@@ -424,7 +449,7 @@ impl PlayerApp {
                 let source = media::Source::Remote {
                     url: "https://demo.local/clip.mp4".into(),
                 };
-                app.set_current_source(&source);
+                let _ = app.set_current_source(&source);
                 app.player.open(source);
                 app.title = "Demo clip".to_string();
                 // Park at a fixed position and pause so the synthesized frame and
@@ -515,11 +540,16 @@ impl PlayerApp {
         self.player.latest_frame().is_some()
     }
 
-    fn open_path(&mut self, path: &Path) {
+    fn open_path(&mut self, path: &Path) -> Result<(), String> {
         let source = source_for_path(path);
-        self.set_current_source(&source);
-        self.search_cache.get_mut().take();
-        self.metadata_revision = self.metadata_revision.wrapping_add(1);
+        if let Err(error) = self.set_current_source(&source) {
+            self.open_error = Some(error.clone());
+            self.dirty = true;
+            return Err(error);
+        }
+        self.cancel_pending_portal("a direct video open replaced the file picker");
+        self.open_error = None;
+        self.invalidate_search_cache();
         self.title = path.file_name().map_or_else(
             || path.to_string_lossy().into_owned(),
             |n| n.to_string_lossy().into_owned(),
@@ -539,15 +569,28 @@ impl PlayerApp {
                 art_url: String::new(),
             });
         self.dirty = true;
+        Ok(())
     }
 
-    fn set_current_source(&mut self, source: &media::Source) {
-        self.source_generation = self.source_generation.wrapping_add(1);
-        self.current_source_id = Some(format!(
-            "{}#open-{}",
-            source.to_uri(),
-            self.source_generation
-        ));
+    /// Assign the next never-reused source identity. Once the u64 namespace is
+    /// exhausted the app refuses a new source rather than making an action
+    /// address from the start of the process current again.
+    fn set_current_source(&mut self, source: &media::Source) -> Result<(), String> {
+        let generation = self.source_generation.checked_add(1).ok_or_else(|| {
+            "video source identity generation exhausted; restart Video Player".to_string()
+        })?;
+        self.source_generation = generation;
+        self.current_source_id = Some(format!("{}#open-{}", source.to_uri(), generation));
+        Ok(())
+    }
+
+    /// Invalidate the bounded search catalog before advancing its revision.
+    /// Resetting the revision at the numeric boundary is safe only because the
+    /// old provider is explicitly discarded first, so its `0` can never be
+    /// mistaken for the fresh post-boundary catalog's `0`.
+    fn invalidate_search_cache(&mut self) {
+        self.search_cache.get_mut().take();
+        self.metadata_revision = self.metadata_revision.checked_add(1).unwrap_or_default();
     }
 
     fn close_media(&mut self) {
@@ -568,9 +611,7 @@ impl PlayerApp {
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
-        self.source_generation = self.source_generation.wrapping_add(1);
-        self.search_cache.get_mut().take();
-        self.metadata_revision = self.metadata_revision.wrapping_add(1);
+        self.invalidate_search_cache();
         self.dirty = true;
     }
 
@@ -581,17 +622,72 @@ impl PlayerApp {
     }
 
     /// Kick off a portal file-open (or the immediate "no portal" outcome in the
-    /// hermetic build).
-    fn trigger_open(&mut self) {
-        self.portal_rx = Some(video_open_request().send());
+    /// hermetic build). A second request is rejected instead of replacing the
+    /// receiver for the first request, which would make the result race-prone.
+    fn trigger_open(&mut self) -> Result<(), String> {
+        if self.portal_open.is_some() {
+            return Err("a video picker is already open".into());
+        }
+        // Do not accept a new background operation while a prior accepted
+        // operation still has a completion for the host. Keeping the result is
+        // more important than accepting unbounded work: dropping it would
+        // strand that invocation forever.
+        if !self.resource_results.is_empty() {
+            return Err(
+                "a previous video-picker completion is awaiting host acknowledgement".into(),
+            );
+        }
+        let generation = self.portal_generation.checked_add(1).ok_or_else(|| {
+            "video-picker request generation exhausted; restart Video Player".to_string()
+        })?;
+        self.portal_generation = generation;
+        self.open_error = None;
+        self.portal_open = Some(PendingPortalOpen {
+            channel: video_open_request().send(),
+            generation,
+            invocation: None,
+        });
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Drop a portal receiver that no longer represents the user's active
+    /// intent. The portal may still complete in the desktop service, but its
+    /// response has no receiver and therefore cannot mutate this player.
+    fn cancel_pending_portal(&mut self, message: &str) {
+        let Some(pending) = self.portal_open.take() else {
+            return;
+        };
+        if let Some(invocation) = pending.invocation {
+            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(message.into()),
+            });
+        }
+    }
+
+    /// Queue an action completion without letting a newer action overwrite an
+    /// older invocation that the host has not polled yet. `trigger_open`
+    /// applies backpressure before accepting another asynchronous request, so
+    /// every accepted invocation keeps its result until it is collected.
+    fn queue_resource_result(&mut self, update: qos_actions::InvocationUpdate) {
+        self.resource_results.push_back(update);
     }
 
     fn perform_resource_operation(&mut self, operation: crate::actions::PlayerOperation) {
         use crate::actions::PlayerOperation;
         match operation {
-            PlayerOperation::Open { path: None } => self.trigger_open(),
+            PlayerOperation::Open { path: None } => {
+                // `invoke_resource_operation` starts portal opens so it can
+                // report a refusal to agents; this branch is retained for the
+                // in-app path and intentionally ignores an already-reported
+                // failure rather than panicking.
+                let _ = self.trigger_open();
+            }
             PlayerOperation::Open { path: Some(path) } => {
-                self.open_path(Path::new(&path));
+                if let Err(error) = self.open_path(Path::new(&path)) {
+                    tracing::warn!(%error, "video player: could not open direct path");
+                }
             }
             PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
@@ -735,43 +831,66 @@ impl PlayerApp {
 
     /// Drain a pending portal outcome, opening the chosen file.
     fn drain_portal(&mut self) {
-        let mut clear = false;
-        let mut outcome: Option<Result<PathBuf, Option<String>>> = None;
-        if let Some(rx) = self.portal_rx.as_ref() {
-            match rx.try_recv() {
+        let pending = self.portal_open.take();
+        let mut outcome: Option<PortalOpenOutcome> = None;
+        if let Some(request) = pending.as_ref() {
+            match request.channel.try_recv() {
                 Ok(PortalOutcome::Opened(p)) => {
-                    outcome = Some(Ok(p));
-                    clear = true;
+                    outcome = Some((request.generation, request.invocation, Ok(p)));
                 }
                 Ok(PortalOutcome::Cancelled) => {
-                    outcome = Some(Err(None));
-                    clear = true;
+                    outcome = Some((request.generation, request.invocation, Err(None)));
                 }
                 Ok(PortalOutcome::Failed(error)) => {
-                    outcome = Some(Err(Some(error)));
-                    clear = true;
+                    outcome = Some((request.generation, request.invocation, Err(Some(error))));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    outcome = Some(Err(Some("video picker disconnected".into())));
-                    clear = true;
+                    outcome = Some((
+                        request.generation,
+                        request.invocation,
+                        Err(Some("video picker disconnected".into())),
+                    ));
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
-        if clear {
-            self.portal_rx = None;
+        if outcome.is_none() {
+            self.portal_open = pending;
+            return;
         }
-        if let Some(outcome) = outcome {
-            let result = match outcome {
-                Ok(path) => {
-                    self.open_path(&path);
-                    Ok(true)
+        // The receiver is intentionally dropped before opening the selected
+        // path. `open_path` then cannot cancel the just-completed invocation.
+        if let Some((generation, invocation, outcome)) = outcome {
+            if generation != self.portal_generation {
+                tracing::warn!(
+                    generation,
+                    current_generation = self.portal_generation,
+                    "video player: ignored a stale portal outcome"
+                );
+                if let Some(invocation) = invocation {
+                    self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "video_player.stale_open_response".into(),
+                            message: "ignored a stale video picker response; open again".into(),
+                            details: None,
+                            retryable: true,
+                        },
+                    });
                 }
+                return;
+            }
+            let result = match outcome {
+                Ok(path) => self.open_path(&path).map(|()| true),
                 Err(None) => Ok(false),
-                Err(Some(e)) => Err(e),
+                Err(Some(e)) => {
+                    self.open_error = Some(e.clone());
+                    self.dirty = true;
+                    Err(e)
+                }
             };
-            if let Some(invocation) = self.resource_invocation.take() {
-                self.resource_result = Some(match result {
+            if let Some(invocation) = invocation {
+                self.queue_resource_result(match result {
                     Ok(true) => qos_actions::InvocationUpdate::Succeeded {
                         invocation,
                         output: qos_actions::ActionOutput::default(),
@@ -1019,6 +1138,7 @@ impl PlayerApp {
                     .text_size(14.0)
                     .weight(TextWeight::Regular)
                     .primary()
+                    .focused(self.open_focused)
                     .hovered(self.open_button_rect.contains(self.last_cursor)),
             );
         }
@@ -1036,16 +1156,21 @@ impl PlayerApp {
             return;
         }
         let center = self.rect.center();
-        let (title, subtitle) = if self.player.has_media() {
+        let (title, subtitle) = if let Some(error) = &self.open_error {
+            ("Couldn't open video", error.as_str())
+        } else if self.player.has_media() {
             ("Loading video…", "Preparing the first frame")
         } else {
             ("Open a video to start", "MP4, WebM, MKV, MOV and AVI")
         };
-        let (title_w, _) = text_renderer.measure(title, 20.0, None);
-        let (subtitle_w, _) = text_renderer.measure(subtitle, 13.0, None);
+        let copy_width = (self.rect.width() - 32.0).max(0.0) as f32;
+        let title = text_renderer.elide_to_width(title, 20.0, copy_width);
+        let subtitle = text_renderer.elide_to_width(subtitle, 13.0, copy_width);
+        let (title_w, _) = text_renderer.measure(&title, 20.0, None);
+        let (subtitle_w, _) = text_renderer.measure(&subtitle, 13.0, None);
         text_renderer.draw_text(
             scene,
-            title,
+            &title,
             20.0,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((center.x - f64::from(title_w) * 0.5, center.y + 55.0)),
@@ -1053,7 +1178,7 @@ impl PlayerApp {
         );
         text_renderer.draw_text(
             scene,
-            subtitle,
+            &subtitle,
             13.0,
             theme.tokens.colors.text_dim,
             transform
@@ -1158,9 +1283,17 @@ impl Widget for PlayerApp {
         }
         if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
             if !Path::new(path).is_file() {
-                return Err(format!("video does not exist: {path}"));
+                let message = format!("Video does not exist: {path}");
+                self.open_error = Some(message.clone());
+                self.dirty = true;
+                return Err(message);
             }
-            self.open_path(Path::new(path));
+            self.open_path(Path::new(path))?;
+        } else if matches!(
+            operation,
+            crate::actions::PlayerOperation::Open { path: None }
+        ) {
+            self.trigger_open()?;
         } else {
             self.perform_resource_operation(operation);
         }
@@ -1184,17 +1317,20 @@ impl Widget for PlayerApp {
             operation,
             Some(crate::actions::PlayerOperation::Open { path: None })
         ) {
-            self.resource_invocation = Some(invocation);
+            let Some(pending) = self.portal_open.as_mut() else {
+                return Err("video picker did not start".into());
+            };
+            pending.invocation = Some(invocation);
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else if matches!(
             operation,
             Some(crate::actions::PlayerOperation::Open { path: Some(_) })
         ) {
-            self.resource_result = Some(qos_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: qos_actions::ActionOutput::default(),
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            // A direct path was validated and opened synchronously above, so
+            // it does not need an accepted/polled lifecycle or queue slot.
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 qos_actions::ActionOutput::default(),
@@ -1210,15 +1346,10 @@ impl Widget for PlayerApp {
         _path: &ObjId,
     ) -> Option<qos_actions::InvocationUpdate> {
         self.drain_portal();
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-        {
-            self.resource_result.take()
-        } else {
-            None
-        }
+        self.resource_results
+            .iter()
+            .position(|update| update.invocation() == invocation)
+            .and_then(|index| self.resource_results.remove(index))
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -1471,7 +1602,7 @@ impl Widget for PlayerApp {
         // Collaboration is polled through `needs_idle_sync`; treating an idle,
         // paused collab session as animation would otherwise force a 60 Hz
         // redraw forever. Playback and the portal are the only frame-rate work.
-        self.player.needs_animation_frame() || self.portal_rx.is_some()
+        self.player.needs_animation_frame() || self.portal_open.is_some()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1512,7 +1643,8 @@ mod tests {
     #[test]
     fn opening_a_path_sets_title_and_loads_the_engine() {
         let mut app = PlayerApp::new_with_preferences(PlaybackPreferences::default());
-        app.open_path(&PathBuf::from("/tmp/Holiday.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Holiday.mp4"))
+            .expect("source identity available");
         assert_eq!(app.title, "Holiday.mp4");
         assert!(app.player.is_playing(), "autoplay on open");
         assert_eq!(
@@ -1524,12 +1656,149 @@ mod tests {
     #[test]
     fn portal_outcome_opens_the_chosen_file() {
         let mut app = PlayerApp::new();
-        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            PathBuf::from("/tmp/Chosen.webm"),
-        )));
+        app.portal_generation = 1;
+        app.portal_open = Some(PendingPortalOpen {
+            channel: ui::portal::inject_for_test(PortalOutcome::Opened(PathBuf::from(
+                "/tmp/Chosen.webm",
+            ))),
+            generation: 1,
+            invocation: None,
+        });
         app.drain_portal();
         assert_eq!(app.title, "Chosen.webm");
-        assert!(app.portal_rx.is_none(), "channel cleared after the outcome");
+        assert!(
+            app.portal_open.is_none(),
+            "channel cleared after the outcome"
+        );
+    }
+
+    #[test]
+    fn portal_open_is_single_flight_and_a_direct_open_supersedes_it() {
+        let mut app = PlayerApp::new();
+        app.trigger_open().expect("first picker starts");
+        let first_generation = app.portal_open.as_ref().map(|open| open.generation);
+        assert!(
+            app.trigger_open().is_err(),
+            "a second request must not replace the first portal receiver"
+        );
+        assert_eq!(
+            app.portal_open.as_ref().map(|open| open.generation),
+            first_generation
+        );
+
+        app.open_path(Path::new("/tmp/Direct.mp4"))
+            .expect("source identity available");
+        assert!(
+            app.portal_open.is_none(),
+            "a direct open drops the stale picker receiver before it can win later"
+        );
+    }
+
+    #[test]
+    fn portal_generation_exhaustion_fails_closed_without_aliasing_old_requests() {
+        let mut app = PlayerApp::new();
+        app.portal_generation = u64::MAX;
+        let error = app.trigger_open().expect_err("generation must not wrap");
+        assert!(error.contains("generation exhausted"));
+        assert!(app.portal_open.is_none());
+        assert_eq!(app.portal_generation, u64::MAX);
+    }
+
+    #[test]
+    fn source_identity_generation_exhaustion_refuses_the_new_open() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Original.mp4"))
+            .expect("initial source identity");
+        let original_id = app.current_source_id.clone();
+        let original_title = app.title.clone();
+        let original_source = app
+            .player
+            .engine()
+            .and_then(|engine| engine.source())
+            .cloned();
+        app.source_generation = u64::MAX;
+
+        let error = app
+            .open_path(Path::new("/tmp/New.mp4"))
+            .expect_err("source generation must not wrap into an old resource identity");
+        assert!(error.contains("identity generation exhausted"));
+        assert_eq!(app.source_generation, u64::MAX);
+        assert_eq!(app.current_source_id, original_id);
+        assert_eq!(app.title, original_title);
+        assert_eq!(
+            app.player.engine().and_then(|engine| engine.source()),
+            original_source.as_ref()
+        );
+    }
+
+    #[test]
+    fn metadata_revision_boundary_discards_the_cache_before_resetting() {
+        let mut app = PlayerApp::for_shot(None, Some("metadata"));
+        let _first = app.search_providers();
+        assert_eq!(app.search_catalog_builds.get(), 1);
+        assert!(app.search_cache.borrow().is_some());
+
+        app.metadata_revision = u64::MAX;
+        app.search_metadata = DecoderMetadata::default();
+        app.sync_decoder_settings();
+        assert_eq!(app.metadata_revision, 0);
+        assert!(
+            app.search_cache.borrow().is_none(),
+            "the old max-revision provider is discarded before reusing revision zero"
+        );
+
+        let _second = app.search_providers();
+        assert_eq!(
+            app.search_catalog_builds.get(),
+            2,
+            "the fresh post-boundary provider is rebuilt instead of reusing stale metadata"
+        );
+    }
+
+    #[test]
+    fn stale_portal_outcome_cannot_open_media_in_release_or_debug_builds() {
+        let mut app = PlayerApp::new();
+        app.portal_generation = 2;
+        app.portal_open = Some(PendingPortalOpen {
+            channel: ui::portal::inject_for_test(PortalOutcome::Opened(PathBuf::from(
+                "/tmp/Stale.webm",
+            ))),
+            generation: 1,
+            invocation: None,
+        });
+        app.drain_portal();
+        assert_eq!(app.title, "No media");
+        assert!(app.current_source_id.is_none());
+        assert!(app.portal_open.is_none());
+    }
+
+    #[test]
+    fn completed_portal_result_backpressures_new_async_requests_until_polled() {
+        let mut app = PlayerApp::new();
+        app.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+            invocation: qos_actions::InvocationId::new(),
+            message: Some("test completion".into()),
+        });
+        let error = app
+            .trigger_open()
+            .expect_err("unpolled completion applies backpressure");
+        assert!(error.contains("awaiting host acknowledgement"));
+        assert!(app.portal_open.is_none());
+        assert_eq!(app.resource_results.len(), 1, "the completion is retained");
+    }
+
+    #[test]
+    fn portal_failure_is_retained_for_the_empty_state() {
+        let mut app = PlayerApp::new();
+        app.portal_generation = 1;
+        app.portal_open = Some(PendingPortalOpen {
+            channel: ui::portal::inject_for_test(PortalOutcome::Failed("permission denied".into())),
+            generation: 1,
+            invocation: None,
+        });
+        app.drain_portal();
+        assert_eq!(app.open_error.as_deref(), Some("permission denied"));
+        assert!(app.player.latest_frame().is_none());
     }
 
     #[test]
@@ -1540,7 +1809,7 @@ mod tests {
         assert_eq!(invocation.address.resource, "video-player.application");
         assert_eq!(invocation.address.action, "open");
         assert!(
-            app.portal_rx.is_none(),
+            app.portal_open.is_none(),
             "the control did not bypass the host"
         );
     }
@@ -1548,7 +1817,8 @@ mod tests {
     #[test]
     fn resources_cover_transport_navigation_audio_metadata_and_settings() {
         let mut app = synth_app();
-        app.open_path(Path::new("/tmp/Clip.mp4"));
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
         let resources = Widget::resources(&app, &AutoCommit::new());
         let app_resource = &resources[0];
         assert_eq!(app_resource.kind, "video-player.application");
@@ -1576,7 +1846,8 @@ mod tests {
     #[test]
     fn follower_rejects_transport_operations_even_if_invoked_out_of_band() {
         let mut app = synth_app();
-        app.open_path(Path::new("/tmp/Clip.mp4"));
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
         app.collab = Some(CollabPlayback::new(Role::Follower));
         app.player.set_transport_enabled(false);
         let encoded = qos_actions::EncodedAction::encode_operation(
@@ -1657,7 +1928,8 @@ mod tests {
     #[test]
     fn opening_a_file_then_syncing_lands_a_frame_and_duration() {
         let mut app = synth_app();
-        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+            .expect("source identity available");
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root());
         assert!(
@@ -1680,7 +1952,8 @@ mod tests {
             app.preferences.autoplay,
             app.preferences.loop_enabled,
         );
-        app.open_path(Path::new("/tmp/Clip.mp4"));
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
         assert!(
             !app.player.is_playing(),
             "disabled autoplay is honoured on open"
@@ -1705,7 +1978,8 @@ mod tests {
     #[test]
     fn playhead_advances_while_playing_and_a_mid_play_seek_holds() {
         let mut app = synth_app();
-        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+            .expect("source identity available");
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &root()); // baseline the synth clock
         std::thread::sleep(std::time::Duration::from_millis(40));
@@ -1732,7 +2006,8 @@ mod tests {
     #[test]
     fn volume_and_mute_propagate_to_the_engine() {
         let mut app = synth_app();
-        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+            .expect("source identity available");
         app.player.set_volume(0.3);
         assert!((app.player.volume() - 0.3).abs() < 1e-6);
         assert!((app.player.engine().unwrap().volume() - 0.3).abs() < 1e-6);
@@ -1746,7 +2021,8 @@ mod tests {
     #[test]
     fn playback_speed_action_changes_the_engine_and_collaborative_snapshot() {
         let mut app = synth_app();
-        app.open_path(Path::new("/tmp/Clip.mp4"));
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
         app.perform_resource_operation(crate::actions::PlayerOperation::SetPlaybackRate(2.0));
         let engine = app.player.engine().expect("engine");
         assert!((engine.rate() - 2.0).abs() < f32::EPSILON);
@@ -1756,7 +2032,8 @@ mod tests {
     #[test]
     fn space_key_routed_through_the_app_toggles_playback() {
         let mut app = synth_app();
-        app.open_path(&PathBuf::from("/tmp/Clip.mp4"));
+        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+            .expect("source identity available");
 
         // Lay the app out so `handle_event` can find the player child node.
         let theme = Theme::dark();
@@ -1905,7 +2182,8 @@ mod tests {
         let source = media::Source::Remote {
             url: "https://demo.local/clip.mp4".into(),
         };
-        app.set_current_source(&source);
+        app.set_current_source(&source)
+            .expect("source identity available");
         assert_ne!(app.current_source_id.as_deref(), Some(old_source.as_str()));
         let track = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
         assert!(
