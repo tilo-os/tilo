@@ -28,9 +28,9 @@ use ui::theme::Theme;
 use ui::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::UserId;
-use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::{TextInput, TextInputKind, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
@@ -101,6 +101,9 @@ enum CtxAction {
     },
     /// A comment or tracked-change operation contributed by the review overlay.
     Review(ReviewAction),
+    /// A lower-frequency command chosen from the compact toolbar's accessible
+    /// More menu. It deliberately reuses the exact toolbar action path.
+    Tool(ToolAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,6 +341,10 @@ enum ToolAction {
     /// Open the "New ▾" template picker menu (lists every [`crate::Template`];
     /// a selection replaces the open document with the chosen template in place).
     NewMenu,
+    /// Compact-toolbar overflow. Its visible label, accessible name and menu
+    /// keep lower-frequency tools reachable without turning a narrow editor
+    /// into a multi-row ribbon.
+    More,
 }
 
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
@@ -712,6 +719,9 @@ const TOOLBAR_RIGHT_PAD: f64 = 18.0;
 /// hint stays available through its two explicit chips, but would compete with
 /// the status otherwise.
 const COMPACT_LAYOUT_BAR_BREAKPOINT: f64 = 760.0;
+/// Below this width the toolbar becomes a single focused writing row. Less
+/// frequent structure/review/view controls move into the labeled More menu.
+const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
 
 /// Pack toolbar items into rows that each fit within `avail_w` (the toolbar's
 /// usable width). Returns the index ranges `[start, end)` for each row. The
@@ -1772,6 +1782,17 @@ pub struct WordProcessorWidget {
     /// Comment/tracked-change visibility, materialized items, card drawing, and
     /// frame-local action hit targets. Document mutation remains editor policy.
     review: ReviewOverlay,
+    /// The selected durable comment resource, if its thread composer is open.
+    /// This stays outside `ReviewOverlay`: that overlay only lays out inline
+    /// anchors/cards; the editor owns input and action dispatch.
+    thread_comment: Option<String>,
+    /// A materialized snapshot supplied only by the headless visual scenario.
+    /// Interactive threads always resolve their current value from `review`.
+    thread_snapshot: Option<qdoc::snapshot::CommentView>,
+    thread_reply: TextInput,
+    thread_panel: Rect,
+    thread_submit: Rect,
+    thread_cancel: Rect,
     /// Document-outline visibility, drawing, and frame-local hit geometry.
     outline: OutlinePane,
     /// Version-history strip under the canvas: the document's own change graph
@@ -1796,6 +1817,10 @@ pub struct WordProcessorWidget {
     resource_file_invocation: Option<qos_actions::InvocationId>,
     resource_file_result: Option<qos_actions::InvocationUpdate>,
     pending_resource_open: Option<(qos_actions::InvocationId, std::path::PathBuf)>,
+    /// A resource-invoked revision to focus after the next mutable sync has
+    /// refreshed the history model. `invoke_resource_operation` only receives
+    /// an immutable document, so deferring avoids a second, stale timeline.
+    pending_history_revision: Option<usize>,
     // ---- paragraph-style context menu -------------------------------------
     /// Right-click style-menu lifecycle, drawing, hit-testing, and typed outcome.
     style_menu: StyleMenu,
@@ -1888,6 +1913,16 @@ impl WordProcessorWidget {
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             review: ReviewOverlay::default(),
+            thread_comment: None,
+            thread_snapshot: None,
+            thread_reply: TextInput::local()
+                .with_kind(TextInputKind::Prose)
+                .with_id("word_processor_comment_reply")
+                .with_accessible_name(t("review-reply"))
+                .with_font_size(13.0),
+            thread_panel: Rect::ZERO,
+            thread_submit: Rect::ZERO,
+            thread_cancel: Rect::ZERO,
             outline: OutlinePane::default(),
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
@@ -1899,6 +1934,7 @@ impl WordProcessorWidget {
             resource_file_invocation: None,
             resource_file_result: None,
             pending_resource_open: None,
+            pending_history_revision: None,
             style_menu: StyleMenu::default(),
             toast: None,
             color_picker: StyleColorPicker::default(),
@@ -2021,6 +2057,17 @@ impl WordProcessorWidget {
                 }
             }),
             region: self.inner.region_kind(),
+            search_hits: self
+                .find
+                .matches()
+                .iter()
+                .take(crate::actions::MAX_RESOURCE_SEARCH_HITS)
+                .map(|(block, start, end)| crate::actions::SearchTarget {
+                    block: block.clone(),
+                    start: *start,
+                    end: *end,
+                })
+                .collect(),
         })
     }
 
@@ -2306,6 +2353,27 @@ impl WordProcessorWidget {
     /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {
         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+        self.dirty = true;
+    }
+
+    /// Put the production Find bar into a deterministic populated state for
+    /// visual review. The query still runs through the complete-document search
+    /// path, so this catches virtualized/offscreen result regressions rather
+    /// than painting a mock search surface.
+    pub fn stage_find_for_shot(&mut self, state: &AutoCommit, query: &str) {
+        let blocks = self.search_blocks(state);
+        let effect = self.find.open(Some(query), &blocks);
+        self.apply_find_effect(state, effect);
+        self.dirty = true;
+    }
+
+    /// Open one materialized durable comment thread for visual/a11y review.
+    /// The screenshot path still uses the ordinary production panel rather
+    /// than a fixture-only rendering branch.
+    pub fn stage_comment_thread_for_shot(&mut self, comment: qdoc::snapshot::CommentView) {
+        self.thread_comment = Some(comment.id.clone());
+        self.thread_snapshot = Some(comment);
+        Widget::set_focus(&mut self.thread_reply, true);
         self.dirty = true;
     }
 
@@ -2674,6 +2742,47 @@ impl WordProcessorWidget {
             });
             self.scroll_to_block(&bid);
         }
+    }
+
+    /// Navigate a resource-addressed body range after checking it still exists
+    /// in the canonical document. This is intentionally separate from Find's
+    /// index because global search/agents may invoke a result after rendering
+    /// has virtualized or reordered its local cache.
+    fn navigate_to_range(
+        &mut self,
+        state: &AutoCommit,
+        block: &str,
+        start: usize,
+        end: usize,
+    ) -> Result<(), String> {
+        let Some(containers) = self.inner.containers.as_ref() else {
+            return Err("Writer document is not initialized".into());
+        };
+        let Some(text) = qdoc::model::block_text(state, containers, block) else {
+            return Err("the requested document range no longer exists".into());
+        };
+        let len = text.chars().count();
+        if start > end || end > len {
+            return Err("the requested document range is stale".into());
+        }
+        if self.inner.in_running_region() {
+            return Err("leave header or footer editing before navigating body results".into());
+        }
+        self.inner.clear_anchor();
+        self.inner.set_caret(Caret {
+            block: block.to_string(),
+            offset: start,
+        });
+        if start < end {
+            self.inner.set_anchor();
+            self.inner.set_caret(Caret {
+                block: block.to_string(),
+                offset: end,
+            });
+        }
+        self.scroll_to_block(block);
+        self.dirty = true;
+        Ok(())
     }
 
     fn scroll_to_block(&mut self, bid: &str) {
@@ -4755,6 +4864,7 @@ fn tool_action_id(action: ToolAction) -> String {
         ToolAction::ToggleHistory => "toggle-history".into(),
         ToolAction::InsertToc => "insert-table-of-contents".into(),
         ToolAction::NewMenu => "new-from-template".into(),
+        ToolAction::More => "more-tools".into(),
         ToolAction::TextColor(None) => "text-color-default".into(),
         ToolAction::TextColor(Some(rgb)) => {
             format!("text-color-{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
@@ -4793,6 +4903,7 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::ToggleHistory => "a11y-version-history",
         ToolAction::InsertToc => "a11y-insert-toc",
         ToolAction::NewMenu => "a11y-new-from-template",
+        ToolAction::More => "a11y-more-tools",
         ToolAction::TextColor(c) => {
             return match c {
                 Some(rgb) => {
@@ -4822,6 +4933,7 @@ fn review_action_target(action: &ReviewAction) -> String {
         ReviewAction::AcceptAllChanges => "word-processor.review:accept-all".into(),
         ReviewAction::RejectAllChanges => "word-processor.review:reject-all".into(),
         ReviewAction::ResolveComment(id) => format!("word-processor.review:resolve:{id}"),
+        ReviewAction::OpenCommentThread(id) => format!("word-processor.review:reply:{id}"),
     }
 }
 
@@ -4842,6 +4954,7 @@ fn review_action_a11y_label(
         ReviewAction::AcceptAllChanges => t("review-accept-all"),
         ReviewAction::RejectAllChanges => t("review-reject-all"),
         ReviewAction::ResolveComment(_) => t("review-resolve-comment"),
+        ReviewAction::OpenCommentThread(_) => t("review-reply"),
     }
 }
 
@@ -8441,6 +8554,15 @@ impl Widget for WordProcessorWidget {
             WordProcessorOperation::ToggleRuler => self.ruler_on = !self.ruler_on,
             WordProcessorOperation::ToggleOutline => self.outline.toggle(),
             WordProcessorOperation::ToggleHistory => self.history.toggle(),
+            WordProcessorOperation::NavigateTo { block, start, end } => {
+                self.navigate_to_range(doc, &block, start, end)?;
+            }
+            WordProcessorOperation::ShowRevision { index } => {
+                if !self.history.is_open() {
+                    self.history.toggle();
+                }
+                self.pending_history_revision = Some(index);
+            }
         }
         self.dirty = true;
         Ok(true)
@@ -8586,6 +8708,9 @@ impl Widget for WordProcessorWidget {
         // Cheap when it hasn't: `refresh` compares heads first.
         if self.history.is_open() {
             self.history.refresh(state);
+            if let Some(index) = self.pending_history_revision.take() {
+                self.history.set_current_tick(index);
+            }
         }
         self.dirty = true;
     }
@@ -8810,6 +8935,22 @@ impl Widget for WordProcessorWidget {
         {
             return;
         }
+        // The expanded comment thread owns its reply field and modal-like
+        // button surface. Keep it ahead of the editor and Find bar so typing
+        // never leaks into the document beneath it.
+        if self.handle_comment_thread_event(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
         // The version-history strip captures pointer input over its own band (and
         // keeps capturing mid-drag). A restore flags `needs_commit`, handing the
         // commit to `App::commit_action` so it lands on the undo stack stamped and
@@ -8923,6 +9064,7 @@ impl Widget for WordProcessorWidget {
             self.find
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+        self.draw_comment_thread(scene, transform, text_renderer, theme, presence);
         let cc = self.chrome;
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
@@ -9182,6 +9324,174 @@ impl ui::widget::AppWidget for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    /// Draw the expanded, durable comment thread above the inline margin
+    /// anchor. The panel is on-demand, retaining the compact canvas as the
+    /// primary surface while keeping each persisted reply visible and usable.
+    #[allow(clippy::too_many_lines)]
+    fn draw_comment_thread(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(id) = self.thread_comment.clone() else {
+            return;
+        };
+        let comment = self
+            .review
+            .comments()
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+            .or_else(|| self.thread_snapshot.clone());
+        let Some(comment) = comment else {
+            self.close_comment_thread();
+            return;
+        };
+        let cc = self.chrome;
+        let width = self.rect.width().clamp(260.0, 372.0);
+        let height = (self.rect.height() * 0.48).clamp(238.0, 360.0);
+        let panel = Rect::new(
+            self.rect.x1 - width - 12.0,
+            self.rect.y1 - height - 38.0,
+            self.rect.x1 - 12.0,
+            self.rect.y1 - 38.0,
+        );
+        self.thread_panel = panel;
+        let rounded = vello::kurbo::RoundedRect::from_rect(panel, 8.0);
+        scene.fill(Fill::NonZero, transform, cc.bar, None, &rounded);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            cc.border,
+            None,
+            &rounded,
+        );
+        tr.draw_text(
+            scene,
+            &t("review-thread"),
+            14.0,
+            cc.text,
+            transform * Affine::translate((panel.x0 + 12.0, panel.y0 + 12.0)),
+            None,
+        );
+        let root = comment
+            .blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let root_layout = RichTextLayout::shape(
+            &mut tr.font_system,
+            &[RichSpan::new(format!("{}  {}", comment.author, root))],
+            false,
+            12.0,
+            num::f32_of_f64(width - 24.0),
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        tr.draw_rich(
+            scene,
+            &root_layout,
+            transform * Affine::translate((panel.x0 + 12.0, panel.y0 + 39.0)),
+            cc.text,
+        );
+        let mut y = panel.y0 + 48.0 + f64::from(root_layout.height());
+        for reply in comment.replies.iter().take(3) {
+            let text = reply
+                .blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let layout = RichTextLayout::shape(
+                &mut tr.font_system,
+                &[RichSpan::new(format!("{}  {}", reply.author, text))],
+                false,
+                11.0,
+                num::f32_of_f64(width - 36.0),
+                TextAlign::Left,
+                FontFamily::Sans,
+                vec![],
+                vec![],
+                1.0,
+            );
+            let h = f64::from(layout.height()) + 8.0;
+            if y + h > panel.y1 - 96.0 {
+                break;
+            }
+            let bubble = Rect::new(panel.x0 + 18.0, y, panel.x1 - 12.0, y + h);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                cc.chip,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(bubble, 5.0),
+            );
+            tr.draw_rich(
+                scene,
+                &layout,
+                transform * Affine::translate((bubble.x0 + 7.0, bubble.y0 + 4.0)),
+                cc.text,
+            );
+            y += h + 5.0;
+        }
+        let field = Rect::new(
+            panel.x0 + 12.0,
+            panel.y1 - 82.0,
+            panel.x1 - 12.0,
+            panel.y1 - 52.0,
+        );
+        self.thread_reply
+            .set_placeholder(&t("review-reply-placeholder"));
+        self.thread_reply.apply_layout_external(field);
+        Widget::draw(
+            &mut self.thread_reply,
+            scene,
+            transform,
+            tr,
+            theme,
+            presence,
+        );
+        self.thread_cancel = Rect::new(
+            panel.x1 - 210.0,
+            panel.y1 - 40.0,
+            panel.x1 - 118.0,
+            panel.y1 - 12.0,
+        );
+        self.thread_submit = Rect::new(
+            panel.x1 - 110.0,
+            panel.y1 - 40.0,
+            panel.x1 - 12.0,
+            panel.y1 - 12.0,
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            self.thread_cancel,
+            &t("review-cancel-reply"),
+            false,
+            true,
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            self.thread_submit,
+            &t("review-send-reply"),
+            true,
+            true,
+        );
+    }
+
     fn block_index_cached(&self, block: &str) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == block)
     }
@@ -9470,7 +9780,44 @@ impl WordProcessorWidget {
             }
             ToolAction::InsertToc => self.generate_toc(state),
             ToolAction::NewMenu => self.open_template_picker(),
+            ToolAction::More => self.open_toolbar_overflow(),
         }
+    }
+
+    /// Open the compact toolbar's lower-frequency command menu. The action
+    /// payloads remain the same toolbar actions; this is presentation-only
+    /// routing, not a second implementation of commands.
+    fn open_toolbar_overflow(&mut self) {
+        let anchor = self
+            .toolbar
+            .iter()
+            .find(|(action, _)| *action == ToolAction::More)
+            .map_or_else(
+                || Point::new(self.rect.x1 - 72.0, self.rect.y0 + TOOLBAR_H),
+                |(_, rect)| Point::new(rect.x0, rect.y1),
+            );
+        let mut menu = ContextMenu::new();
+        let mut actions = Vec::new();
+        for action in [
+            ToolAction::Strike,
+            ToolAction::Super,
+            ToolAction::Sub,
+            ToolAction::FontSizeDec,
+            ToolAction::FontSizeInc,
+            ToolAction::InsertTable,
+            ToolAction::InsertImage,
+            ToolAction::ToggleRuler,
+            ToolAction::ToggleOutline,
+            ToolAction::ToggleHistory,
+            ToolAction::InsertToc,
+        ] {
+            menu.push(MenuItem::action(tool_action_a11y_label(action), || {}));
+            actions.push(Some(CtxAction::Tool(action)));
+        }
+        menu.open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
+        self.context_menu = menu;
+        self.context_actions = actions;
+        self.dirty = true;
     }
 
     /// Mutate the focused block's style in the live widget sheet (component-
@@ -10054,6 +10401,10 @@ impl WordProcessorWidget {
                     ))));
                     review_rows = true;
                 } else if m.name == qdoc::schema::MARK_COMMENT {
+                    menu.push(MenuItem::action(t("review-reply"), || {}));
+                    actions.push(Some(CtxAction::Review(ReviewAction::OpenCommentThread(
+                        id.clone(),
+                    ))));
                     menu.push(MenuItem::action(t("review-resolve-comment"), || {}));
                     actions.push(Some(CtxAction::Review(ReviewAction::ResolveComment(
                         id.clone(),
@@ -10174,6 +10525,23 @@ impl WordProcessorWidget {
                 self.needs_commit = true;
             }
             CtxAction::Review(action) => self.dispatch_review_action(action, state),
+            CtxAction::Tool(tool) => {
+                self.apply_tool(state, tool);
+                self.refresh_blocks(state);
+                if !matches!(
+                    tool,
+                    ToolAction::ToggleStyles
+                        | ToolAction::ToggleRuler
+                        | ToolAction::ToggleOutline
+                        | ToolAction::ToggleHistory
+                        | ToolAction::More
+                        | ToolAction::NewMenu
+                ) {
+                    self.needs_commit = true;
+                    self.modified = true;
+                    self.note_edit_for_autosave(state);
+                }
+            }
         }
         self.context_menu.close();
         self.dirty = true;
@@ -10297,6 +10665,141 @@ impl WordProcessorWidget {
         staged
     }
 
+    fn open_comment_thread(&mut self, comment: &str) {
+        if !self.review.comments().iter().any(|item| item.id == comment) {
+            self.toast = Some((t("review-thread-unavailable"), ToastKind::Error));
+            return;
+        }
+        self.thread_comment = Some(comment.to_string());
+        self.thread_snapshot = None;
+        self.thread_reply.set_text("");
+        Widget::set_focus(&mut self.thread_reply, true);
+        self.dirty = true;
+    }
+
+    fn close_comment_thread(&mut self) {
+        self.thread_comment = None;
+        self.thread_snapshot = None;
+        self.thread_panel = Rect::ZERO;
+        self.thread_submit = Rect::ZERO;
+        self.thread_cancel = Rect::ZERO;
+        Widget::set_focus(&mut self.thread_reply, false);
+        self.dirty = true;
+    }
+
+    fn submit_comment_reply(&mut self, state: &mut AutoCommit) {
+        let Some(comment) = self.thread_comment.clone() else {
+            return;
+        };
+        let text = self.thread_reply.value().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let action = crate::actions::reply_to_comment_action(&comment, &t("review-you"), "", &text);
+        self.perform_action(state, &action);
+        self.thread_reply.set_text("");
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.dirty = true;
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the embedded Find bar input route"
+    )]
+    fn handle_comment_thread_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if self.thread_comment.is_none() {
+            return false;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            Widget::handle_event(
+                &mut self.thread_reply,
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            return false;
+        }
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                self.close_comment_thread();
+                *handled = true;
+                return true;
+            }
+            if matches!(logical_key, Key::Named(NamedKey::Enter)) && modifiers.state().control_key()
+            {
+                self.submit_comment_reply(state);
+                *handled = true;
+                return true;
+            }
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            if self.thread_submit.contains(self.pointer) {
+                self.submit_comment_reply(state);
+                *handled = true;
+                return true;
+            }
+            if self.thread_cancel.contains(self.pointer) {
+                self.close_comment_thread();
+                *handled = true;
+                return true;
+            }
+            if !self.thread_panel.contains(self.pointer) {
+                self.close_comment_thread();
+                *handled = true;
+                return true;
+            }
+        }
+        Widget::handle_event(
+            &mut self.thread_reply,
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+        *handled = true;
+        true
+    }
+
     /// Act on a tracked-change / comment review affordance (from a margin-card
     /// button or a context-menu row): accept/reject a change, accept/reject all,
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
@@ -10317,6 +10820,10 @@ impl WordProcessorWidget {
             }
             ReviewAction::ResolveComment(id) => {
                 crate::actions::WordProcessorAction::ResolveComment { id }
+            }
+            ReviewAction::OpenCommentThread(id) => {
+                self.open_comment_thread(&id);
+                return;
             }
         };
         self.perform_action(state, &typed);
@@ -10398,7 +10905,8 @@ impl WordProcessorWidget {
     /// section (editing controls inside a cell, else "Insert table"), and the
     /// panel/pane toggles. Paragraph-style presets/controls live in the side
     /// panel, not here — see [`ToolAction`].
-    fn toolbar_button_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
+    #[allow(clippy::too_many_lines)]
+    fn toolbar_button_specs(&self, compact: bool) -> Vec<(ToolAction, ToolbarItem)> {
         let bold_a = self.mark_active_in_selection("strong");
         let italic_a = self.mark_active_in_selection("em");
         let under_a = self.mark_active_in_selection("underline");
@@ -10430,6 +10938,7 @@ impl WordProcessorWidget {
                     | ToolAction::TableRowAdd
                     | ToolAction::ToggleStyles
                     | ToolAction::ToggleOutline
+                    | ToolAction::More
             )
         };
         let panel_open = self.styles_panel_open;
@@ -10456,6 +10965,26 @@ impl WordProcessorWidget {
         add(ToolAction::Bold, "B", 34.0, bold_a);
         add(ToolAction::Italic, "I", 30.0, italic_a);
         add(ToolAction::Underline, "U", 32.0, under_a);
+        // A compact tile keeps the writing surface primary: the common writing
+        // trio, font choice, and style inspector remain one coherent row;
+        // every lower-frequency command is reachable from an explicit More
+        // menu instead of wrapping into orphaned ribbon rows.
+        if compact {
+            add(ToolAction::FontCycle, font_label, 58.0, false);
+            add(
+                ToolAction::ToggleStyles,
+                &t("toolbar-styles"),
+                64.0,
+                panel_open,
+            );
+            add(
+                ToolAction::More,
+                &t("toolbar-more"),
+                62.0,
+                self.context_menu.is_open(),
+            );
+            return specs;
+        }
         add(ToolAction::Strike, "S", 30.0, strike_a);
         add(ToolAction::Super, "x²", 34.0, super_a);
         add(ToolAction::Sub, "x₂", 34.0, sub_a);
@@ -10517,7 +11046,8 @@ impl WordProcessorWidget {
         theme: &Theme,
         tb: Rect,
     ) {
-        let specs = self.toolbar_button_specs();
+        let compact = self.use_compact_toolbar(tb.width());
+        let specs = self.toolbar_button_specs(compact);
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
 
         // Responsive packing: when the controls don't fit `tb.width()`, wrap to
@@ -10529,9 +11059,11 @@ impl WordProcessorWidget {
         let mut starts: Vec<bool> = items.iter().map(|it| it.group_start).collect();
         // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
         // not as chrome buttons) as a trailing phantom item so no button row
-        // extends under them; `toolbar_item_widths` mirrors this exactly.
-        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
-        starts.push(true);
+        // extends under them; `toolbar_height` mirrors this exactly.
+        if !compact {
+            widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
+            starts.push(true);
+        }
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
 
@@ -10587,19 +11119,21 @@ impl WordProcessorWidget {
         // Zoom stepper: right-aligned on the last toolbar row (its width reserved
         // as part of the trailing packer phantom below, so buttons never run under
         // it). The colour/highlight swatch strips pack to its left.
-        let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
-        self.draw_zoom_control(scene, transform, tr, last_row);
-        let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
-        let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
-        let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
-        // Highlight swatch strip, packed just left of the text-colour strip.
-        let hl_band = Rect::new(
-            tb.x0,
-            last_row_y,
-            (text_left - 10.0).max(tb.x0),
-            last_row_y + row_h,
-        );
-        self.draw_highlight_swatches(scene, transform, tr, hl_band);
+        if !compact {
+            let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
+            self.draw_zoom_control(scene, transform, tr, last_row);
+            let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
+            let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
+            let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
+            // Highlight swatch strip, packed just left of the text-colour strip.
+            let hl_band = Rect::new(
+                tb.x0,
+                last_row_y,
+                (text_left - 10.0).max(tb.x0),
+                last_row_y + row_h,
+            );
+            self.draw_highlight_swatches(scene, transform, tr, hl_band);
+        }
 
         // Subtle hover highlight over the button under the pointer. A low-alpha
         // tint of the primary text colour reads as a veneer in both light
@@ -10621,65 +11155,32 @@ impl WordProcessorWidget {
     /// wrapped row. Computed from the same packer `draw_toolbar` uses so the
     /// canvas top offset and the drawn rows always agree.
     fn toolbar_height(&self, width: f64) -> f64 {
-        let widths: Vec<f64> = self.toolbar_item_widths();
-        let starts: Vec<bool> = self.toolbar_item_group_starts();
+        let compact = self.use_compact_toolbar(width);
+        let specs = self.toolbar_button_specs(compact);
+        let mut widths: Vec<f64> = specs.iter().map(|(_, item)| item.width).collect();
+        let mut starts: Vec<bool> = specs.iter().map(|(_, item)| item.group_start).collect();
+        if !compact {
+            widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
+            starts.push(true);
+        }
         let rows = pack_toolbar_rows(&widths, &starts, width);
         num::f64_of_usize(rows.len()) * TOOLBAR_H
     }
 
-    /// The per-item widths fed to the toolbar packer. Mirrors the `add(...)`
-    /// sequence in `draw_toolbar`; the contextual table/cell controls depend on
-    /// the caret block kind, so this resolves the same branch.
-    fn toolbar_item_widths(&self) -> Vec<f64> {
-        let (kind, _) = self.current_block_style();
-        let mut w = vec![
-            64.0, // New ▾
-            34.0, 30.0, 32.0, 30.0, // B I U S
-            34.0, 34.0, // x² x₂
-            58.0, // font family
-            34.0, 34.0, // A− A+ (font size)
-        ];
-        if kind == "cell" {
-            w.extend([54.0, 54.0, 52.0, 52.0, 30.0]); // +Row −Row +Col −Col ✕
-        } else {
-            w.push(78.0); // ⊞ Table
+    /// A medium canvas should never leave one low-frequency control stranded on
+    /// a second ribbon row. Prefer the compact, explicit More menu whenever the
+    /// complete desktop set would wrap, while retaining the full grouped set on
+    /// widths where it is genuinely a single coherent row.
+    fn use_compact_toolbar(&self, width: f64) -> bool {
+        if width < COMPACT_TOOLBAR_BREAKPOINT {
+            return true;
         }
-        w.push(40.0); // Image (vector icon, no label)
-        w.push(64.0); // Styles
-        w.push(60.0); // Ruler
-        w.push(72.0); // Outline
-        w.push(68.0); // History
-        w.push(48.0); // TOC
-        // right-aligned colour + highlight swatches, plus the zoom stepper cluster
-        // (mirrors the reservation in `draw_toolbar`).
-        w.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
-        w
-    }
-
-    /// The per-item `group_start` flags, parallel to `toolbar_item_widths`.
-    fn toolbar_item_group_starts(&self) -> Vec<bool> {
-        let (kind, _) = self.current_block_style();
-        // Indices that start a group in `draw_toolbar` (see `group_start`).
-        let mut g = vec![
-            true, // New ▾ (group)
-            true, false, false, false, // B(group) I U S
-            false, false, // x² x₂
-            true,  // font family(group)
-            false, false, // A− A+ (same group as font)
-        ];
-        if kind == "cell" {
-            g.extend([true, false, false, false, false]); // +Row starts a group
-        } else {
-            g.push(true); // ⊞ Table starts a group
-        }
-        g.push(true); // Image starts a group
-        g.push(true); // Styles starts a group
-        g.push(false); // Ruler (same group as Styles)
-        g.push(true); // Outline starts a group (navigation)
-        g.push(false); // History (same navigation group)
-        g.push(false); // TOC
-        g.push(true); // swatch reservation starts a group (see `swatch_reserve_width`)
-        g
+        let full = self.toolbar_button_specs(false);
+        let mut widths: Vec<f64> = full.iter().map(|(_, item)| item.width).collect();
+        let mut starts: Vec<bool> = full.iter().map(|(_, item)| item.group_start).collect();
+        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
+        starts.push(true);
+        pack_toolbar_rows(&widths, &starts, width).len() > 1
     }
 
     /// Draw the text-colour swatch row at the right edge of the toolbar and
@@ -10875,6 +11376,28 @@ mod tests {
                 .as_ref()
                 .map(|resource| resource.kind.as_str()),
             Some("word_processor.document")
+        );
+    }
+
+    #[test]
+    fn resource_navigation_uses_stable_ranges_and_refuses_stale_ones() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "findable text");
+        wp.sync(&mut state.doc, &state.root);
+        let block = wp.model().caret().block.clone();
+
+        wp.navigate_to_range(&state.doc, &block, 0, 8)
+            .expect("canonical range exists");
+        assert_eq!(wp.model().caret().offset, 8);
+        assert!(wp.model().has_selection());
+        let before = wp.model().caret().clone();
+        assert!(wp.navigate_to_range(&state.doc, &block, 0, 99).is_err());
+        assert_eq!(
+            wp.model().caret(),
+            &before,
+            "stale navigation changes nothing"
         );
     }
 
@@ -13731,6 +14254,35 @@ mod tests {
         assert!(
             rects[0].2 > rects[0].0,
             "the highlight rect has positive width"
+        );
+    }
+
+    #[test]
+    fn review_reply_affordance_opens_the_durable_thread() {
+        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let comment;
+        {
+            let mut dm = qdoc::model::DocMut {
+                doc: &mut state.doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            comment = dm.add_comment(&bid, 0, 5, "Ada", "Could this be clearer?");
+            let reply = dm.add_comment_reply(&comment, "Bea", "2026-09-07", "I will revise it.");
+            assert!(reply.is_some(), "reply attaches to the stable parent id");
+        }
+        state.doc.commit();
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(wp.review.comments()[0].replies.len(), 1);
+
+        wp.dispatch_review_action(
+            ReviewAction::OpenCommentThread(comment.clone()),
+            &mut state.doc,
+        );
+        assert_eq!(wp.thread_comment.as_deref(), Some(comment.as_str()));
+        assert!(
+            wp.thread_snapshot.is_none(),
+            "interactive panel reads current review data"
         );
     }
 
