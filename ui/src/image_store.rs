@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -36,8 +36,70 @@ enum Slot {
     Failed,
 }
 
+struct SlotEntry {
+    slot: Slot,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct CacheState {
+    slots: HashMap<String, SlotEntry>,
+    clock: u64,
+}
+
+impl CacheState {
+    fn next_tick(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+}
+
+const DEFAULT_IMAGE_WORKERS: usize = 2;
+const MAX_IMAGE_WORKERS: usize = 4;
+const IMAGE_JOB_QUEUE_LIMIT: usize = 64;
+const IMAGE_CACHE_ENTRY_LIMIT: usize = 64;
+const IMAGE_CACHE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+
+fn slot_bytes(slot: &Slot) -> u64 {
+    match slot {
+        Slot::Ready(image) => u64::from(image.width)
+            .saturating_mul(u64::from(image.height))
+            .saturating_mul(4),
+        Slot::Loading | Slot::Failed => 0,
+    }
+}
+
+fn cache_bytes(cache: &CacheState) -> u64 {
+    cache
+        .slots
+        .values()
+        .map(|entry| slot_bytes(&entry.slot))
+        .sum()
+}
+
+fn evict_one_settled(cache: &mut CacheState) -> bool {
+    let victim = cache
+        .slots
+        .iter()
+        .filter(|(_, entry)| !matches!(entry.slot, Slot::Loading))
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(url, _)| url.clone());
+    victim.is_some_and(|url| cache.slots.remove(&url).is_some())
+}
+
+fn insert_settled(cache: &mut CacheState, url: String, slot: Slot) {
+    cache.slots.remove(&url);
+    let incoming_bytes = slot_bytes(&slot);
+    while (cache.slots.len() >= IMAGE_CACHE_ENTRY_LIMIT
+        || cache_bytes(cache).saturating_add(incoming_bytes) > IMAGE_CACHE_BYTE_LIMIT)
+        && evict_one_settled(cache)
+    {}
+    let last_used = cache.next_tick();
+    cache.slots.insert(url, SlotEntry { slot, last_used });
+}
+
 struct Shared {
-    slots: Mutex<HashMap<String, Slot>>,
+    slots: Mutex<CacheState>,
     /// Count of in-flight (queued or decoding) loads, for `is_idle` /
     /// `block_until_idle` and to know when to keep animation frames flowing.
     pending: AtomicUsize,
@@ -47,24 +109,25 @@ struct Shared {
 #[derive(Clone)]
 pub struct ImageStore {
     shared: Arc<Shared>,
-    tx: Sender<String>,
+    tx: SyncSender<String>,
 }
 
 impl ImageStore {
     /// Build a store with the default worker count.
     pub fn new(fetch: &Fetcher) -> Self {
-        Self::with_workers(fetch, 6)
+        Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
-    /// Build a store with `workers` background fetch/decode threads (min 1).
+    /// Build a store with `workers` background fetch/decode threads, clamped
+    /// to 1..=4 so each store has a predictable stack/scheduler footprint.
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(IMAGE_JOB_QUEUE_LIMIT);
         let shared = Arc::new(Shared {
-            slots: Mutex::new(HashMap::new()),
+            slots: Mutex::new(CacheState::default()),
             pending: AtomicUsize::new(0),
         });
         let rx: Arc<Mutex<Receiver<String>>> = Arc::new(Mutex::new(rx));
-        for i in 0..workers.max(1) {
+        for i in 0..workers.clamp(1, MAX_IMAGE_WORKERS) {
             let rx = rx.clone();
             let shared = shared.clone();
             let fetch = fetch.clone();
@@ -88,17 +151,37 @@ impl ImageStore {
         let Ok(mut slots) = self.shared.slots.lock() else {
             return None;
         };
-        if let Some(slot) = slots.get(url) {
-            return match slot {
+        let last_used = slots.next_tick();
+        if let Some(entry) = slots.slots.get_mut(url) {
+            entry.last_used = last_used;
+            return match &entry.slot {
                 Slot::Ready(img) => Some(img.clone()),
                 _ => None,
             };
         }
-        slots.insert(url.to_string(), Slot::Loading);
+        if slots.slots.len() >= IMAGE_CACHE_ENTRY_LIMIT && !evict_one_settled(&mut slots) {
+            // Every slot is still loading. Avoid an unbounded work queue; a
+            // later frame can retry after one of those requests settles.
+            return None;
+        }
+        slots.slots.insert(
+            url.to_string(),
+            SlotEntry {
+                slot: Slot::Loading,
+                last_used,
+            },
+        );
         drop(slots);
         self.shared.pending.fetch_add(1, Ordering::SeqCst);
-        // If the workers are gone the send fails; undo the bump so `is_idle` doesn't wedge.
-        if self.tx.send(url.to_string()).is_err() {
+        // Never block the UI thread behind image I/O. A full queue removes the
+        // provisional Loading slot so a later frame can retry.
+        if let Err(error) = self.tx.try_send(url.to_string()) {
+            let failed_url = match error {
+                TrySendError::Full(url) | TrySendError::Disconnected(url) => url,
+            };
+            if let Ok(mut slots) = self.shared.slots.lock() {
+                slots.slots.remove(&failed_url);
+            }
             self.shared.pending.fetch_sub(1, Ordering::SeqCst);
         }
         None
@@ -110,7 +193,7 @@ impl ImageStore {
         self.shared
             .slots
             .lock()
-            .is_ok_and(|slots| slots.contains_key(url))
+            .is_ok_and(|slots| slots.slots.contains_key(url))
     }
 
     /// Number of in-flight loads (queued or decoding).
@@ -159,7 +242,9 @@ fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &
             None => Slot::Failed,
         };
         if let Ok(mut slots) = shared.slots.lock() {
-            slots.insert(url, slot);
+            // Replace this request's Loading marker, then reclaim settled
+            // entries until both the count and decoded-pixel ceilings fit.
+            insert_settled(&mut slots, url, slot);
         }
         shared.pending.fetch_sub(1, Ordering::SeqCst);
     }
@@ -233,6 +318,16 @@ pub fn paint_image_cover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn logical_image(width: u32, height: u32) -> PenikoImage {
+        PenikoImage {
+            data: Blob::new(Arc::new(vec![0, 0, 0, 0])),
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width,
+            height,
+        }
+    }
 
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's
     /// fetch+decode+cache path is exercised deterministically.
@@ -312,5 +407,62 @@ mod tests {
         let store = ImageStore::new(&fetch);
         assert!(store.get("").is_none());
         assert!(store.is_idle(), "empty url schedules nothing");
+    }
+
+    #[test]
+    fn decoded_cache_has_strict_entry_and_byte_limits() {
+        let mut slots = CacheState::default();
+        for index in 0..IMAGE_CACHE_ENTRY_LIMIT.saturating_add(5) {
+            insert_settled(
+                &mut slots,
+                format!("small-{index}"),
+                Slot::Ready(logical_image(1, 1)),
+            );
+        }
+        assert_eq!(slots.slots.len(), IMAGE_CACHE_ENTRY_LIMIT);
+
+        let mut large_slots = CacheState::default();
+        for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
+            insert_settled(
+                &mut large_slots,
+                format!("large-{index}"),
+                Slot::Ready(logical_image(600, 600)),
+            );
+            assert!(cache_bytes(&large_slots) <= IMAGE_CACHE_BYTE_LIMIT);
+        }
+        assert!(large_slots.slots.len() < IMAGE_CACHE_ENTRY_LIMIT);
+    }
+
+    #[test]
+    fn decoded_cache_evicts_the_least_recently_used_settled_entry() {
+        let mut cache = CacheState::default();
+        for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
+            insert_settled(
+                &mut cache,
+                format!("image-{index}"),
+                Slot::Ready(logical_image(1, 1)),
+            );
+        }
+        let hot_tick = cache.next_tick();
+        cache
+            .slots
+            .get_mut("image-0")
+            .expect("seeded entry")
+            .last_used = hot_tick;
+        insert_settled(
+            &mut cache,
+            "new-image".into(),
+            Slot::Ready(logical_image(1, 1)),
+        );
+        assert!(cache.slots.contains_key("image-0"));
+        assert!(!cache.slots.contains_key("image-1"));
+        assert!(cache.slots.contains_key("new-image"));
+    }
+
+    #[test]
+    fn decode_downscales_oversized_sources_before_caching() {
+        let bytes = png_bytes(700, 2, [20, 40, 60]);
+        let (_, width, height) = decode_rgba(&bytes).expect("valid PNG decodes");
+        assert!(width <= 600 && height <= 600);
     }
 }

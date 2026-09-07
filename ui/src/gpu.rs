@@ -68,7 +68,9 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
         format: TextureFormat::Rgba8Unorm,
         view_formats: &[],
     });
@@ -118,10 +120,44 @@ impl RenderContext {
                 .ok()?;
         let features = adapter.features();
         let maybe_features = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
+        // Timestamp queries allocate profile-only GPU resources and are not a
+        // baseline rendering requirement. Opt in explicitly, and leave the
+        // ordinary feature request bit-for-bit unchanged.
+        let gpu_timestamps_requested =
+            std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|value| value == "1");
+        let dispatch_timestamps_requested =
+            std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").is_ok_and(|value| value == "1");
+        let timestamp_feature = wgpu::Features::TIMESTAMP_QUERY;
+        let inside_pass_feature = wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        let timestamp_features = if gpu_timestamps_requested && features.contains(timestamp_feature)
+        {
+            if dispatch_timestamps_requested && features.contains(inside_pass_feature) {
+                timestamp_feature | inside_pass_feature
+            } else {
+                if dispatch_timestamps_requested {
+                    eprintln!(
+                        "qos: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY_INSIDE_PASSES"
+                    );
+                }
+                timestamp_feature
+            }
+        } else {
+            if gpu_timestamps_requested {
+                eprintln!(
+                    "qos: VELLO_GPU_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY"
+                );
+            }
+            if dispatch_timestamps_requested {
+                eprintln!(
+                    "qos: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requires VELLO_GPU_TIMESTAMPS=1 with TIMESTAMP_QUERY"
+                );
+            }
+            wgpu::Features::empty()
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: features & maybe_features,
+                required_features: (features & maybe_features) | timestamp_features,
                 required_limits: Limits::default(),
                 // See the module header for the default's cost. `MemoryUsage`
                 // (8 MB first block, 64 MB largest) is still not enough,
@@ -246,4 +282,61 @@ pub enum CreateSurfaceError {
     NoCompatibleDevice,
     #[error("this surface offers no format vello can render")]
     UnsupportedSurfaceFormat,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_targets;
+    use crate::offscreen::shared_gpu;
+
+    #[test]
+    fn live_retained_target_accepts_native_damage_copy() {
+        let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
+        let (target, _) = create_targets(4, 4, &gpu.device);
+        assert!(target.usage().contains(wgpu::TextureUsages::COPY_DST));
+        let source = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("gpu-test-copy-source"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gpu-test-copy-into-live-target"),
+            });
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &source,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        assert!(
+            pollster::block_on(scope.pop()).is_none(),
+            "live target rejected COPY_DST damage copy"
+        );
+    }
 }
