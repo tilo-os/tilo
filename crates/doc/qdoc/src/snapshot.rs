@@ -158,9 +158,24 @@ pub struct CommentView {
     pub author: String,
     pub date: String,
     pub blocks: Vec<BlockView>,
+    /// Ordered, durable thread replies. Older documents have no `replies`
+    /// map and materialize this as an empty list.
+    #[serde(default)]
+    pub replies: Vec<CommentReplyView>,
     /// `(block_id, start, end)` of the anchored range in the body, or `None` if the anchoring mark is absent.
     #[serde(default)]
     pub range: Option<(String, usize, usize)>,
+}
+
+/// One reply in a durable comment thread. Reply ids are stable CRDT ids rather
+/// than list positions, so simultaneous replies merge without one replacing the
+/// other; consumers display them in canonical id order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommentReplyView {
+    pub id: String,
+    pub author: String,
+    pub date: String,
+    pub blocks: Vec<BlockView>,
 }
 
 /// One footnote/endnote: its id, kind (`"footnote"`/`"endnote"`), and the block sequence forming its content.

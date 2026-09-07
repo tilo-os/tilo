@@ -50,6 +50,8 @@ pub(super) enum ReviewAction {
     AcceptAllChanges,
     RejectAllChanges,
     ResolveComment(String),
+    /// Opens the editor-owned durable reply composer for this comment thread.
+    OpenCommentThread(String),
 }
 
 pub(super) struct ReviewOverlay {
@@ -76,7 +78,6 @@ impl ReviewOverlay {
         self.changes = changes;
     }
 
-    #[cfg(test)]
     pub(super) fn comments(&self) -> &[CommentView] {
         &self.comments
     }
@@ -155,7 +156,7 @@ impl ReviewOverlay {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn draw_comment(
         &mut self,
         scene: &mut Scene,
@@ -211,7 +212,39 @@ impl ReviewOverlay {
             1.0,
         );
         let card_top = anchor_y.max(next_card_y);
-        let card_h = 22.0 + f64::from(body_layout.height()) + 8.0 + REVIEW_BTN + 6.0;
+        let replies: Vec<String> = comment
+            .replies
+            .iter()
+            .take(2)
+            .map(|reply| {
+                let text = reply
+                    .blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{}: {}", reply.author, text)
+            })
+            .collect();
+        let reply_text = replies.join("\n");
+        let reply_layout = RichTextLayout::shape(
+            &mut text_renderer.font_system,
+            &[RichSpan::new(&reply_text)],
+            false,
+            10.0,
+            num::f32_of_f64(COMMENT_CARD_W - 16.0),
+            TextAlign::Left,
+            FontFamily::Sans,
+            vec![],
+            vec![],
+            1.0,
+        );
+        let reply_h = if replies.is_empty() {
+            0.0
+        } else {
+            4.0 + f64::from(reply_layout.height())
+        };
+        let card_h = 22.0 + f64::from(body_layout.height()) + reply_h + 8.0 + REVIEW_BTN + 6.0;
         let card = Rect::new(card_x, card_top, card_x + COMMENT_CARD_W, card_top + card_h);
         let rounded = vello::kurbo::RoundedRect::from_rect(card, 5.0);
         scene.fill(Fill::NonZero, transform, COMMENT_CARD_BG, None, &rounded);
@@ -244,6 +277,28 @@ impl ReviewOverlay {
             COMMENT_BODY_INK,
         );
 
+        if !replies.is_empty() {
+            text_renderer.draw_rich(
+                scene,
+                &reply_layout,
+                transform
+                    * Affine::translate((
+                        card_x + 9.0,
+                        card_top + 22.0 + f64::from(body_layout.height()) + 3.0,
+                    )),
+                COMMENT_BODY_INK,
+            );
+        }
+
+        self.draw_comment_reply_button(
+            scene,
+            text_renderer,
+            transform,
+            card_x,
+            card_top,
+            card_h,
+            id,
+        );
         self.draw_comment_resolve_button(
             scene,
             text_renderer,
@@ -254,6 +309,45 @@ impl ReviewOverlay {
             id,
         );
         card_top + card_h + 6.0
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_comment_reply_button(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        card_x: f64,
+        card_top: f64,
+        card_h: f64,
+        id: &str,
+    ) {
+        let button_y = card_top + card_h - REVIEW_BTN - 4.0;
+        let button = Rect::new(card_x + 8.0, button_y, card_x + 51.0, button_y + REVIEW_BTN);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            COMMENT_CARD_BG,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(button, 4.0),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            COMMENT_CARD_EDGE,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(button, 4.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            &t("review-reply"),
+            10.0,
+            COMMENT_AUTHOR_INK,
+            transform * Affine::translate((button.x0 + 5.0, button.y0 + 2.5)),
+            None,
+        );
+        self.hits
+            .push((button, ReviewAction::OpenCommentThread(id.to_string())));
     }
 
     /// The Resolve button on a comment card: its rect, chrome, label and
