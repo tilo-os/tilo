@@ -35,7 +35,7 @@ use ui::qos_actions::{
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
-use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent, normalise_url};
+use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, EmptyState, IconDescriptor, ProgressBar, Row,
@@ -101,6 +101,24 @@ const URL_INPUT_ID: &str = "browser.url_input";
 const PIP_FEEDBACK_LIFETIME: std::time::Duration = std::time::Duration::from_millis(4200);
 const PIP_FEEDBACK_FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const SEARCH_QUERY_TOKEN: &str = "{query}";
+
+/// Browser's public navigation boundary. Keep this separate from the generic
+/// embedded-view helper: Browser's manifest advertises only these schemes.
+fn is_supported_web_url(value: &str) -> bool {
+    url::Url::parse(value.trim())
+        .ok()
+        .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+}
+
+/// Host-like text that users conventionally enter without a scheme. Bracketed
+/// IPv6 is deliberately included; unbracketed IPv6 is ambiguous with a URL
+/// scheme/port and is not a browser address syntax.
+fn looks_like_bare_web_host(value: &str) -> bool {
+    !value.chars().any(char::is_whitespace)
+        && (value.starts_with("localhost")
+            || value.contains('.')
+            || (value.starts_with('[') && value.contains(']')))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PipFeedbackKind {
@@ -293,6 +311,11 @@ pub struct BrowserWidget {
     /// load-finished.
     current_uri: String,
     load_error: Option<String>,
+    /// A locally rejected address must outlive any late event from an earlier
+    /// engine navigation. `WebView` events carry no request id, so this gate is
+    /// deliberately owned by the chrome and cleared only when the user starts
+    /// a fresh, allowed navigation.
+    address_error_active: bool,
     forced_load_error: bool,
     forced_loading: bool,
 
@@ -398,6 +421,11 @@ impl BrowserWidget {
         } else {
             Bookmarks::load()
         };
+        let initial_url = if is_supported_web_url(&settings.homepage) {
+            settings.homepage.clone()
+        } else {
+            DEFAULT_URL.into()
+        };
         let search_index = crate::search_provider::BrowserSearchIndex::default();
         search_index.sync(&history, &bookmarks);
         Self {
@@ -406,13 +434,14 @@ impl BrowserWidget {
             composed: None,
             bootstrap_done: false,
             headless,
-            initial_url: DEFAULT_URL.into(),
+            initial_url,
             can_go_back: false,
             can_go_forward: false,
             progress: 1.0,
             title: String::new(),
             current_uri: String::new(),
             load_error: None,
+            address_error_active: false,
             forced_load_error: false,
             forced_loading: false,
             settings,
@@ -550,17 +579,31 @@ impl BrowserWidget {
         self.content_rect.clone()
     }
 
-    fn perform_browser_operation(&mut self, operation: BrowserOperation) {
+    /// Perform a browser operation and report inputs that the Browser is not
+    /// permitted to hand to the web engine.  In particular, a browser window
+    /// is not a file picker: its package declares only the web schemes, and
+    /// passing `file:` through would bypass the portal boundary.
+    fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
         match operation {
-            BrowserOperation::Back => self.engine.send(WebViewCommand::GoBack),
-            BrowserOperation::Forward => self.engine.send(WebViewCommand::GoForward),
-            BrowserOperation::Reload => self.engine.send(WebViewCommand::Reload),
+            BrowserOperation::Back => {
+                self.clear_address_error();
+                self.engine.send(WebViewCommand::GoBack);
+            }
+            BrowserOperation::Forward => {
+                self.clear_address_error();
+                self.engine.send(WebViewCommand::GoForward);
+            }
+            BrowserOperation::Reload => {
+                self.clear_address_error();
+                self.engine.send(WebViewCommand::Reload);
+            }
             BrowserOperation::Navigate { url } => {
+                let target = self.navigation_target(url.trim())?;
+                self.clear_address_error();
                 self.show_library = false;
                 self.show_settings = false;
                 self.structure_dirty = true;
-                self.engine
-                    .send(WebViewCommand::Navigate(self.navigation_target(url.trim())));
+                self.engine.send(WebViewCommand::Navigate(target));
             }
             BrowserOperation::ShowLibrary { section } => {
                 self.library_section = section;
@@ -580,6 +623,8 @@ impl BrowserWidget {
             }
             BrowserOperation::ClearHistory => {
                 self.history.clear();
+                self.suggestions.clear();
+                self.last_query = None;
                 if !self.headless {
                     let _ = self.history.save();
                 }
@@ -604,25 +649,28 @@ impl BrowserWidget {
                 self.settings_dirty = true;
             }
             BrowserOperation::SetHomepage { url } => {
-                if url::Url::parse(&url).is_ok() {
-                    self.settings.homepage = url;
-                    if !self.headless {
-                        self.settings.save();
-                    }
-                    self.settings_dirty = true;
+                if !is_supported_web_url(&url) {
+                    return Err("Homepage must be an absolute http(s) URL.".into());
                 }
+                self.settings.homepage = url;
+                if !self.headless {
+                    self.settings.save();
+                }
+                self.settings_dirty = true;
             }
             BrowserOperation::SetSearchEngine { template } => {
-                if url::Url::parse(&template).is_ok() {
-                    self.settings.search_engine = template;
-                    if !self.headless {
-                        self.settings.save();
-                    }
-                    self.settings_dirty = true;
+                if !is_supported_web_url(&template) {
+                    return Err("Search engine must be an absolute http(s) URL.".into());
                 }
+                self.settings.search_engine = template;
+                if !self.headless {
+                    self.settings.save();
+                }
+                self.settings_dirty = true;
             }
             BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
         }
+        Ok(())
     }
 
     fn resource_by_id(&self, wanted: &str) -> Option<Resource> {
@@ -715,22 +763,84 @@ impl BrowserWidget {
         }
     }
 
-    fn navigation_target(&self, input: &str) -> String {
+    /// Convert an address-bar value into a safe engine target. The engine is
+    /// intentionally restricted to the schemes declared in `qos-app.toml`;
+    /// local files and internal `WebKit` schemes must be reached through their
+    /// dedicated, consented system routes instead.
+    fn navigation_target(&mut self, input: &str) -> Result<String, String> {
         let input = input.trim();
-        if url::Url::parse(input)
-            .ok()
-            .is_some_and(|url| matches!(url.scheme(), "http" | "https" | "file"))
-            || (!input.chars().any(char::is_whitespace) && input.contains('.'))
-        {
-            return normalise_url(input);
+        if input.is_empty() {
+            return self.reject_navigation("Enter a web address or search terms.");
         }
-        let query: String = url::form_urlencoded::byte_serialize(input.as_bytes()).collect();
-        if self.settings.search_engine.contains(SEARCH_QUERY_TOKEN) {
-            self.settings
-                .search_engine
-                .replace(SEARCH_QUERY_TOKEN, &query)
+        if input.len() > 8 * 1024 || input.chars().any(char::is_control) {
+            return self.reject_navigation("That address is not valid.");
+        }
+
+        // An explicitly schemed address must satisfy the manifest boundary.
+        // We test it before treating dotted text as a host so `file:///a.html`
+        // cannot get rewritten into an apparent HTTPS address.
+        if input.contains("://") {
+            let Ok(url) = url::Url::parse(input) else {
+                return self.reject_navigation("That web address is malformed.");
+            };
+            if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
+                return self
+                    .reject_navigation("Browser can open only http:// or https:// addresses.");
+            }
+            return Ok(input.to_string());
+        }
+
+        if let Ok(url) = url::Url::parse(input)
+            && !matches!(url.scheme(), "http" | "https")
+            // URL parsing regards a bare `localhost:3000` / `127.0.0.1:3000`
+            // as a scheme. Preserve these ordinary local-development web
+            // addresses, while refusing `file:`, `about:`, `data:`, custom
+            // schemes, and WebKit internals.
+            && !looks_like_bare_web_host(input)
+        {
+            return self.reject_navigation("Browser can open only http:// or https:// addresses.");
+        }
+
+        let candidate = if !input.chars().any(char::is_whitespace)
+            && looks_like_bare_web_host(input)
+        {
+            format!("https://{input}")
         } else {
-            format!("{}{query}", self.settings.search_engine)
+            let query: String = url::form_urlencoded::byte_serialize(input.as_bytes()).collect();
+            if self.settings.search_engine.contains(SEARCH_QUERY_TOKEN) {
+                self.settings
+                    .search_engine
+                    .replace(SEARCH_QUERY_TOKEN, &query)
+            } else {
+                format!("{}{query}", self.settings.search_engine)
+            }
+        };
+        let Ok(parsed) = url::Url::parse(&candidate) else {
+            return self.reject_navigation("That web address is malformed.");
+        };
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
+            return self.reject_navigation("Browser can open only http:// or https:// addresses.");
+        }
+        Ok(candidate)
+    }
+
+    fn reject_navigation<T>(&mut self, message: &str) -> Result<T, String> {
+        self.show_navigation_error(message);
+        Err(message.into())
+    }
+
+    fn show_navigation_error(&mut self, message: &str) {
+        self.progress = 1.0;
+        self.title = "Couldn’t open this address".into();
+        self.load_error = Some(message.into());
+        self.address_error_active = true;
+        self.structure_dirty = true;
+    }
+
+    fn clear_address_error(&mut self) {
+        self.address_error_active = false;
+        if !self.forced_load_error {
+            self.load_error = None;
         }
     }
 
@@ -1321,11 +1431,9 @@ impl BrowserWidget {
                 Box::new(rows)
             }
             LibrarySection::Downloads => Box::new(
-                EmptyState::new("No downloads in this window")
+                EmptyState::new("Web downloads aren’t available yet")
                     .with_icon(Icon::Download)
-                    .with_message(
-                        "Saved files appear in Files. Transfer progress is not available yet.",
-                    ),
+                    .with_message("Download progress and saved files are unavailable."),
             ),
             LibrarySection::Extensions => {
                 let installed = if self.headless {
@@ -1536,7 +1644,7 @@ impl BrowserWidget {
         for event in self.engine.drain_events() {
             match event {
                 WebViewEvent::UriChanged(uri) => {
-                    if !self.forced_load_error {
+                    if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
                     }
                     if !editing {
@@ -1548,7 +1656,7 @@ impl BrowserWidget {
                 WebViewEvent::LoadProgress(p) if !self.forced_loading => self.progress = p,
                 WebViewEvent::LoadProgress(_) => {}
                 WebViewEvent::LoadFinished => {
-                    if !self.forced_load_error {
+                    if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
                     }
                     if !self.forced_loading {
@@ -1644,7 +1752,9 @@ impl BrowserWidget {
         }
         if intents.clear_history {
             self.history.clear();
-            let _ = self.history.save();
+            if !self.headless {
+                let _ = self.history.save();
+            }
             self.suggestions.clear();
             self.last_query = None;
         }
@@ -1664,14 +1774,14 @@ impl BrowserWidget {
         }
         if let Some(value) = intents.search_engine {
             let value = value.trim();
-            if !value.is_empty() && value != self.settings.search_engine {
+            if is_supported_web_url(value) && value != self.settings.search_engine {
                 self.settings.search_engine = value.to_string();
                 changed = true;
             }
         }
         if let Some(value) = intents.homepage {
             let value = value.trim();
-            if url::Url::parse(value).is_ok() && value != self.settings.homepage {
+            if is_supported_web_url(value) && value != self.settings.homepage {
                 self.settings.homepage = value.to_string();
                 changed = true;
             }
@@ -1804,6 +1914,50 @@ impl BrowserWidget {
             return true;
         }
         false
+    }
+
+    /// Browser-standard Ctrl/Cmd+L. Focus is kept inside the chrome, so a
+    /// page cannot intercept the shortcut and leave keyboard users hunting
+    /// for the address field.
+    fn focus_address_input(&mut self) -> bool {
+        fn clear(widget: &mut dyn Widget) {
+            widget.set_focus(false);
+            for child in widget.children_mut() {
+                clear(child);
+            }
+        }
+        fn focus(widget: &mut dyn Widget) -> bool {
+            if widget.test_id() == Some(URL_INPUT_ID) {
+                widget.set_focus(true);
+                return true;
+            }
+            for child in widget.children_mut() {
+                if focus(child) {
+                    return true;
+                }
+            }
+            false
+        }
+        self.composed.as_mut().is_some_and(|composed| {
+            clear(composed.as_mut());
+            focus(composed.as_mut())
+        })
+    }
+
+    fn handle_address_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let modifiers = modifiers.state();
+        let requested = key.state == ElementState::Pressed
+            && (modifiers.control_key() || modifiers.super_key())
+            && !modifiers.alt_key()
+            && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("l"));
+        requested && !self.show_settings && !self.show_library && self.focus_address_input()
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -2266,7 +2420,7 @@ impl Widget for BrowserWidget {
             return Ok(false);
         }
         let operation = decode_browser_operation(payload)?;
-        self.perform_browser_operation(operation);
+        self.perform_browser_operation(operation)?;
         Ok(true)
     }
 
@@ -2291,7 +2445,7 @@ impl Widget for BrowserWidget {
                 | BrowserOperation::Navigate { .. }
         );
         if !is_navigation {
-            self.perform_browser_operation(operation);
+            self.perform_browser_operation(operation)?;
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 ui::qos_actions::ActionOutput::default(),
             )));
@@ -2299,7 +2453,7 @@ impl Widget for BrowserWidget {
         if self.resource_navigation_invocation.is_some() {
             return Err("another browser navigation is already running".into());
         }
-        self.perform_browser_operation(operation);
+        self.perform_browser_operation(operation)?;
         self.resource_navigation_invocation = Some(invocation);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
@@ -2352,13 +2506,13 @@ impl Widget for BrowserWidget {
         self.apply_engine_events(state, path);
 
         if Self::take_flag(state, path, BACK_FLAG) {
-            self.perform_browser_operation(BrowserOperation::Back);
+            let _ = self.perform_browser_operation(BrowserOperation::Back);
         }
         if Self::take_flag(state, path, FORWARD_FLAG) {
-            self.perform_browser_operation(BrowserOperation::Forward);
+            let _ = self.perform_browser_operation(BrowserOperation::Forward);
         }
         if Self::take_flag(state, path, RELOAD_FLAG) {
-            self.perform_browser_operation(BrowserOperation::Reload);
+            let _ = self.perform_browser_operation(BrowserOperation::Reload);
         }
         if Self::take_flag(state, path, SETTINGS_FLAG) {
             self.show_settings = !self.show_settings;
@@ -2395,7 +2549,7 @@ impl Widget for BrowserWidget {
                 Self::take_flag(state, path, flag).then(|| entry.url.clone())
             });
         if let Some(url) = history_open {
-            self.perform_browser_operation(BrowserOperation::Navigate { url });
+            let _ = self.perform_browser_operation(BrowserOperation::Navigate { url });
         }
         let bookmark_operation = self
             .bookmarks
@@ -2414,10 +2568,10 @@ impl Widget for BrowserWidget {
                 }
             });
         if let Some(operation) = bookmark_operation {
-            self.perform_browser_operation(operation);
+            let _ = self.perform_browser_operation(operation);
         }
         if Self::take_flag(state, path, "browser.library.history.clear") {
-            self.perform_browser_operation(BrowserOperation::ClearHistory);
+            let _ = self.perform_browser_operation(BrowserOperation::ClearHistory);
         }
         if Self::take_flag(state, path, PIP_FLAG) && !self.show_settings && !self.show_library {
             self.begin_pip_probe();
@@ -2717,6 +2871,11 @@ impl Widget for BrowserWidget {
             }
         }
 
+        if self.handle_address_shortcut(event, *modifiers) {
+            *handled = true;
+            return;
+        }
+
         // Conventional browser navigation keys. These must be handled before
         // forwarding into the page: an embedded site should not be able to
         // steal the browser's own history controls. The queued invocation is
@@ -2901,6 +3060,89 @@ mod tests {
         assert_eq!(
             BrowserWidget::read_url(&state, &root).as_deref(),
             Some(DEFAULT_URL)
+        );
+    }
+
+    #[test]
+    fn address_shortcut_focuses_the_chrome_input_after_composition() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        let _ = synced(&mut w);
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+
+        assert!(w.focus_address_input());
+        assert!(w.url_input_focused());
+    }
+
+    #[test]
+    fn address_validation_never_dispatches_non_web_inputs_and_keeps_a_recoverable_error() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (_, _) = synced(&mut w);
+        let commands_before = engine.commands().len();
+        let overlong = "x".repeat(8 * 1024 + 1);
+
+        for input in [
+            "",
+            overlong.as_str(),
+            "https://",
+            "https://bad host",
+            "file:///tmp/private.html",
+            "about:blank",
+            "data:text/html,hello",
+            "javascript:alert(1)",
+            "custom:opaque",
+            "https://example.test/\u{0007}",
+        ] {
+            let error = w.navigation_target(input).expect_err(input);
+            assert!(!error.is_empty());
+            assert_eq!(w.load_error.as_deref(), Some(error.as_str()));
+            assert!(w.address_error_active);
+            assert_eq!(engine.commands().len(), commands_before, "{input}");
+        }
+    }
+
+    #[test]
+    fn address_validation_accepts_local_web_hosts_but_not_local_files() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        for (input, expected) in [
+            ("localhost:3000", "https://localhost:3000"),
+            ("127.0.0.1:8080", "https://127.0.0.1:8080"),
+            ("[::1]:8443", "https://[::1]:8443"),
+        ] {
+            assert_eq!(w.navigation_target(input).unwrap(), expected);
+        }
+        assert!(w.navigation_target("file:///tmp/index.html").is_err());
+    }
+
+    #[test]
+    fn stale_engine_completion_cannot_clear_a_rejected_address_error() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (mut state, root) = synced(&mut w);
+
+        // Simulate events from an earlier navigation arriving after the user
+        // entered a prohibited address. The error must remain actionable,
+        // rather than disappearing behind that stale successful page.
+        engine.send(WebViewCommand::Navigate("https://earlier.example".into()));
+        assert!(w.navigation_target("file:///tmp/not-allowed.html").is_err());
+        w.apply_engine_events(&mut state, &root);
+        assert!(w.address_error_active);
+        assert_eq!(
+            w.load_error.as_deref(),
+            Some("Browser can open only http:// or https:// addresses.")
+        );
+
+        assert!(
+            w.perform_browser_operation(BrowserOperation::Navigate {
+                url: "https://recovery.example".into(),
+            })
+            .is_ok()
+        );
+        assert!(
+            !w.address_error_active,
+            "an allowed retry recovers the page"
         );
     }
 
