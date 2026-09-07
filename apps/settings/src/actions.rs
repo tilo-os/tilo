@@ -209,12 +209,31 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "region.measurement"
         | "region.number_style"
         | "region.first_day"
+        | "a11y.text_size"
+        | "a11y.cursor_size"
+        | "a11y.color_filter"
+        | "a11y.magnifier"
+        | "a11y.switch_keys"
+        | "a11y.switch_scan"
+        | "a11y.reader_rate"
+        | "a11y.reader_voice"
         | "time.timezone"
         | "power.lid"
         | "power.power_key"
         | "power.critical" => text(),
         "appearance.high_contrast"
         | "appearance.reduce_motion"
+        | "a11y.high_contrast"
+        | "a11y.reduce_motion"
+        | "a11y.large_cursor"
+        | "a11y.sticky_keys"
+        | "a11y.slow_keys"
+        | "a11y.on_screen_keyboard"
+        | "a11y.visual_alerts"
+        | "a11y.screen_reader"
+        | "a11y.cursor_crosshair"
+        | "a11y.thick_text_caret"
+        | "a11y.switch_control"
         | "time.auto"
         | "time.h24"
         | "shortcuts.vim_mode"
@@ -359,6 +378,31 @@ fn bool_flip_spec(id: &str, key: &str, on_now: bool, noun: &str) -> ActionSpec {
             ActionSpec::immediate_encoded(id, label, action.locus(), encode(&action))
         })
         .with_contract(setting_contract())
+}
+
+/// A value-carrying boolean setting action. Unlike the palette-friendly flip
+/// operation above, this is used when a retained switch must emit the exact
+/// value it presents. That keeps keyboard and pointer activation on the same
+/// typed action door as agents and Ctrl+K, without a replicated UI draft.
+fn bool_set_spec(id: &str, label: &str, key: &'static str) -> ActionSpec {
+    ActionSpec::typed(
+        id,
+        label,
+        "On or off",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required(
+            "value",
+            ParamType::Boolean,
+            "Whether this setting is on",
+        )],
+        move |args| {
+            encode(&set_bool_action(
+                key,
+                args.boolean("value").unwrap_or(false),
+            ))
+        },
+    )
+    .with_contract(setting_contract())
 }
 
 fn setting_contract() -> ActionContract {
@@ -861,96 +905,215 @@ fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     sec
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered declaration mirrors the visible Accessibility pane and keeps every resource action auditable in one place"
+)]
 fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
     let mut sec = Resource::new(
         "settings.section:accessibility",
         "settings.section",
         "Accessibility",
     );
-    sec = sec.with_action(bool_flip_spec(
-        "large_cursor",
-        panes::accessibility::LARGE_CURSOR_KEY,
-        b(
+    for (id, key, label) in [
+        (
+            "high-contrast",
+            panes::accessibility::HIGH_CONTRAST_KEY,
+            "Set high contrast",
+        ),
+        (
+            "reduce-motion",
+            panes::accessibility::REDUCE_MOTION_KEY,
+            "Set reduced motion",
+        ),
+        (
+            "large-cursor",
             panes::accessibility::LARGE_CURSOR_KEY,
-            d.accessibility.large_cursor,
+            "Set large cursor",
         ),
-        "the large cursor",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "screen_reader",
-        panes::accessibility::SCREEN_READER_KEY,
-        b(
-            panes::accessibility::SCREEN_READER_KEY,
-            d.accessibility.screen_reader,
-        ),
-        "the screen reader",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "osk",
-        panes::accessibility::OSK_KEY,
-        b(
-            panes::accessibility::OSK_KEY,
-            d.accessibility.on_screen_keyboard,
-        ),
-        "the on-screen keyboard",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "sticky_keys",
-        panes::accessibility::STICKY_KEYS_KEY,
-        b(
+        (
+            "sticky-keys",
             panes::accessibility::STICKY_KEYS_KEY,
-            d.accessibility.sticky_keys,
+            "Set sticky keys",
         ),
-        "sticky keys",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "slow_keys",
-        panes::accessibility::SLOW_KEYS_KEY,
-        b(
+        (
+            "slow-keys",
             panes::accessibility::SLOW_KEYS_KEY,
-            d.accessibility.slow_keys,
+            "Set slow keys",
         ),
-        "slow keys",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "visual_alerts",
-        panes::accessibility::VISUAL_ALERTS_KEY,
-        b(
+        (
+            "visual-alerts",
             panes::accessibility::VISUAL_ALERTS_KEY,
-            d.accessibility.visual_alerts,
+            "Set visual alerts",
         ),
-        "visual alerts",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "cursor_crosshair",
-        panes::accessibility::CURSOR_CROSSHAIR_KEY,
-        b(
+        (
+            "pointer-crosshair",
             panes::accessibility::CURSOR_CROSSHAIR_KEY,
-            d.accessibility.cursor_crosshair,
+            "Set pointer crosshair",
         ),
-        "the pointer crosshair",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "thick_text_caret",
-        panes::accessibility::THICK_CARET_KEY,
-        b(
+        (
+            "thick-text-caret",
             panes::accessibility::THICK_CARET_KEY,
-            d.accessibility.thick_text_caret,
+            "Set thicker text cursor",
         ),
-        "the thicker text cursor",
-    ));
-    sec = sec.with_action(bool_flip_spec(
-        "switch_control",
-        panes::accessibility::SWITCH_CONTROL_KEY,
-        b(
+        (
+            "switch-control",
             panes::accessibility::SWITCH_CONTROL_KEY,
-            d.accessibility.switch_control,
+            "Set switch control",
         ),
-        "switch control",
-    ));
+    ] {
+        sec = sec.with_action(bool_set_spec(id, label, key));
+    }
+    if panes::accessibility::osk_service_available() {
+        sec = sec.with_action(bool_set_spec(
+            "on-screen-keyboard",
+            "Set on-screen keyboard",
+            panes::accessibility::OSK_KEY,
+        ));
+    }
+    if panes::accessibility::screen_reader_available() {
+        sec = sec.with_action(bool_set_spec(
+            "screen-reader",
+            "Set screen reader",
+            panes::accessibility::SCREEN_READER_KEY,
+        ));
+    }
+    for (id, label, key, placeholder, options, fallback) in [
+        (
+            "text-size",
+            "Set text size",
+            panes::accessibility::TEXT_SIZE_KEY,
+            "Small, Default, Large, Larger",
+            &["Small", "Default", "Large", "Larger"][..],
+            crate::panes::appearance::text_size_label(d.appearance.text_scale),
+        ),
+        (
+            "cursor-size",
+            "Set cursor size",
+            panes::accessibility::CURSOR_SIZE_KEY,
+            "Default, Large, Larger, Largest",
+            &["Default", "Large", "Larger", "Largest"][..],
+            crate::prefs::AccessibilityPrefs::cursor_size_label(d.accessibility.cursor_size),
+        ),
+        (
+            "colour-filter",
+            "Set colour filter",
+            panes::accessibility::COLOR_FILTER_KEY,
+            "Off, Greyscale, Protanopia, Deuteranopia, Tritanopia",
+            &[
+                "Off",
+                "Greyscale",
+                "Protanopia",
+                "Deuteranopia",
+                "Tritanopia",
+            ][..],
+            d.accessibility.color_filter.label(),
+        ),
+        (
+            "magnifier",
+            "Set magnifier lens",
+            panes::accessibility::MAGNIFIER_KEY,
+            "Off, 2×, 3×",
+            &["Off", "2×", "3×"][..],
+            match d.accessibility.magnifier_zoom {
+                2 => "2×",
+                3 => "3×",
+                _ => "Off",
+            },
+        ),
+        (
+            "switch-keys",
+            "Set switch keys",
+            panes::accessibility::SWITCH_KEYS_KEY,
+            "Tab / Enter, Space / Enter",
+            &["Tab / Enter", "Space / Enter"][..],
+            d.accessibility.switch_key_pair.label(),
+        ),
+        (
+            "switch-scan",
+            "Set automatic switch scan",
+            panes::accessibility::SWITCH_SCAN_KEY,
+            "Manual, 1 second, 2 seconds, 3 seconds",
+            &["Manual", "1 second", "2 seconds", "3 seconds"][..],
+            match d.accessibility.switch_scan_ms {
+                1000 => "1 second",
+                2000 => "2 seconds",
+                3000 => "3 seconds",
+                _ => "Manual",
+            },
+        ),
+    ] {
+        sec = sec.with_action(choice_prompt_spec(
+            id,
+            label,
+            key,
+            placeholder,
+            options,
+            s(key, fallback),
+        ));
+    }
+    if panes::accessibility::screen_reader_available() {
+        for (id, label, key, placeholder, options, fallback) in [
+            (
+                "speech-rate",
+                "Set screen-reader speech rate",
+                panes::accessibility::READER_RATE_KEY,
+                "Slow, Default, Fast, Very fast",
+                &["Slow", "Default", "Fast", "Very fast"][..],
+                match d.accessibility.screen_reader_rate {
+                    0..=75 => "Slow",
+                    76..=115 => "Default",
+                    116..=160 => "Fast",
+                    _ => "Very fast",
+                },
+            ),
+            (
+                "speech-voice",
+                "Set screen-reader voice",
+                panes::accessibility::READER_VOICE_KEY,
+                "Default, Male, Female",
+                &["Default", "Male", "Female"][..],
+                d.accessibility.screen_reader_voice.label(),
+            ),
+        ] {
+            sec = sec.with_action(choice_prompt_spec(
+                id,
+                label,
+                key,
+                placeholder,
+                options,
+                s(key, fallback),
+            ));
+        }
+    }
     sec
+}
+
+/// Bind an Accessibility switch to the value-carrying action exported by the
+/// real Accessibility resource. The widget still reads its checked state from
+/// the canonical CRDT key; it merely emits through this brokered door instead
+/// of writing the document itself.
+pub fn accessibility_bool_binding(action_id: &str) -> Option<qos_actions::ActionBinding<bool>> {
+    let resource = accessibility_section(&AutoCommit::new(), &SystemPrefs::default());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    qos_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+/// Bind an Accessibility chooser to its exact typed resource action. The
+/// choices are validated by the same `ActionSpec` used for Ctrl+K before a
+/// control invocation reaches the host.
+pub fn accessibility_text_binding(action_id: &str) -> Option<qos_actions::ActionBinding<String>> {
+    let resource = accessibility_section(&AutoCommit::new(), &SystemPrefs::default());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    qos_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
 }
 
 fn updates_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
@@ -1373,6 +1536,49 @@ mod tests {
             immediate_encode(dnd),
             encode(&set_bool_action(panes::notifications::DND_KEY, true))
         );
+    }
+
+    #[test]
+    fn accessibility_controls_bind_to_their_exported_typed_actions() {
+        let resources = provide_resources(&AutoCommit::new());
+        let accessibility = find(&resources, &pane_resource_id(Category::Accessibility));
+        let high_contrast = accessibility
+            .actions
+            .iter()
+            .find(|action| action.id == "high-contrast")
+            .expect("Accessibility exports the high-contrast control action");
+        assert_eq!(high_contrast.params().len(), 1);
+        assert_eq!(high_contrast.params()[0].ty, ParamType::Boolean);
+
+        let binding = accessibility_bool_binding("high-contrast")
+            .expect("the displayed switch has a matching exported action");
+        let invocation = binding.invoke(true).expect("true is a valid switch value");
+        assert_eq!(
+            invocation.address,
+            ActionAddress::new(pane_resource_id(Category::Accessibility), "high-contrast")
+        );
+        assert_eq!(
+            invocation.arguments.get("value"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let encoded = high_contrast
+            .build_json(&invocation.arguments)
+            .expect("the resource accepts the control invocation");
+        let action = registry()
+            .decode(&encoded)
+            .expect("settings action decodes");
+        let mut doc = AutoCommit::new();
+        action
+            .apply(&mut doc)
+            .expect("the setting target is accepted");
+        assert_eq!(
+            doc_bool(&doc, panes::accessibility::HIGH_CONTRAST_KEY),
+            Some(true)
+        );
+
+        let text = accessibility_text_binding("text-size")
+            .expect("the displayed chooser has a matching exported action");
+        assert!(text.invoke("not a size".to_string()).is_err());
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
