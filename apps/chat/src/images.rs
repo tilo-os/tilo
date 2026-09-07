@@ -3,15 +3,12 @@
 //! Image attachments are painted through the shared [`ui::ImageStore`], which
 //! fetches + decodes + caches off the UI thread and hands back a GPU-ready
 //! `peniko::ImageData` on a later frame. This module supplies the injected
-//! [`ui::Fetcher`]: the transport that turns an attachment's `path` into raw
+//! [`ui::Fetcher`]: the transport that turns an attachment's blob key into raw
 //! encoded bytes.
 //!
-//! Chat images are **local**, not remote — a share is a file projected from
-//! the P2P FUSE workspace (`/var/workspace/...`), read on first paint and
-//! cached. So the fetcher's real path is a plain `std::fs::read`; there is no
-//! CDN and no HTTP client to inject. Content that hasn't hydrated yet simply
-//! fails to read and the caller shows a neutral loading tile (projection vs.
-//! hydration — see the `fs` driver).
+//! Chat images are qdoc content-addressed blobs, not peer-local file paths.
+//! The qdoc store asks the collaboration transport on a miss; this fetcher
+//! runs on `ImageStore` worker threads and returns only already-verified bytes.
 //!
 //! The one non-filesystem case is the `qos-demo://` scheme used only by the
 //! ephemeral `--shots`/demo seed: it synthesises a real PNG in memory so the
@@ -24,26 +21,35 @@ use std::sync::Arc;
 use ui::Fetcher;
 
 /// URL scheme for the synthesised demo attachment thumbnails. Only the
-/// ephemeral demo seed emits these; the live app always uses real filesystem
-/// paths.
+/// ephemeral demo seed emits these; live attachments use qdoc hashes.
 pub const DEMO_SCHEME: &str = "qos-demo://";
+/// Prefix used for qdoc content hashes when they are handed to `ImageStore`.
+pub const BLOB_SCHEME: &str = "qos-blob://";
+
+pub fn blob_key(hash: &str) -> String {
+    if hash.starts_with(DEMO_SCHEME) {
+        hash.to_string()
+    } else {
+        format!("{BLOB_SCHEME}{hash}")
+    }
+}
 
 /// A believable "call overlay mockup" attachment for the demo conversation.
 pub const DEMO_CALL_GRID: &str = "qos-demo://call-grid";
 /// A believable "shared screenshot" attachment for the demo `+` action.
 pub const DEMO_SHARED_SHOT: &str = "qos-demo://shared-shot";
 
-/// The fetcher injected into the app's [`ui::ImageStore`]. Reads real bytes
-/// off the FUSE mount for filesystem paths; synthesises a PNG for the demo
-/// scheme. Runs on the store's background worker threads.
+/// The fetcher injected into the app's [`ui::ImageStore`]. Reads verified qdoc
+/// blob bytes or synthesises a PNG for the demo scheme. Runs on the store's
+/// background worker threads.
 pub fn fetcher() -> Fetcher {
     Arc::new(|key: &str| {
         if let Some(id) = key.strip_prefix(DEMO_SCHEME) {
             return synth_demo_png(id);
         }
-        // A real projected file. `open()` does not imply the bytes are local
-        // yet, so a miss here is expected until the content hydrates.
-        std::fs::read(key).ok().filter(|b| !b.is_empty())
+        key.strip_prefix(BLOB_SCHEME)
+            .and_then(qdoc::blobstore::get)
+            .filter(|b| !b.is_empty())
     })
 }
 

@@ -217,26 +217,25 @@ pub struct User {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Attachment {
-    /// An image projected from the P2P FUSE filesystem. `w`/`h` are the real
-    /// pixel dimensions read from the file header; the bytes are decoded and
-    /// painted through the shared image cache (content is fetched on first
-    /// read — see `fs`), so there is no placeholder stand-in for the pixels.
+    /// An image addressed by its qdoc content hash. `w`/`h` are the real pixel
+    /// dimensions read at import time; bytes travel through qdoc's shared blob
+    /// transport, never as a path meaningful only on the sending peer.
     Image {
         name: String,
-        path: String,
+        blob: String,
         w: u32,
         h: u32,
     },
-    /// A video projected from the P2P FUSE filesystem. Rendered inline as a
+    /// A video addressed by its qdoc content hash. Rendered inline as a
     /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes hydrate from the FUSE mount **by reference** on demand (a full
+    /// bytes hydrate from qdoc's shared blob transport on demand (a full
     /// frame decode needs the media engine's decoder — see [`crate::media`] —
     /// available only in the `live-media` build), never copied into the CRDT.
     /// `w`/`h` are the pixel dimensions when known (0 when the container header
     /// wasn't probed).
     Video {
         name: String,
-        path: String,
+        blob: String,
         w: u32,
         h: u32,
         size: u64,
@@ -244,20 +243,20 @@ pub enum Attachment {
     /// A non-image file share (chip with name + size).
     File {
         name: String,
-        path: String,
+        blob: String,
         size: u64,
     },
 }
 
 impl Attachment {
-    /// The FUSE / filesystem path whose bytes back this attachment. Every
-    /// variant references a real projected file — the gate the permissions
-    /// layer checks before hydrating, and the key the image cache loads from.
-    pub fn path(&self) -> &str {
+    /// The portable, content-addressed qdoc blob identity backing this
+    /// attachment. It is safe to replicate and cannot expose a peer-local
+    /// filesystem layout.
+    pub fn blob(&self) -> &str {
         match self {
-            Attachment::Image { path, .. }
-            | Attachment::Video { path, .. }
-            | Attachment::File { path, .. } => path,
+            Attachment::Image { blob, .. }
+            | Attachment::Video { blob, .. }
+            | Attachment::File { blob, .. } => blob,
         }
     }
     pub fn name(&self) -> &str {
