@@ -50,7 +50,9 @@ use ui::presence::PresenceCtx;
 use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, TabBar, TabDescriptor, Widget};
+use ui::widget::{
+    FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor, Widget,
+};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -145,7 +147,10 @@ struct SearchProjectionRevision {
     document_heads: Vec<ChangeHash>,
     /// Filesystem/project and streamed-result changes are local projections,
     /// not necessarily CRDT mutations.
-    local_generation: u64,
+    /// `None` means this local revision counter is exhausted. In that state we
+    /// deliberately rebuild rather than reusing a cursor that could describe a
+    /// different tree after a wrapped identity.
+    local_generation: Option<u64>,
 }
 
 #[cfg(test)]
@@ -294,6 +299,9 @@ pub struct CodeApp {
     search_job: Option<search::Job>,
     search_hits: Vec<search::Hit>,
     search_truncated: bool,
+    /// Count reported by the finished bounded worker, surfaced in the panel so
+    /// a partial/no-result search remains honest about its coverage.
+    search_files_scanned: usize,
     /// The needle of the most recent search, kept after the job finishes so the
     /// panel can still say what these results are for.
     last_search_needle: String,
@@ -312,7 +320,7 @@ pub struct CodeApp {
     /// Revision gate for the expensive complete projection above. An idle
     /// `sync` compares this tiny value and does no project/body traversal.
     search_projection_revision: Option<SearchProjectionRevision>,
-    search_projection_local_generation: u64,
+    search_projection_local_generation: Option<u64>,
     #[cfg(test)]
     search_refresh_stats: SearchRefreshStats,
 
@@ -624,12 +632,13 @@ impl CodeApp {
             search_job: None,
             search_hits: Vec::new(),
             search_truncated: false,
+            search_files_scanned: 0,
             last_search_needle: String::new(),
             search_symbols: Vec::new(),
             search_catalog: SearchCatalog::new("Code"),
             search_catalog_ids: HashSet::new(),
             search_projection_revision: None,
-            search_projection_local_generation: 0,
+            search_projection_local_generation: Some(0),
             #[cfg(test)]
             search_refresh_stats: SearchRefreshStats::default(),
             portal: None,
@@ -1448,8 +1457,9 @@ impl CodeApp {
     }
 
     fn invalidate_search_projection(&mut self) {
-        self.search_projection_local_generation =
-            self.search_projection_local_generation.wrapping_add(1);
+        self.search_projection_local_generation = self
+            .search_projection_local_generation
+            .and_then(|generation| generation.checked_add(1));
     }
 
     /// Refresh the durable search projection only when the authoritative CRDT
@@ -1461,7 +1471,12 @@ impl CodeApp {
             document_heads: doc.get_heads(),
             local_generation: self.search_projection_local_generation,
         };
-        if self.search_projection_revision.as_ref() == Some(&revision) {
+        // Once the local identity space is exhausted there can be no safe
+        // equality shortcut: reusing the old projection would let an obsolete
+        // action directory masquerade as the current project.
+        if revision.local_generation.is_some()
+            && self.search_projection_revision.as_ref() == Some(&revision)
+        {
             #[cfg(test)]
             {
                 self.search_refresh_stats.skipped =
@@ -1721,73 +1736,74 @@ impl CodeApp {
         let Some(conflict) = self.conflict.clone() else {
             return;
         };
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.scrim, None, &self.rect);
+        // Shared modal chrome deliberately paints in three ordered stages:
+        // existing editor → backdrop-aware translucent scrim → raised card and
+        // controls. A plain translucent fill in this immediate scene can be
+        // batched after text by the renderer; `ModalFrame` uses isolated layers
+        // for its scrim, so the card never gets dimmed with the editor.
+        let title = format!("{} changed on disk", conflict.name);
+        let base_actions = [
+            ModalAction::primary("Reload").focused(true),
+            ModalAction::danger("Overwrite"),
+            ModalAction::secondary("Cancel"),
+        ];
+        let base_spec = ModalSpec::new(&title)
+            .actions(&base_actions)
+            .body_height(64.0)
+            .max_width(460.0)
+            .closable(false)
+            .dismiss_on_scrim(false);
+        let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
+        let actions = [
+            ModalAction::primary("Reload")
+                .hovered(
+                    layout
+                        .actions
+                        .first()
+                        .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
+                )
+                .focused(true),
+            ModalAction::danger("Overwrite").hovered(
+                layout
+                    .actions
+                    .get(1)
+                    .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
+            ),
+            ModalAction::secondary("Cancel").hovered(
+                layout
+                    .actions
+                    .get(2)
+                    .is_some_and(|bounds| bounds.contains(self.conflict_hover)),
+            ),
+        ];
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .body_height(64.0)
+            .max_width(460.0)
+            .closable(false)
+            .dismiss_on_scrim(false);
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
 
-        let w = 460.0_f64.min(self.rect.width() - 32.0);
-        let h = 190.0_f64;
-        let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
-        let y0 = self.rect.y0 + (self.rect.height() - h) / 2.0;
-        let card = vello::kurbo::RoundedRect::new(x0, y0, x0 + w, y0 + h, 12.0);
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &card);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-            None,
-            &card,
-        );
-
-        text_renderer.draw_text_weighted(
-            scene,
-            &format!("{} changed on disk", conflict.name),
-            16.0,
-            c.text_primary,
-            transform * Affine::translate((x0 + 20.0, y0 + 20.0)),
-            Some((w - 40.0) as f32),
-            ui::text_render::TextWeight::Semibold,
-        );
+        let (_, dim) = ModalFrame::ink(theme);
         text_renderer.draw_text(
             scene,
             "Something else wrote this file after you opened it. Overwriting \
              discards their change; reloading discards yours.",
             13.0,
-            c.text_dim,
-            transform * Affine::translate((x0 + 20.0, y0 + 50.0)),
-            Some((w - 40.0) as f32),
+            dim,
+            transform * Affine::translate((layout.body.x0, layout.body.y0 + 4.0)),
+            Some(layout.body.width() as f32),
         );
-
-        // Buttons, right-aligned, with the destructive one clearly marked and
-        // never the default.
-        let bw = 116.0;
-        let bh = 34.0;
-        let by = y0 + h - 20.0 - bh;
-        let mut bx = x0 + w - 20.0 - bw;
-        for (choice, label, style) in [
-            (
+        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        self.conflict_buttons.extend(
+            [
                 ConflictChoice::Reload,
-                "Reload",
-                ui::widget::ButtonStyle::Primary,
-            ),
-            (
                 ConflictChoice::Overwrite,
-                "Overwrite",
-                ui::widget::ButtonStyle::Danger,
-            ),
-            (
                 ConflictChoice::Cancel,
-                "Cancel",
-                ui::widget::ButtonStyle::Neutral,
-            ),
-        ] {
-            let rect = Rect::new(bx, by, bx + bw, by + bh);
-            let face = ui::widget::ButtonFace::new(rect, label)
-                .style(style)
-                .hovered(rect.contains(self.conflict_hover));
-            ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
-            self.conflict_buttons.push((choice, rect));
-            bx -= bw + 8.0;
-        }
+            ]
+            .into_iter()
+            .zip(layout.actions),
+        );
     }
 
     // ---- the file picker --------------------------------------------------
@@ -2589,6 +2605,7 @@ impl CodeApp {
             self.invalidate_search_projection();
         }
         self.search_truncated = false;
+        self.search_files_scanned = 0;
         let Some(root) = self.session.project.root_path() else {
             self.note("Open a project folder to search it", true);
             return;
@@ -2620,7 +2637,10 @@ impl CodeApp {
                     results_changed |= !hits.is_empty();
                     self.search_hits.extend(hits);
                 }
-                search::Msg::Done { truncated, .. } => self.search_truncated = truncated,
+                search::Msg::Done { files, truncated } => {
+                    self.search_files_scanned = files;
+                    self.search_truncated = truncated;
+                }
             }
         }
         if results_changed {
@@ -2656,7 +2676,7 @@ impl CodeApp {
                 .collect(),
             running: self.search_job.is_some(),
             truncated: self.search_truncated,
-            files_scanned: 0,
+            files_scanned: self.search_files_scanned,
         });
     }
 
@@ -2670,6 +2690,7 @@ impl CodeApp {
             self.invalidate_search_projection();
         }
         self.search_truncated = false;
+        self.search_files_scanned = 0;
         self.last_search_needle.clear();
         self.push_search_state();
     }
@@ -4390,10 +4411,13 @@ impl Widget for CodeApp {
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let resources = if cursor.is_empty() && max_results > 0 {
+            vec![crate::actions::project_root(&self.code_resource_ctx())]
+        } else {
+            Vec::new()
+        };
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| vec![crate::actions::project_root(&self.code_resource_ctx())])
-                .unwrap_or_default(),
+            resources,
             next_cursor: Vec::new(),
             exhausted: true,
         })
@@ -4938,6 +4962,22 @@ mod tests {
                 .search("result_revision_needle")
                 .iter()
                 .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
+        );
+    }
+
+    #[test]
+    fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor() {
+        let (mut app, mut doc) = synced_sample();
+        app.search_projection_local_generation = Some(u64::MAX);
+        app.invalidate_search_projection();
+        assert_eq!(app.search_projection_local_generation, None);
+        let before = app.search_refresh_stats().rebuilds;
+        app.refresh_search_catalog(&mut doc);
+        app.refresh_search_catalog(&mut doc);
+        assert_eq!(
+            app.search_refresh_stats().rebuilds,
+            before.saturating_add(2),
+            "an exhausted generation must never make a stale catalogue look current"
         );
     }
 
