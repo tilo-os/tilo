@@ -11,7 +11,7 @@ use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::widget::{TextInput, TextInputKind};
 
 use crate::canvas;
 use crate::draw;
@@ -565,6 +565,9 @@ impl EndpointEditor {
 
 fn endpoint_input(placeholder: &str) -> TextInput {
     let mut input = TextInput::local()
+        // Route endpoints are the same structured place/address vocabulary as
+        // the top-level map search, never prose to spellcheck or autocorrect.
+        .with_kind(TextInputKind::Search)
         .with_enter_submits(true)
         .with_font_size(13.0);
     input.set_plain_chrome(true);
@@ -614,5 +617,12 @@ mod tests {
         editor.dismiss();
         assert!(!editor.is_focused());
         assert!(!editor.has_pending_query());
+    }
+
+    #[test]
+    fn route_endpoints_are_not_spellchecked_as_prose() {
+        let editor = EndpointEditor::new();
+        assert!(!editor.origin_input.spellcheck_enabled());
+        assert!(!editor.destination_input.spellcheck_enabled());
     }
 }
