@@ -2,7 +2,7 @@
 //! model. Thin wrapper delegating to [`crate::model`]; the borrowed [`crate::model::DocMut`] view
 //! drives the same operations over a host's doc (e.g. `ui::State.doc`).
 
-use crate::model::{Containers, DocMut, DocRef, IdGen};
+use crate::model::{Containers, DocMut, DocRef, IdGen, IdGenError};
 use automerge::{AutoCommit, ObjId, ROOT};
 
 #[derive(thiserror::Error, Debug)]
@@ -13,6 +13,8 @@ pub enum DocError {
     Load(String),
     #[error("invalid document: {0}")]
     Invalid(String),
+    #[error(transparent)]
+    IdNamespaceExhausted(#[from] IdGenError),
 }
 
 /// The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`;
@@ -115,7 +117,7 @@ impl Document {
     pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
         let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
         let c = crate::model::open(&doc, &ROOT)?;
-        let ids = crate::model::seeded_id_gen(&doc, &c);
+        let ids = crate::model::try_seeded_id_gen(&doc, &c)?;
         Ok(Self {
             doc,
             root: ROOT,
@@ -651,9 +653,13 @@ impl Document {
             let _ = a.merge(&mut b);
             a.save()
         };
-        self.doc = AutoCommit::load(&merged).expect("merge: reload");
-        self.c = crate::model::open(&self.doc, &ROOT).expect("merge: open");
-        self.ids = crate::model::seeded_id_gen(&self.doc, &self.c);
+        let candidate_doc = AutoCommit::load(&merged).expect("merge: reload");
+        let candidate_containers = crate::model::open(&candidate_doc, &ROOT).expect("merge: open");
+        let candidate_ids = crate::model::try_seeded_id_gen(&candidate_doc, &candidate_containers)
+            .expect("merged qdoc exhausted its id namespace; refusing to reuse an identifier");
+        self.doc = candidate_doc;
+        self.c = candidate_containers;
+        self.ids = candidate_ids;
     }
 }
 
