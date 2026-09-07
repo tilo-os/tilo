@@ -624,7 +624,14 @@ impl SharedFlatpakSession {
                     m.record_bitrate(bytes_per_sec);
                 }
                 let keyframe = is_h264_keyframe(&nalus);
-                self.stream_sender.publish(keyframe, nalus.clone());
+                if let Err(error) = self.stream_sender.publish(keyframe, nalus.clone()) {
+                    tracing::warn!(
+                        surface = self.surface_id,
+                        error = ?error,
+                        "dropping encoded frame rejected by stream limits"
+                    );
+                    return None;
+                }
                 Some(EncodedFrame {
                     surface: self.surface_id,
                     source_peer: self.host_user_id,
