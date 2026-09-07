@@ -52,6 +52,11 @@ struct HitRegion {
 
 pub struct PanelsView;
 
+pub struct PanelsDraw {
+    pub hits: Vec<Box<dyn Fn(Point) -> Option<PanelHit>>>,
+    pub semantic_hits: Vec<(Rect, PanelHit)>,
+}
+
 impl PanelsView {
     /// Draw the panels grid into `area`. Returns hit closures for the
     /// remote-action toolbar buttons.
@@ -63,7 +68,7 @@ impl PanelsView {
         area: Rect,
         model: &RepoModel,
         hover_action: Option<RemoteAction>,
-    ) -> Vec<Box<dyn Fn(Point) -> Option<PanelHit>>> {
+    ) -> PanelsDraw {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
 
@@ -130,7 +135,11 @@ impl PanelsView {
             model,
         );
 
-        regions
+        let semantic_hits = regions
+            .iter()
+            .map(|region| (region.rect, region.action.clone()))
+            .collect();
+        let hits = regions
             .into_iter()
             .map(|r| {
                 Box::new(move |p: Point| {
@@ -141,7 +150,11 @@ impl PanelsView {
                     }
                 }) as Box<dyn Fn(Point) -> Option<PanelHit>>
             })
-            .collect()
+            .collect();
+        PanelsDraw {
+            hits,
+            semantic_hits,
+        }
     }
 
     #[allow(
