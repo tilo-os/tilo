@@ -21,7 +21,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     match args.scenario.as_deref().unwrap_or("wide") {
-        "detail" | "error-compact" => (480, 800),
+        "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
         "running" | "error" => (1000, 760),
         _ => (1280, 800),
     }
@@ -43,7 +43,15 @@ pub fn main() {
         &LaunchSpec::new_with_args("dev.qos.windows", live_root)
             .max_positionals(1)
             .shot_root(shot_root)
-            .scenarios(&["wide", "detail", "running", "error", "error-compact"])
+            .scenarios(&[
+                "wide",
+                "detail",
+                "vm-detail",
+                "running",
+                "error",
+                "error-compact",
+                "confirm-delete",
+            ])
             .shot_viewport(shot_viewport)
             .configure_app(configure_app),
     );
