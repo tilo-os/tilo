@@ -424,8 +424,11 @@ fn keyboard_slider_arrows_route_through_the_host() {
 /// overlay ordering and modifier state have historically swallowed keys.
 #[test]
 fn keyboard_actions_and_reverse_tab_route_through_the_host() {
-    // The first Tab selects Edit; the second selects Settings. Enter opens
-    // settings and dismisses the popover.
+    // The first Tab selects Edit; the second selects Personal Settings.
+    // Enter dismisses the popover. The launcher itself is covered by the
+    // serial `quick_settings_settings_action_launches_personal_settings_app`
+    // test; this route test also guards against reopening the unrelated
+    // workspace-sharing settings surface.
     let tree = minimal_tree();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
@@ -450,8 +453,11 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
         Key::Named(NamedKey::Enter),
         ModifiersState::empty(),
     ));
-    assert!(chrome.borrow().overlays.ws_settings);
     assert!(!chrome.borrow().overlays.quick_settings);
+    assert!(
+        !chrome.borrow().overlays.ws_settings,
+        "Personal Settings must not be conflated with workspace sharing settings"
+    );
 
     // A fresh host: Space on History opens its in-panel activity route.
     let tree = minimal_tree();
