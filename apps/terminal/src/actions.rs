@@ -69,8 +69,12 @@
 //! The terminal publishes its live session with send/interrupt/clear effects;
 //! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
 //! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch, and `main.rs` registers no action decoder). The
-//! tests below prove each half of this split on the real production path.
+//! nothing for it to dispatch, and `main.rs` registers no action decoder).
+//! The bounded resource tree still exposes the live session, its transcript and
+//! visible OSC links to search, agents and invocation history. Those operations
+//! are typed effects/views: they drive the PTY, clipboard, viewport or URL
+//! opener, but never pretend transient process state is a durable document edit.
+//! The tests below prove each half of this split on the real production path.
 
 #[cfg(test)]
 mod tests {
@@ -383,7 +387,7 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        assert_eq!(ids, vec!["send", "interrupt", "clear"]);
+        assert_eq!(ids, vec!["send", "run", "interrupt", "clear"]);
         assert!(
             terminal
                 .actions
@@ -406,6 +410,51 @@ mod tests {
                     )
             }),
             "palette and agents must explicitly confirm every operation that can affect a live shell"
+        );
+        let transcript = terminal
+            .children
+            .iter()
+            .find(|resource| resource.kind == "terminal.transcript")
+            .expect("session owns a canonical transcript resource");
+        assert_eq!(
+            transcript
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["history-top", "history-live", "copy-visible"]
+        );
+    }
+
+    #[test]
+    fn run_command_is_bounded_and_presses_enter_exactly_once() {
+        let (mut widget, writes) = build_test_widget();
+        let doc = AutoCommit::new();
+        let payload = serde_json::to_vec("printf resource-run").expect("serialize command");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                ui::qos_actions::OperationKind::Effect,
+                "terminal.run",
+                &payload,
+                &doc,
+                &ROOT,
+            )
+            .expect("invoke run command")
+        );
+        assert_eq!(drain_writes(&writes), b"printf resource-run\r".to_vec());
+
+        let blank = serde_json::to_vec("  ").expect("serialize blank command");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut widget,
+                ui::qos_actions::OperationKind::Effect,
+                "terminal.run",
+                &blank,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
         );
     }
 
