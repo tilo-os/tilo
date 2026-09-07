@@ -1623,7 +1623,9 @@ fn prepare_attachment_import(token: u64, path: &std::path::Path) -> AttachmentIm
         .file_name()
         .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned());
     let meta = qdoc::blobstore::sniff(&bytes);
-    let blob = qdoc::blobstore::put(&bytes);
+    let Some(blob) = qdoc::blobstore::put(&bytes) else {
+        return fail("shared content store refused the attachment");
+    };
     if qdoc::blobstore::get(&blob).as_deref() != Some(bytes.as_slice()) {
         return fail("shared byte verification failed");
     }
