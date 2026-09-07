@@ -5,9 +5,10 @@
 //! becomes an [`Action`](qos_actions::Action) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
-//! app code. Applying that split to the Disks app leaves **nothing** on the
-//! action side, and this module records that finding rather than fabricate a
-//! saved-configs or scheduled-jobs model just to have actions.
+//! app code. Applying that split to Disks leaves no *replicated document*
+//! actions, but it does publish its real machine-local effects as resource
+//! operations so search, agents, history and collaboration all use one safety
+//! contract.
 //!
 //! ## Everything that changes the world is external
 //!
@@ -62,12 +63,18 @@
 //!
 //! ## Consequence
 //!
-//! The Disks app exports **no** actions and publishes **no** Ctrl+K resource
-//! tree: [`Widget::resources`](ui::widget::Widget::resources) stays empty and
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
-//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch, and `main.rs` registers no action decoder). The
-//! tests below prove each half of this split on the real production path.
+//! [`Widget::resources`](ui::widget::Widget::resources) publishes a storage
+//! root, a resource for every drive and child resources for every partition.
+//! Each meaningful operation is an `OperationKind::Effect` handled by
+//! `disks.operation`: format and benchmark for disks/partitions, eject for a
+//! removable disk, and the applicable mount/unmount operation for a partition.
+//! The descriptors declare admin permission, background progress, retry policy
+//! and an exact typed phrase for destructive formatting. Before an operation
+//! starts, `DisksApp` revalidates the resource leaf against its latest local
+//! probe and derives the filesystem type from that probe, rejecting stale or
+//! forged remote payloads. [`take_committed_action`](ui::widget::Widget::take_committed_action)
+//! remains `None` because none of these effects may be replayed as a CRDT
+//! mutation; the tests below prove both halves of that boundary.
 
 #[cfg(test)]
 mod tests {

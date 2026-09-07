@@ -83,6 +83,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         part: args.value("--part").and_then(|value| value.parse().ok()),
         tab: args.value("--tab").map(str::to_owned),
         pending: args.value("--pending").map(str::to_owned),
+        status: args.value("--status").map(str::to_owned),
     };
     render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
@@ -107,7 +108,7 @@ pub fn main() {
         &LaunchSpec::new("dev.qos.disks", live_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--live", "--narrow"])
-            .allowed_options(&["--drive", "--part", "--tab", "--pending"]),
+            .allowed_options(&["--drive", "--part", "--tab", "--pending", "--status"]),
     );
 }
 
@@ -120,6 +121,9 @@ struct Preset {
     /// Pre-arm a confirm modal, e.g. `format:0:2`, to capture the
     /// type-to-confirm gate offscreen.
     pending: Option<String>,
+    /// Pin a success or failure toast for deterministic visual regression
+    /// captures without invoking a real storage operation.
+    status: Option<String>,
 }
 
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
@@ -154,6 +158,7 @@ fn render_shot_to_png(
         || preset.part.is_some()
         || preset.tab.is_some()
         || preset.pending.is_some()
+        || preset.status.is_some()
     {
         if let Some(d) = preset.drive {
             disks::doc::DisksDoc::set_selected(&mut state.doc, d);
@@ -166,6 +171,9 @@ fn render_shot_to_png(
         }
         if let Some(p) = &preset.pending {
             disks::doc::DisksDoc::set_pending(&mut state.doc, p);
+        }
+        if let Some(status) = &preset.status {
+            disks::doc::DisksDoc::set_status(&mut state.doc, status);
         }
         widget.sync(&mut state.doc, &state.root);
     }
