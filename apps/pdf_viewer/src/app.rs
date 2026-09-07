@@ -1764,12 +1764,11 @@ impl PdfApp {
         };
         // Only publish validated bytes. A malformed or excessive payload has
         // not mutated either local page plan or shared history at this point.
-        let hash = qdoc::blobstore::put(&bytes);
-        if !qdoc::blobstore::store().has(&hash) {
+        let Some(hash) = qdoc::blobstore::put(&bytes) else {
             self.status_note =
                 Some("Import failed: local content store refused the payload".into());
             return false;
-        }
+        };
         let pages = sizes
             .into_iter()
             .enumerate()

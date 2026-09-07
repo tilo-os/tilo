@@ -507,8 +507,12 @@ impl PhotosApp {
                 // can already answer for — and one the room can be handed.
                 // Otherwise the document would name a picture only the path
                 // could find, and the path is true on one machine.
-                let open = OpenImage::from_path(path, img.w, img.h)
-                    .with_content(qdoc::blobstore::put(bytes.as_deref().unwrap_or_default()));
+                let Some(content) = qdoc::blobstore::put(bytes.as_deref().unwrap_or_default())
+                else {
+                    self.notice = Some(tr("photos-open-failed"));
+                    return;
+                };
+                let open = OpenImage::from_path(path, img.w, img.h).with_content(content);
                 self.original = Some((path.to_string(), img));
                 self.rendered = None;
                 self.viewer = None;
