@@ -392,8 +392,18 @@ impl Annotation {
 
 #[derive(Clone, Debug)]
 pub struct Reply {
+    /// Stable identity minted when the reply action is authored.  Replies are
+    /// first-class collaborative resources, not just an unaddressable string
+    /// in their parent comment's list.
+    pub id: String,
     pub author: String,
     pub body: String,
+}
+
+impl Reply {
+    pub fn new_id() -> String {
+        Uuid::new_v4().to_string()
+    }
 }
 
 #[derive(Clone, Debug)]
