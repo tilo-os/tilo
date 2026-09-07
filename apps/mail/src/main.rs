@@ -70,6 +70,7 @@ pub fn main() {
                 "setup_oauth",
                 "firstrun",
                 "html_mail",
+                "search",
                 "preview",
                 "loading",
                 "empty",
