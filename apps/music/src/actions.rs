@@ -16,11 +16,14 @@
 //!
 //! ## What is *not* an action
 //!
-//! Presentation stays local: the current view / selection / scroll, search text
-//! and filter tab. Stream resolution, audio output, artwork fetching and the
-//! native cover picker are device effects too. Their durable results — playback,
-//! cache choices and a selected cover — are instead written through the action
-//! types below, so the state users see remains replayable and syncable.
+//! Presentation stays local: selection, scroll, search text and filter tabs.
+//! The stable top-level destinations are still exported as idempotent `View`
+//! operations, so history, search hosts and agents can address a screen without
+//! guessing a local widget path. Stream resolution, audio output, artwork
+//! fetching and the native cover picker are device effects too. Their durable
+//! results — playback, cache choices and a selected cover — are instead written
+//! through the action types below, so the state users see remains replayable and
+//! syncable.
 //!
 //! ## Determinism contract
 //!
@@ -65,6 +68,42 @@ pub const OPEN_RESOURCE_CATEGORY_LIMIT: usize = 16;
 /// memberships. The complete playlist remains reachable by its stable
 /// resource id, and the visible app has its own virtualised list.
 pub const OPEN_PLAYLIST_TRACK_LIMIT: usize = 32;
+
+/// Stable identifiers for Music's app-owned destinations.  These are not
+/// synthetic content: every value names a real screen in [`crate::app::View`].
+/// Keeping the allowlist at the resource boundary prevents a caller from
+/// turning an arbitrary string into local routing authority.
+pub const NAVIGATION_VIEWS: &[(&str, &str)] = &[
+    ("home", "Home"),
+    ("songs", "Songs"),
+    ("albums", "Albums"),
+    ("artists", "Artists"),
+    ("playlists", "Playlists"),
+    ("downloads", "Downloads"),
+    ("liked", "Liked Songs"),
+    ("search", "Search"),
+    ("queue", "Queue"),
+    ("lyrics", "Lyrics"),
+];
+
+pub fn view_resource_id(id: &str) -> String {
+    format!("music.view:{id}")
+}
+
+pub fn known_view_label(id: &str) -> Option<&'static str> {
+    NAVIGATION_VIEWS
+        .iter()
+        .find_map(|(candidate, label)| (*candidate == id).then_some(*label))
+}
+
+pub fn parse_view_resource_id(id: &str) -> Option<&str> {
+    let view = id.strip_prefix("music.view:")?;
+    known_view_label(view).map(|_| view)
+}
+
+pub fn open_view_address(id: &str) -> Option<ActionAddress> {
+    known_view_label(id).map(|_| ActionAddress::new(view_resource_id(id), "open"))
+}
 
 pub fn track_resource_id(id: &str) -> String {
     format!("music.track:{id}")
@@ -141,6 +180,11 @@ pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAd
 /// output remain device effects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicOperation {
+    /// Open one of the stable app-owned destinations in [`NAVIGATION_VIEWS`].
+    /// The receiver validates `id` again before it changes local presentation.
+    OpenView {
+        id: String,
+    },
     PlayTrack {
         id: String,
     },
@@ -757,6 +801,15 @@ fn playlist_label(p: &PlaylistResource) -> String {
     }
 }
 
+fn navigation_view_resource(id: &str, label: &str) -> Resource {
+    Resource::new(view_resource_id(id), "music.view", label).with_action(operation_spec(
+        "open",
+        &format!("Open {label}"),
+        OperationKind::View,
+        &MusicOperation::OpenView { id: id.to_string() },
+    ))
+}
+
 fn with_playback_actions(
     root: Resource,
     playback: &crate::model::Playback,
@@ -1356,6 +1409,15 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         root = root.with_child(catalog_artist_resource(artist));
     }
 
+    // App destinations are first-class resources too. A palette, agent or
+    // history item can therefore reopen the exact screen through the same
+    // canonical operation broker used for albums, artists and playlists. Keep
+    // them after document resources so Ctrl+K's unfiltered initial window still
+    // prioritises the library actions users can immediately perform.
+    for &(id, label) in NAVIGATION_VIEWS {
+        root = root.with_child(navigation_view_resource(id, label));
+    }
+
     vec![root]
 }
 
@@ -1365,6 +1427,9 @@ pub fn provide_resources(ctx: &MusicResourceCtx, _doc: &AutoCommit) -> Vec<Resou
 /// otherwise stale targets disappear instead of gaining authority from an old
 /// palette snapshot.
 pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
+    if let Some(view) = parse_view_resource_id(id) {
+        return known_view_label(view).map(|label| navigation_view_resource(view, label));
+    }
     if let Some(membership) = &ctx.membership
         && id == playlist_track_resource_id(&membership.playlist, &membership.track.id)
     {
@@ -2081,6 +2146,47 @@ mod tests {
     }
 
     #[test]
+    fn every_top_level_destination_is_a_safe_canonical_view_resource() {
+        let ctx = MusicResourceCtx::default();
+        let root = provide_resources(&ctx, &AutoCommit::new())
+            .into_iter()
+            .next()
+            .expect("library root");
+        for &(id, label) in NAVIGATION_VIEWS {
+            let resource_id = view_resource_id(id);
+            let resource = root
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == resource_id)
+                .expect("published top-level destination");
+            assert_eq!(resource.kind, "music.view");
+            assert_eq!(resource.label, label);
+            let open = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "open")
+                .expect("canonical open action");
+            assert_eq!(open.kind, OperationKind::View);
+            assert_eq!(open.contract.permission, PermissionRequirement::Read);
+            let encoded = immediate_encode(open);
+            assert_eq!(
+                decode_operation(&encoded.type_id, &encoded.payload).expect("operation decodes"),
+                Some(MusicOperation::OpenView { id: id.to_string() })
+            );
+            assert_eq!(
+                open_view_address(id).expect("known view address").resource,
+                resource_id
+            );
+            assert_eq!(
+                resource_by_id(&ctx, &resource_id).map(|r| r.id.as_str().to_string()),
+                Some(resource_id)
+            );
+        }
+        assert!(parse_view_resource_id("music.view:../../etc/passwd").is_none());
+        assert!(open_view_address("../../etc/passwd").is_none());
+    }
+
+    #[test]
     fn published_resource_action_surface_validates_with_music_handlers() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
@@ -2117,8 +2223,13 @@ mod tests {
             ..Default::default()
         };
         let snapshot = provide_resources(&ctx, &AutoCommit::new());
+        let playlist_snapshot = snapshot[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == playlist_resource_id(&playlist.id))
+            .expect("playlist remains present after the fixed navigation resources");
         assert_eq!(
-            snapshot[0].children[1].children.len(),
+            playlist_snapshot.children.len(),
             OPEN_PLAYLIST_TRACK_LIMIT,
             "the contextual page does not materialize every membership"
         );
