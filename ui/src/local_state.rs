@@ -284,15 +284,20 @@ impl<T> LatestRequest<T> {
 
     /// Start a request, invalidating any older completion capability.
     ///
-    /// # Panics
-    ///
-    /// Panics after the generation namespace is exhausted. This preserves the
-    /// original infallible API without ever returning an aliased capability;
-    /// long-lived hosts that need to handle exhaustion can use
-    /// [`Self::try_begin`].
+    /// After the generation namespace is exhausted this returns a permanently
+    /// stale capability which cannot publish. This preserves the original
+    /// infallible API without aliasing a live generation; long-lived hosts that
+    /// need to observe exhaustion can use [`Self::try_begin`].
     pub fn begin(&mut self) -> RequestCompletion<T> {
-        self.try_begin()
-            .expect("latest-request generation namespace exhausted")
+        match self.try_begin() {
+            Some(completion) => completion,
+            None => RequestCompletion {
+                sender: self.sender.clone(),
+                generation: Arc::clone(&self.generation),
+                request_generation: 0,
+                wake: WakeHandle::new(),
+            },
+        }
     }
 
     /// Fallible form of [`Self::begin`]. Returns `None` without changing state
@@ -424,17 +429,22 @@ impl<T> LatestTask<T> {
     /// Begin a new run and return its background-safe completion capability.
     /// Any earlier capability becomes stale before `running` is published.
     ///
-    /// # Panics
-    ///
-    /// Panics after the generation namespace is exhausted. This preserves the
-    /// original infallible API without reissuing an aliased capability; use
+    /// After the generation namespace is exhausted this returns a permanently
+    /// stale capability which cannot publish. This preserves the original
+    /// infallible API without reissuing an aliased generation; use
     /// [`Self::try_begin`] when exhaustion must be handled explicitly.
     pub fn begin(&self, running: T) -> TaskCompletion<T>
     where
         T: Send + Sync + 'static,
     {
-        self.try_begin(running)
-            .expect("latest-task generation namespace exhausted")
+        match self.try_begin(running) {
+            Some(completion) => completion,
+            None => TaskCompletion {
+                writer: self.state.writer(),
+                generation: Arc::clone(&self.generation),
+                run: 0,
+            },
+        }
     }
 
     /// Fallible form of [`Self::begin`]. Returns `None` without publishing the
@@ -755,6 +765,9 @@ mod tests {
         assert_eq!(request.generation.load(Ordering::Acquire), u64::MAX);
         assert!(!request.try_cancel());
         assert!(request.try_begin().is_none());
+        let stale = request.begin();
+        assert!(!stale.is_current());
+        assert!(!stale.complete(()));
     }
 
     #[test]
@@ -768,6 +781,10 @@ mod tests {
         assert!(task.try_cancel("cancelled"));
         assert_eq!(state.get(), "cancelled");
         assert!(!task.try_cancel("later"));
+        assert_eq!(state.get(), "cancelled");
+        let inert_completion = task.begin("never published");
+        assert!(!inert_completion.is_current());
+        assert!(!inert_completion.complete("late"));
         assert_eq!(state.get(), "cancelled");
     }
 }
