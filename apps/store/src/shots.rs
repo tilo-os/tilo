@@ -170,6 +170,7 @@ pub fn render_scenario_to_path(
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
         Some("detail") => app.focus_detail_for_shot("dev.qos.notes"),
+        Some("remotes") => app.show_remotes_for_shot(),
         Some("progress") => {
             app.set_status_line("Installing Notes · verifying signed package…");
             app.set_worker_busy(true);
@@ -231,11 +232,17 @@ pub fn render_widget(
     widget: &mut Box<dyn Widget>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    if matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
+        Ok("1" | "true" | "yes")
+    ) {
+        theme = theme.with_reduce_motion(true);
+    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

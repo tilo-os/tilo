@@ -46,7 +46,7 @@ use ui::qos_actions::{
 };
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Column, Container, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput,
+    CardGrid, Column, Container, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput,
     ToggleGroup, Widget,
 };
 use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_render::TextRenderer};
@@ -104,6 +104,12 @@ const REPORT_NOTE_KEY: &str = "store.report_note";
 const PAGE_PREVIOUS_KEY: &str = "store.page_previous";
 const PAGE_NEXT_KEY: &str = "store.page_next";
 const PAGE_SIZE: usize = 48;
+/// Bound CRDT-supplied configuration before it is rendered, serialized, or
+/// forwarded to the Flatpak worker. These are deliberately generous relative
+/// to real remote names and HTTPS URLs, but prevent a hostile collaboration
+/// document from allocating an unbounded action payload or layout paragraph.
+const MAX_REMOTE_NAME_CHARS: usize = 128;
+const MAX_REMOTE_URL_BYTES: usize = 2_048;
 /// The contextual action snapshot deliberately stays small. The retained
 /// global catalogue and `Widget::resource` resolve every omitted stable app
 /// on demand, so this never hides a catalogue entry from agents or Ctrl+K.
@@ -244,6 +250,7 @@ fn detail_section(
     title: &str,
     lines: impl IntoIterator<Item = String>,
     theme: &Theme,
+    compact: bool,
 ) -> Box<dyn Widget> {
     let mut column = Column::new().with_intrinsic_height().push(Box::new(
         Text::new(title).with_size(17.0).with_heading_level(2),
@@ -253,11 +260,29 @@ fn detail_section(
             Text::new(&line).with_size(12.0).with_color(theme.text_dim),
         ));
     }
-    Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(column)),
-    )
+    bounded_detail_card(Box::new(column), compact)
+}
+
+/// The desktop detail view is one centred reading column: its hero and each
+/// evidence section use identical bounds. Narrow layouts retain full-width
+/// cards so text and controls never overflow the viewport.
+fn bounded_detail_card(child: Box<dyn Widget>, compact: bool) -> Box<dyn Widget> {
+    if compact {
+        Box::new(Container::new().with_background().with_child(child))
+    } else {
+        let surface: Box<dyn Widget> = Box::new(
+            Container::new()
+                .with_width(900.0)
+                .with_background()
+                .with_child(child),
+        );
+        Box::new(
+            Row::new()
+                .push(Box::new(Spacer::new()))
+                .push(surface)
+                .push(Box::new(Spacer::new())),
+        )
+    }
 }
 
 fn report_envelope(report: &ReportRecord, item: Option<&StoreItem>, note: &str) -> ReportEnvelope {
@@ -348,6 +373,9 @@ fn moderation_case_spec(
 }
 
 fn validate_remote_url(value: &str) -> Result<(), String> {
+    if value.len() > MAX_REMOTE_URL_BYTES {
+        return Err("repository URL is too long".into());
+    }
     let url = reqwest::Url::parse(value).map_err(|_| "repository URL is invalid".to_string())?;
     if url.scheme() != "https"
         || !url.username().is_empty()
@@ -355,6 +383,17 @@ fn validate_remote_url(value: &str) -> Result<(), String> {
         || url.host_str().is_none()
     {
         return Err("repository URL must be credential-free HTTPS".into());
+    }
+    Ok(())
+}
+
+fn validate_remote_name(value: &str) -> Result<(), String> {
+    let name = value.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_REMOTE_NAME_CHARS
+        || name.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err("remote name must be a non-empty, short identifier".into());
     }
     Ok(())
 }
@@ -445,6 +484,22 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
         }));
     }
     resource
+}
+
+/// Return an owned canonical resource from the bounded contextual snapshot.
+///
+/// `Widget::resource` is also used for direct links from history, agents, and
+/// collaboration.  Keeping this traversal here makes roots, remotes, reports,
+/// and moderation cases resolvable by their published IDs, while app resources
+/// beyond the snapshot retain the lazy resolver below.
+fn find_snapshot_resource(resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.0 == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .into_iter()
+        .find_map(|child| find_snapshot_resource(child, id))
 }
 
 fn add_store_item_action(
@@ -861,6 +916,19 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
+    /// Populate the machine-scoped remote management view for a deterministic
+    /// compact-layout screenshot without querying the real Flatpak host.
+    pub fn show_remotes_for_shot(&mut self) {
+        self.remotes_open = true;
+        self.remotes = vec![crate::flathub_client::Remote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            title: "Flathub".into(),
+            disabled: false,
+        }];
+        self.structure_dirty = true;
+    }
+
     pub fn clear_catalogue_for_shot(&mut self) {
         self.items.clear();
         self.structure_dirty = true;
@@ -1049,15 +1117,52 @@ impl StoreApp {
         // card list spans to the window bottom.
         let mut column = Column::new()
             .with_vertical_padding(0.0)
-            .with_horizontal_padding(0.0, 0.0)
-            .push(header);
+            .with_horizontal_padding(0.0, 0.0);
         if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
-            column = column
-                .push(self.build_filter_row())
-                .push(self.build_category_row());
+            // Search and the two facets are one catalogue surface, rather
+            // than three unrelated full-width bands.  It also gives the
+            // desktop grid a deliberate shared reading width.
+            let catalogue_controls = Column::new()
+                .with_intrinsic_height()
+                .with_gap(10.0)
+                .push(header)
+                .push(self.build_filter_row(theme))
+                .push(self.build_category_row(theme));
+            column = column.push(
+                self.centered_content(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(catalogue_controls)),
+                )),
+            );
+        } else {
+            column = column.push(self.centered_content(Box::new(
+                Container::new().with_background().with_child(header),
+            )));
         }
         column = column.push(content);
         Box::new(Container::new().filling().with_child(Box::new(column)))
+    }
+
+    /// Keep desktop pages readable on large displays without imposing a
+    /// fixed width on narrow windows.  The surrounding spacers make the
+    /// 1120 px surface genuinely centred rather than merely indented.
+    fn centered_content(&self, child: Box<dyn Widget>) -> Box<dyn Widget> {
+        if self.compact_layout() {
+            child
+        } else {
+            Box::new(
+                Row::new()
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(1120.0)
+                            .with_no_padding()
+                            .with_child(child),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            )
+        }
     }
 
     #[allow(
@@ -1092,51 +1197,25 @@ impl StoreApp {
             // Detail content mixes an intrinsic artwork row, paragraph and
             // actions. A real gap prevents the paragraph's baseline from
             // colliding with the first action at larger text metrics.
-            .with_gap(8.0)
-            .push(Box::new(
-                ui::widget::Button::new("store.detail.back", "Back to apps", Some(DETAIL_BACK_KEY))
-                    .ghost()
-                    .tooltip("Return to the catalogue"),
-            ))
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(crate::widgets::Artwork::new(
-                        self.images.clone(),
-                        item.icon_url.as_deref(),
-                        &item.name,
-                        72.0,
-                        72.0,
-                    )))
-                    .push(Box::new(
-                        Column::new()
-                            .with_no_padding()
-                            .push(Box::new(Text::new(&item.name).with_size(24.0)))
-                            .push(Box::new(
-                                Text::new(&source)
-                                    .with_size(12.0)
-                                    .with_color(theme.text_dim),
-                            )),
-                    )),
-            ))
-            .push(Box::new(Text::new(&item.description).with_size(14.0)));
+            .with_gap(12.0);
         let action = item.action_kind(self.flatpak_available);
         let primary_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
         let mut primary = ui::widget::Button::new(&primary_key, action.label(), Some(&primary_key));
         if let Some(binding) = item_action_binding(item, action) {
             primary = primary.on_action(binding);
         }
-        let mut actions = Row::new().push(Box::new(primary.primary().tooltip(format!(
-            "{} {}",
-            action.label(),
-            item.name
-        ))));
+        let mut action_buttons: Vec<Box<dyn Widget>> = vec![Box::new(
+            primary
+                .primary()
+                .tooltip(format!("{} {}", action.label(), item.name)),
+        )];
         if let Some(pin_action) = item.pin_action() {
             let pin_key = format!("{}{}", PIN_CLICK_KEY_PREFIX, item.id);
             let mut button = ui::widget::Button::new(&pin_key, pin_action.label(), Some(&pin_key));
             if let Some(binding) = item_action_binding(item, pin_action) {
                 button = button.on_action(binding);
             }
-            actions = actions.push(Box::new(button.ghost().tooltip(format!(
+            action_buttons.push(Box::new(button.ghost().tooltip(format!(
                 "{} {}",
                 pin_action.label(),
                 item.name
@@ -1148,7 +1227,7 @@ impl StoreApp {
             if let Some(binding) = item_action_binding(item, remove_action) {
                 button = button.on_action(binding);
             }
-            actions = actions.push(Box::new(
+            action_buttons.push(Box::new(
                 button.ghost().tooltip(format!("Remove {}", item.name)),
             ));
         }
@@ -1160,10 +1239,72 @@ impl StoreApp {
         }
         let mut trust_lines = vec![trust_summary.to_string()];
         trust_lines.extend(publisher_identity_lines(item));
-        column = column.push(Box::new(actions)).push(detail_section(
+        let actions: Box<dyn Widget> = if self.compact_layout() {
+            let mut column = Column::new().with_no_padding().with_intrinsic_height();
+            for button in action_buttons {
+                column = column.push(button);
+            }
+            Box::new(column)
+        } else {
+            let mut row = Row::new();
+            for button in action_buttons {
+                row = row.push(button);
+            }
+            Box::new(row)
+        };
+        let back = Box::new(
+            ui::widget::Button::new("store.detail.back", "Back to apps", Some(DETAIL_BACK_KEY))
+                .ghost()
+                .tooltip("Return to the catalogue"),
+        );
+        let artwork = Box::new(crate::widgets::Artwork::new(
+            self.images.clone(),
+            item.icon_url.as_deref(),
+            &item.name,
+            72.0,
+            72.0,
+        ));
+        let summary = Column::new()
+            .with_no_padding()
+            .with_fill_remaining_height()
+            .push(Box::new(Text::new(&item.name).with_size(24.0)))
+            .push(Box::new(
+                Text::new(&source)
+                    .with_size(12.0)
+                    .with_color(theme.text_dim),
+            ));
+        let hero: Box<dyn Widget> = if self.compact_layout() {
+            Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_gap(10.0)
+                    .push(back)
+                    .push(Box::new(Row::new().push(artwork).push(Box::new(summary))))
+                    .push(Box::new(Text::new(&item.description).with_size(14.0)))
+                    .push(actions),
+            )
+        } else {
+            Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .with_gap(10.0)
+                    .push(back)
+                    .push(Box::new(
+                        Row::new()
+                            .no_wrap()
+                            .push(artwork)
+                            .push(Box::new(summary))
+                            .push(actions),
+                    ))
+                    .push(Box::new(Text::new(&item.description).with_size(14.0))),
+            )
+        };
+        let hero = bounded_detail_card(hero, self.compact_layout());
+        column = column.push(hero).push(detail_section(
             "Trust & safety",
             trust_lines,
             theme,
+            self.compact_layout(),
         ));
 
         let version_lines = if item.versions.is_empty() {
@@ -1191,7 +1332,12 @@ impl StoreApp {
                 })
                 .collect()
         };
-        column = column.push(detail_section("Versions & package", version_lines, theme));
+        column = column.push(detail_section(
+            "Versions & package",
+            version_lines,
+            theme,
+            self.compact_layout(),
+        ));
 
         let installed = match &item.installed {
             crate::InstalledState::Not => "Not installed".to_string(),
@@ -1216,6 +1362,7 @@ impl StoreApp {
                 "Changelog: not published as signed catalogue metadata.".into(),
             ],
             theme,
+            self.compact_layout(),
         ));
 
         column = column.push(detail_section(
@@ -1231,6 +1378,7 @@ impl StoreApp {
                 ),
             ],
             theme,
+            self.compact_layout(),
         ));
 
         if item.screenshot_urls.is_empty() {
@@ -1238,11 +1386,12 @@ impl StoreApp {
                 "Preview gallery",
                 ["No preview images were published for this app.".into()],
                 theme,
+                self.compact_layout(),
             ));
         } else {
-            let mut gallery = Row::new();
+            let mut previews: Vec<Box<dyn Widget>> = Vec::new();
             for (index, preview) in item.screenshot_urls.iter().take(3).enumerate() {
-                gallery = gallery.push(Box::new(crate::widgets::Artwork::new(
+                previews.push(Box::new(crate::widgets::Artwork::new(
                     self.images.clone(),
                     Some(preview),
                     &format!("{} preview {}", item.name, index + 1),
@@ -1250,36 +1399,56 @@ impl StoreApp {
                     140.0,
                 )));
             }
+            let gallery: Box<dyn Widget> = if self.compact_layout() {
+                let mut column = Column::new().with_no_padding();
+                for preview in previews {
+                    column = column.push(preview);
+                }
+                Box::new(column)
+            } else {
+                let mut row = Row::new();
+                for preview in previews {
+                    row = row.push(preview);
+                }
+                Box::new(row)
+            };
             column = column
                 .push(Box::new(
                     Text::new("Preview gallery")
                         .with_size(17.0)
                         .with_heading_level(2),
                 ))
-                .push(Box::new(gallery));
+                .push(gallery);
         }
 
-        column = column.push(Box::new(
-            Row::new()
-                .push(Box::new(
-                    report_button.tooltip("Create a local, collaborative report draft"),
-                ))
-                .push(Box::new(
-                    ui::widget::Button::new(
-                        "store.safety.detail",
-                        "Moderation details",
-                        Some(SAFETY_OPEN_KEY),
-                    )
-                    .ghost()
-                    .tooltip("Review the Store trust and moderation model"),
-                )),
-        ));
+        let report_button: Box<dyn Widget> =
+            Box::new(report_button.tooltip("Create a local, collaborative report draft"));
+        let moderation_button: Box<dyn Widget> = Box::new(
+            ui::widget::Button::new(
+                "store.safety.detail",
+                "Moderation details",
+                Some(SAFETY_OPEN_KEY),
+            )
+            .ghost()
+            .tooltip("Review the Store trust and moderation model"),
+        );
+        let report_actions: Box<dyn Widget> = if self.compact_layout() {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .push(report_button)
+                    .push(moderation_button),
+            )
+        } else {
+            Box::new(Row::new().push(report_button).push(moderation_button))
+        };
+        column = column.push(report_actions);
         Some(Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_child(Box::new(
                     Container::new()
-                        .with_background()
+                        .with_no_padding()
                         .with_child(Box::new(column)),
                 )),
         ))
@@ -1415,23 +1584,26 @@ impl StoreApp {
             .push(detail_section("How reports and appeals work", [
                 "Reports are signed by your workspace identity. Publisher replies and appeals must match the package publisher key; reviewer decisions must match the pinned registry owner.".into(),
                 "Drafts stay collaborative. A submission receipt does not replace the last verified status: status changes appear only after the Store verifies the complete event chain against an owner-signed snapshot. Offline or refused requests remain drafts and can be retried.".into(),
-            ], theme))
+            ], theme, self.compact_layout()))
             .push(detail_section("Verified identity & integrity", [
                 "qOS packages are bound to a publisher key, app id, version, exact size and content hash. A pinned registry owner controls which publishers may list apps.".into(),
-            ], theme))
+            ], theme, self.compact_layout()))
             .push(detail_section("Review is a separate claim", [
                 "A valid package signature does not mean an app is useful, private or honest. Moderation decisions are separately signed; the Store never invents a review badge.".into(),
                 "Public moderation events form a numbered signed hash chain. The Store derives case status itself, checks publisher and reviewer authorization, and requires the final head committed by the registry owner's current snapshot.".into(),
-            ], theme))
+            ], theme, self.compact_layout()))
             .push(detail_section("Publishing guidelines", [
                 "Listings must accurately describe behavior, identify paid or remote-service dependencies, request only necessary permissions, preserve user data during updates, provide an accessible UI, and avoid impersonation, manipulation and undisclosed tracking.".into(),
-            ], theme));
+            ], theme, self.compact_layout()));
+        if !self.compact_layout() {
+            column = column.with_horizontal_padding(190.0, 190.0);
+        }
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_child(Box::new(
                     Container::new()
-                        .with_background()
+                        .with_no_padding()
                         .with_child(Box::new(column)),
                 )),
         )
@@ -1450,6 +1622,7 @@ impl StoreApp {
                     .with_size(12.0)
                     .with_color(theme.text_dim),
             ));
+        let mut remote_rows: Vec<Box<dyn Widget>> = Vec::new();
         for remote in &self.remotes {
             let label = format!(
                 "{} · {}{}",
@@ -1458,43 +1631,82 @@ impl StoreApp {
                 if remote.disabled { " · disabled" } else { "" }
             );
             let key = format!("{}{}", REMOTES_REMOVE_KEY_PREFIX, remote.name);
-            column = column.push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(&label).with_size(13.0)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        ui::widget::Button::new(&key, "Remove", Some(&key)).ghost(),
-                    )),
-            ));
+            let remove = Box::new(ui::widget::Button::new(&key, "Remove", Some(&key)).ghost());
+            let remote_row: Box<dyn Widget> = if self.compact_layout() {
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(Text::new(&label).with_size(13.0)))
+                        .push(remove),
+                )
+            } else {
+                Box::new(
+                    Row::new()
+                        .push(Box::new(Text::new(&label).with_size(13.0)))
+                        .push(Box::new(Spacer::new()))
+                        .push(remove),
+                )
+            };
+            remote_rows.push(remote_row);
         }
-        let form = Row::new()
-            .push(Box::new(
-                TextInput::new(vec![])
-                    .with_id("store.remote.name")
-                    .with_on_change_path(REMOTE_NAME_KEY)
-                    .with_placeholder("Remote name"),
-            ))
-            .push(Box::new(
-                TextInput::new(vec![])
-                    .with_id("store.remote.url")
-                    .with_on_change_path(REMOTE_URL_KEY)
-                    .with_placeholder("Repository URL"),
-            ))
-            .push(Box::new(
-                ui::widget::Button::new("store.remote.add", "Add remote", Some(REMOTES_ADD_KEY))
-                    .primary(),
-            ))
-            .push(Box::new(ui::widget::Button::new(
-                "store.remote.refresh",
-                "Refresh",
-                Some(REMOTES_REFRESH_KEY),
-            )));
-        column = column.push(Box::new(form));
+        let remote_name: Box<dyn Widget> = Box::new(
+            TextInput::new(vec![])
+                .with_id("store.remote.name")
+                .with_on_change_path(REMOTE_NAME_KEY)
+                .with_placeholder("Remote name"),
+        );
+        let remote_url: Box<dyn Widget> = Box::new(
+            TextInput::new(vec![])
+                .with_id("store.remote.url")
+                .with_on_change_path(REMOTE_URL_KEY)
+                .with_placeholder("Repository URL"),
+        );
+        let add: Box<dyn Widget> = Box::new(
+            ui::widget::Button::new("store.remote.add", "Add remote", Some(REMOTES_ADD_KEY))
+                .primary(),
+        );
+        let refresh: Box<dyn Widget> = Box::new(ui::widget::Button::new(
+            "store.remote.refresh",
+            "Refresh",
+            Some(REMOTES_REFRESH_KEY),
+        ));
+        let form: Box<dyn Widget> = if self.compact_layout() {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(remote_name)
+                    .push(remote_url)
+                    .push(add)
+                    .push(refresh),
+            )
+        } else {
+            Box::new(
+                Row::new()
+                    .push(remote_name)
+                    .push(remote_url)
+                    .push(add)
+                    .push(refresh),
+            )
+        };
+        column = column.push(form);
+        for remote_row in remote_rows {
+            column = column.push(remote_row);
+        }
+        if !self.compact_layout() {
+            column = column.with_horizontal_padding(190.0, 190.0);
+        }
         Box::new(
-            Container::new()
-                .filling()
-                .with_background()
-                .with_child(Box::new(column)),
+            Scrollable::new(ScrollAxis::Vertical)
+                // Remote management is an intrinsic, bounded document; a
+                // long remote list remains scrollable without a dead slab.
+                .with_max_height(360.0)
+                .with_child(Box::new(
+                    Container::new()
+                        .with_background()
+                        .with_child(Box::new(column)),
+                )),
         )
     }
 
@@ -1520,15 +1732,51 @@ impl StoreApp {
                 .tooltip("Manage Flatpak remotes");
         let safety_btn = ui::widget::Button::new("store.safety", "Trust", Some(SAFETY_OPEN_KEY))
             .tooltip("Understand signatures, review, reports and appeals");
-        let title_row = Row::new()
-            .push(Box::new(Text::new("Apps").with_size(24.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(safety_btn))
-            .push(Box::new(remotes_btn))
-            .push(Box::new(refresh_btn));
-        let mut header = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(title_row))
+        let title_row: Box<dyn Widget> = if self.compact_layout() {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(8.0)
+                    .push(Box::new(Text::new("Apps").with_size(24.0)))
+                    .push(Box::new(
+                        Row::new()
+                            .push(Box::new(safety_btn))
+                            .push(Box::new(remotes_btn)),
+                    ))
+                    .push(Box::new(refresh_btn)),
+            )
+        } else {
+            let controls = Row::new()
+                .push(Box::new(safety_btn))
+                .push(Box::new(remotes_btn))
+                .push(Box::new(refresh_btn));
+            Box::new(
+                Row::new()
+                    .push(Box::new(Text::new("Apps").with_size(24.0)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(controls)),
+            )
+        };
+        let mut header = Column::new().with_intrinsic_height().with_gap(8.0);
+        if !self.compact_layout() {
+            header = header.with_vertical_padding(12.0);
+        }
+        // A compact control row wraps Refresh beneath Trust/Remotes. Leave a
+        // full gap below the input so its focus ring never escapes the header
+        // card or visually collides with the first filter rail. A live job or
+        // error adds its own status line beneath the input.
+        if self.compact_layout() {
+            header = header.with_extra_bottom_padding(
+                if self.worker_busy || self.operation_error.is_some() {
+                    40.0
+                } else {
+                    16.0
+                },
+            );
+        }
+        header = header
+            .push(title_row)
             .push(Box::new(
                 Text::new("Find trusted tools and open them instantly.")
                     .with_size(12.0)
@@ -1537,33 +1785,26 @@ impl StoreApp {
             .push(Box::new(search));
         if self.worker_busy {
             header = header.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Text::new(if self.status_line.is_empty() {
-                        "Working…"
-                    } else {
-                        &self.status_line
-                    })
-                    .with_size(13.0),
-                )),
+                Text::new(if self.status_line.is_empty() {
+                    "Working…"
+                } else {
+                    &self.status_line
+                })
+                .with_size(13.0)
+                .with_color(theme.text_dim),
             ));
         } else if let Some(error) = &self.operation_error {
             let error_message = format!("The operation did not finish · {error}");
             header = header.push(Box::new(
-                Container::new().with_background().with_child(Box::new(
-                    Text::new(&error_message)
-                        .with_size(13.0)
-                        .with_color(theme.text_dim),
-                )),
+                Text::new(&error_message)
+                    .with_size(13.0)
+                    .with_color(theme.text_dim),
             ));
         }
-        Box::new(
-            Container::new()
-                .with_background()
-                .with_child(Box::new(header)),
-        )
+        Box::new(header)
     }
 
-    fn build_filter_row(&self) -> Box<dyn Widget> {
+    fn build_filter_row(&self, _theme: &Theme) -> Box<dyn Widget> {
         let segs: Vec<Segment> = SourceFilter::ALL
             .iter()
             .map(|f| Segment::new(f.label()))
@@ -1581,12 +1822,18 @@ impl StoreApp {
         let group = ToggleGroup::new(segs, selected).on_view("store.source-filter", move |idx| {
             sink.set(Some(idx));
         });
-        Box::new(Container::new().with_background().with_child(Box::new(
-            Scrollable::new(ScrollAxis::Horizontal).with_child(Box::new(group)),
-        )))
+        Box::new(
+            Scrollable::new(ScrollAxis::Horizontal)
+                // Facets remain scrollable by wheel, touch and keyboard.  A
+                // permanent bright thumb is visual noise in high contrast,
+                // especially when no pointer is over the rail.
+                .with_scrollbar(false)
+                .with_max_height(44.0)
+                .with_child(Box::new(group)),
+        )
     }
 
-    fn build_category_row(&self) -> Box<dyn Widget> {
+    fn build_category_row(&self, _theme: &Theme) -> Box<dyn Widget> {
         let labels = self.category_labels();
         let selected = self
             .active_category
@@ -1599,11 +1846,18 @@ impl StoreApp {
             ToggleGroup::new(segments, selected).on_view("store.category-filter", move |idx| {
                 sink.set(Some(idx));
             });
-        Box::new(Container::new().with_background().with_child(Box::new(
-            Scrollable::new(ScrollAxis::Horizontal).with_child(Box::new(group)),
-        )))
+        Box::new(
+            Scrollable::new(ScrollAxis::Horizontal)
+                .with_scrollbar(false)
+                .with_max_height(44.0)
+                .with_child(Box::new(group)),
+        )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the catalogue's empty, paging and responsive-card states are one cohesive view"
+    )]
     fn build_list(&self, theme: &Theme) -> Box<dyn Widget> {
         let visible = self.visible_items();
         if visible.is_empty() {
@@ -1644,11 +1898,12 @@ impl StoreApp {
                 )),
             ));
         }
+        let mut cards: Vec<Box<dyn Widget>> = Vec::new();
         for item in visible.into_iter().skip(start).take(PAGE_SIZE) {
             let action = item.action_kind(self.flatpak_available);
             let click_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
             let select_key = format!("store.detail_select.{}", item.id);
-            column = column.push(crate::widgets::store_card(
+            cards.push(crate::widgets::store_card(
                 item,
                 action,
                 &select_key,
@@ -1657,7 +1912,43 @@ impl StoreApp {
                 self.images.clone(),
                 item_action_binding(item, action),
                 detail_binding(item),
-                self.compact_layout(),
+                true,
+            ));
+        }
+        if self.compact_layout() {
+            for card in cards {
+                column = column.push(card);
+            }
+        } else {
+            let recommended = Column::new()
+                .with_intrinsic_height()
+                .with_gap(24.0)
+                .push(Box::new(
+                    Text::new("Recommended for you")
+                        .with_size(18.0)
+                        .with_heading_level(2),
+                ))
+                // CardGrid owns its own paint bounds, so reserve a concrete
+                // breathing lane instead of relying solely on flex gaps.
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(22.0),
+                ))
+                .push(Box::new(
+                    CardGrid::new(cards)
+                        .with_min_card_width(280.0)
+                        .with_card_height(280.0)
+                        .with_gap(16.0),
+                ));
+            column = column.push(Box::new(
+                Row::new()
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(1120.0)
+                            .with_no_padding()
+                            .with_child(Box::new(recommended)),
+                    ))
+                    .push(Box::new(Spacer::new())),
             ));
         }
         if page_count > 1 {
@@ -2060,7 +2351,7 @@ impl StoreApp {
         if take_bool_edge(state, path, REMOTES_ADD_KEY) {
             let name = text_at(state, path, REMOTE_NAME_KEY);
             let url = text_at(state, path, REMOTE_URL_KEY);
-            if !name.trim().is_empty() && validate_remote_url(&url).is_ok() {
+            if validate_remote_name(&name).is_ok() && validate_remote_url(&url).is_ok() {
                 self.pending_control_invocation = Some(ControlInvocation {
                     address: ActionAddress::new("store:remotes", "add"),
                     arguments: serde_json::Map::from_iter([
@@ -2378,7 +2669,18 @@ impl Widget for StoreApp {
         vec![Box::new(self.search_index.provider())]
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        // Resolve every ID we currently publish before falling back to the
+        // unbounded catalogue's lazy app/version/publisher lookup.  This
+        // preserves discovery links for privileged remote and moderation
+        // actions without turning resource snapshots into an unbounded scan.
+        if let Some(resource) = self
+            .resources(doc)
+            .into_iter()
+            .find_map(|resource| find_snapshot_resource(resource, id))
+        {
+            return Some(resource);
+        }
         if let Some(rest) = id.strip_prefix("app:") {
             if let Some((app_id, version)) = rest.split_once(":version:") {
                 let item = self.items.iter().find(|item| item.id == app_id)?;
@@ -2622,22 +2924,23 @@ impl Widget for StoreApp {
             let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             let intent = match args.first().map(String::as_str) {
                 Some("refresh") => RemoteIntent::Refresh,
-                Some("remove") => RemoteIntent::Remove(
-                    args.get(1)
-                        .filter(|name| !name.trim().is_empty())
-                        .ok_or_else(|| "missing remote name".to_string())?
-                        .clone(),
-                ),
+                Some("remove") => {
+                    let name = args
+                        .get(1)
+                        .ok_or_else(|| "missing remote name".to_string())?;
+                    validate_remote_name(name)?;
+                    RemoteIntent::Remove(name.clone())
+                }
                 Some("add") => {
                     let name = args
                         .get(1)
-                        .filter(|name| !name.trim().is_empty())
                         .ok_or_else(|| "missing remote name".to_string())?
                         .clone();
                     let url = args
                         .get(2)
                         .ok_or_else(|| "missing repository URL".to_string())?
                         .clone();
+                    validate_remote_name(&name)?;
                     validate_remote_url(&url)?;
                     RemoteIntent::Add { name, url }
                 }
@@ -3042,6 +3345,47 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| action.id == "show-details")
+        );
+    }
+
+    #[test]
+    fn every_top_level_remote_and_moderation_resource_resolves_by_canonical_id() {
+        let mut app = seeded_app();
+        app.set_remotes(vec![crate::flathub_client::Remote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            title: "Flathub".into(),
+            disabled: false,
+        }]);
+        let doc = AutoCommit::new();
+
+        for id in [
+            "store",
+            "store:remotes",
+            "remote:flathub",
+            "store:moderation",
+        ] {
+            assert!(
+                Widget::resource(&app, &doc, id).is_some(),
+                "published resource {id} must remain directly resolvable"
+            );
+        }
+        let remote = Widget::resource(&app, &doc, "remote:flathub").unwrap();
+        assert!(remote.actions.iter().any(|action| action.id == "remove"));
+    }
+
+    #[test]
+    fn remote_configuration_rejects_hostile_sizes_and_control_characters() {
+        assert!(validate_remote_name("flathub").is_ok());
+        assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
+        assert!(validate_remote_name("bad\nname").is_err());
+        assert!(validate_remote_url("https://dl.flathub.org/repo/").is_ok());
+        assert!(
+            validate_remote_url(&format!(
+                "https://example.invalid/{}",
+                "a".repeat(MAX_REMOTE_URL_BYTES)
+            ))
+            .is_err()
         );
     }
 
