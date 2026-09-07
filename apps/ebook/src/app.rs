@@ -643,6 +643,10 @@ pub struct BooksApp {
     reader_bubble: ReaderBubble,
 
     cursor: Point,
+    /// Pointer tooltip derived from the same semantic label the accessibility
+    /// tree exposes. Keeping this retained avoids a hand-maintained second
+    /// vocabulary for the reader's icon-only and compact controls.
+    hover_tooltip: Option<String>,
     /// Stable synthetic control focused by assistive technology. Pointer and
     /// keyboard activation still dispatch through the same [`Action`] path.
     semantic_focus: Option<String>,
@@ -868,6 +872,7 @@ impl BooksApp {
             reading_settings: ReadingSettings::default(),
             reader_bubble: ReaderBubble::default(),
             cursor: Point::ZERO,
+            hover_tooltip: None,
             semantic_focus: None,
             page_top_block: 0,
             composing: None,
@@ -3538,6 +3543,20 @@ impl BooksApp {
         }
     }
 
+    /// Refresh the hover description from the topmost live hit. The reader
+    /// draws several icon-only affordances on a narrow viewport, and a hit can
+    /// also be covered by a modal; using the final hit stack means the tooltip
+    /// always names the action that would actually receive a click.
+    fn refresh_hover_tooltip(&mut self) {
+        self.hover_tooltip = self
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| hit.rect.contains(self.cursor))
+            .map(|hit| self.semantic_label(&hit.action))
+            .filter(|label| !label.is_empty());
+    }
+
     fn annotation_label(&self, id: Uuid, fallback: &str) -> String {
         self.all_annotations
             .iter()
@@ -4155,6 +4174,7 @@ impl Widget for BooksApp {
                 );
             }
         }
+        self.refresh_hover_tooltip();
         if let Some(focused) = self.semantic_focus.as_deref()
             && let Some(hit) = self
                 .hits
@@ -4258,6 +4278,10 @@ impl Widget for BooksApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.hover_tooltip.as_deref()
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -10521,6 +10545,27 @@ mod interaction_tests {
         node.children
             .iter()
             .find_map(|child| find_semantic_target(child, target))
+    }
+
+    #[test]
+    fn hover_tooltip_reuses_the_semantic_label_of_the_topmost_control() {
+        let mut app = app_with_sample();
+        let target = Rect::new(10.0, 10.0, 44.0, 44.0);
+        app.cursor = target.center();
+        app.hits = vec![Hit {
+            rect: target,
+            action: Action::NextPage,
+        }];
+        app.refresh_hover_tooltip();
+        assert_eq!(Widget::tooltip(&app), Some("Next page"));
+
+        // A swallowed modal background never pretends to be a real control.
+        app.hits = vec![Hit {
+            rect: target,
+            action: Action::Swallow,
+        }];
+        app.refresh_hover_tooltip();
+        assert_eq!(Widget::tooltip(&app), None);
     }
 
     #[test]
