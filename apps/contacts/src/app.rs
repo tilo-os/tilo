@@ -1310,6 +1310,27 @@ impl ContactsApp {
         self.commit_select(id);
     }
 
+    /// Reveal a durable membership group through its canonical view action.
+    /// This is intentionally presentation-only: the group already exists as
+    /// collaborative contact-row data, so opening it must not fabricate a
+    /// second mutable index or history entry. In narrow mode the useful result
+    /// is the filtered list, not a hidden detail pane.
+    fn reveal_group(&mut self, requested: &str) -> Result<(), String> {
+        let group = self
+            .store
+            .all_groups()
+            .into_iter()
+            .find(|group| group_names_equal(group, requested))
+            .ok_or_else(|| "group no longer exists".to_string())?;
+        self.search.set_text("");
+        self.set_group_filter(Some(group));
+        if self.narrow {
+            self.push.show_list();
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
     /// Unconditionally switch selection to `id` (leaving any edit form).
     fn commit_select(&mut self, id: ContactId) {
         self.form = None;
@@ -4736,6 +4757,10 @@ impl Widget for ContactsApp {
                 self.reveal_contact(id);
             }
             (
+                qos_actions::OperationKind::View,
+                crate::actions::ContactsOperation::OpenGroup { name },
+            ) => self.reveal_group(&name)?,
+            (
                 qos_actions::OperationKind::Effect,
                 crate::actions::ContactsOperation::ImportVcard { .. },
             ) => {
@@ -4842,6 +4867,7 @@ impl Widget for ContactsApp {
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
             crate::actions::ContactsOperation::Open { .. }
+            | crate::actions::ContactsOperation::OpenGroup { .. }
             | crate::actions::ContactsOperation::KeepImportConflict { .. }
             | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
@@ -7179,6 +7205,55 @@ mod tests {
         assert!(
             app.visible_ids().contains(&id),
             "Grace is now visible in the list — opened, not just selected behind a filter"
+        );
+    }
+
+    /// A group is durable collaborative data, not merely a local dropdown
+    /// string. Its canonical View operation must clear an unrelated search,
+    /// select the filter, and leave a real matching list for keyboard/pointer
+    /// users as well as Ctrl+K and agents.
+    #[test]
+    fn group_open_operation_reveals_its_canonical_filter() {
+        let mut app = ContactsApp::new();
+        for contact in sample_contacts() {
+            app.store.upsert(contact);
+        }
+        app.search.set_text("nothing will match this");
+        app.group_filter = Some("Friends".into());
+        let group = app
+            .store
+            .all_groups()
+            .into_iter()
+            .find(|group| group == "Work")
+            .expect("samples expose Work");
+        let operation = crate::actions::ContactsOperation::OpenGroup {
+            name: group.clone(),
+        };
+        let payload = serde_json::to_vec(&operation).expect("view operation serializes");
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::CONTACTS_OPERATION_TYPE,
+                &payload,
+                &AutoCommit::new(),
+                &ROOT,
+            )
+            .expect("group open succeeds")
+        );
+        assert_eq!(app.group_filter.as_deref(), Some(group.as_str()));
+        assert!(
+            app.search.value().is_empty(),
+            "open reveals a complete group"
+        );
+        assert!(
+            !app.visible_ids().is_empty()
+                && app.visible_ids().iter().all(|id| app
+                    .store
+                    .get(*id)
+                    .is_some_and(|c| c.groups.iter().any(|g| group_names_equal(&g.value, &group)))),
+            "every revealed row belongs to the canonical group"
         );
     }
 
