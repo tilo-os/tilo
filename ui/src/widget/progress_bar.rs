@@ -632,7 +632,9 @@ mod tests {
         let mut bar = ProgressBar::indeterminate();
         bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
         bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
-        bar.start = Instant::now() - Duration::from_millis(300);
+        bar.start = Instant::now()
+            .checked_sub(Duration::from_millis(300))
+            .expect("the test duration is far shorter than the monotonic clock");
         bar.dirty = false;
         // The frame owner must collect immediately after `draw`, before it
         // clears dirty flags. `draw` is what records this frame's outgoing
