@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, SyncSender};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
@@ -42,7 +43,7 @@ use ui::widget::{Button, EmptyState, ImageViewer, TextInput, Widget};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::doc::PhotosDoc;
-use crate::model::{Edits, OpenImage, Rect01};
+use crate::model::{Edits, LibraryPhoto, OpenImage, Rect01};
 use crate::pixels::{self, Rgba};
 use crate::strings::tr;
 
@@ -83,6 +84,44 @@ const SEP_W: f32 = 17.0;
 /// Without it a contain-fit image whose limiting axis is the height butts
 /// straight against the toolbar rule and looks wedged under it.
 const CANVAS_INSET: f32 = 10.0;
+
+/// Library previews are recognition aids, never an alternate full-resolution
+/// image cache. One small worker and a four-item queue keep a hostile library
+/// from occupying a core or retaining unbounded decoded pixels.
+const THUMBNAIL_MAX_W: u32 = 320;
+const THUMBNAIL_MAX_H: u32 = 180;
+const THUMBNAIL_QUEUE_LIMIT: usize = 4;
+
+#[derive(Clone)]
+struct ThumbnailJob {
+    generation: u64,
+    id: String,
+    image: OpenImage,
+}
+
+struct ThumbnailResult {
+    generation: u64,
+    id: String,
+    preview: Option<Rgba>,
+}
+
+fn thumbnail_worker(rx: &Receiver<ThumbnailJob>, tx: &SyncSender<ThumbnailResult>) {
+    while let Ok(job) = rx.recv() {
+        let preview = crate::doc::bytes_of(&job.image)
+            .and_then(|bytes| pixels::decode(&bytes))
+            .map(|image| pixels::thumbnail(&image, THUMBNAIL_MAX_W, THUMBNAIL_MAX_H));
+        if tx
+            .send(ThumbnailResult {
+                generation: job.generation,
+                id: job.id,
+                preview,
+            })
+            .is_err()
+        {
+            return;
+        }
+    }
+}
 
 /// One toolbar affordance. Buttons post their intent here rather than
 /// mutating the document from inside a closure, because the document is not
@@ -326,6 +365,31 @@ pub struct PhotosApp {
     /// scanned at draw time, and a large library cannot turn a frame into a
     /// disk-I/O loop.
     library_thumbnails: HashMap<String, ImageData>,
+    /// The visible entries whose bytes were unavailable or invalid in the
+    /// current document generation. Keeping this negative cache avoids
+    /// decoding the same corrupt peer payload every frame; it is cleared when
+    /// shared metadata changes so a fresh content reference gets a retry.
+    thumbnail_unavailable: HashSet<String>,
+    /// A bad peer-provided image must not be decoded once per frame. Content
+    /// hashes are immutable, and a user reopening a changed legacy path makes
+    /// a new attempt through `open_path`, so retaining this failure is safe.
+    original_decode_failed: Option<String>,
+    /// One background decoder serializes disk/content-store access. Results
+    /// are stamped with a visible-library generation before they may enter the
+    /// UI cache, so an old job can never paint a card that now names another
+    /// photograph.
+    thumbnail_tx: Option<SyncSender<ThumbnailJob>>,
+    thumbnail_rx: Receiver<ThumbnailResult>,
+    /// `None` is a deliberately terminal generation. Counter exhaustion is
+    /// practically unreachable, but reusing zero could admit an ancient
+    /// queued result, so the cache fails closed instead.
+    thumbnail_generation: Option<u64>,
+    thumbnail_visible_ids: Vec<String>,
+    thumbnail_queued: HashSet<String>,
+    /// A destructive library removal takes two deliberate activations. The
+    /// stable photo id, not a card index, keeps confirmation correct if a
+    /// collaborator changes the grid between clicks.
+    library_remove_confirm: Option<String>,
     /// Stable-id hit targets for the currently materialised grid cards.
     library_cards: Vec<(String, Rect, bool)>,
     pointer: Point,
@@ -340,6 +404,15 @@ impl Default for PhotosApp {
 
 impl PhotosApp {
     pub fn new() -> Self {
+        let (thumbnail_job_tx, thumbnail_job_rx) =
+            std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
+        let (thumbnail_result_tx, thumbnail_result_rx) =
+            std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
+        let thumbnail_tx = std::thread::Builder::new()
+            .name("photos-thumbnail".to_owned())
+            .spawn(move || thumbnail_worker(&thumbnail_job_rx, &thumbnail_result_tx))
+            .ok()
+            .map(|_| thumbnail_job_tx);
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
@@ -384,6 +457,14 @@ impl PhotosApp {
             album_editor_rect: Rect::ZERO,
             album_editor_hits: Vec::new(),
             library_thumbnails: HashMap::new(),
+            thumbnail_unavailable: HashSet::new(),
+            original_decode_failed: None,
+            thumbnail_tx,
+            thumbnail_rx: thumbnail_result_rx,
+            thumbnail_generation: Some(0),
+            thumbnail_visible_ids: Vec::new(),
+            thumbnail_queued: HashSet::new(),
+            library_remove_confirm: None,
             library_cards: Vec::new(),
             pointer: Point::ZERO,
             library_mode: false,
@@ -431,6 +512,7 @@ impl PhotosApp {
                 self.original = Some((path.to_string(), img));
                 self.rendered = None;
                 self.viewer = None;
+                self.original_decode_failed = None;
                 PhotosDoc::set_image(doc, Some(&open));
                 self.notice = None;
             }
@@ -505,6 +587,7 @@ impl PhotosApp {
     /// toolbar button and semantic action as a user.
     pub fn show_library(&mut self) {
         self.library_mode = true;
+        self.library_remove_confirm = None;
     }
 
     /// Pose the ordinary library editor for deterministic offscreen coverage.
@@ -990,18 +1073,28 @@ impl PhotosApp {
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
         if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
+            let key = decode_key(&open);
+            if self.original_decode_failed.as_deref() == Some(&key) {
+                self.original = None;
+                self.rendered = None;
+                self.viewer = None;
+                self.canvas_state = CanvasState::Error;
+                return;
+            }
             let bytes = crate::doc::bytes_of(&open);
             if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
                 self.original = Some((open.path.clone(), img));
+                self.original_decode_failed = None;
             } else {
                 self.original = None;
                 self.rendered = None;
                 self.viewer = None;
-                self.canvas_state = if bytes.is_some() {
-                    CanvasState::Error
+                if bytes.is_some() {
+                    self.original_decode_failed = Some(key);
+                    self.canvas_state = CanvasState::Error;
                 } else {
-                    CanvasState::Loading
-                };
+                    self.canvas_state = CanvasState::Loading;
+                }
                 return;
             }
         }
@@ -1134,40 +1227,65 @@ impl PhotosApp {
                         .iter()
                         .find(|(item_id, _, _)| item_id == id)?;
                     let open_target = format!("photos:library-photo:{id}");
-                    let favorite_target = format!("photos:library-favorite:{id}");
-                    let children = vec![
-                        if self.album_editor {
-                            AccessNode::new(Role::ToggleButton)
-                                .with_name(name.clone())
-                                .with_description("Included in this album")
-                                .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    checked: Some(self.album_editor_members.contains(id)),
-                                    ..Default::default()
-                                })
-                                .with_action_target(open_target)
-                        } else {
-                            AccessNode::new(Role::Button)
-                                .with_name(name.clone())
-                                .with_description(tr("photos-open"))
-                                .with_bounds(*bounds)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
-                                .with_action_target(open_target)
-                        },
+                    let mut children = vec![if self.album_editor {
                         AccessNode::new(Role::ToggleButton)
-                            .with_name("Favorite")
+                            .with_name(name.clone())
+                            .with_description("Included in this album")
                             .with_bounds(*bounds)
                             .with_state(AccessState {
                                 focusable: true,
-                                checked: Some(*favorite),
+                                checked: Some(self.album_editor_members.contains(id)),
                                 ..Default::default()
                             })
-                            .with_action_target(favorite_target),
-                    ];
+                            .with_action_target(open_target)
+                    } else {
+                        AccessNode::new(Role::Button)
+                            .with_name(name.clone())
+                            .with_description(tr("photos-open"))
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(open_target)
+                    }];
+                    if !self.album_editor {
+                        let favorite_target = format!("photos:library-favorite:{id}");
+                        let favorite_bounds =
+                            Rect::new(bounds.x1 - 32.0, bounds.y1 - 38.0, bounds.x1, bounds.y1);
+                        children.push(
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name("Favorite")
+                                .with_bounds(favorite_bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    checked: Some(*favorite),
+                                    ..Default::default()
+                                })
+                                .with_action_target(favorite_target),
+                        );
+                        let confirmed = self.library_remove_confirm.as_deref() == Some(id);
+                        children.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(if confirmed {
+                                    format!("Confirm removing {name} from library")
+                                } else {
+                                    format!("Remove {name} from library")
+                                })
+                                .with_description("Removes this photograph from every album")
+                                .with_bounds(Rect::new(
+                                    bounds.x1 - 64.0,
+                                    bounds.y1 - 38.0,
+                                    bounds.x1 - 32.0,
+                                    bounds.y1,
+                                ))
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(format!("photos:library-remove:{id}")),
+                        );
+                    }
                     Some(
                         AccessNode::new(Role::ListItem)
                             .with_name(name.clone())
@@ -1354,11 +1472,13 @@ impl PhotosApp {
             self.library_offset = 0;
             return true;
         }
-        let (photo_id, set_favorite) =
+        let (photo_id, set_favorite, remove) =
             if let Some(id) = target.strip_prefix("photos:library-photo:") {
-                (id, false)
+                (id, false, false)
             } else if let Some(id) = target.strip_prefix("photos:library-favorite:") {
-                (id, true)
+                (id, true, false)
+            } else if let Some(id) = target.strip_prefix("photos:library-remove:") {
+                (id, false, true)
             } else {
                 return false;
             };
@@ -1369,7 +1489,23 @@ impl PhotosApp {
         else {
             return false;
         };
-        if set_favorite {
+        if remove {
+            if self.library_remove_confirm.as_deref() == Some(photo_id) {
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::RemovePhoto {
+                        photo_id: photo_id.to_owned(),
+                    },
+                );
+                self.library_remove_confirm = None;
+                self.notice = Some("Photograph removed from the shared library".to_owned());
+            } else {
+                self.library_remove_confirm = Some(photo_id.to_owned());
+                self.notice = Some(
+                    "Activate Remove again to confirm; it will also leave every album".to_owned(),
+                );
+            }
+        } else if set_favorite {
             self.commit_library_action(
                 doc,
                 &crate::actions::PhotosAction::SetFavorite {
@@ -1825,16 +1961,34 @@ impl PhotosApp {
                 13.0,
                 theme.text_primary,
                 transform * Affine::translate((x + 9.0, preview.y1 + 9.0)),
-                Some((card_w - 34.0) as f32),
+                Some((card_w - 62.0) as f32),
                 TextWeight::Regular,
             );
-            if *favorite {
+            if !self.album_editor {
                 text_renderer.draw_text_weighted(
                     scene,
-                    "★",
+                    if *favorite { "★" } else { "☆" },
                     14.0,
-                    theme.tokens.colors.accent[6],
+                    if *favorite {
+                        theme.tokens.colors.accent[6]
+                    } else {
+                        theme.text_dim
+                    },
                     transform * Affine::translate((card.x1 - 22.0, preview.y1 + 8.0)),
+                    Some(16.0),
+                    TextWeight::Medium,
+                );
+                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    if confirmed { "!" } else { "×" },
+                    16.0,
+                    if confirmed {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.text_dim
+                    },
+                    transform * Affine::translate((card.x1 - 46.0, preview.y1 + 7.0)),
                     Some(16.0),
                     TextWeight::Medium,
                 );
@@ -2155,6 +2309,91 @@ fn to_peniko(img: &Rgba) -> ImageData {
     }
 }
 
+/// A local decode-cache key. The content hash, when present, is immutable;
+/// include the legacy path too so older documents remain distinguishable.
+fn decode_key(open: &OpenImage) -> String {
+    format!(
+        "{}\0{}",
+        open.path,
+        open.content.as_deref().unwrap_or_default()
+    )
+}
+
+impl PhotosApp {
+    /// Take completed thumbnail work without blocking the UI thread.
+    fn drain_thumbnail_results(&mut self) {
+        while let Ok(result) = self.thumbnail_rx.try_recv() {
+            self.accept_thumbnail_result(result);
+        }
+    }
+
+    /// Accept a worker result only when it still belongs to the materialised
+    /// library slice. This is the generation fence that makes scrolling,
+    /// filtering and collaboration safe while a decode is in flight.
+    fn accept_thumbnail_result(&mut self, result: ThumbnailResult) {
+        if Some(result.generation) != self.thumbnail_generation
+            || !self.thumbnail_visible_ids.contains(&result.id)
+        {
+            return;
+        }
+        self.thumbnail_queued.remove(&result.id);
+        if let Some(preview) = result.preview {
+            self.library_thumbnails
+                .insert(result.id, to_peniko(&preview));
+        } else {
+            self.thumbnail_unavailable.insert(result.id);
+        }
+    }
+
+    /// Keep thumbnail work to one small queued item per synchronization. The
+    /// worker, rather than this method, may read a file or decode bytes.
+    fn schedule_library_thumbnail(&mut self, sources: Vec<LibraryPhoto>, document_changed: bool) {
+        let ids: Vec<_> = sources.iter().map(|photo| photo.id.clone()).collect();
+        if document_changed || ids != self.thumbnail_visible_ids {
+            let Some(next_generation) = self
+                .thumbnail_generation
+                .and_then(|generation| generation.checked_add(1))
+            else {
+                // Never reuse a generation token. Any result still in the
+                // worker's queue is now untrusted, and no new work is sent.
+                self.thumbnail_generation = None;
+                self.thumbnail_visible_ids = ids;
+                self.thumbnail_queued.clear();
+                self.library_thumbnails.clear();
+                self.thumbnail_unavailable.clear();
+                return;
+            };
+            self.thumbnail_generation = Some(next_generation);
+            self.thumbnail_visible_ids = ids;
+            self.thumbnail_queued.clear();
+            self.library_thumbnails
+                .retain(|id, _| self.thumbnail_visible_ids.contains(id));
+            self.thumbnail_unavailable
+                .retain(|id| self.thumbnail_visible_ids.contains(id));
+        }
+        let (Some(tx), Some(generation)) = (self.thumbnail_tx.as_ref(), self.thumbnail_generation)
+        else {
+            return;
+        };
+        let Some(photo) = sources.into_iter().find(|photo| {
+            !self.library_thumbnails.contains_key(&photo.id)
+                && !self.thumbnail_unavailable.contains(&photo.id)
+                && !self.thumbnail_queued.contains(&photo.id)
+        }) else {
+            return;
+        };
+        let id = photo.id.clone();
+        let job = ThumbnailJob {
+            generation,
+            id: id.clone(),
+            image: photo.image,
+        };
+        if tx.try_send(job).is_ok() {
+            self.thumbnail_queued.insert(id);
+        }
+    }
+}
+
 impl Widget for PhotosApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::PHOTOS_OPERATION_TYPE]
@@ -2279,9 +2518,11 @@ impl Widget for PhotosApp {
         }
         self.status = self.status_text(doc);
         let heads = doc.get_heads();
-        if heads != self.search_heads {
+        let document_changed = heads != self.search_heads;
+        if document_changed {
             self.search_provider = crate::search::PhotosSearchProvider::new(doc);
             self.search_heads = heads;
+            self.thumbnail_unavailable.clear();
         }
         let library = PhotosDoc::library(doc);
         let membership = self.active_album.as_ref().and_then(|id| {
@@ -2319,19 +2560,10 @@ impl Widget for PhotosApp {
             .filter(|photo| membership.is_none_or(|ids| ids.contains(&photo.id)))
             .skip(self.library_offset)
             .take(24)
-            .map(|photo| (photo.id.clone(), photo.image.path.clone()))
+            .cloned()
             .collect();
-        self.library_thumbnails
-            .retain(|id, _| thumbnail_sources.iter().any(|(wanted, _)| wanted == id));
-        for (id, source) in thumbnail_sources {
-            if !self.library_thumbnails.contains_key(&id)
-                && let Some(decoded) = std::fs::read(source)
-                    .ok()
-                    .and_then(|bytes| pixels::decode(&bytes))
-            {
-                self.library_thumbnails.insert(id, to_peniko(&decoded));
-            }
-        }
+        self.drain_thumbnail_results();
+        self.schedule_library_thumbnail(thumbnail_sources, document_changed);
     }
 
     #[allow(
@@ -2630,8 +2862,9 @@ impl Widget for PhotosApp {
         }
 
         // A library card is a direct manipulation surface, but it is still
-        // only a front end for a canonical action.  The star has its own hit
-        // area so changing a favourite does not unexpectedly open the editor.
+        // only a front end for a canonical action. The trailing star and
+        // remove affordance have their own hit areas, so destructive and
+        // metadata changes do not unexpectedly open the editor.
         if self.library_mode
             && matches!(
                 event,
@@ -2647,7 +2880,30 @@ impl Widget for PhotosApp {
                 .find(|(_, card, _)| card.contains(self.pointer))
                 .cloned()
         {
-            if self.pointer.x >= card.x1 - 34.0 {
+            if !self.album_editor && self.pointer.x >= card.x1 - 64.0 {
+                if self.pointer.x >= card.x1 - 32.0 {
+                    self.library_remove_confirm = None;
+                    self.commit_library_action(
+                        doc,
+                        &crate::actions::PhotosAction::SetFavorite {
+                            photo_id,
+                            favorite: !favorite,
+                        },
+                    );
+                } else if self.library_remove_confirm.as_deref() == Some(&photo_id) {
+                    self.commit_library_action(
+                        doc,
+                        &crate::actions::PhotosAction::RemovePhoto { photo_id },
+                    );
+                    self.library_remove_confirm = None;
+                    self.notice = Some("Photograph removed from the shared library".to_owned());
+                } else {
+                    self.library_remove_confirm = Some(photo_id);
+                    self.notice = Some(
+                        "Click × again to remove it from the library and every album".to_owned(),
+                    );
+                }
+            } else if self.pointer.x >= card.x1 - 32.0 {
                 self.commit_library_action(
                     doc,
                     &crate::actions::PhotosAction::SetFavorite {
@@ -2656,6 +2912,7 @@ impl Widget for PhotosApp {
                     },
                 );
             } else {
+                self.library_remove_confirm = None;
                 self.commit_library_action(
                     doc,
                     &crate::actions::PhotosAction::SelectPhoto { photo_id },
@@ -3004,5 +3261,105 @@ mod tests {
                 .iter()
                 .any(|resource| has_resource_id(resource, &address.resource))
         );
+    }
+
+    #[test]
+    fn a_large_library_schedules_only_one_background_thumbnail_at_a_time() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..500 {
+            library
+                .photos
+                .push(LibraryPhoto::from_image(OpenImage::from_path(
+                    &format!("/unavailable/library-{index}.png"),
+                    32_000,
+                    32_000,
+                )));
+        }
+        PhotosDoc::set_library(&mut doc, &library);
+        app.sync(&mut doc, &ROOT);
+
+        assert_eq!(app.thumbnail_visible_ids.len(), 24);
+        assert!(app.thumbnail_queued.len() <= 1);
+        assert!(app.library_thumbnails.len() <= 1);
+        assert!(
+            app.thumbnail_generation
+                .is_some_and(|generation| generation > 0)
+        );
+    }
+
+    #[test]
+    fn a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice() {
+        let mut app = PhotosApp::new();
+        app.thumbnail_generation = Some(8);
+        app.thumbnail_visible_ids = vec!["photos.photo:current".into()];
+        app.thumbnail_queued.insert("photos.photo:current".into());
+        app.accept_thumbnail_result(ThumbnailResult {
+            generation: 7,
+            id: "photos.photo:current".into(),
+            preview: Some(shots_pattern(16, 8)),
+        });
+        assert!(app.library_thumbnails.is_empty());
+        assert!(app.thumbnail_queued.contains("photos.photo:current"));
+
+        app.accept_thumbnail_result(ThumbnailResult {
+            generation: 8,
+            id: "photos.photo:current".into(),
+            preview: Some(shots_pattern(16, 8)),
+        });
+        assert!(app.library_thumbnails.contains_key("photos.photo:current"));
+        assert!(!app.thumbnail_queued.contains("photos.photo:current"));
+    }
+
+    #[test]
+    fn exhausted_thumbnail_generation_fails_closed_without_reusing_a_token() {
+        let mut app = PhotosApp::new();
+        app.thumbnail_generation = Some(u64::MAX);
+        app.thumbnail_visible_ids = vec!["photos.photo:before".into()];
+        app.library_thumbnails.insert(
+            "photos.photo:before".into(),
+            to_peniko(&shots_pattern(16, 8)),
+        );
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/after.png", 16, 8));
+        let id = photo.id.clone();
+
+        app.schedule_library_thumbnail(vec![photo], true);
+        assert_eq!(app.thumbnail_generation, None);
+        assert!(app.thumbnail_queued.is_empty());
+        assert!(app.library_thumbnails.is_empty());
+
+        app.accept_thumbnail_result(ThumbnailResult {
+            generation: u64::MAX,
+            id,
+            preview: Some(shots_pattern(16, 8)),
+        });
+        assert!(app.library_thumbnails.is_empty());
+    }
+
+    #[test]
+    fn library_removal_requires_confirmation_and_routes_through_the_action_host() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/remove.png", 20, 10));
+        let id = photo.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![photo],
+                albums: Vec::new(),
+            },
+        );
+        app.show_library();
+        app.sync(&mut doc, &ROOT);
+        let target = format!("photos:library-remove:{id}");
+        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
+        assert!(PhotosDoc::library(&doc).photo(&id).is_some());
+        assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
+        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
+        assert!(PhotosDoc::library(&doc).photo(&id).is_none());
+        assert!(app.take_committed_action().is_some());
     }
 }

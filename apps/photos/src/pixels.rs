@@ -23,7 +23,24 @@
 //! through the rotation before it is stored — [`unrotate_rect`] is that map,
 //! and it is exercised at every quarter turn by the tests below.
 
+use std::io::Cursor;
+
 use crate::model::Rect01;
+
+/// Largest source image Photos will expand in memory.
+///
+/// RGBA8 needs four bytes per pixel, so this caps one decoded source at about
+/// 128 MiB. Rendering may briefly hold a second buffer while applying an
+/// edit, which is still bounded rather than letting a compressed image
+/// exhaust the session.
+pub const MAX_DECODED_PIXELS: u64 = 32 * 1024 * 1024;
+
+/// Reject implausibly large compressed inputs before handing them to a codec.
+pub const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+
+/// A preview cache entry must stay small even if a caller supplies huge
+/// requested bounds. This keeps the public helper safe outside Photos too.
+pub const MAX_THUMBNAIL_PIXELS: u64 = 320 * 180;
 
 /// A decoded image: RGBA8, tightly packed, `w * h * 4` bytes.
 #[derive(Clone, PartialEq, Eq)]
@@ -67,10 +84,26 @@ impl Rgba {
 /// panicking: this runs on whatever the file chooser handed back, and a user
 /// picking a text file must produce an honest error, not a crash.
 pub fn decode(bytes: &[u8]) -> Option<Rgba> {
+    if bytes.len() > MAX_ENCODED_BYTES {
+        return None;
+    }
+    // Read dimensions before decoding pixels. `load_from_memory` otherwise
+    // allocates the full RGBA image before Photos can apply its own limit.
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let (w, h) = reader.into_dimensions().ok()?;
+    if !within_decode_limits(w, h) {
+        return None;
+    }
     let img = image::load_from_memory(bytes).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     Rgba::new(w, h, rgba.into_raw())
+}
+
+fn within_decode_limits(w: u32, h: u32) -> bool {
+    w != 0 && h != 0 && u64::from(w).saturating_mul(u64::from(h)) <= MAX_DECODED_PIXELS
 }
 
 /// Encode RGBA8 as a PNG. This is what reaches the clipboard consumer that
@@ -85,6 +118,89 @@ pub fn encode_png(img: &Rgba) -> Option<Vec<u8>> {
         writer.write_image_data(&img.bytes).ok()?;
     }
     Some(out)
+}
+
+/// Make a bounded, aspect-preserving nearest-neighbour preview.
+///
+/// The library cache must never hold a second full-resolution copy of every
+/// visible photograph. The preview is for recognition, not export quality;
+/// the original remains the only source used by the editor and Save.
+#[must_use]
+pub fn thumbnail(src: &Rgba, max_w: u32, max_h: u32) -> Rgba {
+    let max_w = max_w.max(1);
+    let max_h = max_h.max(1);
+    if src.w <= max_w
+        && src.h <= max_h
+        && u64::from(src.w).saturating_mul(u64::from(src.h)) <= MAX_THUMBNAIL_PIXELS
+    {
+        return src.clone();
+    }
+    let (mut w, mut h) =
+        if u64::from(src.w) * u64::from(max_h) >= u64::from(src.h) * u64::from(max_w) {
+            (
+                max_w,
+                ((u64::from(src.h) * u64::from(max_w) / u64::from(src.w)).max(1)) as u32,
+            )
+        } else {
+            (
+                ((u64::from(src.w) * u64::from(max_h) / u64::from(src.h)).max(1)) as u32,
+                max_h,
+            )
+        };
+    // Find the largest dimension along the source aspect ratio that fits the
+    // global pixel budget. Binary search uses saturated arithmetic so callers
+    // may pass arbitrary `u32` bounds without overflowing capacity math.
+    if u64::from(w).saturating_mul(u64::from(h)) > MAX_THUMBNAIL_PIXELS {
+        if w >= h {
+            let mut low = 1_u32;
+            let mut high = w;
+            while low < high {
+                let mid = low + (high - low).div_ceil(2);
+                let candidate_h =
+                    ((u64::from(src.h) * u64::from(mid) / u64::from(src.w)).max(1)) as u32;
+                if u64::from(mid).saturating_mul(u64::from(candidate_h)) <= MAX_THUMBNAIL_PIXELS {
+                    low = mid;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            w = low;
+            h = ((u64::from(src.h) * u64::from(w) / u64::from(src.w)).max(1)) as u32;
+        } else {
+            let mut low = 1_u32;
+            let mut high = h;
+            while low < high {
+                let mid = low + (high - low).div_ceil(2);
+                let candidate_w =
+                    ((u64::from(src.w) * u64::from(mid) / u64::from(src.h)).max(1)) as u32;
+                if u64::from(mid).saturating_mul(u64::from(candidate_w)) <= MAX_THUMBNAIL_PIXELS {
+                    low = mid;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            h = low;
+            w = ((u64::from(src.w) * u64::from(h) / u64::from(src.h)).max(1)) as u32;
+        }
+    }
+    let capacity = u64::from(w)
+        .saturating_mul(u64::from(h))
+        .saturating_mul(4)
+        .try_into()
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    for y in 0..h {
+        let sy = (u64::from(y) * u64::from(src.h) / u64::from(h)) as u32;
+        for x in 0..w {
+            let sx = (u64::from(x) * u64::from(src.w) / u64::from(w)) as u32;
+            if let Some(pixel) = src.pixel(sx, sy) {
+                bytes.extend_from_slice(&pixel);
+            }
+        }
+    }
+    // `w` and `h` are nonzero and exactly one four-byte pixel is appended per
+    // loop iteration, so this is a well-formed tight RGBA image.
+    Rgba { w, h, bytes }
 }
 
 /// Crop to `rect`, expressed in normalized `0..1` coordinates of `src`.
@@ -234,6 +350,31 @@ mod tests {
         );
         assert_eq!((out.w, out.h), (1, 1), "a zero-area crop must not vanish");
         assert_eq!(out.bytes.len(), 4);
+    }
+
+    #[test]
+    fn decode_limits_refuse_dimensions_that_would_need_an_unbounded_rgba_buffer() {
+        assert!(within_decode_limits(8_000, 4_000));
+        assert!(!within_decode_limits(8_193, 4_096));
+        assert!(!within_decode_limits(u32::MAX, u32::MAX));
+        assert!(!within_decode_limits(0, 1));
+    }
+
+    #[test]
+    fn thumbnail_is_bounded_and_preserves_the_source_orientation() {
+        let source = ramp(8, 4);
+        let preview = thumbnail(&source, 2, 2);
+        assert_eq!((preview.w, preview.h), (2, 1));
+        assert_eq!(preview.pixel(0, 0).unwrap()[0..2], [0, 0]);
+        assert_eq!(preview.pixel(1, 0).unwrap()[0..2], [4, 0]);
+    }
+
+    #[test]
+    fn thumbnail_caps_arbitrary_requested_bounds_without_overflowing() {
+        let source = ramp(800, 400);
+        let preview = thumbnail(&source, u32::MAX, u32::MAX);
+        assert!(u64::from(preview.w).saturating_mul(u64::from(preview.h)) <= MAX_THUMBNAIL_PIXELS);
+        assert_eq!(preview.pixel(0, 0).unwrap()[0..2], [0, 0]);
     }
 
     #[test]
