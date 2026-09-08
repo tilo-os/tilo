@@ -2,8 +2,8 @@
 //!
 //! These are the collaborative, replicable operations on Tube's shared CRDT
 //! state — likes, the watch queue, comment likes + replies — as distinct from
-//! Tube's *presentation* (the JSON render-cache blob under `STATE_KEY`, the
-//! playhead, the route). An action mutates a structured sub-tree under the
+//! Tube's device-local presentation (fetched catalogues, playhead, route and
+//! watch history). An action mutates a structured sub-tree under the
 //! document's `"tube"` map so it replicates + replays deterministically:
 //!
 //! ```text
@@ -835,9 +835,9 @@ fn subscriptions_resource(model: &TubeModel) -> Resource {
     subscriptions
 }
 
-/// Ordered durable watch history. Entries are membership resources rather than
-/// aliases of `tube.video:*`, preserving both the original video identity and
-/// the user's chronological history identity for automation clients.
+/// Ordered device-local watch history. Entries are membership resources rather
+/// than aliases of `tube.video:*`, preserving both the original video identity
+/// and the user's chronological history identity for local automation clients.
 fn history_resource(model: &TubeModel) -> Resource {
     let mut history = Resource::new("tube.history", "tube.collection", "Watch history");
     for video_id in model.history.iter().take(MAX_RESOURCE_ENTITIES) {

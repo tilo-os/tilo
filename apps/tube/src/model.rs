@@ -1,7 +1,8 @@
 //! Pure data model for Tube. Everything here is plain serde-able data —
-//! no toolkit types, no colours, no IO. The whole [`TubeModel`] is mirrored
-//! into the Automerge document as JSON (see `app::TubeApp::persist`), which
-//! is what gives subscriptions / settings / history undo + collaboration.
+//! no toolkit types, no colours, no IO. The model is device-local presentation
+//! state. Explicit collaboration boundaries live in `actions`: subscriptions
+//! and settings are structured Automerge actions, while fetched catalogues,
+//! playback, navigation and watch history stay local.
 //!
 //! Colours are never stored: thumbnails derive a deterministic gradient
 //! from a seed string at draw time (`util::seed_gradient`) so the model
@@ -550,6 +551,9 @@ pub struct TubeModel {
     pub history: Vec<VideoId>,
     pub settings: Settings,
     pub route: Route,
+    /// Last submitted, device-local search query. The editable top-bar buffer
+    /// is a toolkit [`ui::LocalState`] owned by `TubeApp`; it is copied here
+    /// only when the user submits so this route can render independently.
     pub search_query: String,
     /// Playhead position (seconds) on the current watch page.
     pub playhead: f64,
@@ -567,8 +571,9 @@ pub struct TubeModel {
     /// Whether the Ctrl+K global command palette overlay is open.
     #[serde(default)]
     pub palette_open: bool,
-    /// The palette's live query (separate from the top-bar search box so
-    /// opening the palette doesn't clobber an in-progress search).
+    /// Device-local palette query mirrored from the toolkit's local text
+    /// binding for rendering; opening the palette never clobbers top-bar text
+    /// and neither query enters the collaborative document.
     #[serde(default)]
     pub palette_query: String,
     /// Provenance of the on-screen catalogue (sample vs live).
