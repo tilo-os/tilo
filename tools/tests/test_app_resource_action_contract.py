@@ -179,6 +179,20 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertTrue(any("not reachable" in item.reason for item in violations))
 
+    def test_document_aware_canonical_handler_reaches_registered_helper(self):
+        root = self.fixture(
+            "use qos_actions::ActionSpec;\n"
+            "const APP_OPEN: &str = \"app.open\";\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::operation(\"open\", \"Open\", OperationKind::Effect, \"app.open\", &()).unwrap())] }\n"
+            " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[APP_OPEN] }\n"
+            " fn start_resource_operation_with_document(&mut self) { self.start_local_operation(); } }\n"
+            "fn start_local_operation(&mut self) { let _ = APP_OPEN; }\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertFalse(any("not reachable" in item.reason for item in violations))
+
     def test_comments_and_empty_provider_do_not_satisfy_contract(self):
         root = self.fixture(
             "// ActionSpec::operation Resource::new\n"
