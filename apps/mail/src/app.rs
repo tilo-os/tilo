@@ -205,6 +205,11 @@ pub struct MailApp {
     /// root; the sample / shots / test constructors target a throwaway sandbox
     /// so they can never write into the real account store.
     accounts_persist: AccountsPersist,
+    /// The device-local account id last flushed to [`AccountsPersist`]. Pane,
+    /// accessibility, and resource operations all select through `MailState`,
+    /// so observing the id here gives every selection path one persistence
+    /// boundary without leaking that preference into Automerge.
+    persisted_active_account: Option<String>,
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
@@ -293,7 +298,16 @@ impl MailApp {
             .with_sidebar_width(SIDEBAR_W)
             .with_overview_width(OVERVIEW_W);
 
-        let cfg = shared.borrow().accounts.active_config();
+        let (cfg, persisted_active_account) = {
+            let state = shared.borrow();
+            (
+                state.accounts.active_config(),
+                state
+                    .accounts
+                    .active_account()
+                    .map(|account| account.id.clone()),
+            )
+        };
         Self {
             shared,
             mail_search_provider,
@@ -319,6 +333,7 @@ impl MailApp {
             engine,
             pending_send: None,
             accounts_persist,
+            persisted_active_account,
             connect_requested: false,
             awaiting_engine: false,
             pending_engine_requests: HashMap::new(),
@@ -1137,7 +1152,7 @@ impl MailApp {
     /// unit-testable without a network.
     fn save_setup_with(
         &mut self,
-        doc: &mut AutoCommit,
+        _doc: &mut AutoCommit,
         probe: &dyn crate::validate::ProbeTransport,
     ) {
         self.maybe_autofill();
@@ -1167,8 +1182,6 @@ impl MailApp {
                 cfg.email.clone()
             };
             st.accounts.upsert(account);
-            MailDoc::store_account(doc, &cfg);
-            MailDoc::set_active_account(doc, st.accounts.active);
             // Persist to the shared on-disk store + vault so the account (and
             // its password) survive a restart. Routed through `accounts_persist`
             // so sample / shots / test builds never touch the real store.
@@ -1176,17 +1189,21 @@ impl MailApp {
                 Ok(()) => st.status = Some("Account saved".into()),
                 Err(e) => st.status = Some(format!("Saved, but could not write to disk: {e}")),
             }
+            self.persisted_active_account = st
+                .accounts
+                .active_account()
+                .map(|account| account.id.clone());
         }
         // Connect + fetch the freshly-saved account through the engine.
         self.post_engine(EngineRequest::connect(cfg.clone()));
-        self.post_engine(EngineRequest::fetch(cfg.clone(), Folder::Inbox));
+        self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
         self.close_setup();
     }
 
     /// Remove the account currently being edited, persist the removal to disk
     /// (dropping it from the shared store + purging its vault secret), and close
     /// the sheet. A no-op on the add flow (no editing target).
-    fn remove_editing_account(&mut self, doc: &mut AutoCommit) {
+    fn remove_editing_account(&mut self, _doc: &mut AutoCommit) {
         let Some(idx) = self.setup_editing else {
             return;
         };
@@ -1196,7 +1213,6 @@ impl MailApp {
                 return;
             };
             st.accounts.remove(&id);
-            MailDoc::set_active_account(doc, st.accounts.active);
             match self.accounts_persist.persist(&st.accounts) {
                 Ok(()) => st.status = Some("Account removed".into()),
                 Err(e) => st.status = Some(format!("Removed, but could not write to disk: {e}")),
@@ -1206,6 +1222,10 @@ impl MailApp {
             // new active account.
             st.mailbox = crate::model::Mailbox::new(st.accounts.active_config());
             st.selected = None;
+            self.persisted_active_account = st
+                .accounts
+                .active_account()
+                .map(|account| account.id.clone());
         }
         self.connect_requested = false;
         self.close_setup();
@@ -1638,33 +1658,47 @@ impl MailApp {
                 MailDoc::store_flags(doc, &m.clone());
             }
         }
-        MailDoc::store_account(doc, &st.accounts.active_config());
         MailDoc::set_folder(doc, st.folder);
         MailDoc::set_mode(doc, "mailbox");
         MailDoc::set_compose_format(doc, self.compose.format().as_key());
-        MailDoc::set_active_account(doc, st.accounts.active);
         if let Some(sel) = st.selected {
             MailDoc::set_selected(doc, Some(&sel.to_string()));
         }
     }
 
-    /// Restore the session persisted in an already-seeded document: the active
-    /// account, the selected folder, the compose format, per-message flags, the
-    /// current selection, and any in-progress draft (materialised back into the
-    /// visible Drafts folder). Complements [`Self::seed_doc`].
+    /// Flush an active-account change to the device-local shared account store.
+    /// This runs after every input path (pane pointer/keyboard, accessibility,
+    /// or canonical resource operation) has selected an account. It never
+    /// touches the Automerge document.
+    fn persist_active_account_if_changed(&mut self) {
+        let (active, accounts) = {
+            let state = self.shared.borrow();
+            (
+                state
+                    .accounts
+                    .active_account()
+                    .map(|account| account.id.clone()),
+                state.accounts.clone(),
+            )
+        };
+        if active == self.persisted_active_account {
+            return;
+        }
+        match self.accounts_persist.persist(&accounts) {
+            Ok(()) => self.persisted_active_account = active,
+            Err(error) => {
+                self.shared.borrow_mut().status = Some(format!(
+                    "Selected account, but could not save that preference: {error}"
+                ));
+            }
+        }
+    }
+
+    /// Restore the collaborative session persisted in an already-seeded
+    /// document: folder, compose format, per-message flags, current selection,
+    /// and any in-progress draft. Accounts are device-local and deliberately
+    /// never adopted from peer state. Complements [`Self::seed_doc`].
     fn restore_session(&mut self, doc: &mut AutoCommit) {
-        // Active account (clamped inside `set_active`).
-        if let Some(idx) = MailDoc::get_active_account(doc) {
-            self.shared.borrow_mut().accounts.set_active(idx);
-        }
-        // If the on-disk store had no accounts but the document carries a
-        // synced account config, adopt it.
-        if self.shared.borrow().accounts.is_empty()
-            && let Some(cfg) = MailDoc::load_account(doc)
-            && !cfg.email.is_empty()
-        {
-            self.shared.borrow_mut().accounts.upsert(Account::new(cfg));
-        }
         // Compose body format preference.
         if let Some(fmt) = MailDoc::get_compose_format(doc) {
             self.compose.set_format(ComposeFormat::from_key(&fmt));
@@ -1712,7 +1746,7 @@ impl MailApp {
             .enumerate()
             .map(|(index, account)| {
                 (
-                    index,
+                    account.id.clone(),
                     account.label().to_string(),
                     st.accounts.active == index,
                 )
@@ -2735,6 +2769,7 @@ impl Widget for MailApp {
             self.shared.borrow_mut().now_min = crate::state::now_minutes();
             self.maybe_auto_refresh();
         }
+        self.persist_active_account_if_changed();
         self.mail_search_provider
             .refresh(&self.shared.borrow().mailbox);
         self.nav.sync(state, path);
@@ -2805,11 +2840,18 @@ impl Widget for MailApp {
             }
             (
                 qos_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealAccount { index },
+                crate::actions::MailOperation::RevealAccount { id },
             ) => {
-                if index >= self.shared.borrow().accounts.accounts.len() {
+                let Some(index) = self
+                    .shared
+                    .borrow()
+                    .accounts
+                    .accounts
+                    .iter()
+                    .position(|account| account.id == id)
+                else {
                     return Err("account no longer exists".into());
-                }
+                };
                 let mut st = self.shared.borrow_mut();
                 st.accounts.set_active(index);
                 st.reveal_folder(Folder::Inbox);
@@ -3698,7 +3740,7 @@ impl Widget for MailApp {
             let collapsed = account.collapsed;
             match action {
                 Action::Activate => {
-                    st.set_active_account(state, account_index);
+                    st.set_active_account(account_index);
                     st.select_folder(state, Folder::Inbox);
                     st.push_intent(Intent::CloseDrawer);
                 }
@@ -3734,7 +3776,7 @@ impl Widget for MailApp {
             if account.collapsed || !AccountStore::folders_for(account).contains(&folder) {
                 return false;
             }
-            st.set_active_account(state, account_index);
+            st.set_active_account(account_index);
             st.select_folder(state, folder);
             st.push_intent(Intent::CloseDrawer);
             drop(st);
@@ -4059,6 +4101,7 @@ impl MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use winit::event::{DeviceId, Modifiers};
 
     fn synth_device() -> DeviceId {
@@ -5134,7 +5177,7 @@ mod tests {
             app.shared
                 .borrow_mut()
                 .select_folder(&mut doc, Folder::Sent);
-            app.shared.borrow_mut().set_active_account(&mut doc, 1);
+            app.shared.borrow_mut().set_active_account(1);
             app.compose.set_format(ComposeFormat::Text);
             app.persist_compose_format(&mut doc);
         }
@@ -5144,13 +5187,43 @@ mod tests {
         assert_eq!(app2.shared.borrow().folder, Folder::Sent, "folder restored");
         assert_eq!(
             app2.shared.borrow().accounts.active,
-            1,
-            "active account restored"
+            0,
+            "the device-local active account is never restored from shared state"
         );
         assert_eq!(
             app2.compose.format(),
             ComposeFormat::Text,
             "compose format restored"
+        );
+        assert!(
+            doc.get(&automerge::ROOT, "account")
+                .expect("document remains readable")
+                .is_none(),
+            "account connection settings never enter collaborative state"
+        );
+    }
+
+    #[test]
+    fn active_account_selection_persists_locally_without_touching_automerge() {
+        let (mut app, mut doc) = app();
+        let selected_id = app.shared.borrow().accounts.accounts[1].id.clone();
+        app.shared.borrow_mut().set_active_account(1);
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let root = app
+            .accounts_persist_root()
+            .expect("sample app has a sandbox");
+        let reloaded = AccountStore::load_in(&root);
+        assert_eq!(
+            reloaded.active_account().map(|account| account.id.as_str()),
+            Some(selected_id.as_str()),
+            "the shared device-local account store remembers the selected account"
+        );
+        assert!(
+            doc.get(&automerge::ROOT, "account")
+                .expect("document remains readable")
+                .is_none(),
+            "account configuration never crosses the collaborative boundary"
         );
     }
 
