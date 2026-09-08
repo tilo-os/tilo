@@ -17446,7 +17446,7 @@ mod palette_dispatch_tests {
             .get(&ShortcutAction::ShortcutHelp)
             .cloned()
             .expect("default global help binding");
-        let key = Key::Character(chord.key.clone().into());
+        let key = Key::Character(chord.key.into());
         let modifiers = Modifiers::from(ModifiersState::SUPER);
         handled = false;
         assert!(host.handle_shell_keyboard_event(

@@ -2570,7 +2570,7 @@ mod tests {
     }
 
     /// Satellite can give the rendered mirror a provisional non-anonymous
-    /// class before the protocol tree receives the final WM_CLASS. The
+    /// class before the protocol tree receives the final `WM_CLASS`. The
     /// mirror must re-home on that identity transition too; restricting this
     /// path to `anon-*` leaves protocol and chrome in different groups.
     #[test]
