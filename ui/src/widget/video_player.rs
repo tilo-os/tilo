@@ -238,6 +238,13 @@ pub struct VideoPlayer {
     /// Rendered as priority icons on the bar and/or under the settings gear.
     settings: Vec<PlayerSetting>,
     setting_events: Vec<PlayerSettingEvent>,
+    /// Terminal engine events are owned by the widget's frame pump, but the
+    /// embedding app must be able to report a truthful open failure or advance
+    /// a real queue when decoding ends. Progress events stay in the widget's
+    /// mirrored fields rather than accumulating when an embedder does not
+    /// observe this channel. Drained with [`Self::take_media_events`] so a
+    /// terminal status cannot be replayed accidentally across frames.
+    media_events: Vec<media::MediaEvent>,
     open_menu: Option<OpenMenu>,
     gear_expanded: Option<usize>,
     /// ZERO when not shown.
@@ -308,6 +315,7 @@ impl VideoPlayer {
             scrub_marks: Vec::new(),
             settings: Vec::new(),
             setting_events: Vec::new(),
+            media_events: Vec::new(),
             open_menu: None,
             gear_expanded: None,
             gear_button_rect: Rect::ZERO,
@@ -393,6 +401,15 @@ impl VideoPlayer {
 
     pub fn take_setting_events(&mut self) -> Vec<PlayerSettingEvent> {
         std::mem::take(&mut self.setting_events)
+    }
+
+    /// Drain terminal decoder events observed during the widget's normal frame
+    /// pump. Only fatal errors and end-of-stream are forwarded: position,
+    /// duration, and buffering continuously mirror into the widget and never
+    /// accumulate in an unattended embedding app. Playback, rendering, and
+    /// accessibility state remain owned by `VideoPlayer`.
+    pub fn take_media_events(&mut self) -> Vec<media::MediaEvent> {
+        std::mem::take(&mut self.media_events)
     }
 
     /// Reveals the controls so the menu is visible; lays out on the next paint.
@@ -814,7 +831,7 @@ impl VideoPlayer {
         let last_pts = self.last_frame_pts;
         let have_frame = self.latest_frame.is_some();
         let snapshot = self.engine.as_mut().map(|engine| {
-            engine.poll();
+            let events = engine.poll();
             // Clone the (multi-megabyte) RGBA buffer only on a real pts
             // change — the scroll path re-syncs every frame, so cloning
             // unconditionally was a per-frame memcpy this guard discards.
@@ -832,11 +849,13 @@ impl VideoPlayer {
                 engine.buffering_percent(),
                 engine.is_playing(),
                 frame,
+                events,
             )
         });
-        let Some((pos, dur, buffering, playing, frame)) = snapshot else {
+        let Some((pos, dur, buffering, playing, frame, events)) = snapshot else {
             return;
         };
+        self.record_terminal_media_events(events);
         if self.position_ms != pos {
             self.position_ms = pos;
             self.dirty = true;
@@ -872,6 +891,22 @@ impl VideoPlayer {
         if self.mpris.is_active() {
             self.publish_mpris();
         }
+    }
+
+    /// Keep the embedding observation channel bounded under normal playback.
+    /// Position/buffering/duration events have already been reflected into the
+    /// widget's state by the caller, while the two terminal cases require an
+    /// app-level outcome.
+    fn record_terminal_media_events(
+        &mut self,
+        events: impl IntoIterator<Item = media::MediaEvent>,
+    ) {
+        self.media_events.extend(events.into_iter().filter(|event| {
+            matches!(
+                event,
+                media::MediaEvent::Ended | media::MediaEvent::Error(_)
+            )
+        }));
     }
 
     fn paint(
@@ -3365,6 +3400,39 @@ mod tests {
         assert_eq!(vp.position_ms(), 0);
         vp.set_volume(0.3);
         assert!((vp.volume() - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn engine_lifecycle_events_are_forwarded_once_to_the_embedding_app() {
+        let mut vp = VideoPlayer::new();
+        vp.record_terminal_media_events([
+            media::MediaEvent::Ended,
+            media::MediaEvent::Error("decoder stopped".into()),
+        ]);
+        let events = vp.take_media_events();
+        assert!(
+            matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::Error(message)] if message == "decoder stopped")
+        );
+        assert!(
+            vp.take_media_events().is_empty(),
+            "taking events cannot replay an old terminal status"
+        );
+    }
+
+    #[test]
+    fn nonterminal_engine_events_never_accumulate_for_an_unattended_embedder() {
+        let mut vp = VideoPlayer::new();
+        for position in 0..1_000 {
+            vp.record_terminal_media_events([
+                media::MediaEvent::DurationKnown { ms: 90_000 },
+                media::MediaEvent::Buffering { percent: 50 },
+                media::MediaEvent::Position { ms: position },
+            ]);
+        }
+        assert!(
+            vp.media_events.is_empty(),
+            "progress is mirrored by the widget, never buffered for the app"
+        );
     }
 
     #[test]

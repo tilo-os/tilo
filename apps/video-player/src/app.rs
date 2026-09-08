@@ -20,7 +20,7 @@ use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{BlendMode, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
@@ -34,7 +34,7 @@ use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
-use crate::preferences::PlaybackPreferences;
+use crate::preferences::{PlaybackPreferences, RecentMedia};
 
 /// Inset (logical px) of the floating top overlay (media title + Open) from the
 /// video edges.
@@ -43,6 +43,9 @@ const OVERLAY_MARGIN: f64 = 14.0;
 const OPEN_BTN_H: f64 = 32.0;
 /// Width (logical px) of the floating Open pill.
 const OPEN_BTN_W: f64 = 84.0;
+/// A decoder open is asynchronous. Do not turn portal/direct admission into a
+/// false successful history entry until a first picture has actually arrived.
+const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 /// One file-picker request at a time.  A portal response is asynchronous and
 /// cannot be cancelled at the protocol level, so the app owns the receiver and
 /// drops it when a newer direct open supersedes the request.  `generation` is
@@ -62,6 +65,38 @@ type PortalOpenOutcome = (
     Option<qos_actions::InvocationId>,
     Result<PathBuf, Option<String>>,
 );
+
+/// A canonical open invocation awaiting its decoder's first picture. This is
+/// separate from the file-picker request: the picker can succeed while decode
+/// fails, stalls, or is superseded before a frame appears.
+struct PendingMediaOpen {
+    invocation: qos_actions::InvocationId,
+    source_id: String,
+    deadline: std::time::Instant,
+}
+
+/// A file-backed local record. The source is deliberately kept only in this
+/// process; public resources expose the opaque `id` and friendly basename.
+#[derive(Clone)]
+struct LocalMediaEntry {
+    id: String,
+    title: String,
+    source: media::Source,
+}
+
+#[derive(Clone)]
+struct LibraryRowHit {
+    id: String,
+    row: Rect,
+    play: Rect,
+    remove: Option<Rect>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibraryTab {
+    Queue,
+    Recent,
+}
 
 fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
     let mut player = VideoPlayer::new()
@@ -116,6 +151,48 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
+fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
+    scene.fill(Fill::NonZero, transform, color, None, &rect);
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "immediate-mode panel text needs its render context and explicit style"
+)]
+fn panel_text(
+    scene: &mut Scene,
+    text_renderer: &mut TextRenderer,
+    transform: Affine,
+    rect: Rect,
+    text: &str,
+    size: f32,
+    color: Color,
+    weight: TextWeight,
+) {
+    let _ = weight;
+    text_renderer.draw_text(
+        scene,
+        text,
+        size,
+        color,
+        transform * Affine::translate((rect.x0, rect.y0 + f64::from(size))),
+        None,
+    );
+}
+
+fn find_resource<'a>(
+    resources: &'a [qos_actions::Resource],
+    id: &str,
+) -> Option<&'a qos_actions::Resource> {
+    resources.iter().find_map(|resource| {
+        if resource.id.0 == id {
+            Some(resource)
+        } else {
+            find_resource(&resource.children, id)
+        }
+    })
+}
+
 fn video_open_request() -> PickRequest {
     PickRequest::open("Open a video", "Play")
         .thread_name("video-player-portal")
@@ -146,6 +223,25 @@ pub fn source_for_path(path: &Path) -> media::Source {
     }
 }
 
+/// Opaque, deterministic per-process identity for a local source. Resource
+/// IDs and action payload guards need a stable token, but publishing a URI
+/// would expose an absolute path to search, history, or a collaborator.
+fn local_source_token(source: &media::Source, generation: u64) -> String {
+    // FNV-1a is used only as an opaque UI identifier, not as a security
+    // boundary. The monotonic generation prevents a same-path reopen from
+    // accepting stale dynamic stream/chapter actions.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in source.to_uri().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("local-media-{hash:016x}-open-{generation}")
+}
+
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "overlay, local library, portal, and frame-dirty flags are independent widget state"
+)]
 pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
@@ -153,15 +249,31 @@ pub struct PlayerApp {
     /// The floating Open pill's hit rect (top-right of the video). Only live
     /// while the overlay is shown.
     open_button_rect: Rect,
+    library_button_rect: Rect,
+    library_panel_rect: Rect,
+    library_queue_tab_rect: Rect,
+    library_recent_tab_rect: Rect,
+    library_close_rect: Rect,
+    library_row_hits: Vec<LibraryRowHit>,
+    library_clear_rect: Rect,
+    library_visible: bool,
+    library_tab: LibraryTab,
+    queue: Vec<LocalMediaEntry>,
+    recent: VecDeque<LocalMediaEntry>,
+    current_queue_id: Option<String>,
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`. Requests are
     /// never replaced: doing so would let an old chooser response unexpectedly
     /// open a file after the user chose a newer source.
     portal_open: Option<PendingPortalOpen>,
+    media_open: Option<PendingMediaOpen>,
     portal_generation: u64,
     resource_results: VecDeque<qos_actions::InvocationUpdate>,
     open_action: Option<ActionEmitter<()>>,
+    library_control_invocations: VecDeque<qos_actions::ControlInvocation>,
     open_focused: bool,
+    library_focused: bool,
+    library_focus_id: Option<String>,
     /// Collaborative playback state (host/follower). `None` for a local-only
     /// session or the headless `--shots` path.
     collab: Option<CollabPlayback>,
@@ -223,7 +335,24 @@ impl PlayerApp {
             audio_tracks,
             subtitle_tracks,
             chapters,
+            library: crate::actions::LocalLibraryState {
+                queue: self.library_items(self.queue.iter()),
+                recent: self.library_items(self.recent.iter()),
+            },
         }
+    }
+
+    fn library_items<'a>(
+        &self,
+        entries: impl Iterator<Item = &'a LocalMediaEntry>,
+    ) -> Vec<crate::actions::LocalMediaItemState> {
+        entries
+            .map(|entry| crate::actions::LocalMediaItemState {
+                id: entry.id.clone(),
+                title: entry.title.clone(),
+                current: self.current_queue_id.as_deref() == Some(entry.id.as_str()),
+            })
+            .collect()
     }
 
     fn decoder_metadata(
@@ -366,6 +495,14 @@ impl PlayerApp {
 
     fn new_with_preferences(preferences: PlaybackPreferences) -> Self {
         let player = configured_player(preferences.autoplay, preferences.loop_enabled);
+        let recent = crate::preferences::load_recent_history()
+            .into_iter()
+            .map(|entry| LocalMediaEntry {
+                id: entry.id,
+                title: entry.title,
+                source: entry.source,
+            })
+            .collect();
         let action_ctx = crate::actions::PlayerResourceCtx {
             title: "No media",
             media: crate::actions::MediaAvailability {
@@ -381,6 +518,7 @@ impl PlayerApp {
             audio_tracks: &[],
             subtitle_tracks: &[],
             chapters: &[],
+            library: crate::actions::LocalLibraryState::default(),
         };
         let action_surface = crate::actions::resources(&action_ctx, &AutoCommit::new());
         let open_action = action_surface
@@ -392,12 +530,28 @@ impl PlayerApp {
             title: "No media".to_string(),
             rect: Rect::ZERO,
             open_button_rect: Rect::ZERO,
+            library_button_rect: Rect::ZERO,
+            library_panel_rect: Rect::ZERO,
+            library_queue_tab_rect: Rect::ZERO,
+            library_recent_tab_rect: Rect::ZERO,
+            library_close_rect: Rect::ZERO,
+            library_row_hits: Vec::new(),
+            library_clear_rect: Rect::ZERO,
+            library_visible: false,
+            library_tab: LibraryTab::Queue,
+            queue: Vec::new(),
+            recent,
+            current_queue_id: None,
             last_cursor: Point::ZERO,
             portal_open: None,
+            media_open: None,
             portal_generation: 0,
             resource_results: VecDeque::new(),
             open_action,
+            library_control_invocations: VecDeque::new(),
             open_focused: false,
+            library_focused: false,
+            library_focus_id: None,
             collab: None,
             manager: None,
             preferences,
@@ -422,21 +576,29 @@ impl PlayerApp {
     }
 
     /// Build a player staged for a headless `--shots` capture: a source opened
-    /// and playing (so a frame is produced) with the controls revealed. Opens
+    /// with its real engine state and the controls revealed. Opens
     /// `open` when given, else a synthesized demo clip. Never attaches a collab
     /// socket, so no thread/portal is created.
     ///
     /// `scenario` selects an optional demo overlay for the capture:
     ///   * `"empty"` — the first-run state before a source is chosen.
+    ///   * `"error"` — a decoder/open failure before a picture arrives.
+    ///   * `"native-error"` — use `--open` with a bad source to capture the
+    ///     decoder's actual error event rather than fixture copy.
+    ///   * `"playing"` / `"paused"` — explicit transport states (the
+    ///     default remains paused for byte-stable review).
     ///   * `"settings"` — open the real autoplay/repeat settings menu.
     ///   * `"fullscreen"` — toggle fullscreen so the control bar shows its
     ///     immersive (exit-fullscreen) state.
     ///   * `"metadata"` — open the controls menu with deterministic embedded
     ///     audio/subtitle/chapter metadata.
+    ///   * `"library"` / `"recent"` — populated device-local queue/history.
+    ///   * `"library-focus"` — the same queue with a keyboard-visible Play
+    ///     focus ring, for accessibility visual review.
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
-        if !matches!(scenario, Some("empty")) {
+        if !matches!(scenario, Some("empty" | "error")) {
             if let Some(path) = open {
                 let _ = app.open_path(&path);
             } else {
@@ -449,19 +611,27 @@ impl PlayerApp {
                 let source = media::Source::Remote {
                     url: "https://demo.local/clip.mp4".into(),
                 };
+                let queue_id = app.ensure_queued(source.clone(), "Demo clip".into());
                 let _ = app.set_current_source(&source);
                 app.player.open(source);
                 app.title = "Demo clip".to_string();
-                // Park at a fixed position and pause so the synthesized frame and
-                // the transport read-out are byte-deterministic across runs: a
-                // *playing* demo would capture a different synth frame each time
-                // depending on warm-up timing. `open` already seeded a frame, so
-                // the `--shots` warm-up still breaks immediately.
+                app.current_queue_id = Some(queue_id);
+                // Park at a fixed position for a stable reference frame. The
+                // explicit `playing` fixture starts the real engine below;
+                // default/`paused` deliberately stay deterministic.
                 app.player.seek_to_ms(8_000);
                 app.player.pause();
             }
         }
         match scenario {
+            Some("error") => {
+                app.open_error = Some(
+                    "The local decoder could not read this video. Check the file and try again."
+                        .into(),
+                );
+            }
+            Some("playing") => app.player.play(),
+            Some("paused") => app.player.pause(),
             Some("settings") => app.player.open_settings_menu(None),
             Some("metadata") => {
                 app.shot_metadata = Some(DecoderMetadata {
@@ -501,10 +671,28 @@ impl PlayerApp {
                 app.sync_decoder_settings();
                 app.player.open_settings_menu(None);
             }
+            Some("library" | "recent" | "library-focus") => {
+                for (url, title) in [
+                    ("https://demo.local/next.mp4", "Second act"),
+                    ("https://demo.local/finale.mp4", "Closing scene"),
+                ] {
+                    app.ensure_queued(media::Source::Remote { url: url.into() }, title.into());
+                }
+                app.recent = app.queue.iter().rev().cloned().collect();
+                app.library_visible = true;
+                app.library_tab = if scenario == Some("recent") {
+                    LibraryTab::Recent
+                } else {
+                    LibraryTab::Queue
+                };
+                if scenario == Some("library-focus") {
+                    app.library_focus_id = app.queue.get(1).map(|entry| entry.id.clone());
+                }
+            }
             Some("fullscreen") => app.player.toggle_fullscreen(),
             _ => {}
         }
-        if !matches!(scenario, Some("empty")) {
+        if !matches!(scenario, Some("empty" | "error")) {
             app.player.reveal_controls();
         }
         app
@@ -542,18 +730,67 @@ impl PlayerApp {
 
     fn open_path(&mut self, path: &Path) -> Result<(), String> {
         let source = source_for_path(path);
+        let title = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("selected video")
+            .to_string();
+        let queue_id = self.ensure_queued(source.clone(), title.clone());
+        self.open_local_source(source, title, Some(queue_id))
+    }
+
+    fn ensure_queued(&mut self, source: media::Source, title: String) -> String {
+        if let Some(entry) = self
+            .queue
+            .iter()
+            .find(|entry| entry.source.to_uri() == source.to_uri())
+        {
+            return entry.id.clone();
+        }
+        let id = format!("local-queue-{}", local_source_token(&source, 0));
+        self.queue.push(LocalMediaEntry {
+            id: id.clone(),
+            title,
+            source,
+        });
+        self.invalidate_search_cache();
+        id
+    }
+
+    fn open_local_entry(&mut self, item_id: &str) -> Result<(), String> {
+        let entry = self
+            .queue
+            .iter()
+            .chain(self.recent.iter())
+            .find(|entry| entry.id == item_id)
+            .cloned()
+            .ok_or_else(|| "that local queue item is no longer available".to_string())?;
+        self.open_local_source(entry.source, entry.title, Some(entry.id))
+    }
+
+    fn open_local_source(
+        &mut self,
+        source: media::Source,
+        title: String,
+        queue_id: Option<String>,
+    ) -> Result<(), String> {
         if let Err(error) = self.set_current_source(&source) {
             self.open_error = Some(error.clone());
             self.dirty = true;
             return Err(error);
         }
         self.cancel_pending_portal("a direct video open replaced the file picker");
+        if let Some(pending) = self.media_open.take() {
+            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+                invocation: pending.invocation,
+                message: Some("a newer video open replaced this decoder request".into()),
+            });
+        }
         self.open_error = None;
         self.invalidate_search_cache();
-        self.title = path.file_name().map_or_else(
-            || path.to_string_lossy().into_owned(),
-            |n| n.to_string_lossy().into_owned(),
-        );
+        self.title = title;
+        self.current_queue_id = queue_id;
         self.player.open(source);
         if self.preferences.autoplay {
             self.player.play();
@@ -563,13 +800,97 @@ impl PlayerApp {
         self.player.reveal_controls();
         self.player
             .set_now_playing(ui::widget::video_player::NowPlaying {
-                track_id: path.to_string_lossy().into_owned(),
+                // MPRIS/session metadata must not disclose a portal-granted
+                // absolute path. The title above is just the user-facing file
+                // name; this stable opaque ID is the machine identity.
+                track_id: self.current_source_id.clone().unwrap_or_default(),
                 title: self.title.clone(),
                 artist: String::new(),
                 art_url: String::new(),
             });
         self.dirty = true;
         Ok(())
+    }
+
+    fn record_current_history(&mut self) {
+        let Some(queue_id) = self.current_queue_id.as_deref() else {
+            return;
+        };
+        let Some(entry) = self
+            .queue
+            .iter()
+            .find(|entry| entry.id == queue_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.recent.retain(|item| item.id != entry.id);
+        self.recent.push_front(entry);
+        self.recent
+            .truncate(crate::preferences::RECENT_HISTORY_LIMIT);
+        if let Err(error) = self.persist_recent_history() {
+            tracing::warn!(%error, "video player: could not persist recent history");
+        }
+        self.invalidate_search_cache();
+        self.dirty = true;
+    }
+
+    fn persist_recent_history(&self) -> std::io::Result<()> {
+        let entries: Vec<RecentMedia> = self
+            .recent
+            .iter()
+            .map(|entry| RecentMedia {
+                id: entry.id.clone(),
+                title: entry.title.clone(),
+                source: entry.source.clone(),
+            })
+            .collect();
+        crate::preferences::save_recent_history(&entries)
+    }
+
+    fn clear_recent_history(&mut self) -> Result<(), String> {
+        let previous = self.recent.clone();
+        self.recent.clear();
+        if let Err(error) = self.persist_recent_history() {
+            self.recent = previous;
+            return Err(format!("could not clear local recent history: {error}"));
+        }
+        self.invalidate_search_cache();
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn remove_queue_entry(&mut self, item_id: &str) -> Result<(), String> {
+        let Some(index) = self.queue.iter().position(|entry| entry.id == item_id) else {
+            return Err("that local queue item is no longer available".into());
+        };
+        self.queue.remove(index);
+        if self.current_queue_id.as_deref() == Some(item_id) {
+            self.current_queue_id = None;
+        }
+        self.invalidate_search_cache();
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn advance_after_engine_end(&mut self) {
+        if self.preferences.loop_enabled {
+            return;
+        }
+        let Some(current) = self.current_queue_id.as_deref() else {
+            return;
+        };
+        let Some(index) = self.queue.iter().position(|entry| entry.id == current) else {
+            return;
+        };
+        let Some(next) = self.queue.get(index.saturating_add(1)) else {
+            return;
+        };
+        let next_id = next.id.clone();
+        if let Err(error) = self.open_local_entry(&next_id) {
+            self.open_error = Some(error);
+            self.dirty = true;
+        }
     }
 
     /// Assign the next never-reused source identity. Once the u64 namespace is
@@ -580,7 +901,7 @@ impl PlayerApp {
             "video source identity generation exhausted; restart Video Player".to_string()
         })?;
         self.source_generation = generation;
-        self.current_source_id = Some(format!("{}#open-{}", source.to_uri(), generation));
+        self.current_source_id = Some(local_source_token(source, generation));
         Ok(())
     }
 
@@ -594,6 +915,12 @@ impl PlayerApp {
     }
 
     fn close_media(&mut self) {
+        if let Some(pending) = self.media_open.take() {
+            self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+                invocation: pending.invocation,
+                message: Some("video was closed before decoding a first frame".into()),
+            });
+        }
         let mut player =
             configured_player(self.preferences.autoplay, self.preferences.loop_enabled);
         player.set_transport_enabled(
@@ -611,6 +938,7 @@ impl PlayerApp {
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
+        self.current_queue_id = None;
         self.invalidate_search_cache();
         self.dirty = true;
     }
@@ -618,6 +946,40 @@ impl PlayerApp {
     fn request_open_action(&mut self) {
         if let Some(action) = &mut self.open_action {
             let _ = action.emit(());
+        }
+    }
+
+    fn request_library_play(&mut self, item_id: &str) {
+        let resource_id = if self.queue.iter().any(|entry| entry.id == item_id) {
+            crate::actions::queue_item_resource_id(item_id)
+        } else {
+            crate::actions::recent_item_resource_id(item_id)
+        };
+        self.request_library_action(&resource_id, "play");
+    }
+
+    fn request_library_remove(&mut self, item_id: &str) {
+        self.request_library_action(&crate::actions::queue_item_resource_id(item_id), "remove");
+    }
+
+    fn request_library_clear(&mut self) {
+        self.request_library_action("video-player.history.local", "clear");
+    }
+
+    fn request_library_action(&mut self, resource_id: &str, action_id: &str) {
+        let (audio, subtitles, chapters) = self.decoder_metadata();
+        let resources = crate::actions::resources(
+            &self.action_context(&audio, &subtitles, &chapters),
+            &AutoCommit::new(),
+        );
+        let Some(resource) = find_resource(&resources, resource_id) else {
+            return;
+        };
+        let Ok(binding) = qos_actions::ActionBinding::unit_for(resource, action_id) else {
+            return;
+        };
+        if let Ok(invocation) = binding.invoke(()) {
+            self.library_control_invocations.push_back(invocation);
         }
     }
 
@@ -666,6 +1028,70 @@ impl PlayerApp {
         }
     }
 
+    fn await_open_frame(&mut self, invocation: qos_actions::InvocationId) -> Result<(), String> {
+        if self.media_open.is_some() {
+            return Err("another video open is still waiting for decoder output".into());
+        }
+        let source_id = self
+            .current_source_id
+            .clone()
+            .ok_or_else(|| "video source did not receive an identity".to_string())?;
+        self.media_open = Some(PendingMediaOpen {
+            invocation,
+            source_id,
+            deadline: std::time::Instant::now() + OPEN_FRAME_TIMEOUT,
+        });
+        Ok(())
+    }
+
+    fn poll_open_frame(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        let pending = self.media_open.as_ref()?;
+        if pending.invocation != invocation {
+            return None;
+        }
+        if self.current_source_id.as_deref() != Some(pending.source_id.as_str()) {
+            let pending = self.media_open.take()?;
+            return Some(qos_actions::InvocationUpdate::Failed {
+                invocation: pending.invocation,
+                error: qos_actions::ActionFailure {
+                    code: "video_player.open_superseded".into(),
+                    message: "The requested video was superseded before decoding a frame.".into(),
+                    details: None,
+                    retryable: true,
+                },
+            });
+        }
+        if self.player.latest_frame().is_some() {
+            let pending = self.media_open.take()?;
+            self.record_current_history();
+            return Some(qos_actions::InvocationUpdate::Succeeded {
+                invocation: pending.invocation,
+                output: qos_actions::ActionOutput::default(),
+            });
+        }
+        if std::time::Instant::now() >= pending.deadline {
+            let pending = self.media_open.take()?;
+            let message = "The decoder did not produce a first frame in time.".to_string();
+            self.open_error = Some(message.clone());
+            self.dirty = true;
+            return Some(qos_actions::InvocationUpdate::Failed {
+                invocation: pending.invocation,
+                error: qos_actions::ActionFailure {
+                    code: "video_player.open_timed_out".into(),
+                    message,
+                    details: Some(serde_json::json!({
+                        "timeout_seconds": OPEN_FRAME_TIMEOUT.as_secs(),
+                    })),
+                    retryable: true,
+                },
+            });
+        }
+        None
+    }
+
     /// Queue an action completion without letting a newer action overwrite an
     /// older invocation that the host has not polled yet. `trigger_open`
     /// applies backpressure before accepting another asynchronous request, so
@@ -674,6 +1100,10 @@ impl PlayerApp {
         self.resource_results.push_back(update);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all operation variants remain together so their local semantics cannot drift"
+    )]
     fn perform_resource_operation(&mut self, operation: crate::actions::PlayerOperation) {
         use crate::actions::PlayerOperation;
         match operation {
@@ -688,6 +1118,25 @@ impl PlayerApp {
                 if let Err(error) = self.open_path(Path::new(&path)) {
                     tracing::warn!(%error, "video player: could not open direct path");
                 }
+            }
+            PlayerOperation::OpenQueueItem { item_id } => {
+                if let Err(error) = self.open_local_entry(&item_id) {
+                    tracing::warn!(%error, "video player: could not open queued item");
+                }
+            }
+            PlayerOperation::RemoveQueueItem { item_id } => {
+                if let Err(error) = self.remove_queue_entry(&item_id) {
+                    tracing::warn!(%error, "video player: could not remove queued item");
+                }
+            }
+            PlayerOperation::ClearRecentHistory => {
+                if let Err(error) = self.clear_recent_history() {
+                    tracing::warn!(%error, "video player: could not clear recent history");
+                }
+            }
+            PlayerOperation::RevealLibrary => {
+                self.library_visible = true;
+                self.player.reveal_controls();
             }
             PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
@@ -769,6 +1218,18 @@ impl PlayerApp {
     fn validate_dynamic_target(&self, operation: &PlayerOperation) -> Result<(), String> {
         let (audio, subtitles, chapters) = self.decoder_metadata();
         match operation {
+            PlayerOperation::OpenQueueItem { item_id } => {
+                if !self.queue.iter().any(|entry| entry.id == *item_id)
+                    && !self.recent.iter().any(|entry| entry.id == *item_id)
+                {
+                    return Err("that local queue item changed; refresh and try again".into());
+                }
+            }
+            PlayerOperation::RemoveQueueItem { item_id } => {
+                if !self.queue.iter().any(|entry| entry.id == *item_id) {
+                    return Err("that local queue item changed; refresh and try again".into());
+                }
+            }
             PlayerOperation::SelectAudioTrack {
                 source_id,
                 stream_id,
@@ -890,25 +1351,41 @@ impl PlayerApp {
                 }
             };
             if let Some(invocation) = invocation {
-                self.queue_resource_result(match result {
-                    Ok(true) => qos_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: qos_actions::ActionOutput::default(),
-                    },
-                    Ok(false) => qos_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("video selection was cancelled".into()),
-                    },
-                    Err(message) => qos_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: qos_actions::ActionFailure {
-                            code: "video_player.open_failed".into(),
-                            message,
-                            details: None,
-                            retryable: false,
-                        },
-                    },
-                });
+                match result {
+                    Ok(true) => {
+                        // Picker acceptance is not decoder success. Retain the
+                        // invocation until `poll_open_frame` observes a first
+                        // decoded picture (or a truthful timeout/failure).
+                        if let Err(message) = self.await_open_frame(invocation) {
+                            self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                                invocation,
+                                error: qos_actions::ActionFailure {
+                                    code: "video_player.open_lifecycle_failed".into(),
+                                    message,
+                                    details: None,
+                                    retryable: true,
+                                },
+                            });
+                        }
+                    }
+                    Ok(false) => {
+                        self.queue_resource_result(qos_actions::InvocationUpdate::Cancelled {
+                            invocation,
+                            message: Some("video selection was cancelled".into()),
+                        });
+                    }
+                    Err(message) => {
+                        self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "video_player.open_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        });
+                    }
+                }
             }
         }
     }
@@ -1025,6 +1502,40 @@ impl PlayerApp {
         }
     }
 
+    /// Translate decoder-owned lifecycle events into app-visible state. The
+    /// shared widget remains the single engine pump; this layer owns only the
+    /// file-open contract and the user-facing error copy.
+    fn drain_player_media_events(&mut self) {
+        for event in self.player.take_media_events() {
+            match event {
+                media::MediaEvent::Error(message) => {
+                    self.open_error = Some(message.clone());
+                    self.dirty = true;
+                    if let Some(pending) = self.media_open.take() {
+                        self.queue_resource_result(qos_actions::InvocationUpdate::Failed {
+                            invocation: pending.invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "video_player.decoder_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                    }
+                }
+                media::MediaEvent::Ended => {
+                    // Queue advancement belongs to the app, but remains gated
+                    // on a real engine end event rather than the current
+                    // playhead looking close to its duration.
+                    self.advance_after_engine_end();
+                }
+                media::MediaEvent::Buffering { .. }
+                | media::MediaEvent::Position { .. }
+                | media::MediaEvent::DurationKnown { .. } => {}
+            }
+        }
+    }
+
     fn persist_preferences(&self) {
         if let Err(error) = self.preferences.save() {
             // A device-local preference must never prevent playback. The next
@@ -1112,7 +1623,7 @@ impl PlayerApp {
         } else {
             "Video Player"
         };
-        let title_x = self.rect.x0 + OVERLAY_MARGIN;
+        let title_x = self.library_button_rect.x1 + 12.0;
         let title_budget = (self.open_button_rect.x0 - title_x - OVERLAY_MARGIN)
             .max(0.0)
             .min(f64::from(f32::MAX)) as f32;
@@ -1125,6 +1636,19 @@ impl PlayerApp {
             transform * Affine::translate((title_x, ty)),
             None,
         );
+        if self.library_button_rect.width() > 0.0 {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.library_button_rect, "Library")
+                    .ghost()
+                    .text_size(14.0)
+                    .focused(self.library_focused)
+                    .hovered(self.library_button_rect.contains(self.last_cursor)),
+            );
+        }
         // Open pill (right), a floating rounded accent button — the shared
         // primary Button face, so it gains hover/press feedback over the video.
         if self.open_button_rect.width() > 0.0 {
@@ -1185,6 +1709,232 @@ impl PlayerApp {
                 * Affine::translate((center.x - f64::from(subtitle_w) * 0.5, center.y + 85.0)),
             None,
         );
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact panel paints and records one matching set of interaction geometry"
+    )]
+    fn paint_library_panel(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.library_visible || self.library_panel_rect.width() <= 0.0 {
+            return;
+        }
+        let colors = &theme.tokens.colors;
+        let panel = self.library_panel_rect;
+        fill_rect(scene, transform, panel, colors.surfaces.raised);
+        fill_rect(
+            scene,
+            transform,
+            Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1),
+            colors.border_standard,
+        );
+        panel_text(
+            scene,
+            text_renderer,
+            transform,
+            Rect::new(
+                panel.x0 + 16.0,
+                panel.y0 + 10.0,
+                panel.x1 - 48.0,
+                panel.y0 + 34.0,
+            ),
+            "Library",
+            18.0,
+            colors.text_primary,
+            TextWeight::Semibold,
+        );
+        panel_text(
+            scene,
+            text_renderer,
+            transform,
+            Rect::new(
+                panel.x0 + 16.0,
+                panel.y0 + 34.0,
+                panel.x1 - 12.0,
+                panel.y0 + 54.0,
+            ),
+            "Local to this device · paths never shared",
+            12.0,
+            colors.text_dim,
+            TextWeight::Regular,
+        );
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.library_close_rect, "Close")
+                .ghost()
+                .text_size(12.0)
+                .hovered(self.library_close_rect.contains(self.last_cursor)),
+        );
+        self.library_clear_rect = Rect::new(
+            panel.x1 - 124.0,
+            panel.y0 + 10.0,
+            panel.x1 - 74.0,
+            panel.y0 + 38.0,
+        );
+        if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.library_clear_rect, "Clear")
+                    .ghost()
+                    .text_size(12.0)
+                    .focused(self.library_focus_id.as_deref() == Some("library-clear"))
+                    .hovered(self.library_clear_rect.contains(self.last_cursor)),
+            );
+        }
+        let queue_active = self.library_tab == LibraryTab::Queue;
+        for (label, rect, active) in [
+            ("Queue", self.library_queue_tab_rect, queue_active),
+            ("Recent", self.library_recent_tab_rect, !queue_active),
+        ] {
+            let mut face = ButtonFace::new(rect, label).ghost().text_size(13.0);
+            if active {
+                face = face.primary();
+            }
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &face.hovered(rect.contains(self.last_cursor)),
+            );
+        }
+        self.library_row_hits.clear();
+        let entries: Vec<LocalMediaEntry> = match self.library_tab {
+            LibraryTab::Queue => self.queue.clone(),
+            LibraryTab::Recent => self.recent.iter().cloned().collect(),
+        };
+        let mut y = panel.y0 + 108.0;
+        let row_h = 62.0;
+        if entries.is_empty() {
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + 44.0),
+                if self.library_tab == LibraryTab::Queue {
+                    "Your queue is empty. Open a video to add it here."
+                } else {
+                    "Recently played videos will appear here after a frame is decoded."
+                },
+                13.0,
+                colors.text_dim,
+                TextWeight::Regular,
+            );
+            return;
+        }
+        for entry in entries
+            .into_iter()
+            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
+        {
+            if y + row_h > panel.y1 - 14.0 {
+                break;
+            }
+            let rect = Rect::new(panel.x0 + 12.0, y, panel.x1 - 12.0, y + row_h - 4.0);
+            let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
+                rect.x1 - 106.0,
+                rect.y0 + 7.0,
+                rect.x1 - 56.0,
+                rect.y0 + 51.0,
+            ));
+            let play = Rect::new(rect.x1 - 50.0, rect.y0 + 7.0, rect.x1 - 2.0, rect.y0 + 51.0);
+            if rect.contains(self.last_cursor) {
+                fill_rect(scene, transform, rect, colors.neutral[2]);
+            }
+            let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
+            let label =
+                text_renderer.elide_to_width(&entry.title, 14.0, (rect.width() - 120.0) as f32);
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(
+                    rect.x0 + 12.0,
+                    rect.y0 + 8.0,
+                    remove.map_or(play.x0, |remove| remove.x0) - 8.0,
+                    rect.y0 + 29.0,
+                ),
+                &label,
+                14.0,
+                if active {
+                    colors.accent[6]
+                } else {
+                    colors.text_primary
+                },
+                TextWeight::Medium,
+            );
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(
+                    rect.x0 + 12.0,
+                    rect.y0 + 29.0,
+                    remove.map_or(play.x0, |remove| remove.x0) - 8.0,
+                    rect.y1 - 4.0,
+                ),
+                if active {
+                    "Playing on this device"
+                } else {
+                    "Local video"
+                },
+                12.0,
+                colors.text_dim,
+                TextWeight::Regular,
+            );
+            if let Some(remove) = remove {
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(remove, "Remove")
+                        .ghost()
+                        .text_size(11.0)
+                        .focused(
+                            self.library_focus_id.as_deref()
+                                == Some(format!("library-remove-{}", entry.id).as_str()),
+                        )
+                        .hovered(remove.contains(self.last_cursor)),
+                );
+            }
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(
+                    play,
+                    if self.library_tab == LibraryTab::Recent {
+                        "Replay"
+                    } else {
+                        "Play"
+                    },
+                )
+                .primary()
+                .text_size(11.0)
+                .focused(self.library_focus_id.as_deref() == Some(entry.id.as_str()))
+                .hovered(play.contains(self.last_cursor)),
+            );
+            self.library_row_hits.push(LibraryRowHit {
+                id: entry.id,
+                row: rect,
+                play,
+                remove,
+            });
+            y += row_h;
+        }
     }
 }
 
@@ -1283,7 +2033,12 @@ impl Widget for PlayerApp {
         }
         if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
             if !Path::new(path).is_file() {
-                let message = format!("Video does not exist: {path}");
+                let label = Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("selected video");
+                let message = format!("Video does not exist: {label}");
                 self.open_error = Some(message.clone());
                 self.dirty = true;
                 return Err(message);
@@ -1294,6 +2049,15 @@ impl Widget for PlayerApp {
             crate::actions::PlayerOperation::Open { path: None }
         ) {
             self.trigger_open()?;
+        } else if let crate::actions::PlayerOperation::OpenQueueItem { item_id } = &operation {
+            self.open_local_entry(item_id)?;
+        } else if matches!(
+            operation,
+            crate::actions::PlayerOperation::ClearRecentHistory
+        ) {
+            self.clear_recent_history()?;
+        } else if let crate::actions::PlayerOperation::RemoveQueueItem { item_id } = &operation {
+            self.remove_queue_entry(item_id)?;
         } else {
             self.perform_resource_operation(operation);
         }
@@ -1326,11 +2090,17 @@ impl Widget for PlayerApp {
             operation,
             Some(crate::actions::PlayerOperation::Open { path: Some(_) })
         ) {
-            // A direct path was validated and opened synchronously above, so
-            // it does not need an accepted/polled lifecycle or queue slot.
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
-            )))
+            // A filesystem path exists before admission, but a real decoder
+            // can still fail after `open`. Accepted therefore means only
+            // "decoding has begun"; polling waits for an actual frame.
+            self.await_open_frame(invocation)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::OpenQueueItem { .. })
+        ) {
+            self.await_open_frame(invocation)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 qos_actions::ActionOutput::default(),
@@ -1346,6 +2116,9 @@ impl Widget for PlayerApp {
         _path: &ObjId,
     ) -> Option<qos_actions::InvocationUpdate> {
         self.drain_portal();
+        if let Some(update) = self.poll_open_frame(invocation) {
+            return Some(update);
+        }
         self.resource_results
             .iter()
             .position(|update| update.invocation() == invocation)
@@ -1356,6 +2129,7 @@ impl Widget for PlayerApp {
         self.drain_portal();
         self.tick_collab();
         self.player.sync(state, path);
+        self.drain_player_media_events();
         self.sync_decoder_settings();
         self.drain_player_settings();
         self.maybe_loop_current_media();
@@ -1412,6 +2186,41 @@ impl Widget for PlayerApp {
         let bx1 = self.rect.x1 - OVERLAY_MARGIN;
         let bx0 = (bx1 - OPEN_BTN_W).max(self.rect.x0);
         self.open_button_rect = Rect::new(bx0, by0, bx1, by0 + OPEN_BTN_H);
+        self.library_button_rect = Rect::new(
+            self.rect.x0 + OVERLAY_MARGIN,
+            by0,
+            (self.rect.x0 + OVERLAY_MARGIN + 88.0).min(bx0 - OVERLAY_MARGIN),
+            by0 + OPEN_BTN_H,
+        );
+        let panel_width = if self.rect.width() < 640.0 {
+            self.rect.width()
+        } else {
+            360.0_f64.min(self.rect.width())
+        };
+        self.library_panel_rect = Rect::new(
+            self.rect.x1 - panel_width,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        self.library_close_rect = Rect::new(
+            self.library_panel_rect.x1 - 68.0,
+            self.library_panel_rect.y0 + 10.0,
+            self.library_panel_rect.x1 - 12.0,
+            self.library_panel_rect.y0 + 38.0,
+        );
+        self.library_queue_tab_rect = Rect::new(
+            self.library_panel_rect.x0 + 12.0,
+            self.library_panel_rect.y0 + 66.0,
+            self.library_panel_rect.x0 + 98.0,
+            self.library_panel_rect.y0 + 96.0,
+        );
+        self.library_recent_tab_rect = Rect::new(
+            self.library_panel_rect.x0 + 104.0,
+            self.library_panel_rect.y0 + 66.0,
+            self.library_panel_rect.x0 + 196.0,
+            self.library_panel_rect.y0 + 96.0,
+        );
     }
 
     fn draw(
@@ -1428,6 +2237,7 @@ impl Widget for PlayerApp {
         if self.overlay_visible() {
             self.paint_overlay(scene, transform, text_renderer, theme);
         }
+        self.paint_library_panel(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -1451,10 +2261,47 @@ impl Widget for PlayerApp {
             ..
         } = event
         {
+            if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
+                if self.library_close_rect.contains(self.last_cursor) {
+                    self.library_visible = false;
+                } else if self.library_queue_tab_rect.contains(self.last_cursor) {
+                    self.library_tab = LibraryTab::Queue;
+                } else if self.library_recent_tab_rect.contains(self.last_cursor) {
+                    self.library_tab = LibraryTab::Recent;
+                } else if self.library_tab == LibraryTab::Recent
+                    && self.library_clear_rect.contains(self.last_cursor)
+                {
+                    self.request_library_clear();
+                } else if let Some(row) = self
+                    .library_row_hits
+                    .iter()
+                    .find(|row| row.row.contains(self.last_cursor))
+                    .cloned()
+                {
+                    if row
+                        .remove
+                        .is_some_and(|rect| rect.contains(self.last_cursor))
+                    {
+                        self.request_library_remove(&row.id);
+                    } else {
+                        self.request_library_play(&row.id);
+                    }
+                }
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
             // Only intercept the Open pill while the overlay is actually shown;
             // during immersive playback that corner is just video.
             if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
                 self.request_open_action();
+                *handled = true;
+                return;
+            }
+            if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
+                self.library_visible = !self.library_visible;
+                self.player.reveal_controls();
+                self.dirty = true;
                 *handled = true;
                 return;
             }
@@ -1465,6 +2312,16 @@ impl Widget for PlayerApp {
             && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("o"))
         {
             self.request_open_action();
+            *handled = true;
+            return;
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("l"))
+        {
+            self.library_visible = !self.library_visible;
+            self.player.reveal_controls();
+            self.dirty = true;
             *handled = true;
             return;
         }
@@ -1496,7 +2353,10 @@ impl Widget for PlayerApp {
     }
 
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
-        self.open_action.as_mut().and_then(ActionEmitter::take)
+        self.open_action
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.library_control_invocations.pop_front())
     }
 
     fn refresh_control_action_availability(
@@ -1516,6 +2376,86 @@ impl Widget for PlayerApp {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        let mut children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Open video")
+                .with_description("Ctrl+O")
+                .with_action_target("video-player.open")
+                .with_bounds(self.open_button_rect)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.open_focused,
+                    disabled: self
+                        .open_action
+                        .as_ref()
+                        .is_none_or(|action| !action.is_available()),
+                    ..Default::default()
+                }),
+            AccessNode::new(Role::Button)
+                .with_name(if self.library_visible {
+                    "Hide library"
+                } else {
+                    "Show queue and recent videos"
+                })
+                .with_description("L")
+                .with_action_target("video-player.library")
+                .with_bounds(self.library_button_rect)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.library_focused,
+                    ..Default::default()
+                }),
+        ];
+        if self.library_visible {
+            children.extend(self.library_row_hits.iter().map(|row| {
+                let id = &row.id;
+                let title = self
+                    .queue
+                    .iter()
+                    .chain(self.recent.iter())
+                    .find(|entry| entry.id == *id)
+                    .map_or("Local video", |entry| entry.title.as_str());
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Play {title}"))
+                    .with_description("Opens this device-local video")
+                    .with_action_target(format!("video-player.library.play.{id}"))
+                    .with_bounds(row.play)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some(id.as_str()),
+                        ..Default::default()
+                    })
+            }));
+            if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Clear recent videos")
+                        .with_description("Removes recent-history entries from this device")
+                        .with_action_target("video-player.library.clear")
+                        .with_bounds(self.library_clear_rect)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.library_focus_id.as_deref() == Some("library-clear"),
+                            ..Default::default()
+                        }),
+                );
+            }
+            children.extend(self.library_row_hits.iter().filter_map(|row| {
+                row.remove.map(|remove| {
+                    AccessNode::new(Role::Button)
+                        .with_name("Remove from queue")
+                        .with_description("Removes this item from the session-only queue")
+                        .with_action_target(format!("video-player.library.remove.{}", row.id))
+                        .with_bounds(remove)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.library_focus_id.as_deref()
+                                == Some(format!("library-remove-{}", row.id).as_str()),
+                            ..Default::default()
+                        })
+                })
+            }));
+        }
         Some(
             AccessNode::new(Role::Group)
                 .with_name(if self.player.has_media() {
@@ -1523,37 +2463,90 @@ impl Widget for PlayerApp {
                 } else {
                     "Video Player".into()
                 })
-                .with_children(vec![
-                    AccessNode::new(Role::Button)
-                        .with_name("Open video")
-                        .with_description("Ctrl+O")
-                        .with_action_target("video-player.open")
-                        .with_bounds(self.open_button_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.open_focused,
-                            disabled: self
-                                .open_action
-                                .as_ref()
-                                .is_none_or(|action| !action.is_available()),
-                            ..Default::default()
-                        }),
-                ]),
+                .with_children(children),
         )
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        matches!(path, [0]).then_some(self.open_button_rect)
+        match path {
+            [0] => Some(self.open_button_rect),
+            [1] => Some(self.library_button_rect),
+            [index] => {
+                let library_index = index.saturating_sub(2);
+                let play_count = self.library_row_hits.len();
+                if let Some(row) = self.library_row_hits.get(library_index) {
+                    Some(row.play)
+                } else if self.library_tab == LibraryTab::Recent
+                    && !self.recent.is_empty()
+                    && library_index == play_count
+                {
+                    Some(self.library_clear_rect)
+                } else {
+                    let remove_index = library_index.saturating_sub(
+                        play_count
+                            + usize::from(
+                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
+                            ),
+                    );
+                    self.library_row_hits
+                        .iter()
+                        .filter_map(|row| row.remove)
+                        .nth(remove_index)
+                }
+            }
+            _ => None,
+        }
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        if matches!(path, [0]) {
-            self.open_focused = true;
-            self.player.reveal_controls();
-            self.dirty = true;
-            true
-        } else {
-            false
+        match path {
+            [0] => {
+                self.open_focused = true;
+                self.library_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [1] => {
+                self.library_focused = true;
+                self.open_focused = false;
+                self.player.reveal_controls();
+                self.dirty = true;
+                true
+            }
+            [index] => {
+                let library_index = index.saturating_sub(2);
+                let play_count = self.library_row_hits.len();
+                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
+                {
+                    Some(row.id.clone())
+                } else if self.library_tab == LibraryTab::Recent
+                    && !self.recent.is_empty()
+                    && library_index == play_count
+                {
+                    Some("library-clear".into())
+                } else {
+                    let remove_index = library_index.saturating_sub(
+                        play_count
+                            + usize::from(
+                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
+                            ),
+                    );
+                    self.library_row_hits
+                        .iter()
+                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
+                        .nth(remove_index)
+                        .map(|id| format!("library-remove-{id}"))
+                };
+                if self.library_focus_id.is_none() {
+                    return false;
+                }
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1567,14 +2560,55 @@ impl Widget for PlayerApp {
         if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
             true
+        } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
+            self.library_visible = !self.library_visible;
+            self.player.reveal_controls();
+            self.dirty = true;
+            true
+        } else if let Some(item_id) = target.strip_prefix("video-player.library.play.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_library_play(item_id);
+            true
+        } else if target == "video-player.library.clear"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_library_clear();
+            true
+        } else if let Some(item_id) = target.strip_prefix("video-player.library.remove.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.request_library_remove(item_id);
+            true
         } else {
             false
         }
     }
 
     fn tooltip(&self) -> Option<&str> {
-        (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
-            .then_some("Open video (Ctrl+O)")
+        if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
+            Some("Open video (Ctrl+O)")
+        } else if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
+            Some("Show queue and recent videos (L)")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Recent
+            && self.library_clear_rect.contains(self.last_cursor)
+        {
+            Some("Clear recent videos from this device")
+        } else if self.library_row_hits.iter().any(|row| {
+            row.remove
+                .is_some_and(|rect| rect.contains(self.last_cursor))
+        }) {
+            Some("Remove from this session queue")
+        } else if self
+            .library_row_hits
+            .iter()
+            .any(|row| row.play.contains(self.last_cursor))
+        {
+            Some("Play this local video")
+        } else {
+            None
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1602,7 +2636,9 @@ impl Widget for PlayerApp {
         // Collaboration is polled through `needs_idle_sync`; treating an idle,
         // paused collab session as animation would otherwise force a 60 Hz
         // redraw forever. Playback and the portal are the only frame-rate work.
-        self.player.needs_animation_frame() || self.portal_open.is_some()
+        self.player.needs_animation_frame()
+            || self.portal_open.is_some()
+            || self.media_open.is_some()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1732,6 +2768,18 @@ mod tests {
     }
 
     #[test]
+    fn local_source_identity_and_now_playing_never_expose_an_absolute_path() {
+        let mut app = synth_app();
+        let path = Path::new("/home/alice/Private videos/launch-cut.mp4");
+        app.open_path(path)
+            .expect("local source opens in the synthesized engine");
+        let source_id = app.current_source_id.as_deref().unwrap_or_default();
+        assert!(source_id.starts_with("local-media-"));
+        assert!(!source_id.contains("/home/alice"));
+        assert!(!source_id.contains("launch-cut"));
+    }
+
+    #[test]
     fn metadata_revision_boundary_discards_the_cache_before_resetting() {
         let mut app = PlayerApp::for_shot(None, Some("metadata"));
         let _first = app.search_providers();
@@ -1811,6 +2859,67 @@ mod tests {
         assert!(
             app.portal_open.is_none(),
             "the control did not bypass the host"
+        );
+    }
+
+    #[test]
+    fn library_row_emits_its_canonical_play_action_without_opening_directly() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        let item_id = app.queue[1].id.clone();
+        let source_before = app.current_source_id.clone();
+        app.request_library_play(&item_id);
+        let invocation = Widget::take_control_invocation(&mut app).expect("queue play intent");
+        assert_eq!(
+            invocation.address.resource,
+            crate::actions::queue_item_resource_id(&item_id)
+        );
+        assert_eq!(invocation.address.action, "play");
+        assert_eq!(
+            app.current_source_id, source_before,
+            "click did not bypass host lifecycle"
+        );
+    }
+
+    #[test]
+    fn library_remove_and_clear_controls_emit_their_canonical_host_actions() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        let item_id = app.queue[1].id.clone();
+        app.request_library_remove(&item_id);
+        let remove = Widget::take_control_invocation(&mut app).expect("remove intent");
+        assert_eq!(
+            remove.address.resource,
+            crate::actions::queue_item_resource_id(&item_id)
+        );
+        assert_eq!(remove.address.action, "remove");
+        app.request_library_clear();
+        let clear = Widget::take_control_invocation(&mut app).expect("clear intent");
+        assert_eq!(clear.address.resource, "video-player.history.local");
+        assert_eq!(clear.address.action, "clear");
+    }
+
+    #[test]
+    fn library_play_focus_has_a_real_accessibility_target_and_visual_state() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        let focused_id = app.queue[1].id.clone();
+        app.library_row_hits = vec![
+            LibraryRowHit {
+                id: app.queue[0].id.clone(),
+                row: Rect::ZERO,
+                play: Rect::new(0.0, 0.0, 44.0, 44.0),
+                remove: Some(Rect::new(44.0, 0.0, 88.0, 44.0)),
+            },
+            LibraryRowHit {
+                id: focused_id.clone(),
+                row: Rect::ZERO,
+                play: Rect::new(0.0, 44.0, 44.0, 88.0),
+                remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
+            },
+        ];
+        assert!(Widget::focus_synthetic_accessibility(&mut app, &[3]));
+        assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
+        assert_eq!(
+            Widget::synthetic_accessibility_rect(&app, &[3]),
+            Some(Rect::new(0.0, 44.0, 44.0, 88.0))
         );
     }
 
@@ -1941,6 +3050,131 @@ mod tests {
             "duration mirrored from the engine"
         );
         assert!(app.player.is_playing(), "autoplay after open");
+    }
+
+    #[test]
+    fn direct_open_is_accepted_until_a_decoder_frame_confirms_success() {
+        let mut app = synth_app();
+        let path = std::env::temp_dir().join(format!(
+            "qos-video-player-open-lifecycle-{}-{}.mp4",
+            std::process::id(),
+            media::now_ms()
+        ));
+        std::fs::write(&path, []).expect("create a portal-equivalent local file");
+        let operation = PlayerOperation::Open {
+            path: Some(path.to_string_lossy().into_owned()),
+        };
+        let payload = serde_json::to_vec(&operation).expect("serialize operation");
+        let invocation = qos_actions::InvocationId::new();
+        let doc = AutoCommit::new();
+        let started = Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::OPERATION_TYPE,
+            &payload,
+            &doc,
+            &root(),
+        )
+        .expect("direct open admits");
+        assert_eq!(
+            started,
+            Some(ui::widget::ResourceOperationStart::Accepted),
+            "path validation is admission, not decoder completion"
+        );
+        assert!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()).is_none()
+        );
+        let mut mutable_doc = doc;
+        app.sync(&mut mutable_doc, &root());
+        assert!(matches!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &mutable_doc, &root()),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn queued_item_uses_the_same_pending_decoder_lifecycle_as_direct_open() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        let item_id = app.queue[1].id.clone();
+        let payload = serde_json::to_vec(&PlayerOperation::OpenQueueItem {
+            item_id: item_id.clone(),
+        })
+        .expect("serialize queue operation");
+        let invocation = qos_actions::InvocationId::new();
+        let mut doc = AutoCommit::new();
+        assert_eq!(
+            Widget::start_resource_operation(
+                &mut app,
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::OPERATION_TYPE,
+                &payload,
+                &doc,
+                &root(),
+            )
+            .expect("queue item admits"),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        assert_eq!(app.current_queue_id.as_deref(), Some(item_id.as_str()));
+        assert!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()).is_none(),
+            "admission is still not a terminal playback success"
+        );
+        app.sync(&mut doc, &root());
+        assert!(matches!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert_eq!(
+            app.recent.front().map(|entry| entry.id.as_str()),
+            Some(item_id.as_str())
+        );
+    }
+
+    #[test]
+    fn admitted_direct_open_reports_a_decoder_timeout_instead_of_false_success() {
+        let mut app = synth_app();
+        let path = std::env::temp_dir().join(format!(
+            "qos-video-player-open-timeout-{}-{}.mp4",
+            std::process::id(),
+            media::now_ms()
+        ));
+        std::fs::write(&path, []).expect("create a portal-equivalent local file");
+        let payload = serde_json::to_vec(&PlayerOperation::Open {
+            path: Some(path.to_string_lossy().into_owned()),
+        })
+        .expect("serialize operation");
+        let invocation = qos_actions::InvocationId::new();
+        let doc = AutoCommit::new();
+        assert_eq!(
+            Widget::start_resource_operation(
+                &mut app,
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::OPERATION_TYPE,
+                &payload,
+                &doc,
+                &root(),
+            )
+            .expect("direct open admits"),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        app.media_open
+            .as_mut()
+            .expect("pending decoder open")
+            .deadline = std::time::Instant::now();
+        assert!(matches!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
+            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+                if error.code == "video_player.open_timed_out"
+        ));
+        assert_eq!(
+            app.open_error.as_deref(),
+            Some("The decoder did not produce a first frame in time.")
+        );
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
