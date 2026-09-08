@@ -2919,7 +2919,7 @@ impl CameraApp {
                 || "this capture".to_string(),
                 |capture| capture.label.clone(),
             );
-        p::fill_rect(scene, t, full, p::alpha(Color::from_rgb8(0, 0, 0), 0.68));
+        p::fill_rect(scene, t, full, theme.tokens.colors.surfaces.scrim);
         self.push_region(full, Action::CancelDelete);
 
         let width = 420.0_f64.min((full.width() - 32.0).max(280.0));
