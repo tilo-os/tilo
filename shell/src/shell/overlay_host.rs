@@ -12997,11 +12997,12 @@ impl ShellOverlayHost {
             .interaction
             .controller
             .unwrap_or(ui::ControllerFamily::Generic);
+        let compact_panel = panel.height() < 560.0;
         let body = Rect::new(
             panel.x0 + 28.0,
-            panel.y0 + 112.0,
+            panel.y0 + if compact_panel { 104.0 } else { 112.0 },
             panel.x1 - 28.0,
-            panel.y1 - 28.0,
+            panel.y1 - if compact_panel { 36.0 } else { 28.0 },
         );
         self.shortcut_binding_rects.clear();
         self.shortcut_reset_rects.clear();
@@ -13218,7 +13219,7 @@ impl ShellOverlayHost {
                 // comfortably readable; the full reference remains available at normal height
                 // and through command search.
                 let reference_columns = if compact { 2 } else { 4 };
-                let navigation_step = if compact { 50.0 } else { 62.0 };
+                let navigation_step = if compact { 47.0 } else { 62.0 };
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
                     let row = index / 2;
@@ -13315,7 +13316,7 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let essentials_y = body.y0 + if compact { 158.0 } else { 196.0 };
+                let essentials_y = body.y0 + if compact { 148.0 } else { 196.0 };
                 text_renderer.draw_text_weighted(
                     scene,
                     "Essential desktop actions",
@@ -13331,8 +13332,8 @@ impl ShellOverlayHost {
                 } else {
                     references.as_slice()
                 };
-                let reference_step = if compact { 32.0 } else { 38.0 };
-                let reference_offset = if compact { 24.0 } else { 28.0 };
+                let reference_step = if compact { 30.0 } else { 38.0 };
+                let reference_offset = if compact { 22.0 } else { 28.0 };
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
                     let reference_columns = reference_columns.max(1);
                     let column = index.checked_rem(reference_columns).unwrap_or_default();
@@ -13380,7 +13381,7 @@ impl ShellOverlayHost {
                     + reference_offset
                     + usize_to_f64_lossy(reference_rows) * reference_step
                     + 6.0;
-                if pointer_y + 34.0 < body.y1 {
+                if pointer_y + 30.0 <= body.y1 {
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -13393,7 +13394,7 @@ impl ShellOverlayHost {
                         "Mouse · click a window · drag tabs or groups to reorder · drag an edge to resize · horizontal scroll moves the view",
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
-                        transform.pre_translate((body.x0, pointer_y + 20.0).into()),
+                        transform.pre_translate((body.x0, pointer_y + 18.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
                     if settings_store::hardware::DesktopControlsConfig::load().vim_mode
@@ -19679,7 +19680,7 @@ mod overlay_event_absorb_tests {
             .borrow_mut()
             .open_workspace_settings(WsTab::General);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x1, 1588.0, "lens docks to the right inset");
+        assert_eq!(lens.x1, 1580.0, "lens docks to the right inset");
         assert!(lens.x0 > 700.0, "workspace remains visible beside {lens:?}");
 
         let workspace_point = Point::new(120.0, 300.0);
@@ -19700,9 +19701,28 @@ mod overlay_event_absorb_tests {
     fn workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs() {
         let h = build_harness_sized(600.0, 700.0);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x0, 12.0);
-        assert_eq!(lens.x1, 588.0);
-        assert_eq!(lens.y1, 688.0);
+        assert_eq!(lens.x0, 20.0);
+        assert_eq!(lens.x1, 580.0);
+        assert_eq!(lens.y1, 680.0);
+    }
+
+    #[test]
+    fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
+        let h = build_harness_sized(960.0, 540.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        let done = h.host.shortcut_help_done_rect();
+        assert_eq!(panel.y0, 20.0);
+        assert_eq!(panel.y1, 520.0);
+        assert!(done.y0 >= panel.y0 + 16.0);
+        assert!(done.y1 <= panel.y1 - 20.0);
+
+        let body_bottom = panel.y1 - 36.0;
+        let compact_pointer_footer_bottom =
+            panel.y0 + 104.0 + 148.0 + 22.0 + 4.0 * 30.0 + 6.0 + 30.0;
+        assert!(
+            compact_pointer_footer_bottom <= body_bottom,
+            "compact help footer must fit without clipping or scrolling: footer={compact_pointer_footer_bottom}, body={body_bottom}"
+        );
     }
 
     #[test]
