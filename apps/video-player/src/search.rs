@@ -56,6 +56,36 @@ impl VideoPlayerSearchProvider {
                 .with_icon(Icon::Play),
             );
         }
+        for item in &ctx.library.queue {
+            let _ = provider.catalog.upsert(
+                crate::actions::queue_item_resource_id(&item.id),
+                format!("{}\0queue\0local video\0play", item.title),
+                SearchResult::for_action(
+                    VIDEO_PLAYER_SEARCH_KIND,
+                    &item.title,
+                    ActionAddress::new(crate::actions::queue_item_resource_id(&item.id), "play"),
+                )
+                .with_subtitle(if item.current {
+                    "Playing on this device"
+                } else {
+                    "Queue · local session"
+                })
+                .with_icon(Icon::Play),
+            );
+        }
+        for item in &ctx.library.recent {
+            let _ = provider.catalog.upsert(
+                crate::actions::recent_item_resource_id(&item.id),
+                format!("{}\0recent history\0local video\0play again", item.title),
+                SearchResult::for_action(
+                    VIDEO_PLAYER_SEARCH_KIND,
+                    &item.title,
+                    ActionAddress::new(crate::actions::recent_item_resource_id(&item.id), "play"),
+                )
+                .with_subtitle("Recent · this device")
+                .with_icon(Icon::Play),
+            );
+        }
         let source_id = ctx.media.source_id.as_deref();
         for track in ctx.audio_tracks {
             let Some(source_id) = source_id else { continue };
@@ -197,6 +227,7 @@ mod tests {
             audio_tracks: &audio,
             subtitle_tracks: &[],
             chapters: &chapters,
+            library: crate::actions::LocalLibraryState::default(),
         };
         let provider = VideoPlayerSearchProvider::new(&context);
         let hits = provider.search("München");
@@ -224,6 +255,48 @@ mod tests {
                     )
             })
         }));
+    }
+
+    #[test]
+    fn local_library_search_uses_opaque_resource_addresses_not_source_paths() {
+        let context = PlayerResourceCtx {
+            title: "No media",
+            media: MediaAvailability {
+                has_media: false,
+                source_id: None,
+                can_control_transport: true,
+            },
+            settings: PlaybackSettingsState {
+                autoplay: true,
+                loop_enabled: false,
+                rate: 1.0,
+            },
+            audio_tracks: &[],
+            subtitle_tracks: &[],
+            chapters: &[],
+            library: crate::actions::LocalLibraryState {
+                queue: vec![crate::actions::LocalMediaItemState {
+                    id: "local-queue-local-media-a1b2-open-0".into(),
+                    title: "Family clip.mp4".into(),
+                    current: false,
+                }],
+                recent: Vec::new(),
+            },
+        };
+        let provider = VideoPlayerSearchProvider::new(&context);
+        let hit = provider
+            .search("Family")
+            .into_iter()
+            .find(|result| result.title == "Family clip.mp4")
+            .expect("queue item search hit");
+        assert_eq!(
+            hit.action_address(),
+            Some(ActionAddress::new(
+                crate::actions::queue_item_resource_id("local-queue-local-media-a1b2-open-0"),
+                "play",
+            ))
+        );
+        assert!(!format!("{hit:?}").contains("/home/"));
     }
 
     #[test]
@@ -255,6 +328,7 @@ mod tests {
             audio_tracks: &audio,
             subtitle_tracks: &[],
             chapters: &[],
+            library: crate::actions::LocalLibraryState::default(),
         };
         let provider = VideoPlayerSearchProvider::new(&context);
         let first = provider.search_page("Ωmega", None, 64, 4);
