@@ -682,6 +682,7 @@ pub struct UpdatesPane {
     /// must surface here, not only in the journal.
     notice: Option<String>,
     dispatched_restart: bool,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
@@ -739,6 +740,7 @@ impl UpdatesPane {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             structure_dirty: false,
             composed: None,
@@ -813,6 +815,7 @@ impl UpdatesPane {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             structure_dirty: false,
             composed: None,
@@ -823,6 +826,63 @@ impl UpdatesPane {
     /// Is the machine's update timer on, as this pane last read it?
     pub fn timer_enabled(&self) -> Option<bool> {
         self.timer_enabled
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "call sites construct the exact operation whose token must be reported"
+    )]
+    fn operation_succeeded(
+        &self,
+        operation: crate::actions::UpdateOperation,
+        message: impl Into<String>,
+    ) {
+        let token = Self::operation_token(&operation);
+        if matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        ) {
+            self.operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token,
+                    message: message.into(),
+                });
+        }
+    }
+
+    fn operation_token(operation: &crate::actions::UpdateOperation) -> String {
+        crate::actions::local_operation_token_for(crate::actions::UPDATE_OPERATION_TYPE, operation)
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "call sites construct the exact operation whose token must be reported"
+    )]
+    fn operation_failed(
+        &self,
+        operation: crate::actions::UpdateOperation,
+        message: impl Into<String>,
+    ) {
+        let token = Self::operation_token(&operation);
+        if matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        ) {
+            self.operation_status
+                .set(crate::actions::LocalOperationStatus::Failed {
+                    token,
+                    message: message.into(),
+                });
+        }
     }
 
     /// The message currently shown in the pane, if any.
@@ -1327,11 +1387,19 @@ impl UpdatesPane {
                         });
                         self.firmware_updates = os_actions::get_firmware_updates();
                         self.firmware_history = os_actions::get_firmware_history();
+                        self.operation_succeeded(
+                            crate::actions::UpdateOperation::InstallFirmware,
+                            "firmware installation finished",
+                        );
                         finished = true;
                     }
                     os_actions::FirmwareEvent::Failed(error) => {
                         self.firmware_state = FirmwareUiState::Idle;
                         self.notice = Some(format!("Firmware installation failed: {error}"));
+                        self.operation_failed(
+                            crate::actions::UpdateOperation::InstallFirmware,
+                            format!("Firmware installation failed: {error}"),
+                        );
                         finished = true;
                     }
                 }
@@ -1354,6 +1422,10 @@ impl UpdatesPane {
                 self.check_events = None;
                 self.check_pending = false;
                 self.notice = Some("Updates could not be checked: worker stopped".into());
+                self.operation_failed(
+                    crate::actions::UpdateOperation::Check,
+                    "update check worker stopped",
+                );
                 self.structure_dirty = true;
                 return;
             }
@@ -1369,9 +1441,17 @@ impl UpdatesPane {
                 self.last_prefs.last_checked = self.prefs.last_checked.clone();
                 self.notice = None;
                 self.persist();
+                self.operation_succeeded(
+                    crate::actions::UpdateOperation::Check,
+                    "update check finished",
+                );
             }
             Err(error) => {
                 self.notice = Some(format!("Updates could not be checked: {error}"));
+                self.operation_failed(
+                    crate::actions::UpdateOperation::Check,
+                    format!("Updates could not be checked: {error}"),
+                );
             }
         }
         self.structure_dirty = true;
@@ -1391,6 +1471,10 @@ impl UpdatesPane {
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
                 self.notice = Some(format!("Firmware metadata could not be refreshed: {error}"));
+                self.operation_failed(
+                    crate::actions::UpdateOperation::RefreshFirmware,
+                    format!("Firmware metadata could not be refreshed: {error}"),
+                );
                 self.structure_dirty = true;
                 return;
             }
@@ -1402,11 +1486,19 @@ impl UpdatesPane {
                 self.firmware_updates = Ok(updates);
                 self.firmware_history = Ok(history);
                 self.notice = None;
+                self.operation_succeeded(
+                    crate::actions::UpdateOperation::RefreshFirmware,
+                    "firmware metadata refreshed",
+                );
             }
             Err(error) => {
                 self.firmware_updates = Err(error.clone());
                 self.firmware_history = Err(error.clone());
                 self.notice = Some(format!("Firmware metadata could not be refreshed: {error}"));
+                self.operation_failed(
+                    crate::actions::UpdateOperation::RefreshFirmware,
+                    format!("Firmware metadata could not be refreshed: {error}"),
+                );
             }
         }
         self.structure_dirty = true;
@@ -1458,6 +1550,10 @@ impl UpdatesPane {
         }
         let _ = state.put(root, CHECK_KEY, automerge::ScalarValue::Boolean(false));
         if self.check_pending {
+            self.operation_failed(
+                crate::actions::UpdateOperation::Check,
+                "an update check is already running",
+            );
             self.structure_dirty = true;
             return;
         }
@@ -1481,6 +1577,10 @@ impl UpdatesPane {
             .is_err()
         {
             self.notice = Some("Updates could not be checked: worker could not start".into());
+            self.operation_failed(
+                crate::actions::UpdateOperation::Check,
+                "update check worker could not start",
+            );
         } else {
             self.check_events = Some(rx);
             self.check_pending = true;
@@ -1498,6 +1598,10 @@ impl UpdatesPane {
             automerge::ScalarValue::Boolean(false),
         );
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
+            self.operation_failed(
+                crate::actions::UpdateOperation::RefreshFirmware,
+                "firmware work is already in progress",
+            );
             self.structure_dirty = true;
             return;
         }
@@ -1515,6 +1619,10 @@ impl UpdatesPane {
         {
             self.notice =
                 Some("Firmware metadata could not be refreshed: worker could not start".into());
+            self.operation_failed(
+                crate::actions::UpdateOperation::RefreshFirmware,
+                "firmware refresh worker could not start",
+            );
         } else {
             self.firmware_refresh_events = Some(rx);
             self.firmware_refresh_pending = true;
@@ -1533,6 +1641,10 @@ impl UpdatesPane {
         );
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
             self.notice = Some("Firmware work is already in progress".into());
+            self.operation_failed(
+                crate::actions::UpdateOperation::InstallFirmware,
+                "firmware work is already in progress",
+            );
             self.structure_dirty = true;
             return;
         }
@@ -1552,6 +1664,10 @@ impl UpdatesPane {
             }
             Err(e) => {
                 self.notice = Some(format!("Firmware upgrades could not be installed: {e}"));
+                self.operation_failed(
+                    crate::actions::UpdateOperation::InstallFirmware,
+                    format!("Firmware upgrades could not be installed: {e}"),
+                );
             }
         }
         self.structure_dirty = true;
@@ -1567,6 +1683,17 @@ impl UpdatesPane {
             self.dispatched_restart = true;
             if let Err(e) = self.rebooter.reboot() {
                 warn!(target: "qos::settings", op = "reboot", error = %e, "restart & update failed");
+                self.notice = Some(format!("Restarting into the staged update failed: {e}"));
+                self.operation_failed(
+                    crate::actions::UpdateOperation::Restart,
+                    format!("Restarting into the staged update failed: {e}"),
+                );
+                self.structure_dirty = true;
+            } else {
+                self.operation_succeeded(
+                    crate::actions::UpdateOperation::Restart,
+                    "restart command accepted by the system",
+                );
             }
         }
     }
@@ -1621,16 +1748,32 @@ impl UpdatesPane {
         let Some(requested) = read_str(state, root, SCHEDULE_KEY) else {
             return;
         };
+        let operation = crate::actions::UpdateOperation::SetSchedule {
+            schedule: requested.clone(),
+        };
         if requested == current || !UPDATE_SCHEDULES.contains(&requested.as_str()) {
+            if requested == current {
+                self.operation_succeeded(operation, "update schedule was already selected");
+            } else {
+                self.operation_failed(operation, "unsupported update schedule");
+            }
             return;
         }
         match self.control.set_schedule(&requested) {
             Ok(()) => {
-                self.schedule = self.control.schedule().or(Some(requested));
+                self.schedule = match self.control.schedule() {
+                    Some(schedule) => Some(schedule),
+                    None => Some(requested),
+                };
                 self.notice = None;
+                self.operation_succeeded(operation, "update schedule changed");
             }
             Err(error) => {
                 self.notice = Some(format!("Download schedule could not be changed: {error}"));
+                self.operation_failed(
+                    operation,
+                    format!("Download schedule could not be changed: {error}"),
+                );
                 let _ = state.put(root, SCHEDULE_KEY, current);
             }
         }
@@ -1645,17 +1788,29 @@ impl UpdatesPane {
             return;
         };
         if requested == current {
+            self.operation_succeeded(
+                crate::actions::UpdateOperation::SetMetered { allowed: requested },
+                "metered-network policy was already selected",
+            );
             return;
         }
         match self.control.set_allow_metered(requested) {
             Ok(()) => {
                 self.allow_metered = self.control.allow_metered().or(Some(requested));
                 self.notice = None;
+                self.operation_succeeded(
+                    crate::actions::UpdateOperation::SetMetered { allowed: requested },
+                    "metered-network policy changed",
+                );
             }
             Err(error) => {
                 self.notice = Some(format!(
                     "Metered-network policy could not be changed: {error}"
                 ));
+                self.operation_failed(
+                    crate::actions::UpdateOperation::SetMetered { allowed: requested },
+                    format!("Metered-network policy could not be changed: {error}"),
+                );
                 let _ = state.put(root, METERED_KEY, current);
             }
         }
@@ -1668,6 +1823,10 @@ impl UpdatesPane {
             let _ = state.put(root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(false));
             self.rollback_armed = true;
             self.notice = None;
+            self.operation_succeeded(
+                crate::actions::UpdateOperation::ReviewRollback,
+                "rollback details opened",
+            );
             self.structure_dirty = true;
         }
         if read_bool(state, root, ROLLBACK_CONFIRM_KEY) {
@@ -1688,10 +1847,18 @@ impl UpdatesPane {
                     // The target moves once the order changes, so re-read it
                     // rather than showing the value from before the action.
                     self.rollback_target = self.control.rollback_target();
+                    self.operation_succeeded(
+                        crate::actions::UpdateOperation::Rollback,
+                        "previous system image selected for next boot",
+                    );
                 }
                 Err(e) => {
                     warn!(target: "qos::settings", op = "rollback", error = %e, "rollback failed");
                     self.notice = Some(format!("Rolling back failed: {e}"));
+                    self.operation_failed(
+                        crate::actions::UpdateOperation::Rollback,
+                        format!("Rolling back failed: {e}"),
+                    );
                 }
             }
             self.structure_dirty = true;
