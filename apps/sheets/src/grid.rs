@@ -41,6 +41,40 @@ const MAX_AUTOFIT_W: f64 = DEFAULT_COL_W * 3.0;
 /// Always-visible, touch-friendly grid scrollbar rail/target thickness.
 const SCROLLBAR_THICKNESS: f64 = 16.0;
 const SCROLLBAR_MIN_THUMB: f64 = 28.0;
+/// Assistive technology receives only the on-screen virtual window. This
+/// keeps the semantic tree proportional to a frame, even for a full-size
+/// workbook, while the row/column positions below still describe its place in
+/// the complete grid.
+const A11Y_FALLBACK_COLS: u32 = 8;
+const A11Y_FALLBACK_ROWS: u32 = 24;
+
+/// A bounded, rendered slice of the grid for the custom-canvas accessibility
+/// adapter. The app turns this into `AccessNode`s because it owns the
+/// worksheet's display formatting and document-level semantics.
+#[derive(Clone, Debug)]
+pub(crate) struct AccessibleGridWindow {
+    pub columns: Vec<u32>,
+    pub rows: Vec<AccessibleGridRow>,
+    pub total_columns: u32,
+    pub total_rows: u32,
+    pub bounds: Rect,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AccessibleGridRow {
+    pub index: u32,
+    pub bounds: Rect,
+    pub cells: Vec<AccessibleGridCell>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AccessibleGridCell {
+    pub addr: Addr,
+    pub bounds: Rect,
+    pub raw: String,
+    pub display: String,
+    pub selected: bool,
+}
 
 /// A mutation the grid wants applied to the document by the app.
 #[derive(Clone, Debug)]
@@ -437,6 +471,82 @@ impl Grid {
         self.raw.get(&self.active).cloned().unwrap_or_default()
     }
 
+    /// Return the viewport-sized semantic model for screen readers. Unlike a
+    /// naive table export, this never walks every row/cell in a workbook: an
+    /// unopened million-row sheet contributes only the visible window. Before
+    /// the first layout, retain a small window around the active cell so an AT
+    /// can still describe and focus the current cell during startup.
+    pub(crate) fn accessibility_window(&self) -> AccessibleGridWindow {
+        let columns = if self.has_layout() {
+            self.visible_cols()
+        } else {
+            bounded_window(self.active.0, self.n_cols, A11Y_FALLBACK_COLS)
+        };
+        let row_indices = if self.has_layout() {
+            self.visible_rows()
+        } else {
+            bounded_window(self.active.1, self.n_rows, A11Y_FALLBACK_ROWS)
+        };
+        let rows = row_indices
+            .into_iter()
+            .map(|row| {
+                let cells = columns
+                    .iter()
+                    .copied()
+                    .map(|col| {
+                        let addr = (col, row);
+                        let raw = self.raw.get(&addr).cloned().unwrap_or_default();
+                        let display = if self.show_formulas && !raw.is_empty() {
+                            raw.clone()
+                        } else {
+                            self.values.get(&addr).map_or_else(String::new, |value| {
+                                format_value(
+                                    value,
+                                    self.fmt.get(&addr).copied().unwrap_or_default(),
+                                )
+                            })
+                        };
+                        AccessibleGridCell {
+                            addr,
+                            bounds: self.cell_screen_rect(col, row),
+                            raw,
+                            display,
+                            selected: self.cell_is_selected(addr),
+                        }
+                    })
+                    .collect();
+                AccessibleGridRow {
+                    index: row,
+                    bounds: Rect::new(
+                        self.rect.x0,
+                        self.cell_screen_rect(0, row).y0,
+                        self.rect.x1,
+                        self.cell_screen_rect(0, row).y1,
+                    ),
+                    cells,
+                }
+            })
+            .collect();
+        AccessibleGridWindow {
+            columns,
+            rows,
+            total_columns: self.n_cols,
+            total_rows: self.n_rows,
+            bounds: self.rect,
+        }
+    }
+
+    fn cell_is_selected(&self, addr: Addr) -> bool {
+        self.extra_ranges
+            .iter()
+            .copied()
+            .chain(std::iter::once(self.current_range()))
+            .any(|range| {
+                let (c0, r0, c1, r1) = range.bounds();
+                addr.0 >= c0 && addr.0 <= c1 && addr.1 >= r0 && addr.1 <= r1
+            })
+    }
+
     /// The live (in-progress / most-recent) selection range.
     fn current_range(&self) -> SelRange {
         SelRange {
@@ -771,34 +881,34 @@ impl Grid {
 
     /// Visible column indices given the current scroll + body width.
     fn visible_cols(&self) -> Vec<u32> {
-        let mut out = Vec::new();
-        let mut x = self.grid_x0() - self.scroll_x;
-        for c in 0..self.n_cols {
-            let w = self.col_w(c);
-            if x + w > self.grid_x0() - 0.5 && x < self.rect.x1 {
-                out.push(c);
-            }
-            x += w;
-            if x >= self.rect.x1 {
-                break;
-            }
-        }
-        out
+        let body = self.body_rect();
+        let start = self
+            .col_x
+            .partition_point(|&x| x <= self.scroll_x)
+            .saturating_sub(1)
+            .min(self.n_cols as usize);
+        let end = self
+            .col_x
+            .partition_point(|&x| x < self.scroll_x + body.width())
+            .min(self.n_cols as usize);
+        (start..end)
+            .filter_map(|index| u32::try_from(index).ok())
+            .collect()
     }
     fn visible_rows(&self) -> Vec<u32> {
-        let mut out = Vec::new();
-        let mut y = self.grid_y0() - self.scroll_y;
-        for r in 0..self.n_rows {
-            let h = self.row_h(r);
-            if y + h > self.grid_y0() - 0.5 && y < self.rect.y1 {
-                out.push(r);
-            }
-            y += h;
-            if y >= self.rect.y1 {
-                break;
-            }
-        }
-        out
+        let body = self.body_rect();
+        let start = self
+            .row_y
+            .partition_point(|&y| y <= self.scroll_y)
+            .saturating_sub(1)
+            .min(self.n_rows as usize);
+        let end = self
+            .row_y
+            .partition_point(|&y| y < self.scroll_y + body.height())
+            .min(self.n_rows as usize);
+        (start..end)
+            .filter_map(|index| u32::try_from(index).ok())
+            .collect()
     }
 
     /// Map a screen point to a cell, or `None` if it's over a header/corner.
@@ -2595,6 +2705,22 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     }
 }
 
+/// A small, active-cell-centred interval used before the grid has received a
+/// layout. Saturating arithmetic keeps an outlying active cell inside the
+/// published slice without making a startup accessibility request expensive.
+fn bounded_window(active: u32, total: u32, limit: u32) -> Vec<u32> {
+    if total == 0 || limit == 0 {
+        return Vec::new();
+    }
+    let take = total.min(limit);
+    let half = take / 2;
+    let start = active
+        .min(total.saturating_sub(1))
+        .saturating_sub(half)
+        .min(total.saturating_sub(take));
+    (start..start.saturating_add(take)).collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -3077,5 +3203,56 @@ mod tests {
         g.add_range_public((7, 8), (7, 8)); // H9
         assert!(g.col_in_selection(7) && g.row_in_selection(8));
         assert!(g.col_in_selection(2), "original range headers stay lit");
+    }
+
+    #[test]
+    fn accessibility_window_is_viewport_bounded_and_marks_selection() {
+        let mut g = grid_with(&[((1, 1), CellValue::Number(42.0))]);
+        g.raw.insert((1, 1), "42".into());
+        g.select_only((1, 1));
+        let window = g.accessibility_window();
+        assert!(window.columns.len() < g.n_cols as usize);
+        assert!(window.rows.len() < g.n_rows as usize);
+        let active = window
+            .rows
+            .iter()
+            .flat_map(|row| &row.cells)
+            .find(|cell| cell.addr == (1, 1))
+            .expect("visible active cell");
+        assert_eq!(active.display, "42");
+        assert!(active.selected);
+    }
+
+    #[test]
+    fn accessibility_window_before_layout_stays_small_near_active_cell() {
+        let mut g = Grid::new();
+        g.select_only((40, 180));
+        let window = g.accessibility_window();
+        assert!(window.columns.len() <= A11Y_FALLBACK_COLS as usize);
+        assert!(window.rows.len() <= A11Y_FALLBACK_ROWS as usize);
+        assert!(
+            window
+                .rows
+                .iter()
+                .flat_map(|row| &row.cells)
+                .any(|cell| cell.addr == (40, 180))
+        );
+    }
+
+    #[test]
+    fn visible_window_at_workbook_limits_is_small_and_reaches_the_end() {
+        let mut g = Grid::new();
+        g.n_cols = 16_384;
+        g.n_rows = 1_048_576;
+        g.rebuild_geom();
+        g.rect = Rect::new(0.0, 0.0, 280.0, 180.0);
+        g.scroll_x = g.max_scroll_x();
+        g.scroll_y = g.max_scroll_y();
+
+        let columns = g.visible_cols();
+        let rows = g.visible_rows();
+        assert!(columns.len() < 8 && rows.len() < 12);
+        assert_eq!(columns.last().copied(), Some(g.n_cols - 1));
+        assert_eq!(rows.last().copied(), Some(g.n_rows - 1));
     }
 }

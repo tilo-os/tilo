@@ -35,10 +35,104 @@ pub struct SheetSnapshot {
     pub fmt: std::collections::HashMap<Addr, CellFormat>,
 }
 
+/// The first chart set deliberately stays compact: it is sufficient for the
+/// common trend/comparison workflows while keeping every chart a bounded CRDT
+/// record rather than an opaque rendering blob.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChartKind {
+    Column,
+    Line,
+}
+
+impl ChartKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Column => "column",
+            Self::Line => "line",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "column" => Self::Column,
+            "line" => Self::Line,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChartSnapshot {
+    pub id: String,
+    pub title: String,
+    pub kind: ChartKind,
+    pub start: Addr,
+    pub end: Addr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommentReply {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommentThread {
+    pub id: String,
+    pub start: Addr,
+    pub end: Addr,
+    pub author: String,
+    pub body: String,
+    pub resolved: bool,
+    pub replies: Vec<CommentReply>,
+}
+
 /// Stateless namespace of workbook document helpers.
 pub struct SheetsDoc;
 
 impl SheetsDoc {
+    /// Annotation roots are created with every sheet.  In particular they are
+    /// *not* lazy: two peers adding the first chart/comment from the same
+    /// empty sheet must write into the same already-replicated map, rather
+    /// than racing to install incompatible child objects at one map key.
+    fn seed_annotation_roots(doc: &mut AutoCommit, sheet: &ObjId) {
+        let _ = doc.put_object(sheet, "charts", ObjType::Map);
+        let _ = doc.put_object(sheet, "comments", ObjType::Map);
+        // Replies are records keyed by their own UUID and point at a parent
+        // thread. Keeping them beside comments avoids a concurrent first
+        // reply racing to create a nested `replies` object.
+        let _ = doc.put_object(sheet, "comment_replies", ObjType::Map);
+    }
+
+    /// Return every visible object for a key, including Automerge conflict
+    /// branches.  Old workbooks could have lazily-created annotation maps;
+    /// retaining all branches when materialising makes their already-merged
+    /// data durable and visible while fresh sheets use the eager single root.
+    fn map_values(doc: &AutoCommit, parent: &ObjId, key: &str) -> Vec<ObjId> {
+        doc.get_all(parent, key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
+            .collect()
+    }
+
+    fn annotation_map(doc: &mut AutoCommit, idx: usize, key: &str) -> Option<ObjId> {
+        let sheet = Self::sheet_map(doc, idx)?;
+        if let Some(map) = Self::map_values(doc, &sheet, key).into_iter().next() {
+            Some(map)
+        } else {
+            // Legacy workbook migration. A simultaneous migration can leave
+            // multiple maps, which `map_values` above deliberately reads.
+            Some(Self::put_object_or_panic(doc, &sheet, key, ObjType::Map))
+        }
+    }
+
+    fn annotation_maps(doc: &mut AutoCommit, idx: usize, key: &str) -> Vec<ObjId> {
+        let Some(sheet) = Self::sheet_map(doc, idx) else {
+            return Vec::new();
+        };
+        Self::map_values(doc, &sheet, key)
+    }
     fn cell_key(addr: Addr) -> String {
         format!("{},{}", addr.0, addr.1)
     }
@@ -223,6 +317,7 @@ impl SheetsDoc {
         );
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
+        Self::seed_annotation_roots(doc, &sheet);
         idx
     }
 
@@ -260,6 +355,7 @@ impl SheetsDoc {
         );
         let _ = doc.put(&sheet, "name", name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);
+        Self::seed_annotation_roots(doc, &sheet);
         at
     }
 
@@ -297,6 +393,7 @@ impl SheetsDoc {
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, new_idx, *addr, *fmt);
         }
+        Self::copy_annotations(doc, idx, new_idx);
         if let Some(c) = color {
             Self::set_sheet_color(doc, new_idx, Some(c));
         }
@@ -313,6 +410,8 @@ impl SheetsDoc {
         let snap = Self::snapshot_sheet(doc, from, Currency::USD);
         let color = Self::sheet_color(doc, from);
         let resource_id = Self::sheet_resource_id(doc, from);
+        let charts = Self::charts(doc, from);
+        let comments = Self::comments(doc, from);
         let sheets = Self::sheets_list(doc);
         let _ = doc.delete(&sheets, from);
         let insert_at = to.min(len - 1);
@@ -327,6 +426,12 @@ impl SheetsDoc {
         }
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, insert_at, *addr, *fmt);
+        }
+        for chart in charts {
+            Self::put_chart(doc, insert_at, &chart);
+        }
+        for thread in comments {
+            Self::put_comment(doc, insert_at, &thread);
         }
         if let Some(c) = color {
             Self::set_sheet_color(doc, insert_at, Some(c));
@@ -501,6 +606,306 @@ impl SheetsDoc {
         }
     }
 
+    /// Upsert one stable chart record. Actions preflight all fields before this
+    /// method runs, so identical replay emits the same scalar writes.
+    pub fn put_chart(doc: &mut AutoCommit, idx: usize, chart: &ChartSnapshot) {
+        let Some(charts) = Self::annotation_map(doc, idx, "charts") else {
+            return;
+        };
+        let chart_obj = match doc.get(&charts, chart.id.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => Self::put_object_or_panic(doc, &charts, chart.id.as_str(), ObjType::Map),
+        };
+        let _ = doc.put(&chart_obj, "title", &chart.title);
+        let _ = doc.put(&chart_obj, "kind", chart.kind.code());
+        let _ = doc.put(&chart_obj, "c0", i64::from(chart.start.0));
+        let _ = doc.put(&chart_obj, "r0", i64::from(chart.start.1));
+        let _ = doc.put(&chart_obj, "c1", i64::from(chart.end.0));
+        let _ = doc.put(&chart_obj, "r1", i64::from(chart.end.1));
+    }
+
+    pub fn delete_chart(doc: &mut AutoCommit, idx: usize, id: &str) {
+        for charts in Self::annotation_maps(doc, idx, "charts") {
+            let _ = doc.delete(&charts, id);
+        }
+    }
+
+    pub fn charts(doc: &mut AutoCommit, idx: usize) -> Vec<ChartSnapshot> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for charts in Self::annotation_maps(doc, idx, "charts") {
+            for id in doc.keys(&charts) {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), chart))) = doc.get(&charts, id.as_str())
+                else {
+                    continue;
+                };
+                let value = |key: &str| Self::read_str(doc, &chart, key);
+                let number = |key: &str| {
+                    doc.get(&chart, key)
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| match v {
+                            Value::Scalar(v) => v.to_i64(),
+                            Value::Object(_) => None,
+                        })
+                        .and_then(|v| u32::try_from(v).ok())
+                };
+                let (Some(title), Some(kind), Some(c0), Some(r0), Some(c1), Some(r1)) = (
+                    value("title"),
+                    value("kind").and_then(|v| ChartKind::parse(&v)),
+                    number("c0"),
+                    number("r0"),
+                    number("c1"),
+                    number("r1"),
+                ) else {
+                    continue;
+                };
+                out.push(ChartSnapshot {
+                    id,
+                    title,
+                    kind,
+                    start: (c0, r0),
+                    end: (c1, r1),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    pub fn put_comment(doc: &mut AutoCommit, idx: usize, thread: &CommentThread) {
+        let Some(comments) = Self::annotation_map(doc, idx, "comments") else {
+            return;
+        };
+        let object = match doc.get(&comments, thread.id.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => Self::put_object_or_panic(doc, &comments, thread.id.as_str(), ObjType::Map),
+        };
+        let _ = doc.put(&object, "author", &thread.author);
+        let _ = doc.put(&object, "body", &thread.body);
+        let _ = doc.put(&object, "resolved", thread.resolved);
+        let _ = doc.put(&object, "c0", i64::from(thread.start.0));
+        let _ = doc.put(&object, "r0", i64::from(thread.start.1));
+        let _ = doc.put(&object, "c1", i64::from(thread.end.0));
+        let _ = doc.put(&object, "r1", i64::from(thread.end.1));
+        for reply in &thread.replies {
+            Self::put_comment_reply(doc, idx, &thread.id, reply);
+        }
+    }
+
+    /// Append/update a reply in the eager sheet-level reply map. The stable
+    /// reply UUID means concurrent first replies never compete for a nested
+    /// child-map key and therefore both survive a merge.
+    pub fn put_comment_reply(
+        doc: &mut AutoCommit,
+        idx: usize,
+        parent_id: &str,
+        reply: &CommentReply,
+    ) {
+        let Some(replies) = Self::annotation_map(doc, idx, "comment_replies") else {
+            return;
+        };
+        let object = match doc.get(&replies, reply.id.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => Self::put_object_or_panic(doc, &replies, reply.id.as_str(), ObjType::Map),
+        };
+        let _ = doc.put(&object, "parent_id", parent_id);
+        let _ = doc.put(&object, "author", &reply.author);
+        let _ = doc.put(&object, "body", &reply.body);
+    }
+
+    pub fn set_comment_resolved(doc: &mut AutoCommit, idx: usize, id: &str, resolved: bool) {
+        for comments in Self::annotation_maps(doc, idx, "comments") {
+            if let Ok(Some((Value::Object(ObjType::Map), object))) = doc.get(&comments, id) {
+                let _ = doc.put(&object, "resolved", resolved);
+            }
+        }
+    }
+
+    pub fn edit_comment_body(doc: &mut AutoCommit, idx: usize, id: &str, body: &str) {
+        for comments in Self::annotation_maps(doc, idx, "comments") {
+            if let Ok(Some((Value::Object(ObjType::Map), object))) = doc.get(&comments, id) {
+                let _ = doc.put(&object, "body", body);
+            }
+        }
+    }
+
+    pub fn delete_comment(doc: &mut AutoCommit, idx: usize, id: &str) {
+        for comments in Self::annotation_maps(doc, idx, "comments") {
+            let _ = doc.delete(&comments, id);
+        }
+        // Replies are independent records in the current schema; remove the
+        // whole thread in the same deterministic action.
+        for replies in Self::annotation_maps(doc, idx, "comment_replies") {
+            let ids: Vec<String> = doc.keys(&replies).collect();
+            for reply_id in ids {
+                if let Ok(Some((Value::Object(ObjType::Map), reply))) =
+                    doc.get(&replies, reply_id.as_str())
+                    && Self::read_str(doc, &reply, "parent_id").as_deref() == Some(id)
+                {
+                    let _ = doc.delete(&replies, reply_id);
+                }
+            }
+        }
+    }
+
+    pub fn comments(doc: &mut AutoCommit, idx: usize) -> Vec<CommentThread> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for comments in Self::annotation_maps(doc, idx, "comments") {
+            for id in doc.keys(&comments) {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), object))) =
+                    doc.get(&comments, id.as_str())
+                else {
+                    continue;
+                };
+                let value = |key: &str| Self::read_str(doc, &object, key);
+                let number = |key: &str| {
+                    doc.get(&object, key)
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| match v {
+                            Value::Scalar(v) => v.to_i64(),
+                            Value::Object(_) => None,
+                        })
+                        .and_then(|v| u32::try_from(v).ok())
+                };
+                let resolved = matches!(doc.get(&object, "resolved"), Ok(Some((Value::Scalar(v), _))) if v.to_bool().unwrap_or(false));
+                let (Some(author), Some(body), Some(c0), Some(r0), Some(c1), Some(r1)) = (
+                    value("author"),
+                    value("body"),
+                    number("c0"),
+                    number("r0"),
+                    number("c1"),
+                    number("r1"),
+                ) else {
+                    continue;
+                };
+                let mut replies = Vec::new();
+                // Legacy nested replies remain materialised; no migration write
+                // is required merely to read an older collaborative document.
+                if let Ok(Some((Value::Object(ObjType::Map), reply_map))) =
+                    doc.get(&object, "replies")
+                {
+                    for reply_id in doc.keys(&reply_map) {
+                        if let Ok(Some((Value::Object(ObjType::Map), reply))) =
+                            doc.get(&reply_map, reply_id.as_str())
+                            && let (Some(author), Some(body)) = (
+                                Self::read_str(doc, &reply, "author"),
+                                Self::read_str(doc, &reply, "body"),
+                            )
+                        {
+                            replies.push(CommentReply {
+                                id: reply_id,
+                                author,
+                                body,
+                            });
+                        }
+                    }
+                }
+                replies.sort_by(|a, b| a.id.cmp(&b.id));
+                out.push(CommentThread {
+                    id,
+                    start: (c0, r0),
+                    end: (c1, r1),
+                    author,
+                    body,
+                    resolved,
+                    replies,
+                });
+            }
+        }
+        // Current-schema replies are independently-addressable records under
+        // the eager root. Read every conflicting legacy migration branch.
+        let mut seen_replies = std::collections::HashSet::new();
+        for reply_map in Self::annotation_maps(doc, idx, "comment_replies") {
+            for reply_id in doc.keys(&reply_map) {
+                if !seen_replies.insert(reply_id.clone()) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), reply))) =
+                    doc.get(&reply_map, reply_id.as_str())
+                else {
+                    continue;
+                };
+                let (Some(parent_id), Some(author), Some(body)) = (
+                    Self::read_str(doc, &reply, "parent_id"),
+                    Self::read_str(doc, &reply, "author"),
+                    Self::read_str(doc, &reply, "body"),
+                ) else {
+                    continue;
+                };
+                if let Some(thread) = out.iter_mut().find(|thread| thread.id == parent_id) {
+                    thread.replies.push(CommentReply {
+                        id: reply_id,
+                        author,
+                        body,
+                    });
+                }
+            }
+        }
+        for thread in &mut out {
+            thread.replies.sort_by(|a, b| a.id.cmp(&b.id));
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    fn copy_annotations(doc: &mut AutoCommit, from: usize, to: usize) {
+        for chart in Self::charts(doc, from) {
+            Self::put_chart(doc, to, &chart);
+        }
+        for thread in Self::comments(doc, from) {
+            Self::put_comment(doc, to, &thread);
+        }
+    }
+
+    /// Rebase every annotation anchor through a row/column structural map.
+    /// An inserted/deleted cell never leaves a chart or comment pointing at a
+    /// stale coordinate; a deleted endpoint clamps to the closest surviving
+    /// point and a fully-deleted one-cell anchor is dropped.
+    pub fn remap_annotation_anchors(
+        doc: &mut AutoCommit,
+        idx: usize,
+        map: impl Fn(Addr) -> Option<Addr>,
+    ) {
+        let charts = Self::charts(doc, idx);
+        for mut chart in charts {
+            let (Some(start), Some(end)) = (map(chart.start), map(chart.end)) else {
+                Self::delete_chart(doc, idx, &chart.id);
+                continue;
+            };
+            chart.start = (start.0.min(end.0), start.1.min(end.1));
+            chart.end = (start.0.max(end.0), start.1.max(end.1));
+            Self::put_chart(doc, idx, &chart);
+        }
+        for mut thread in Self::comments(doc, idx) {
+            let (Some(start), Some(end)) = (map(thread.start), map(thread.end)) else {
+                // Keep the discussion available when only one corner was
+                // removed; it follows the surviving end instead of silently
+                // evaporating an audit trail.
+                let survivor = map(thread.start).or_else(|| map(thread.end));
+                let Some(anchor) = survivor else {
+                    Self::delete_comment(doc, idx, &thread.id);
+                    continue;
+                };
+                thread.start = anchor;
+                thread.end = anchor;
+                Self::put_comment(doc, idx, &thread);
+                continue;
+            };
+            thread.start = (start.0.min(end.0), start.1.min(end.1));
+            thread.end = (start.0.max(end.0), start.1.max(end.1));
+            Self::put_comment(doc, idx, &thread);
+        }
+    }
+
     /// Snapshot one sheet (raw inputs + formats + name) for rendering.
     /// `default_currency` seeds any stored currency format whose subtype is
     /// missing (legacy data) — fresh formats always carry their own.
@@ -584,6 +989,7 @@ fn time_style_code(s: TimeStyle) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ActorId;
 
     #[test]
     fn seed_and_snapshot_round_trip() {
@@ -699,5 +1105,200 @@ mod tests {
         // A's content survived the move.
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 0)), "keep");
         assert_eq!(SheetsDoc::sheet_resource_id(&doc, 1), Some(stable));
+    }
+
+    #[test]
+    fn charts_and_threads_are_durable_sheet_records() {
+        let mut doc = AutoCommit::new();
+        let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
+        let chart = ChartSnapshot {
+            id: "2cc2d8ba-bc65-4e98-966a-7d0ecb4ac00e".into(),
+            title: "Trend".into(),
+            kind: ChartKind::Line,
+            start: (0, 0),
+            end: (2, 4),
+        };
+        SheetsDoc::put_chart(&mut doc, sheet, &chart);
+        assert_eq!(SheetsDoc::charts(&mut doc, sheet), vec![chart]);
+        let thread = CommentThread {
+            id: "f9448d08-3b4a-4a7a-8e60-5259f8b67454".into(),
+            start: (1, 1),
+            end: (2, 1),
+            author: "Alex".into(),
+            body: "Review this".into(),
+            resolved: false,
+            replies: vec![CommentReply {
+                id: "4eb25e43-28e8-4255-98f4-8bd5b89b2f26".into(),
+                author: "Sam".into(),
+                body: "On it".into(),
+            }],
+        };
+        SheetsDoc::put_comment(&mut doc, sheet, &thread);
+        SheetsDoc::set_comment_resolved(&mut doc, sheet, &thread.id, true);
+        let threads = SheetsDoc::comments(&mut doc, sheet);
+        assert_eq!(threads[0].replies, thread.replies);
+        assert!(threads[0].resolved);
+    }
+
+    #[test]
+    fn concurrent_first_annotations_and_replies_survive_merge_and_reload() {
+        let mut a = AutoCommit::new();
+        let sheet = SheetsDoc::add_sheet(&mut a, "Data");
+        let thread = CommentThread {
+            id: "00000000-0000-4000-8000-000000000003".into(),
+            start: (0, 0),
+            end: (0, 0),
+            author: "Alex".into(),
+            body: "Review".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        SheetsDoc::put_comment(&mut a, sheet, &thread);
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).expect("base loads");
+        b.set_actor(ActorId::random());
+        let chart_a = ChartSnapshot {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            title: "A".into(),
+            kind: ChartKind::Column,
+            start: (0, 0),
+            end: (1, 1),
+        };
+        let chart_b = ChartSnapshot {
+            id: "00000000-0000-4000-8000-000000000002".into(),
+            title: "B".into(),
+            kind: ChartKind::Line,
+            start: (2, 0),
+            end: (3, 1),
+        };
+        let comment_a = CommentThread {
+            id: "00000000-0000-4000-8000-000000000006".into(),
+            start: (1, 0),
+            end: (1, 0),
+            author: "A".into(),
+            body: "First".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        let comment_b = CommentThread {
+            id: "00000000-0000-4000-8000-000000000007".into(),
+            start: (2, 0),
+            end: (2, 0),
+            author: "B".into(),
+            body: "Second".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        SheetsDoc::put_chart(&mut a, sheet, &chart_a);
+        SheetsDoc::put_comment(&mut a, sheet, &comment_a);
+        SheetsDoc::put_chart(&mut b, sheet, &chart_b);
+        SheetsDoc::put_comment(&mut b, sheet, &comment_b);
+        SheetsDoc::put_comment_reply(
+            &mut b,
+            sheet,
+            &thread.id,
+            &CommentReply {
+                id: "00000000-0000-4000-8000-000000000004".into(),
+                author: "Sam".into(),
+                body: "Looking".into(),
+            },
+        );
+        SheetsDoc::put_comment_reply(
+            &mut a,
+            sheet,
+            &thread.id,
+            &CommentReply {
+                id: "00000000-0000-4000-8000-000000000005".into(),
+                author: "Jo".into(),
+                body: "Approved".into(),
+            },
+        );
+        a.merge(&mut b).expect("merge concurrent first writes");
+        let reloaded = AutoCommit::load(&a.save()).expect("final reload");
+        let mut reloaded = reloaded;
+        assert_eq!(SheetsDoc::charts(&mut reloaded, sheet).len(), 2);
+        let threads = SheetsDoc::comments(&mut reloaded, sheet);
+        assert_eq!(threads.len(), 3);
+        assert_eq!(
+            threads
+                .iter()
+                .find(|candidate| candidate.id == thread.id)
+                .expect("base thread")
+                .replies
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn concurrent_comment_delete_hides_reply_and_resolution_deterministically() {
+        let mut a = AutoCommit::new();
+        let sheet = SheetsDoc::add_sheet(&mut a, "Data");
+        let thread = CommentThread {
+            id: "00000000-0000-4000-8000-000000000010".into(),
+            start: (0, 0),
+            end: (0, 0),
+            author: "Alex".into(),
+            body: "Delete race".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        SheetsDoc::put_comment(&mut a, sheet, &thread);
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).expect("base loads");
+        b.set_actor(ActorId::random());
+        SheetsDoc::delete_comment(&mut a, sheet, &thread.id);
+        SheetsDoc::set_comment_resolved(&mut b, sheet, &thread.id, true);
+        SheetsDoc::put_comment_reply(
+            &mut b,
+            sheet,
+            &thread.id,
+            &CommentReply {
+                id: "00000000-0000-4000-8000-000000000011".into(),
+                author: "Sam".into(),
+                body: "Too late".into(),
+            },
+        );
+        a.merge(&mut b).expect("merge");
+        let mut reloaded = AutoCommit::load(&a.save()).expect("reload");
+        assert!(
+            SheetsDoc::comments(&mut reloaded, sheet).is_empty(),
+            "delete wins; orphan replies are never surfaced"
+        );
+    }
+
+    #[test]
+    fn annotation_anchors_follow_structural_coordinate_changes() {
+        let mut doc = AutoCommit::new();
+        let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
+        let chart = ChartSnapshot {
+            id: "00000000-0000-4000-8000-000000000020".into(),
+            title: "Trend".into(),
+            kind: ChartKind::Line,
+            start: (1, 1),
+            end: (3, 3),
+        };
+        let thread = CommentThread {
+            id: "00000000-0000-4000-8000-000000000021".into(),
+            start: (2, 2),
+            end: (2, 2),
+            author: "Alex".into(),
+            body: "Follow".into(),
+            resolved: false,
+            replies: Vec::new(),
+        };
+        SheetsDoc::put_chart(&mut doc, sheet, &chart);
+        SheetsDoc::put_comment(&mut doc, sheet, &thread);
+        SheetsDoc::remap_annotation_anchors(&mut doc, sheet, |(c, r)| Some((c, r + 1)));
+        assert_eq!(SheetsDoc::charts(&mut doc, sheet)[0].start, (1, 2));
+        assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 3));
+        SheetsDoc::remap_annotation_anchors(&mut doc, sheet, |addr| {
+            (addr != (2, 3)).then_some(addr)
+        });
+        assert!(
+            SheetsDoc::comments(&mut doc, sheet).is_empty(),
+            "a fully deleted one-cell anchor removes its thread"
+        );
     }
 }
