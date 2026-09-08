@@ -1199,6 +1199,10 @@ mod tests {
         assert!(rr.known().is_empty());
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the test keeps index guards alive through each generation-invalidation assertion"
+    )]
     #[test]
     fn exhausted_generations_refuse_mutations_and_scan_replacements() {
         let mut rr = RoomRecords::in_memory();

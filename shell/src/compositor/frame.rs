@@ -990,6 +990,10 @@ impl FrameBuilder {
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
     /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
     /// independent for capture and pixel-oracle use.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Retained-damage metadata must be derived alongside the exact scene composition; splitting this transaction risks draw-order or damage-region divergence."
+    )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
         let mut sections = self.host.draw_scene_sections(
@@ -1751,8 +1755,10 @@ impl FrameBuilder {
                 .fullscreen_overlay
                 .take()
                 .filter(|(id, _)| *id == surface_id)
-                .map(|(_, widget)| widget)
-                .unwrap_or_else(|| ForeignSurfaceWidget::new_floating(surface_id, app_id));
+                .map_or_else(
+                    || ForeignSurfaceWidget::new_floating(surface_id, app_id),
+                    |(_, widget)| widget,
+                );
             widget.place_floating(rect);
             (surface_id, widget)
         });

@@ -24,7 +24,7 @@ pub struct FastReading {
     pub volume: Option<f32>,
     pub wifi: Option<bool>,
     pub bluetooth: Option<bool>,
-    /// A successful BlueZ state query proves that an adapter exists.
+    /// A successful `BlueZ` state query proves that an adapter exists.
     pub bluetooth_available: bool,
     pub power: Option<qs::PowerProfile>,
     pub wired: Option<qs::WiredInfo>,

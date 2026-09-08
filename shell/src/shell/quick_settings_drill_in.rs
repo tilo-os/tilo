@@ -195,6 +195,10 @@ impl DrillInList {
         // the trailing edge of a discovery row. Never let a long SSID or
         // device name paint underneath those truthful status indicators.
         let label_width = (row.x1 - 72.0 - (glyph.x1 + 12.0)).max(1.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the bounded quick-settings row width is represented as f32 by the text shaper"
+        )]
         let label =
             text.elide_to_width(label, theme.tokens.typography.scale.sm, label_width as f32);
         let (_, label_height) = text.measure_weighted(
