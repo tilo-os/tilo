@@ -462,7 +462,7 @@ fn dispatch_block_drag(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, 
     // the capture truthfully shows the active interaction state.
     let points = {
         let editor = app.main_panel_mut().editor();
-        editor.blocks().get(0).and_then(|first| {
+        editor.blocks().first().and_then(|first| {
             let from = first.line.get_rect();
             let target = editor.blocks().get(2)?.line.get_rect();
             Some((

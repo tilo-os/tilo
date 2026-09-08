@@ -14,7 +14,7 @@
 //!         └── "blocks" (List)
 //!             └── [i] (Map)
 //!                 ├── "kind" (Str)   # paragraph / heading1.. / bullet / ...
-//!                 └── "text" (Text)  # the block body (carries author marks)
+//!                 └── "text" (Text)  # body + author/Notes inline marks
 //! ```
 //!
 //! Everything here operates on a borrowed `&mut AutoCommit` — the app's
@@ -22,12 +22,14 @@
 //! this document: it is per-peer presence (see `NotesApp`), so two peers
 //! can read different pages while sharing one workspace.
 
+use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{put_if_changed, put_text_diffed};
 use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
+use crate::actions::{InlineMark, InlineMarkSpan};
 use crate::model::{PageId, PageMeta};
 use crate::num;
 
@@ -293,6 +295,203 @@ impl NotesDoc {
         }
         Ok(())
     }
+
+    /// Replace Notes' own formatting/link marks on one durable block.  The
+    /// marks live on Automerge's Text object rather than in a sidecar JSON
+    /// blob, so a concurrent text splice carries the marked range with it.
+    /// Other applications' marks (notably `qos.author`) are deliberately left
+    /// untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale page/block, invalid link target or UTF-8
+    /// range, or an Automerge mutation failure.
+    pub fn set_block_marks(
+        doc: &mut AutoCommit,
+        page: PageId,
+        id: &str,
+        marks: &[InlineMarkSpan],
+    ) -> Result<(), String> {
+        let Some(list) = Self::page_blocks_list(doc, page) else {
+            return Err("page no longer exists".into());
+        };
+        ensure_block_ids(doc, &list)?;
+        let (_, block) =
+            block_map(doc, &list, id).ok_or_else(|| "block no longer exists".to_string())?;
+        let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text") else {
+            return Err("block text no longer exists".into());
+        };
+        let text = doc
+            .text(&text_obj)
+            .map_err(|_| "block text no longer exists")?;
+        for mark in marks {
+            validate_inline_mark(&text, mark)?;
+        }
+
+        replace_native_marks(doc, &block, &text_obj, &text, marks)
+    }
+
+    /// Whether at least one block in `page` has been through the native-mark
+    /// action path. This lets binding migrate legacy Markdown marks once while
+    /// still allowing a collaborator to intentionally clear every mark.
+    pub fn page_marks_are_canonical(doc: &AutoCommit, page: PageId) -> bool {
+        let Some(list) = Self::page_blocks_list(doc, page) else {
+            return false;
+        };
+        (0..doc.length(&list)).any(|index| {
+            let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&list, index) else {
+                return false;
+            };
+            matches!(
+                doc.get(&block, "notes_marks_version"),
+                Ok(Some((Value::Scalar(value), _))) if value.to_i64() == Some(1)
+            )
+        })
+    }
+
+    /// Read the Notes-owned native marks for one page as stable block ids and
+    /// UTF-8 byte ranges. Invalid legacy marks are ignored rather than making
+    /// an otherwise readable note impossible to open.
+    pub fn page_block_marks(doc: &AutoCommit, page: PageId) -> Vec<(String, Vec<InlineMarkSpan>)> {
+        let Some(list) = Self::page_blocks_list(doc, page) else {
+            return Vec::new();
+        };
+        (0..doc.length(&list))
+            .filter_map(|index| {
+                let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&list, index) else {
+                    return None;
+                };
+                let text_obj = Self::block_text_obj(doc, &list, index)?;
+                let text = doc.text(&text_obj).ok()?;
+                let id = block_id(doc, &block).unwrap_or_else(|| {
+                    let kind = block_kind_value(doc, &block).unwrap_or_default();
+                    ui::widget::legacy_block_id(&list, index, &kind, &text)
+                });
+                let marks = doc
+                    .marks(&text_obj)
+                    .ok()?
+                    .iter()
+                    .filter_map(|mark| inline_mark_span(&text, mark))
+                    .collect();
+                Some((id, marks))
+            })
+            .collect()
+    }
+}
+
+const NOTE_MARK_PREFIX: &str = "notes.inline.";
+
+fn note_mark_name(name: &str) -> bool {
+    name.starts_with(NOTE_MARK_PREFIX)
+}
+
+fn durable_mark_value(mark: &InlineMark) -> Result<(String, automerge::ScalarValue), String> {
+    let name = match mark {
+        InlineMark::Bold => "bold".to_string(),
+        InlineMark::Italic => "italic".to_string(),
+        InlineMark::Code => "code".to_string(),
+        InlineMark::Underline => "underline".to_string(),
+        InlineMark::Strikethrough => "strikethrough".to_string(),
+        InlineMark::Link { page } => {
+            page.parse::<PageId>()
+                .map_err(|_| "link target is invalid".to_string())?;
+            format!("link:{page}")
+        }
+    };
+    let value = match mark {
+        InlineMark::Link { page } => automerge::ScalarValue::Str(page.clone().into()),
+        _ => automerge::ScalarValue::Boolean(true),
+    };
+    Ok((format!("{NOTE_MARK_PREFIX}{name}"), value))
+}
+
+fn validate_inline_mark(text: &str, mark: &InlineMarkSpan) -> Result<(), String> {
+    if mark.start >= mark.end || mark.end > text.len() {
+        return Err("mark range is out of bounds".into());
+    }
+    if !text.is_char_boundary(mark.start) || !text.is_char_boundary(mark.end) {
+        return Err("mark range is not on a character boundary".into());
+    }
+    let _ = durable_mark_value(&mark.mark)?;
+    Ok(())
+}
+
+fn char_to_byte_index(text: &str, character: usize) -> Option<usize> {
+    if character == text.chars().count() {
+        return Some(text.len());
+    }
+    text.char_indices().nth(character).map(|(byte, _)| byte)
+}
+
+fn inline_mark_span(text: &str, mark: &Mark) -> Option<InlineMarkSpan> {
+    let name = mark.name.strip_prefix(NOTE_MARK_PREFIX)?;
+    let inline = match name {
+        "bold" => InlineMark::Bold,
+        "italic" => InlineMark::Italic,
+        "code" => InlineMark::Code,
+        "underline" => InlineMark::Underline,
+        "strikethrough" => InlineMark::Strikethrough,
+        link if link.starts_with("link:") => {
+            let page = match &mark.value {
+                automerge::ScalarValue::Str(value) => value.to_string(),
+                _ => link.strip_prefix("link:")?.to_string(),
+            };
+            page.parse::<PageId>().ok()?;
+            InlineMark::Link { page }
+        }
+        _ => return None,
+    };
+    Some(InlineMarkSpan {
+        start: char_to_byte_index(text, mark.start)?,
+        end: char_to_byte_index(text, mark.end)?,
+        mark: inline,
+    })
+}
+
+fn replace_native_marks(
+    doc: &mut AutoCommit,
+    block: &ObjId,
+    text_obj: &ObjId,
+    text: &str,
+    marks: &[InlineMarkSpan],
+) -> Result<(), String> {
+    // Native marks use character offsets. Clear every Notes-owned mark from
+    // its exact current range before writing this authoritative action
+    // payload. Native marks originating from other concerns stay intact.
+    let existing = doc
+        .marks(text_obj)
+        .map_err(|_| "block marks could not be read")?;
+    for mark in existing
+        .iter()
+        .filter(|mark| note_mark_name(mark.name.as_str()))
+    {
+        doc.unmark(
+            text_obj,
+            mark.name.as_str(),
+            mark.start,
+            mark.end,
+            ExpandMark::After,
+        )
+        .map_err(|_| "block marks could not be cleared")?;
+    }
+    for span in marks {
+        let (name, value) = durable_mark_value(&span.mark)?;
+        let start = byte_to_char_index(text, span.start)
+            .ok_or_else(|| "mark start is not on a character boundary".to_string())?;
+        let end = byte_to_char_index(text, span.end)
+            .ok_or_else(|| "mark end is not on a character boundary".to_string())?;
+        doc.mark(
+            text_obj,
+            Mark::new(name, value, start, end),
+            ExpandMark::After,
+        )
+        .map_err(|_| "block marks could not be written")?;
+    }
+    // A version marker distinguishes an intentional empty formatting snapshot
+    // from a pre-native-marks document that still needs Markdown migration.
+    doc.put(block, "notes_marks_version", 1_i64)
+        .map_err(|_| "block marks version could not be written")?;
+    Ok(())
 }
 
 fn block_id(doc: &AutoCommit, block: &ObjId) -> Option<String> {
@@ -504,6 +703,24 @@ fn apply_block_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Resul
                 }
                 _ => return Err("block text no longer exists".into()),
             };
+            // Automerge has no list move primitive: this is a delete + insert.
+            // Preserve the Notes-owned native marks (and their migration
+            // marker) explicitly so a reorder cannot silently strip formatting
+            // or page links from the moved block.
+            let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text") else {
+                return Err("block text no longer exists".into());
+            };
+            let marks = doc
+                .marks(&text_obj)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|mark| inline_mark_span(&text, &mark))
+                .collect::<Vec<_>>();
+            let had_marks_version = matches!(
+                doc.get(&block, "notes_marks_version"),
+                Ok(Some((Value::Scalar(value), _))) if value.to_i64() == Some(1)
+            );
             doc.delete(list, old_index)
                 .map_err(|_| "page block list no longer exists")?;
             let index = match after {
@@ -512,7 +729,18 @@ fn apply_block_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Resul
                     .ok_or_else(|| "block predecessor no longer exists".to_string())?,
                 None => 0,
             };
-            insert_block(doc, list, index, id, &kind, &text)
+            insert_block(doc, list, index, id, &kind, &text)?;
+            if had_marks_version {
+                let (_, inserted) = block_map(doc, list, id)
+                    .ok_or_else(|| "moved block no longer exists".to_string())?;
+                let Ok(Some((Value::Object(ObjType::Text), inserted_text))) =
+                    doc.get(&inserted, "text")
+                else {
+                    return Err("moved block text no longer exists".into());
+                };
+                replace_native_marks(doc, &inserted, &inserted_text, &text, &marks)?;
+            }
+            Ok(())
         }
     }
 }
@@ -719,6 +947,131 @@ mod tests {
             doc.save().len(),
             before,
             "idempotent upsert must not grow the document"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end native-mark regression keeps reorder, Unicode, and merge evidence together"
+    )]
+    fn native_inline_marks_survive_reorder_and_unicode_text_edits() {
+        let mut doc = AutoCommit::new();
+        let page = Uuid::new_v4();
+        let block = Uuid::new_v4().to_string();
+        NotesDoc::upsert_page_meta(
+            &mut doc,
+            &PageMeta {
+                id: page,
+                title: "Formatting".into(),
+                parent: None,
+                order: 0,
+            },
+        );
+        NotesDoc::apply_block_ops(
+            &mut doc,
+            page,
+            &[BlockEditOp::Insert {
+                block_id: block.clone(),
+                after: None,
+                kind: "paragraph".into(),
+                text: "café link".into(),
+            }],
+        )
+        .unwrap();
+        let target = Uuid::new_v4();
+        let expected = vec![
+            InlineMarkSpan {
+                start: 0,
+                end: 5,
+                mark: InlineMark::Bold,
+            },
+            InlineMarkSpan {
+                start: 6,
+                end: 10,
+                mark: InlineMark::Link {
+                    page: target.to_string(),
+                },
+            },
+        ];
+        NotesDoc::set_block_marks(&mut doc, page, &block, &expected).unwrap();
+        assert!(NotesDoc::page_marks_are_canonical(&doc, page));
+        assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
+
+        // A Notes block move is represented as delete+insert, so this pins
+        // the explicit native-mark preservation in that action interpreter.
+        NotesDoc::apply_block_ops(
+            &mut doc,
+            page,
+            &[BlockEditOp::Move {
+                block_id: block.clone(),
+                after: None,
+            }],
+        )
+        .unwrap();
+        assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
+
+        // The mark positions are native character anchors, not a brittle
+        // JSON byte offset: an adjacent Unicode edit keeps the spans readable.
+        NotesDoc::apply_block_ops(
+            &mut doc,
+            page,
+            &[BlockEditOp::TextSplice {
+                block_id: block,
+                start: 0,
+                end: 0,
+                text: "✓ ".into(),
+            }],
+        )
+        .unwrap();
+        let after = NotesDoc::page_block_marks(&doc, page);
+        assert_eq!(after.len(), 1);
+        assert!(
+            after[0]
+                .1
+                .iter()
+                .any(|span| matches!(span.mark, InlineMark::Bold))
+        );
+        assert!(
+            after[0]
+                .1
+                .iter()
+                .any(|span| matches!(span.mark, InlineMark::Link { .. }))
+        );
+
+        // A late-joining peer's text edit merges back without turning the
+        // native formatting/link anchors into stale plain-text state.
+        let mut peer = AutoCommit::load(&doc.save()).unwrap();
+        let moved = after[0].0.clone();
+        let end = peer
+            .text(
+                NotesDoc::block_text_obj(
+                    &peer,
+                    &NotesDoc::page_blocks_list(&peer, page).unwrap(),
+                    0,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .len();
+        NotesDoc::apply_block_ops(
+            &mut peer,
+            page,
+            &[BlockEditOp::TextSplice {
+                block_id: moved,
+                start: end,
+                end,
+                text: "!".into(),
+            }],
+        )
+        .unwrap();
+        let mut merged_peer = AutoCommit::load(&peer.save()).unwrap();
+        doc.merge(&mut merged_peer).unwrap();
+        assert!(
+            NotesDoc::page_block_marks(&doc, page)[0]
+                .1
+                .iter()
+                .any(|span| matches!(span.mark, InlineMark::Link { .. }))
         );
     }
 
