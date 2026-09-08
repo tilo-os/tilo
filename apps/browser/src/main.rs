@@ -92,6 +92,7 @@ pub fn main() {
                 "--shots-overlay",
                 "--shots-pip-empty",
                 "--shots-settings",
+                "--shots-history-paused",
                 "--shots-loading",
                 "--shots-error",
                 "--shots-library",
@@ -126,6 +127,7 @@ fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
         Some("downloads") => widget.debug_show_library("downloads"),
         Some("extensions") => widget.debug_show_library("extensions"),
         Some("settings") => widget.debug_show_settings(),
+        Some("history-paused") => widget.debug_show_history_paused(),
         _ => {}
     }
     widget
@@ -206,6 +208,18 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     if let Some(out) = args.value("--shots-settings") {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_show_settings();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-history-paused") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_history_paused();
         let size = args
             .value("--size")
             .and_then(parse_size)
