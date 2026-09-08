@@ -891,4 +891,83 @@ mod tests {
             Some("typed".to_string())
         );
     }
+
+    #[test]
+    fn comment_actions_are_discovered_and_applied_from_the_live_resource_tree() {
+        let mut document = AutoCommit::new();
+        let containers = qdoc::model::init(&mut document, &ROOT);
+        let mut ids = qdoc::model::seeded_id_gen(&document, &containers);
+        let block = {
+            let mut dm = qdoc::DocMut {
+                doc: &mut document,
+                c: &containers,
+                ids: &mut ids,
+            };
+            let block = dm.insert_block(None, "paragraph");
+            dm.splice_text(&block, 0, 0, "Review this sentence.");
+            block
+        };
+        document.commit();
+
+        let mut editor = Editor::from_snapshot(&document.save(), "Scribe")
+            .expect("the seeded document is a word processor document");
+        let view = View {
+            focus_block: Some(block.clone()),
+            target_blocks: vec![block.clone()],
+            selection: Some(word_processor::actions::SelectionTarget {
+                start_block: block.clone(),
+                start: 0,
+                end_block: block,
+                end: 6,
+            }),
+            ..View::default()
+        };
+        let registry = crate::surface::registry();
+        let add = qos_actions::door::ActionAddress::new("word-processor.document", "add-comment");
+        let add_args = serde_json::json!({
+            "author": "Scribe",
+            "date": "2026-09-08",
+            "text": "Please clarify this."
+        })
+        .as_object()
+        .cloned()
+        .expect("object arguments");
+
+        assert!(
+            editor
+                .invoke_json(&view, &add, &add_args, &registry)
+                .expect("the live document exports add-comment")
+                .is_some(),
+            "adding a comment changes the shared document"
+        );
+        let snap = editor.snapshot().expect("materialize the comment");
+        let comment = snap.comments.first().expect("the comment was stored");
+        assert_eq!(comment.author, "Scribe");
+        assert_eq!(comment.blocks[0].text, "Please clarify this.");
+
+        let reply = qos_actions::door::ActionAddress::new(
+            format!("word-processor.comment:{}", comment.id),
+            "reply",
+        );
+        let reply_args = serde_json::json!({
+            "author": "Scribe",
+            "date": "2026-09-08",
+            "text": "Clarified."
+        })
+        .as_object()
+        .cloned()
+        .expect("object arguments");
+        assert!(
+            editor
+                .invoke_json(&view, &reply, &reply_args, &registry)
+                .expect("the materialized comment exports reply")
+                .is_some(),
+            "replying changes the shared document"
+        );
+        let snap = editor.snapshot().expect("materialize the reply");
+        assert_eq!(snap.comments.len(), 1);
+        assert_eq!(snap.comments[0].replies.len(), 1);
+        assert_eq!(snap.comments[0].replies[0].author, "Scribe");
+        assert_eq!(snap.comments[0].replies[0].blocks[0].text, "Clarified.");
+    }
 }

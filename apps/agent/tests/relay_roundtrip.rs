@@ -200,6 +200,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
             format_spans: Vec::new(),
             selection: None,
             region: word_processor::actions::RegionKind::Body,
+            search_hits: Vec::new(),
         },
         doc,
     )
