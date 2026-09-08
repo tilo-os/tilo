@@ -64,7 +64,7 @@ pub const ADBLOCK_PATH: &str = "settings.adblock";
 pub const CLEAR_ON_EXIT_PATH: &str = "settings.clear_on_exit";
 /// Click-flag raised by the "Clear history now" button. Reset on read.
 pub const CLEAR_HISTORY_FLAG: &str = "settings.clear_history_clicked";
-/// Click-flag raised by the "Clear cookies & site data now" button.
+/// Click-flag raised by the "Request local site-data clear" button.
 pub const CLEAR_COOKIES_FLAG: &str = "settings.clear_cookies_clicked";
 /// Automerge `Text` object holding the search-engine query template.
 pub const SEARCH_ENGINE_PATH: &str = "settings.search_engine";
@@ -228,7 +228,7 @@ impl Settings {
 pub struct SettingsIntents {
     /// The "Clear history now" button was pressed this frame.
     pub clear_history: bool,
-    /// The "Clear cookies & site data now" button was pressed this frame.
+    /// The local-engine site-data clear request was pressed this frame.
     pub clear_cookies: bool,
     /// Current ad-block toggle state, or `None` before bootstrap.
     pub adblock_enabled: Option<bool>,
@@ -288,6 +288,10 @@ pub struct SettingsPane {
     /// True once the `settings.*` paths have been seeded into the CRDT.
     bootstrap_done: bool,
     actions: SettingsActionBindings,
+    /// A device-local persistence failure supplied by Browser after a clear
+    /// action. It is deliberately not a CRDT value: other collaborators
+    /// cannot diagnose this profile's disk permissions or free space.
+    history_clear_error: Option<String>,
 }
 
 impl SettingsPane {
@@ -306,6 +310,7 @@ impl SettingsPane {
             composed: None,
             bootstrap_done: false,
             actions: SettingsActionBindings::default(),
+            history_clear_error: None,
         }
     }
 
@@ -313,6 +318,13 @@ impl SettingsPane {
     #[must_use]
     pub fn with_action_bindings(mut self, actions: SettingsActionBindings) -> Self {
         self.actions = actions;
+        self
+    }
+
+    /// Surface an honest local failure next to the control that initiated it.
+    #[must_use]
+    pub fn with_history_clear_error(mut self, error: Option<String>) -> Self {
+        self.history_clear_error = error;
         self
     }
 
@@ -385,56 +397,57 @@ impl SettingsPane {
             ]),
         );
 
-        let privacy = card(
-            "Privacy & Security",
-            rows(vec![
-                setting_row_described(
-                    "Block ads & trackers",
-                    "Blocks ads, trackers, and YouTube video ads.",
-                    Box::new(toggle_with_action(
-                        Toggle::new("settings.adblock", ADBLOCK_PATH)
-                            .with_id("settings.adblock")
-                            .with_accessible_name("Block ads & trackers"),
-                        self.actions.adblock.clone(),
-                    )),
+        let mut privacy_rows = vec![
+            setting_row_described(
+                "Block ads & trackers",
+                "Blocks ads, trackers, and YouTube video ads.",
+                Box::new(toggle_with_action(
+                    Toggle::new("settings.adblock", ADBLOCK_PATH)
+                        .with_id("settings.adblock")
+                        .with_accessible_name("Block ads & trackers"),
+                    self.actions.adblock.clone(),
+                )),
+            ),
+            setting_row_described(
+                "Clear data when the browser closes",
+                "Wipe history and cookies on exit.",
+                Box::new(toggle_with_action(
+                    Toggle::new("settings.clear_on_exit", CLEAR_ON_EXIT_PATH)
+                        .with_id("settings.clear_on_exit")
+                        .with_accessible_name("Clear data when the browser closes"),
+                    self.actions.clear_on_exit.clone(),
+                )),
+            ),
+            setting_row_described(
+                "Browsing data",
+                "Clear stored history, or request a local engine site-data clear.",
+                Box::new(
+                    Row::new()
+                        .push(Box::new(button_with_action(
+                            Button::new(
+                                "settings.clear_history",
+                                "Clear history",
+                                Some(CLEAR_HISTORY_FLAG),
+                            )
+                            .with_size(140.0, 36.0),
+                            self.actions.clear_history.clone(),
+                        )))
+                        .push(Box::new(button_with_action(
+                            Button::new(
+                                "settings.clear_cookies",
+                                "Request site-data clear",
+                                Some(CLEAR_COOKIES_FLAG),
+                            )
+                            .with_size(200.0, 36.0),
+                            self.actions.clear_site_data.clone(),
+                        ))),
                 ),
-                setting_row_described(
-                    "Clear data when the browser closes",
-                    "Wipe history and cookies on exit.",
-                    Box::new(toggle_with_action(
-                        Toggle::new("settings.clear_on_exit", CLEAR_ON_EXIT_PATH)
-                            .with_id("settings.clear_on_exit")
-                            .with_accessible_name("Clear data when the browser closes"),
-                        self.actions.clear_on_exit.clone(),
-                    )),
-                ),
-                setting_row_described(
-                    "Browsing data",
-                    "Clear stored history and site data now.",
-                    Box::new(
-                        Row::new()
-                            .push(Box::new(button_with_action(
-                                Button::new(
-                                    "settings.clear_history",
-                                    "Clear history",
-                                    Some(CLEAR_HISTORY_FLAG),
-                                )
-                                .with_size(140.0, 36.0),
-                                self.actions.clear_history.clone(),
-                            )))
-                            .push(Box::new(button_with_action(
-                                Button::new(
-                                    "settings.clear_cookies",
-                                    "Clear cookies & data",
-                                    Some(CLEAR_COOKIES_FLAG),
-                                )
-                                .with_size(200.0, 36.0),
-                                self.actions.clear_site_data.clone(),
-                            ))),
-                    ),
-                ),
-            ]),
-        );
+            ),
+        ];
+        if let Some(error) = &self.history_clear_error {
+            privacy_rows.push(Box::new(Text::new(error).with_size(12.0)));
+        }
+        let privacy = card("Privacy & Security", rows(privacy_rows));
 
         let body = Column::new()
             .with_intrinsic_height()
