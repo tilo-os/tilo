@@ -7,7 +7,8 @@
 //! the result was rendered.
 
 use qos_actions::{
-    ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, RetryPolicy,
+    ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, ResultSpec,
+    RetryPolicy,
 };
 use ui::icons::Icon;
 use ui::search::{SearchCatalog, SearchPage, SearchProvider, SearchResult};
@@ -179,6 +180,9 @@ fn navigation_contract() -> ActionContract {
     ActionContract {
         retry: RetryPolicy::Idempotent,
         execution: ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "string" }),
+        },
         tags: vec!["network".into(), "navigation".into()],
         ..ActionContract::view()
     }
