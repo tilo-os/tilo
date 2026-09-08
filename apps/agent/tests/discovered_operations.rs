@@ -93,6 +93,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
             format_spans: Vec::new(),
             selection: None,
             region: word_processor::actions::RegionKind::Body,
+            search_hits: Vec::new(),
         },
         doc,
     )
@@ -108,6 +109,10 @@ fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
 ///
 /// Returns the peer's final replica and whether the agent reports having
 /// acted.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the harness owns one end-to-end relay scenario, including its lifecycle and observable outcomes"
+)]
 fn run(
     agent_actions: &[(&str, &str)],
     cfg_of: impl FnOnce(std::path::PathBuf, Uuid) -> Config,
@@ -736,11 +741,10 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
     );
     let placed = images
         .iter()
-        .filter_map(|block| match block.attrs.get("blob") {
+        .find_map(|block| match block.attrs.get("blob") {
             Some(qdoc::AttrVal::Str(hash)) => Some(hash),
             _ => None,
         })
-        .next()
         .expect("the carried image has a content hash");
     assert!(
         qdoc::blobstore::get(placed).is_some(),
