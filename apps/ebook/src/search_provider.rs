@@ -70,7 +70,11 @@ impl BookSearchProvider {
                     chapter_text.push(' ');
                 }
                 entries.push(SearchEntry {
-                    haystack: format!("{chapter_title} {chapter_text}").to_lowercase(),
+                    // A chapter is part of its book, not an isolated file.
+                    // Include book metadata here too so an author/title search
+                    // brings matching passages along with the book row.
+                    haystack: format!("{title} {} {chapter_title} {chapter_text}", book.author)
+                        .to_lowercase(),
                     result: SearchResult::for_action(
                         CHAPTER_KIND,
                         chapter_title,
@@ -113,8 +117,26 @@ impl BookSearchProvider {
                 .iter()
                 .find(|book| book.id == annotation.doc_id)
                 .map_or("Unknown book", Self::book_title);
+            let book_author = books
+                .iter()
+                .find(|book| book.id == annotation.doc_id)
+                .map_or("", |book| book.author.as_str());
+            let kind = annotation.kind.label();
+            // A note that belongs to a highlight is the reader's comment
+            // model. Index both names so people can search with either term.
+            let comment_alias = if annotation.kind == AnnoKind::Note
+                && highlight_groups.contains(&(annotation.doc_id.clone(), annotation.group))
+            {
+                "comment"
+            } else {
+                ""
+            };
             entries.push(SearchEntry {
-                haystack: format!("{} {}", annotation.excerpt, annotation.note).to_lowercase(),
+                haystack: format!(
+                    "{book_title} {book_author} {kind} {comment_alias} {} {}",
+                    annotation.excerpt, annotation.note
+                )
+                .to_lowercase(),
                 result: SearchResult::for_action(
                     ANNOTATION_KIND,
                     Self::preview(annotation),
@@ -305,6 +327,52 @@ mod tests {
                 .unwrap()
                 .contains(BookSearchProvider::book_title(&books[0]))
         );
+    }
+
+    #[test]
+    fn annotation_search_includes_book_context_and_comment_kind() {
+        let books = sample_books();
+        let book = &books[0];
+        let group = uuid::Uuid::new_v4();
+        let highlight = Annotation {
+            id: group,
+            doc_id: book.id.clone(),
+            kind: AnnoKind::Highlight,
+            chapter: 0,
+            block: 0,
+            start: 0,
+            end: 1,
+            excerpt: "marked passage".into(),
+            note: String::new(),
+            color: crate::model::HiColor::Yellow,
+            created: 1,
+            group,
+        };
+        let comment = Annotation {
+            id: uuid::Uuid::new_v4(),
+            doc_id: book.id.clone(),
+            kind: AnnoKind::Note,
+            chapter: 0,
+            block: 0,
+            start: 0,
+            end: 1,
+            excerpt: "marked passage".into(),
+            note: "A shared observation".into(),
+            color: crate::model::HiColor::Yellow,
+            created: 2,
+            group,
+        };
+        let provider = BookSearchProvider::new(&books, &[highlight, comment]);
+
+        for query in [&book.author, "comment", "highlight", "shared observation"] {
+            assert!(
+                provider
+                    .search(query)
+                    .iter()
+                    .any(|hit| hit.kind == ANNOTATION_KIND),
+                "{query:?} should find the annotation context"
+            );
+        }
     }
 
     #[test]
