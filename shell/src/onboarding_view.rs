@@ -382,6 +382,7 @@ impl Invalidation {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
@@ -1318,6 +1319,7 @@ impl OnboardingView {
         Box::new(body.push(Box::new(Card::new(Box::new(list)))))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
@@ -1785,7 +1787,9 @@ fn terminate_nearby_pairing(child: &mut Option<Child>) {
     // validated PID the process-group ID. A negative target is confined to
     // that group and cannot signal the compositor's own group.
     let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now() + Duration::from_millis(750);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(750))
+        .unwrap_or_else(Instant::now);
     loop {
         let leader_finished = child.try_wait().ok().flatten().is_some();
         // Signal 0 only checks whether any descendant still occupies the
@@ -1927,8 +1931,7 @@ impl Widget for OnboardingView {
                         let label =
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
+                            .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from);
                         let requester = qos_relay::ProcessLease::capture(std::process::id());
                         let spawn =
                             requester
@@ -1969,7 +1972,7 @@ impl Widget for OnboardingView {
                                 self.error = None;
                             }
                             Err(error) => {
-                                self.error = Some(format!("Could not start nearby setup: {error}"))
+                                self.error = Some(format!("Could not start nearby setup: {error}"));
                             }
                         }
                     }
@@ -2003,12 +2006,23 @@ impl Widget for OnboardingView {
                 self.invalidation.structure();
             }
         }
-        let nearby_finished = self
-            .nearby_child
-            .as_mut()
-            .and_then(|child| child.try_wait().ok().flatten());
-        if let Some(status) = nearby_finished {
-            let mut child = self.nearby_child.take().expect("nearby child exists");
+        let finished_nearby_child = match self.nearby_child.take() {
+            Some(mut child) => {
+                if let Some(status) = child.try_wait().ok().flatten() {
+                    Some((child, status))
+                } else {
+                    self.nearby_child = Some(child);
+                    None
+                }
+            }
+            None => None,
+        };
+        if let Some((mut child, status)) = finished_nearby_child {
+            // `try_wait` reaps the leader when it has exited. Keep the
+            // explicit wait as a defensive lifecycle guarantee if platform
+            // behavior changes, and never leave a completed broker child in
+            // the compositor.
+            let _ = child.wait();
             let mut stdout = String::new();
             let mut stderr = String::new();
             if let Some(mut stream) = child.stdout.take() {
@@ -2022,8 +2036,8 @@ impl Widget for OnboardingView {
                     Ok(result) => {
                         let fingerprint = result.get("identity").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
                         let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
-                        if fingerprint.len() == 64 && path.is_some() {
-                            self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
+                        if let Some(path) = path.filter(|_| fingerprint.len() == 64) {
+                            self.flow.complete_connected(MintedIdentity { fingerprint, path });
                             self.identity_ready_page = false;
                             let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
@@ -3761,6 +3775,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[
             (

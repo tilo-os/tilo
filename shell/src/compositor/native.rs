@@ -2352,8 +2352,10 @@ fn pump_test_control_conn(
                                 // exercise the production placement path.
                                 let placement = crate::compositor::tab_binding::Placement::NewGroup;
                                 let identities = crate::shell::host_apps::find(&desktop_id)
-                                    .map(|app| app.window_identities)
-                                    .unwrap_or_else(|| vec![desktop_id.clone()]);
+                                    .map_or_else(
+                                        || vec![desktop_id.clone()],
+                                        |app| app.window_identities,
+                                    );
                                 crate::shell::launcher::set_pending_placement_for_identities(
                                     &desktop_id,
                                     &identities,
