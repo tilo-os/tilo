@@ -21,7 +21,7 @@ use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
 use ui::text_render::TextRenderer;
 use ui::widget::Widget;
-use vello::kurbo::Point;
+use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub const VIEWPORT: (f32, f32) = (1200.0, 760.0);
@@ -108,6 +108,18 @@ impl Harness {
             )
             .unwrap();
         self.w.apply_layout(&self.taffy, child, Point::ORIGIN);
+        // `FileView` publishes only the folders intersecting Scrollable's
+        // viewport as drop targets.  A production frame always draws after
+        // layout; mirror that phase here before tests begin a drag gesture.
+        let mut scene = vello::Scene::new();
+        self.w.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.tr,
+            &ui::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+            &ui::permissions::PermissionContext::permissive(),
+        );
         self.child = child;
     }
 
