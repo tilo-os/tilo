@@ -201,6 +201,8 @@ pub enum SearchCatalogError {
     /// A retained catalogue has assigned every browse ordinal. Reusing one
     /// would overwrite another resource in empty-query browsing.
     BrowseOrdinalExhausted,
+    /// A bulk snapshot must contain one row per canonical resource.
+    DuplicateResourceId,
 }
 
 impl std::fmt::Display for SearchCatalogError {
@@ -218,6 +220,9 @@ impl std::fmt::Display for SearchCatalogError {
             ),
             Self::BrowseOrdinalExhausted => formatter.write_str(
                 "search catalogue browse identity exhausted; rebuild the catalogue before inserting",
+            ),
+            Self::DuplicateResourceId => formatter.write_str(
+                "bulk search catalogue contains the same canonical resource more than once",
             ),
         }
     }
@@ -274,6 +279,105 @@ impl SearchCatalog {
             name: name.into(),
             inner: Arc::new(RwLock::new(SearchCatalogInner::default())),
         }
+    }
+
+    /// Replace an immutable snapshot in one generation. This is the bulk
+    /// counterpart to [`Self::upsert`]: callers rebuilding a complete
+    /// provider avoid repeatedly rebalancing the same high-fanout posting
+    /// trees, while later incremental updates retain their existing semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed, duplicate, or non-canonical rows, or
+    /// when catalogue generation/browse identities are exhausted.
+    pub fn replace_all(
+        &self,
+        rows: impl IntoIterator<Item = (String, String, SearchResult)>,
+    ) -> Result<(), SearchCatalogError> {
+        let mut next = SearchCatalogInner::default();
+        let mut postings = HashMap::<String, Vec<Arc<str>>>::new();
+        let mut tokens = HashMap::<String, Vec<Arc<str>>>::new();
+        for (resource_id, searchable_text, result) in rows {
+            if resource_id.is_empty() {
+                return Err(SearchCatalogError::EmptyResourceId);
+            }
+            if result.action_address().is_none() {
+                return Err(SearchCatalogError::NonCanonicalResult);
+            }
+            if result
+                .action_address()
+                .is_some_and(|address| address.resource != resource_id)
+            {
+                return Err(SearchCatalogError::ResourceAddressMismatch);
+            }
+            let resource_id: Arc<str> = resource_id.into();
+            let normalized = normalize_search_text(&searchable_text);
+            let grams = index_grams(&normalized);
+            let row_tokens = index_tokens(&normalized);
+            let ordinal = next.next_browse_ordinal;
+            next.next_browse_ordinal = next
+                .next_browse_ordinal
+                .checked_add(1)
+                .ok_or(SearchCatalogError::BrowseOrdinalExhausted)?;
+            next.normalized_scalars = next
+                .normalized_scalars
+                .saturating_add(normalized.chars().count());
+            next.browse_order.insert(ordinal, Arc::clone(&resource_id));
+            for gram in &grams {
+                postings
+                    .entry(gram.clone())
+                    .or_default()
+                    .push(Arc::clone(&resource_id));
+            }
+            for token in &row_tokens {
+                tokens
+                    .entry(token.clone())
+                    .or_default()
+                    .push(Arc::clone(&resource_id));
+            }
+            if next.entries.contains_key(resource_id.as_ref()) {
+                return Err(SearchCatalogError::DuplicateResourceId);
+            }
+            next.entries.insert(
+                resource_id,
+                CatalogEntry {
+                    normalized,
+                    grams,
+                    tokens: row_tokens,
+                    result,
+                    browse_ordinal: ordinal,
+                },
+            );
+        }
+        next.postings = postings
+            .into_iter()
+            .map(|(key, mut ids)| {
+                ids.sort();
+                ids.dedup();
+                next.posting_count = next.posting_count.saturating_add(ids.len());
+                (key, ids.into_iter().collect())
+            })
+            .collect();
+        next.tokens = tokens
+            .into_iter()
+            .map(|(key, mut ids)| {
+                ids.sort();
+                ids.dedup();
+                next.posting_count = next.posting_count.saturating_add(ids.len());
+                (key, ids.into_iter().collect())
+            })
+            .collect();
+        let mut inner = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        next.generation = inner
+            .generation
+            .checked_add(1)
+            .ok_or(SearchCatalogError::GenerationExhausted)?;
+        *inner = next;
+        drop(inner);
+        Ok(())
     }
 
     /// Insert or replace one durable resource. `searchable_text` may combine

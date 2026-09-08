@@ -86,6 +86,13 @@ pub enum PhotosOperation {
         path: Option<String>,
     },
     Copy,
+    /// Copy a portable resource reference to the local clipboard. This is an
+    /// explicit share handoff, not a claim that a remote recipient accepted it.
+    /// The target is carried explicitly so a library photograph can be shared
+    /// without first changing the shared open-editor selection.
+    ShareReference {
+        resource_id: String,
+    },
     Save {
         path: Option<String>,
     },
@@ -115,7 +122,8 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
         | PhotosOperation::Open { .. }
-        | PhotosOperation::Copy => spec.retry_policy(RetryPolicy::Idempotent),
+        | PhotosOperation::Copy
+        | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
     })
 }
@@ -575,6 +583,15 @@ impl ResourceProvider for PhotosResources {
                 resource = resource.with_action(spec);
             }
         }
+        if let Some(spec) = operation(
+            "share-reference",
+            "Share photograph reference",
+            &PhotosOperation::ShareReference {
+                resource_id: id.clone(),
+            },
+        ) {
+            resource = resource.with_action(spec);
+        }
         resource = resource.with_action(file_operation("save", "Save edited photograph", false));
 
         // Reset only appears when there is something to undo, so the surface
@@ -762,6 +779,17 @@ fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
         },
     ) {
         item = item.with_action(spec.reversible());
+    }
+    if let Some(spec) = operation(
+        "share-reference",
+        "Share photograph reference",
+        &PhotosOperation::ShareReference {
+            resource_id: photo.id.clone(),
+        },
+    ) {
+        item = item.with_action(spec.with_description(
+            "Copy this library photograph's portable resource reference to the local clipboard",
+        ));
     }
     item = item.with_action(photo_metadata_spec(photo));
     if let Some(spec) = direct_spec(
@@ -1225,6 +1253,7 @@ mod tests {
                 "crop",
                 "open",
                 "copy",
+                "share-reference",
                 "save",
             ]
         );
@@ -1260,6 +1289,38 @@ mod tests {
         registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
         assert!(PhotosDoc::image(&doc).is_none());
         assert!(PhotosDoc::library(&doc).photos.is_empty());
+    }
+
+    #[test]
+    fn an_unselected_library_photo_exposes_a_share_reference_for_its_own_id() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let image = OpenImage::from_path("/photos/library-only.png", 20, 10);
+        let photo = LibraryPhoto::from_image(image);
+        let id = photo.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![photo],
+                ..Default::default()
+            },
+        );
+
+        let resource = PhotosResources
+            .resource(&doc, &id)
+            .expect("library photo has a canonical resource");
+        let share = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "share-reference")
+            .expect("an addressable library photo can be shared");
+        let qos_actions::ActionInput::Immediate(encoded) = &share.input else {
+            panic!("share is a local effect operation");
+        };
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(PhotosOperation::ShareReference { resource_id: id })
+        );
     }
 
     #[test]
