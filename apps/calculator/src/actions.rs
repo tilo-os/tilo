@@ -63,6 +63,10 @@ pub enum CalculatorOperation {
     ShowGraph3d,
 }
 
+/// # Errors
+///
+/// Returns the JSON decoding error when `type_id` identifies a calculator
+/// operation but `payload` is not a valid `CalculatorOperation` envelope.
 pub fn decode_operation(
     type_id: &str,
     payload: &[u8],
@@ -441,6 +445,11 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> V
 /// owns a `calculator.history_entry` per committed computation and a
 /// `calculator.graph` per saved 2D curve / 3D surface. Every document-mutating
 /// operation is exported as the same action its on-screen affordance dispatches.
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the operation payload is a derived enum with only unit variants; serialization cannot fail"
+)]
 pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calculator.workspace", "calculator.workspace", "Calculator");
 
