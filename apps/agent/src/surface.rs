@@ -301,6 +301,12 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
             format_spans: view.format_spans.clone(),
             selection: view.selection.clone(),
             region: view.region,
+            // An agent's headless view does not own the Word Processor's
+            // Find session. Search result resources are therefore absent
+            // here; collaborative review resources are materialized from
+            // the shared document below, independently of presentation
+            // state.
+            search_hits: Vec::new(),
         },
         doc,
     )
