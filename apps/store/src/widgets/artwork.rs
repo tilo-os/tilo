@@ -41,45 +41,24 @@ fn fallback_mark(label: &str) -> FallbackMark {
 }
 
 fn fallback_colors(mark: FallbackMark, theme: &ui::Theme) -> (Color, Color, Color) {
-    // High contrast belongs to the system palette. In normal themes these
-    // muted, product-like hues make an app recognisable without turning the
-    // catalogue into a wall of unrelated saturated rectangles.
-    if theme.name == "High Contrast" {
-        return (theme.bg_active, theme.text_primary, theme.accent_primary);
-    }
-    match mark {
-        FallbackMark::Terminal => (
-            Color::from_rgb8(29, 58, 53),
-            Color::from_rgb8(208, 243, 223),
-            Color::from_rgb8(93, 207, 157),
-        ),
-        FallbackMark::Files => (
-            Color::from_rgb8(47, 74, 124),
-            Color::from_rgb8(224, 238, 255),
-            Color::from_rgb8(123, 181, 255),
-        ),
-        FallbackMark::Media => (
-            Color::from_rgb8(118, 61, 28),
-            Color::from_rgb8(255, 239, 220),
-            Color::from_rgb8(255, 169, 78),
-        ),
-        FallbackMark::Chess => (
-            Color::from_rgb8(72, 52, 99),
-            Color::from_rgb8(239, 229, 255),
-            Color::from_rgb8(184, 145, 255),
-        ),
-        FallbackMark::Vector => (
-            Color::from_rgb8(54, 67, 82),
-            Color::from_rgb8(239, 247, 255),
-            Color::from_rgb8(131, 202, 255),
-        ),
-        FallbackMark::Notes => (
-            Color::from_rgb8(108, 86, 37),
-            Color::from_rgb8(255, 248, 216),
-            Color::from_rgb8(246, 205, 92),
-        ),
-        FallbackMark::Generic => (theme.bg_hover, theme.text_primary, theme.accent_primary),
-    }
+    // Shape carries the app identity; colour remains part of the shared theme.
+    // Deriving the wash and both inks from tokens keeps these tiles coherent in
+    // custom themes and preserves contrast without a name-based HC exception.
+    let colors = &theme.tokens.colors;
+    let tint = match mark {
+        FallbackMark::Terminal => colors.semantic.success,
+        FallbackMark::Files | FallbackMark::Vector => colors.semantic.info,
+        FallbackMark::Media | FallbackMark::Notes => colors.semantic.warning,
+        FallbackMark::Chess | FallbackMark::Generic => theme.accent_primary,
+    };
+    let chip = colors.tinted_chip_on(
+        theme.bg_primary,
+        tint,
+        0.18,
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    );
+    let foreground = theme.on_surface(chip.fill).ink;
+    (chip.fill, foreground, chip.ink)
 }
 
 pub struct Artwork {
