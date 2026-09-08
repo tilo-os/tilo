@@ -366,6 +366,11 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
 /// scenario reviews. Document-write authority is separate so a denied agent
 /// can still write a human-readable refusal without discovering the denied
 /// action.
+///
+/// # Panics
+///
+/// Panics if the deterministic test room cannot be configured or its native
+/// collaboration broker cannot bind `path`.
 pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str)],
