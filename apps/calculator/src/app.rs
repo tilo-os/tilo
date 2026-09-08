@@ -21,6 +21,7 @@ use ui::theme::Theme;
 
 use crate::actions::{self, CalculatorAction, GraphKind};
 use crate::draw::{self, Align};
+use crate::engine;
 use crate::graph2d::Graph2dScreen;
 use crate::graph3d::Graph3dScreen;
 use crate::keypad::{CalcScreen, MEM_KEYS};
@@ -254,9 +255,10 @@ impl CalculatorApp {
             // visit; settle both animators to the current model view.
             self.g2.settle_zoom(self.model.view2d);
             self.g3.settle_zoom(self.model.view3d.zoom);
-            // Give a freshly-entered graph mode something to edit rather than a
-            // blank void: an empty `y =` row for 2D, an example `z =` surface
-            // for 3D. These are editor affordances, not restored data.
+            // Give tests and the screenshot-only constructor a useful starter
+            // without needing a live document. Production mode changes go
+            // through `set_mode_in_document`, which publishes this same row as
+            // a canonical AddGraph action before `store` reconciles the model.
             match m {
                 Mode::Graph2d if self.model.funcs.is_empty() => {
                     self.model.funcs.push(PlotFn {
@@ -275,6 +277,25 @@ impl CalculatorApp {
                 _ => {}
             }
             self.model_dirty = true;
+        }
+    }
+
+    /// Switch modes on a live document.  A first visit to either graph mode
+    /// creates its starter row through the exact `AddGraph` action published to
+    /// Ctrl+K, rather than smuggling it into the CRDT in a later wholesale
+    /// store. This matters for undo, activity history, and collaborators.
+    fn set_mode_in_document(&mut self, m: Mode, doc: &mut AutoCommit) {
+        let funcs_before = self.model.funcs.len();
+        let surfaces_before = self.model.surfaces.len();
+        self.set_mode(m);
+        if self.model.funcs.len() > funcs_before {
+            self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
+        }
+        if self.model.surfaces.len() > surfaces_before {
+            self.perform_action(
+                doc,
+                &actions::add_graph_action(GraphKind::Surface3d, model::DEFAULT_SURFACE),
+            );
         }
     }
 
@@ -388,7 +409,7 @@ impl CalculatorApp {
         // header first
         for (i, r) in self.seg_rects.iter().enumerate() {
             if r.contains(p) {
-                self.set_mode(Mode::from_index(i));
+                self.set_mode_in_document(Mode::from_index(i), doc);
                 return;
             }
         }
@@ -670,15 +691,15 @@ impl CalculatorApp {
         if ctrl && let WKey::Character(s) = key {
             match s.as_str() {
                 "1" => {
-                    self.set_mode(Mode::Calc);
+                    self.set_mode_in_document(Mode::Calc, doc);
                     return;
                 }
                 "2" => {
-                    self.set_mode(Mode::Graph2d);
+                    self.set_mode_in_document(Mode::Graph2d, doc);
                     return;
                 }
                 "3" => {
-                    self.set_mode(Mode::Graph3d);
+                    self.set_mode_in_document(Mode::Graph3d, doc);
                     return;
                 }
                 _ => {}
@@ -898,6 +919,43 @@ fn field_accepts(ch: char) -> bool {
         || ch == '−'
 }
 
+/// Speak intent rather than a lone glyph for the custom-painted keypad.
+fn key_accessible_name(key: &model::Key) -> String {
+    use model::Key;
+    match key {
+        Key::Equals => "Evaluate expression".into(),
+        Key::Clear => "Clear expression".into(),
+        Key::Backspace => "Backspace".into(),
+        Key::ToggleSign => "Toggle sign".into(),
+        Key::Percent => "Percent".into(),
+        Key::Ans => "Insert previous answer".into(),
+        Key::MemAdd => "Add expression to memory".into(),
+        Key::MemSub => "Subtract expression from memory".into(),
+        Key::MemRecall => "Recall memory".into(),
+        Key::MemClear => "Clear memory".into(),
+        Key::Wrap(_, _) => "Square expression".into(),
+        Key::Ins("sin(") => "Sine".into(),
+        Key::Ins("cos(") => "Cosine".into(),
+        Key::Ins("tan(") => "Tangent".into(),
+        Key::Ins("asin(") => "Inverse sine".into(),
+        Key::Ins("acos(") => "Inverse cosine".into(),
+        Key::Ins("atan(") => "Inverse tangent".into(),
+        Key::Ins("sqrt(") => "Square root".into(),
+        Key::Ins("ln(") => "Natural logarithm".into(),
+        Key::Ins("log10(") => "Base 10 logarithm".into(),
+        Key::Ins("exp(") => "Exponential".into(),
+        Key::Ins("1/(") => "Reciprocal".into(),
+        Key::Ins("^") => "Power".into(),
+        Key::Ins("*") => "Multiply".into(),
+        Key::Ins("/") => "Divide".into(),
+        Key::Ins("+") => "Add".into(),
+        Key::Ins("-") => "Subtract".into(),
+        Key::Ins("pi") => "Pi".into(),
+        Key::Ins("e") => "Euler's number".into(),
+        _ => format!("Calculator key {}", key.label()),
+    }
+}
+
 impl Widget for CalculatorApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::CALCULATOR_OPERATION_TYPE]
@@ -917,6 +975,11 @@ impl Widget for CalculatorApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
+        // Resource-open operations are presentation-only except for the first
+        // graph visit, whose starter must still be a replayable action. The
+        // handler receives an immutable document reference, so stage the
+        // visible mode here; the regular interaction path will materialize a
+        // starter before editing. (A palette add action is always available.)
         self.set_mode(match operation {
             actions::CalculatorOperation::ShowCalculator => Mode::Calc,
             actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
@@ -1139,11 +1202,16 @@ impl Widget for CalculatorApp {
         "CalculatorApp"
     }
 
-    /// The calculator canvas has no native control subtree. Export the
-    /// top-bar's persistent state and its primary evaluate affordance; graph
-    /// fields and keypad input retain their existing keyboard/text semantics.
+    /// The calculator is custom-painted, so publish the complete retained
+    /// control tree rather than leaving screen-reader users with only its
+    /// toolbar. Every painted control below has the same activation path as
+    /// its pointer counterpart.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the retained tree is deliberately kept beside its Widget hook so every custom-painted control is auditable together"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
         let modes = Mode::all()
             .iter()
@@ -1152,7 +1220,7 @@ impl Widget for CalculatorApp {
                 AccessNode::new(Role::Tab)
                     .with_name(mode.label())
                     .with_action_target(format!("calculator.mode:{index}"))
-                    .with_bounds(self.seg_rects[index])
+                    .with_bounds(self.seg_rects.get(index).copied().unwrap_or(Rect::ZERO))
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1184,13 +1252,116 @@ impl Widget for CalculatorApp {
                     .with_state(AccessState::new().focusable(true).checked(self.model.deg)),
             ]);
         let mut children = vec![top_bar];
-        if self.model.mode == Mode::Calc {
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Evaluate expression")
-                    .with_action_target("calculator.evaluate")
-                    .with_state(AccessState::new().focusable(true)),
-            );
+        match self.model.mode {
+            Mode::Calc => {
+                let mut controls = Vec::new();
+                let mut display = AccessNode::new(Role::Group)
+                    .with_name("Expression display")
+                    .with_value(if self.model.expr.trim().is_empty() {
+                        "0".to_string()
+                    } else {
+                        self.model.expr.clone()
+                    })
+                    .with_hashed_key("calculator.display");
+                if !self.model.expr.trim().is_empty() {
+                    let outcome = match engine::evaluate(&self.model.expr, &self.model.ctx()) {
+                        Ok(value) => format!("Result {}", engine::format_number(value)),
+                        Err(error) => format!("Invalid expression: {error}"),
+                    };
+                    display = display.with_children(vec![
+                        AccessNode::new(Role::StaticText)
+                            .with_name(outcome)
+                            .with_live(Politeness::Polite)
+                            .with_hashed_key("calculator.display.outcome"),
+                    ]);
+                }
+                children.push(display);
+
+                controls.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(if self.calc.sidebar_open() {
+                            "Hide history"
+                        } else {
+                            "Show history"
+                        })
+                        .with_action_target("calculator.history.toggle")
+                        .with_bounds(self.calc.toggle_rect()),
+                );
+                for (index, key) in MEM_KEYS.iter().enumerate() {
+                    let mut node = AccessNode::new(Role::Button)
+                        .with_name(key_accessible_name(key))
+                        .with_action_target(format!("calculator.memory:{index}"))
+                        .with_state(AccessState::new().focusable(true));
+                    if let Some(bounds) = self.calc.mem_rect(index) {
+                        node = node.with_bounds(bounds);
+                    }
+                    controls.push(node);
+                }
+                children.push(
+                    AccessNode::new(Role::Toolbar)
+                        .with_name("Calculator controls")
+                        .with_hashed_key("calculator.keypad-controls")
+                        .with_children(controls),
+                );
+
+                let keys = self
+                    .calc
+                    .keys()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, key)| {
+                        let mut node = AccessNode::new(Role::Button)
+                            .with_name(key_accessible_name(key))
+                            .with_action_target(format!("calculator.key:{index}"))
+                            .with_state(AccessState::new().focusable(true));
+                        if let Some(bounds) = self.calc.key_rect(index) {
+                            node = node.with_bounds(bounds);
+                        }
+                        node
+                    })
+                    .collect();
+                children.push(
+                    AccessNode::new(Role::Group)
+                        .with_name("Scientific keypad")
+                        .with_description(
+                            "Use the calculator keys, or type an expression directly.",
+                        )
+                        .with_hashed_key("calculator.keypad")
+                        .with_children(keys),
+                );
+
+                if self.calc.sidebar_open() {
+                    let mut history = Vec::new();
+                    if !self.model.history.is_empty() {
+                        history.push(
+                            AccessNode::new(Role::Button)
+                                .with_name("Clear calculation history")
+                                .with_action_target("calculator.history.clear")
+                                .with_state(AccessState::new().focusable(true))
+                                .with_bounds(self.calc.clear_history_rect()),
+                        );
+                    }
+                    for (index, entry) in self.model.history.iter().enumerate() {
+                        let mut item = AccessNode::new(Role::ListItem)
+                            .with_name(format!("{} equals {}", entry.expr, entry.result))
+                            .with_action_target(format!("calculator.history.recall:{index}"))
+                            .with_position(index + 1, self.model.history.len())
+                            .with_state(AccessState::new().focusable(true));
+                        if let Some(bounds) = self.calc.history_row_rect(index) {
+                            item = item.with_bounds(bounds);
+                        }
+                        history.push(item);
+                    }
+                    children.push(
+                        AccessNode::new(Role::List)
+                            .with_name("Calculation history")
+                            .with_hashed_key("calculator.history")
+                            .with_children(history),
+                    );
+                }
+            }
+            Mode::Graph2d => children.push(self.graph_accessibility(GraphKind::Curve2d)),
+            Mode::Graph3d => children.push(self.graph_accessibility(GraphKind::Surface3d)),
         }
         Some(
             AccessNode::new(Role::Group)
@@ -1204,7 +1375,6 @@ impl Widget for CalculatorApp {
                 .with_children(children),
         )
     }
-
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1213,21 +1383,99 @@ impl Widget for CalculatorApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::Action;
-        if !matches!(action, Action::Activate | Action::ToggleCheck) {
-            return false;
-        }
         match target {
-            "calculator.mode:0" => self.set_mode(Mode::Calc),
-            "calculator.mode:1" => self.set_mode(Mode::Graph2d),
-            "calculator.mode:2" => self.set_mode(Mode::Graph3d),
-            "calculator.angle:radians" => self.set_degrees(false),
-            "calculator.angle:degrees" => self.set_degrees(true),
-            "calculator.evaluate" if self.model.mode == Mode::Calc => self.commit_equals(state),
+            "calculator.mode:0" if matches!(action, Action::Activate) => {
+                self.set_mode_in_document(Mode::Calc, state);
+            }
+            "calculator.mode:1" if matches!(action, Action::Activate) => {
+                self.set_mode_in_document(Mode::Graph2d, state);
+            }
+            "calculator.mode:2" if matches!(action, Action::Activate) => {
+                self.set_mode_in_document(Mode::Graph3d, state);
+            }
+            "calculator.angle:radians"
+                if matches!(action, Action::Activate | Action::ToggleCheck) =>
+            {
+                self.set_degrees(false);
+            }
+            "calculator.angle:degrees"
+                if matches!(action, Action::Activate | Action::ToggleCheck) =>
+            {
+                self.set_degrees(true);
+            }
+            "calculator.history.toggle"
+                if matches!(action, Action::Activate | Action::ToggleCheck) =>
+            {
+                self.calc.toggle_sidebar();
+            }
+            "calculator.history.clear"
+                if matches!(action, Action::Activate) && !self.model.history.is_empty() =>
+            {
+                self.model.history.clear();
+                self.perform_action(state, &actions::clear_history_action());
+                self.model_dirty = true;
+            }
+            "calculator.evaluate"
+                if matches!(action, Action::Activate) && self.model.mode == Mode::Calc =>
+            {
+                self.commit_equals(state);
+            }
+            _ if target.starts_with("calculator.key:") && matches!(action, Action::Activate) => {
+                let Some(index) = target
+                    .rsplit(':')
+                    .next()
+                    .and_then(|i| i.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some(key) = self.calc.keys().get(index).cloned() else {
+                    return false;
+                };
+                if matches!(key, model::Key::Equals) {
+                    self.commit_equals(state);
+                } else {
+                    model::apply_key(&mut self.model, &key);
+                    self.model_dirty = true;
+                }
+            }
+            _ if target.starts_with("calculator.memory:") && matches!(action, Action::Activate) => {
+                let Some(index) = target
+                    .rsplit(':')
+                    .next()
+                    .and_then(|i| i.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some(key) = MEM_KEYS.get(index).cloned() else {
+                    return false;
+                };
+                model::apply_key(&mut self.model, &key);
+                self.model_dirty = true;
+            }
+            _ if target.starts_with("calculator.history.recall:")
+                && matches!(action, Action::Activate) =>
+            {
+                let Some(index) = target
+                    .rsplit(':')
+                    .next()
+                    .and_then(|i| i.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some(entry) = self.model.history.get(index) else {
+                    return false;
+                };
+                self.model.expr = entry.expr.clone();
+                self.model.after_equals = false;
+                self.model_dirty = true;
+            }
+            _ if target.starts_with("calculator.graph.") => {
+                return self.perform_graph_semantic_action(target, action, state);
+            }
             _ => return false,
         }
         true
     }
-
     /// Keep the host pumping frames while any frame-driven animation is in
     /// flight: the history drawer's eased reveal, or a smooth graph zoom easing
     /// toward its target. Without this the animation would paint one frame and
@@ -1279,6 +1527,210 @@ impl Widget for CalculatorApp {
     }
 }
 
+impl CalculatorApp {
+    /// Retained semantics for the custom-painted graph editor panels.
+    fn graph_accessibility(&self, kind: GraphKind) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let (title, slug, rows, open, toggle_bounds, add_bounds) = match kind {
+            GraphKind::Curve2d => (
+                "Functions",
+                "2d",
+                &self.model.funcs,
+                self.g2.panel_open(),
+                self.g2.toggle_rect(),
+                self.g2.add_rect(),
+            ),
+            GraphKind::Surface3d => (
+                "Surfaces",
+                "3d",
+                &self.model.surfaces,
+                self.g3.panel_open(),
+                self.g3.toggle_rect(),
+                self.g3.add_rect(),
+            ),
+        };
+        let mut children = Vec::new();
+        if let Some(bounds) = toggle_bounds {
+            children.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("Show {title}"))
+                    .with_action_target(format!("calculator.graph.panel:{slug}"))
+                    .with_state(AccessState::new().focusable(true).checked(open))
+                    .with_bounds(bounds),
+            );
+        }
+        if open {
+            for (index, row) in rows.iter().enumerate() {
+                let (field_bounds, visible_bounds) = match kind {
+                    GraphKind::Curve2d => {
+                        (self.g2.field_rect(index), self.g2.visibility_rect(index))
+                    }
+                    GraphKind::Surface3d => {
+                        (self.g3.field_rect(index), self.g3.visibility_rect(index))
+                    }
+                };
+                let mut field = AccessNode::new(Role::TextInput)
+                    .with_name(format!(
+                        "{} {} formula",
+                        title.trim_end_matches('s'),
+                        index + 1
+                    ))
+                    .with_value(row.expr.clone())
+                    .with_action_target(format!("calculator.graph.field:{slug}:{index}"))
+                    .with_state(AccessState::new().focusable(true));
+                if let Some(bounds) = field_bounds {
+                    field = field.with_bounds(bounds);
+                }
+                let mut visible = AccessNode::new(Role::ToggleButton)
+                    .with_name(format!(
+                        "Show {} {}",
+                        title.trim_end_matches('s'),
+                        index + 1
+                    ))
+                    .with_action_target(format!("calculator.graph.visible:{slug}:{index}"))
+                    .with_state(AccessState::new().focusable(true).checked(row.visible));
+                if let Some(bounds) = visible_bounds {
+                    visible = visible.with_bounds(bounds);
+                }
+                children.push(
+                    AccessNode::new(Role::ListItem)
+                        .with_name(format!("{} {}", title.trim_end_matches('s'), index + 1))
+                        .with_hashed_key(format!("calculator.graph.row:{slug}:{index}"))
+                        .with_position(index + 1, rows.len())
+                        .with_children(vec![field, visible]),
+                );
+            }
+            let mut add = AccessNode::new(Role::Button)
+                .with_name(format!("Add {}", title.trim_end_matches('s')))
+                .with_action_target(format!("calculator.graph.add:{slug}"))
+                .with_state(AccessState::new().focusable(true));
+            if let Some(bounds) = add_bounds {
+                add = add.with_bounds(bounds);
+            }
+            children.push(add);
+        }
+        AccessNode::new(Role::TabPanel)
+            .with_name(title)
+            .with_hashed_key(format!("calculator.graph:{slug}"))
+            .with_children(children)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one parser keeps every retained graph control on the same action-dispatch path"
+    )]
+    fn perform_graph_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+        let Some(rest) = target.strip_prefix("calculator.graph.") else {
+            return false;
+        };
+        let parts: Vec<_> = rest.split(':').collect();
+        let Some(kind) = parts.get(1).and_then(|slug| match *slug {
+            "2d" => Some(GraphKind::Curve2d),
+            "3d" => Some(GraphKind::Surface3d),
+            _ => None,
+        }) else {
+            return false;
+        };
+        match (
+            parts.first().copied(),
+            parts.get(2).and_then(|s| s.parse::<usize>().ok()),
+            action,
+        ) {
+            (Some("panel"), None, Action::Activate | Action::ToggleCheck) => match kind {
+                GraphKind::Curve2d => self.g2.toggle_panel(),
+                GraphKind::Surface3d => self.g3.toggle_panel(),
+            },
+            (Some("add"), None, Action::Activate) => {
+                match kind {
+                    GraphKind::Curve2d => {
+                        self.model.funcs.push(PlotFn {
+                            expr: String::new(),
+                            visible: true,
+                        });
+                        self.model.active_fn = self.model.funcs.len() - 1;
+                    }
+                    GraphKind::Surface3d => {
+                        self.model.surfaces.push(PlotFn {
+                            expr: String::new(),
+                            visible: true,
+                        });
+                        self.model.active_surface = self.model.surfaces.len() - 1;
+                    }
+                }
+                self.perform_action(doc, &actions::add_graph_action(kind, ""));
+                self.model_dirty = true;
+            }
+            (Some("visible"), Some(index), Action::Activate | Action::ToggleCheck) => {
+                let changed = match kind {
+                    GraphKind::Curve2d => self
+                        .model
+                        .funcs
+                        .get_mut(index)
+                        .map(|row| row.visible = !row.visible),
+                    GraphKind::Surface3d => self
+                        .model
+                        .surfaces
+                        .get_mut(index)
+                        .map(|row| row.visible = !row.visible),
+                };
+                if changed.is_none() {
+                    return false;
+                }
+                self.perform_action(doc, &actions::toggle_graph_visible_action(kind, index));
+                self.model_dirty = true;
+            }
+            (Some("field"), Some(index), Action::SetValue(expr)) => {
+                let changed = match kind {
+                    GraphKind::Curve2d => self
+                        .model
+                        .funcs
+                        .get(index)
+                        .is_some_and(|row| row.expr != *expr),
+                    GraphKind::Surface3d => self
+                        .model
+                        .surfaces
+                        .get(index)
+                        .is_some_and(|row| row.expr != *expr),
+                };
+                if !changed {
+                    return true;
+                }
+                match kind {
+                    GraphKind::Curve2d => {
+                        if let Some(row) = self.model.funcs.get_mut(index) {
+                            row.expr.clone_from(expr);
+                        }
+                    }
+                    GraphKind::Surface3d => {
+                        if let Some(row) = self.model.surfaces.get_mut(index) {
+                            row.expr.clone_from(expr);
+                        }
+                    }
+                }
+                self.perform_action(doc, &actions::set_graph_expr_action(kind, index, expr));
+                self.model_dirty = true;
+            }
+            (Some("field"), Some(index), Action::Activate | Action::Focus) => match kind {
+                GraphKind::Curve2d if index < self.model.funcs.len() => {
+                    self.model.active_fn = index;
+                }
+                GraphKind::Surface3d if index < self.model.surfaces.len() => {
+                    self.model.active_surface = index;
+                }
+                _ => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1322,6 +1774,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::items_after_statements,
+        reason = "the local sibling-key assertion reads most clearly next to the tree it validates"
+    )]
     fn accessibility_exposes_and_activates_topbar_controls() {
         use ui::a11y::Action;
         use ui::widget::Widget as _;
@@ -1361,6 +1817,59 @@ mod tests {
             &automerge::ROOT,
         ));
         assert!(app.model.deg);
+    }
+
+    #[test]
+    fn accessibility_exposes_keypad_and_graph_formula_controls() {
+        use ui::a11y::Action;
+        use ui::widget::Widget as _;
+
+        let mut app = CalculatorApp::new();
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        let tree = app.accessibility().expect("calculator semantics");
+        let keypad = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Scientific keypad"))
+            .expect("all painted keypad keys are exposed");
+        let seven = keypad
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Calculator key 7"))
+            .expect("digit key is actionable");
+        let mut doc = AutoCommit::new();
+        assert!(app.perform_semantic_action(
+            seven.action_target.as_deref().unwrap_or_default(),
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.model.expr, "7");
+
+        app.set_mode(Mode::Graph2d);
+        crate::doc::store(&mut doc, &app.model);
+        app.layout_active();
+        let graph = app.accessibility().expect("graph semantics");
+        let panel = graph
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Functions"))
+            .expect("functions panel is exposed");
+        let formula = panel
+            .children
+            .iter()
+            .flat_map(|node| node.children.iter())
+            .find(|node| node.role == ui::a11y::Role::TextInput)
+            .expect("formula editor is a text input");
+        assert!(app.perform_semantic_action(
+            formula.action_target.as_deref().unwrap_or_default(),
+            &Action::SetValue("2*x".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.model.funcs[0].expr, "2*x");
     }
 
     #[test]
