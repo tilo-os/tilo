@@ -9,8 +9,10 @@ use std::collections::HashSet;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
+use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -28,7 +30,27 @@ pub(crate) struct ExportDialog {
     selection: HashSet<ContactId>,
     scroll: f64,
     open: bool,
+    focused: ExportFocus,
 }
+
+/// Hand-drawn modal focus is kept by durable contact ID, never an incidental
+/// row offset, so sorting or a collaborator's edit cannot retarget activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExportFocus {
+    SelectAll,
+    SelectNone,
+    Row(ContactId),
+    Cancel,
+    ExportV3,
+    ExportV4,
+}
+
+const EXPORT_OVERSCAN_ROWS: usize = 4;
+const EXPORT_ROW_H: f64 = 40.0;
+const EXPORT_HEADER_H: f64 = 64.0;
+const EXPORT_FOOTER_H: f64 = 64.0;
+const EXPORT_MIN_H: f64 = 320.0;
+const EXPORT_MAX_H: f64 = 560.0;
 
 #[derive(Debug)]
 pub(crate) struct Geometry {
@@ -37,6 +59,8 @@ pub(crate) struct Geometry {
     pub(crate) select_none: Rect,
     pub(crate) list_body: Rect,
     pub(crate) rows: Vec<(ContactId, Rect, Rect)>,
+    pub(crate) row_start: usize,
+    pub(crate) row_count: usize,
     pub(crate) export_v3: Rect,
     pub(crate) export_v4: Rect,
     pub(crate) cancel: Rect,
@@ -49,6 +73,7 @@ impl ExportDialog {
             selection: HashSet::new(),
             scroll: 0.0,
             open: false,
+            focused: ExportFocus::ExportV4,
         }
     }
 
@@ -56,6 +81,7 @@ impl ExportDialog {
         self.selection = selected.into_iter().collect();
         self.scroll = 0.0;
         self.open = true;
+        self.focused = ExportFocus::ExportV4;
     }
 
     pub(crate) fn close(&mut self) {
@@ -72,10 +98,18 @@ impl ExportDialog {
     }
 
     pub(crate) fn geometry(&self, window: Rect, store: &ContactStore, sort: SortKey) -> Geometry {
+        let ids = store.filtered_sorted("", None, sort);
         let width = 460.0_f64.min((window.width() - 32.0).max(280.0));
-        let height = (window.height() * 0.8)
-            .clamp(320.0, 560.0)
+        let max_height = (window.height() * 0.8)
+            .clamp(EXPORT_MIN_H, EXPORT_MAX_H)
             .min(window.height() - 40.0);
+        // Small address books should not get a large inert well below the
+        // last checkbox.  The list grows with its content through the normal
+        // minimum dialog height, then caps and scrolls for large directories.
+        // Header/footer are fixed so their 28–32px controls keep their
+        // existing touch geometry at every resulting height.
+        let content_height = EXPORT_HEADER_H + ids.len() as f64 * EXPORT_ROW_H + EXPORT_FOOTER_H;
+        let height = content_height.clamp(EXPORT_MIN_H.min(max_height), max_height);
         let panel = Rect::from_center_size(window.center(), (width, height));
         let head_y = panel.y0 + 18.0;
         let select_none = Rect::new(panel.x1 - 112.0, head_y, panel.x1 - 16.0, head_y + 28.0);
@@ -87,15 +121,25 @@ impl ExportDialog {
         );
         let list_body = Rect::new(
             panel.x0 + 16.0,
-            panel.y0 + 64.0,
+            panel.y0 + EXPORT_HEADER_H,
             panel.x1 - 16.0,
-            panel.y1 - 64.0,
+            panel.y1 - EXPORT_FOOTER_H,
         );
-        let ids = store.filtered_sorted("", None, sort);
-        let row_h = 40.0;
+        let row_h = EXPORT_ROW_H;
+        let first_visible = (self.scroll / row_h).floor().max(0.0) as usize;
+        let visible = (list_body.height() / row_h).ceil().max(1.0) as usize;
+        let row_start = first_visible
+            .saturating_sub(EXPORT_OVERSCAN_ROWS)
+            .min(ids.len());
+        let row_end = first_visible
+            .saturating_add(visible)
+            .saturating_add(EXPORT_OVERSCAN_ROWS)
+            .min(ids.len());
         let rows = ids
             .iter()
             .enumerate()
+            .skip(row_start)
+            .take(row_end.saturating_sub(row_start))
             .map(|(index, id)| {
                 let y = list_body.y0 - self.scroll + row_h * index as f64;
                 let row = Rect::new(list_body.x0, y, list_body.x1, y + row_h);
@@ -118,6 +162,8 @@ impl ExportDialog {
             select_none,
             list_body,
             rows,
+            row_start,
+            row_count: ids.len(),
             export_v3,
             export_v4,
             cancel,
@@ -149,7 +195,7 @@ impl ExportDialog {
         menu_panel(scene, transform, theme, geometry.panel);
         self.draw_header(scene, transform, text, theme, &geometry);
         self.draw_rows(scene, transform, text, theme, store, pointer, &geometry);
-        Self::draw_footer_buttons(scene, transform, text, theme, &geometry, pointer);
+        self.draw_footer_buttons(scene, transform, text, theme, &geometry, pointer);
     }
 
     /// The title, selection count, and Select all/none chips (part of
@@ -197,6 +243,18 @@ impl ExportDialog {
             geometry.select_none,
             "Select none",
             false,
+        );
+        let focused = match self.focused {
+            ExportFocus::SelectAll => geometry.select_all,
+            ExportFocus::SelectNone => geometry.select_none,
+            _ => return,
+        };
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            colors.border_focus,
+            None,
+            &RoundedRect::from_rect(focused.inflate(2.0, 2.0), f64::from(theme.tokens.radii.md)),
         );
     }
 
@@ -246,6 +304,18 @@ impl ExportDialog {
                 *checkbox,
                 self.selection.contains(id),
             );
+            if self.focused == ExportFocus::Row(*id) {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(2.0),
+                    transform,
+                    colors.border_focus,
+                    None,
+                    &RoundedRect::from_rect(
+                        row.inflate(-1.0, -1.0),
+                        f64::from(theme.tokens.radii.md),
+                    ),
+                );
+            }
             text.draw_text(
                 scene,
                 &contact.display_name(),
@@ -260,6 +330,7 @@ impl ExportDialog {
 
     /// The Cancel / Export 3.0 / Export 4.0 buttons (part of [`Self::draw`]).
     fn draw_footer_buttons(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
@@ -300,6 +371,19 @@ impl ExportDialog {
             geometry.export_v4.contains(pointer),
             false,
         );
+        let focused = match self.focused {
+            ExportFocus::Cancel => geometry.cancel,
+            ExportFocus::ExportV3 => geometry.export_v3,
+            ExportFocus::ExportV4 => geometry.export_v4,
+            _ => return,
+        };
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            theme.tokens.colors.border_focus,
+            None,
+            &RoundedRect::from_rect(focused.inflate(2.0, 2.0), f64::from(theme.tokens.radii.md)),
+        );
     }
 
     pub(crate) fn handle_event(
@@ -334,21 +418,31 @@ impl ExportDialog {
         }
         let geometry = self.geometry(window, store, sort);
         if geometry.select_all.contains(pointer) {
+            self.focused = ExportFocus::SelectAll;
             self.selection = store.filtered_sorted("", None, sort).into_iter().collect();
         } else if geometry.select_none.contains(pointer) {
+            self.focused = ExportFocus::SelectNone;
             self.selection.clear();
         } else if geometry.list_body.contains(pointer) {
             if let Some((id, _, _)) = geometry
                 .rows
                 .iter()
                 .find(|(_, row, _)| row.contains(pointer))
-                && !self.selection.remove(id)
             {
-                self.selection.insert(*id);
+                self.focused = ExportFocus::Row(*id);
+                if !self.selection.remove(id) {
+                    self.selection.insert(*id);
+                }
             }
         } else if geometry.cancel.contains(pointer) || !geometry.panel.contains(pointer) {
+            self.focused = ExportFocus::Cancel;
             self.close();
         } else if geometry.export_v3.contains(pointer) || geometry.export_v4.contains(pointer) {
+            self.focused = if geometry.export_v4.contains(pointer) {
+                ExportFocus::ExportV4
+            } else {
+                ExportFocus::ExportV3
+            };
             let version = if geometry.export_v4.contains(pointer) {
                 VCardVersion::V4
             } else {
@@ -364,12 +458,266 @@ impl ExportDialog {
         }
         (true, None)
     }
+
+    /// Keyboard route for the hand-drawn dialog. Tab stays inside the modal;
+    /// rows also support arrows, Space and Enter like native checkboxes.
+    pub(crate) fn handle_key(
+        &mut self,
+        key: &KeyEvent,
+        backward: bool,
+        window: Rect,
+        store: &ContactStore,
+        sort: SortKey,
+    ) -> (bool, Option<ExportRequest>) {
+        if key.state != ElementState::Pressed {
+            return (false, None);
+        }
+        match &key.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.close();
+                (true, None)
+            }
+            Key::Named(NamedKey::Tab) => {
+                self.step_focus(store, sort, if backward { -1 } else { 1 });
+                self.scroll_focus_into_view(window, store, sort);
+                (true, None)
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                if matches!(self.focused, ExportFocus::Row(_)) {
+                    self.step_row_focus(store, sort, 1);
+                    self.scroll_focus_into_view(window, store, sort);
+                    (true, None)
+                } else {
+                    (false, None)
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if matches!(self.focused, ExportFocus::Row(_)) {
+                    self.step_row_focus(store, sort, -1);
+                    self.scroll_focus_into_view(window, store, sort);
+                    (true, None)
+                } else {
+                    (false, None)
+                }
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                let request = self.activate_focus(store, sort);
+                (true, request)
+            }
+            _ => (false, None),
+        }
+    }
+
+    /// Build a bounded semantic subtree. The address book can be very large,
+    /// so assistive technology receives only visible rows plus correct total
+    /// positions—the same performance contract as the painted list.
+    pub(crate) fn accessibility(
+        &self,
+        window: Rect,
+        store: &ContactStore,
+        sort: SortKey,
+    ) -> AccessNode {
+        let geometry = self.geometry(window, store, sort);
+        let rows = geometry
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, (id, row, _))| {
+                let contact = store.get(*id)?;
+                Some(
+                    AccessNode::new(Role::Checkbox)
+                        .with_name(contact.display_name())
+                        .with_action_target(format!("contacts.export.row:{id}"))
+                        .with_bounds(*row)
+                        .with_position(geometry.row_start + offset + 1, geometry.row_count)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.focused == ExportFocus::Row(*id))
+                                .checked(self.selection.contains(id)),
+                        ),
+                )
+            })
+            .collect();
+        AccessNode::new(Role::Dialog)
+            .with_name("Export contacts")
+            .with_description("Choose contacts and a vCard version to export.")
+            .with_bounds(geometry.panel)
+            .with_state(AccessState::new().modal(true))
+            .with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name("Select all contacts")
+                    .with_action_target("contacts.export.select-all")
+                    .with_bounds(geometry.select_all)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused == ExportFocus::SelectAll),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Select no contacts")
+                    .with_action_target("contacts.export.select-none")
+                    .with_bounds(geometry.select_none)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused == ExportFocus::SelectNone),
+                    ),
+                AccessNode::new(Role::List)
+                    .with_name("Contacts to export")
+                    .with_children(rows),
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel export")
+                    .with_action_target("contacts.export.cancel")
+                    .with_bounds(geometry.cancel)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused == ExportFocus::Cancel),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Export vCard 3.0")
+                    .with_action_target("contacts.export.v3")
+                    .with_bounds(geometry.export_v3)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused == ExportFocus::ExportV3),
+                    ),
+                AccessNode::new(Role::Button)
+                    .with_name("Export vCard 4.0")
+                    .with_action_target("contacts.export.v4")
+                    .with_bounds(geometry.export_v4)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused == ExportFocus::ExportV4),
+                    ),
+            ])
+    }
+
+    pub(crate) fn perform_accessibility_action(
+        &mut self,
+        target: &str,
+        action: &Action,
+        window: Rect,
+        store: &ContactStore,
+        sort: SortKey,
+    ) -> (bool, Option<ExportRequest>) {
+        let focus = match target {
+            "contacts.export.select-all" => Some(ExportFocus::SelectAll),
+            "contacts.export.select-none" => Some(ExportFocus::SelectNone),
+            "contacts.export.cancel" => Some(ExportFocus::Cancel),
+            "contacts.export.v3" => Some(ExportFocus::ExportV3),
+            "contacts.export.v4" => Some(ExportFocus::ExportV4),
+            _ => target
+                .strip_prefix("contacts.export.row:")
+                .and_then(|raw| raw.parse::<ContactId>().ok())
+                .filter(|id| store.get(*id).is_some())
+                .map(ExportFocus::Row),
+        };
+        let Some(focus) = focus else {
+            return (false, None);
+        };
+        self.focused = focus;
+        self.scroll_focus_into_view(window, store, sort);
+        if matches!(action, Action::Activate | Action::ToggleCheck) {
+            return (true, self.activate_focus(store, sort));
+        }
+        (matches!(action, Action::Focus), None)
+    }
+
+    fn activate_focus(&mut self, store: &ContactStore, sort: SortKey) -> Option<ExportRequest> {
+        match self.focused {
+            ExportFocus::SelectAll => {
+                self.selection = store.filtered_sorted("", None, sort).into_iter().collect();
+            }
+            ExportFocus::SelectNone => self.selection.clear(),
+            ExportFocus::Row(id) => {
+                if !self.selection.remove(&id) {
+                    self.selection.insert(id);
+                }
+            }
+            ExportFocus::Cancel => self.close(),
+            ExportFocus::ExportV3 | ExportFocus::ExportV4 => {
+                let version = if self.focused == ExportFocus::ExportV4 {
+                    VCardVersion::V4
+                } else {
+                    VCardVersion::V3
+                };
+                let ids = store
+                    .filtered_sorted("", None, sort)
+                    .into_iter()
+                    .filter(|id| self.selection.contains(id))
+                    .collect();
+                self.close();
+                return Some(ExportRequest { ids, version });
+            }
+        }
+        None
+    }
+
+    fn step_focus(&mut self, store: &ContactStore, sort: SortKey, delta: isize) {
+        let ids = store.filtered_sorted("", None, sort);
+        let mut stops = vec![ExportFocus::SelectAll, ExportFocus::SelectNone];
+        stops.extend(ids.into_iter().map(ExportFocus::Row));
+        stops.extend([
+            ExportFocus::Cancel,
+            ExportFocus::ExportV3,
+            ExportFocus::ExportV4,
+        ]);
+        let current = stops
+            .iter()
+            .position(|focus| *focus == self.focused)
+            .unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(stops.len() as isize) as usize;
+        if let Some(focus) = stops.get(next).copied() {
+            self.focused = focus;
+        }
+    }
+
+    fn step_row_focus(&mut self, store: &ContactStore, sort: SortKey, delta: isize) {
+        let ids = store.filtered_sorted("", None, sort);
+        let Some(ExportFocus::Row(id)) = Some(self.focused) else {
+            return;
+        };
+        let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+            return;
+        };
+        let next = (index as isize + delta).clamp(0, ids.len().saturating_sub(1) as isize) as usize;
+        if let Some(id) = ids.get(next) {
+            self.focused = ExportFocus::Row(*id);
+        }
+    }
+
+    fn scroll_focus_into_view(&mut self, window: Rect, store: &ContactStore, sort: SortKey) {
+        let ExportFocus::Row(id) = self.focused else {
+            return;
+        };
+        let ids = store.filtered_sorted("", None, sort);
+        let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
+            return;
+        };
+        let geometry = self.geometry(window, store, sort);
+        let top = index as f64 * EXPORT_ROW_H;
+        let bottom = top + EXPORT_ROW_H;
+        if top < self.scroll {
+            self.scroll = top;
+        }
+        if bottom > self.scroll + geometry.list_body.height() {
+            self.scroll = bottom - geometry.list_body.height();
+        }
+        self.scroll = self.scroll.clamp(
+            0.0,
+            (geometry.content_h - geometry.list_body.height()).max(0.0),
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::sample_contacts;
+    use crate::model::{Contact, sample_contacts};
 
     fn store() -> ContactStore {
         let mut store = ContactStore::new();
@@ -386,6 +734,40 @@ mod tests {
         let geometry = dialog.geometry(window, &store(), SortKey::Name);
         assert!(window.contains(geometry.panel.origin()));
         assert!(geometry.panel.x1 <= window.x1);
+    }
+
+    #[test]
+    fn short_books_fit_their_rows_without_a_dead_middle() {
+        let store = store();
+        let dialog = ExportDialog::new();
+        let geometry = dialog.geometry(Rect::new(0.0, 0.0, 1_280.0, 800.0), &store, SortKey::Name);
+        assert_eq!(geometry.row_count, 7);
+        assert!(
+            (geometry.panel.height() - (EXPORT_HEADER_H + 7.0 * EXPORT_ROW_H + EXPORT_FOOTER_H))
+                .abs()
+                < f64::EPSILON
+        );
+        assert!((geometry.list_body.height() - 7.0 * EXPORT_ROW_H).abs() < f64::EPSILON);
+        assert!(
+            geometry.panel.height() < EXPORT_MAX_H,
+            "a short list does not consume the large-directory dialog height"
+        );
+    }
+
+    #[test]
+    fn large_books_cap_height_and_materialize_only_a_viewport() {
+        let mut store = ContactStore::new();
+        for index in 0..1_000 {
+            store.upsert(Contact {
+                id: uuid::Uuid::new_v4(),
+                first: format!("Directory {index:04}"),
+                ..Contact::default()
+            });
+        }
+        let dialog = ExportDialog::new();
+        let geometry = dialog.geometry(Rect::new(0.0, 0.0, 1_280.0, 800.0), &store, SortKey::Name);
+        assert!((geometry.panel.height() - EXPORT_MAX_H).abs() < f64::EPSILON);
+        assert!(geometry.rows.len() < geometry.row_count);
     }
 
     #[test]
