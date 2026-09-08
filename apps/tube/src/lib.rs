@@ -4,8 +4,10 @@
 //! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
 //! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
 //! for community-sourced factual ones. Everything is built on the CRDT-
-//! native `ui` toolkit, so subscriptions, settings and watch history live
-//! in the Automerge document and replicate / undo for free.
+//! native `ui` toolkit. Explicit subscriptions and playback settings are
+//! collaborative actions; fetched catalogues, navigation, playback and watch
+//! history stay device-local so a remote refresh never rewrites a collaborator's
+//! screen or personal viewing trail.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
 //! from real results (yt-dlp / rustypipe / trending) — it never presents the
@@ -62,13 +64,14 @@ pub use app::TubeApp;
 
 use ui::widget::Widget;
 
-/// Descriptors an OS search host registers so a video or channel shows up in
-/// the global palette; activating a hit deep-links back into Tube's watch /
-/// channel page via [`search_type::SearchHit`].
+/// Descriptors used by hosts that want type-specific search presentation in
+/// addition to Tube's standard [`ui::search::SearchProvider`] integration.
 pub fn searchable_types() -> Vec<search_type::SearchableType> {
     vec![
         search_type::video_searchable_type(),
         search_type::channel_searchable_type(),
+        search_type::playlist_searchable_type(),
+        search_type::history_searchable_type(),
     ]
 }
 
@@ -99,10 +102,10 @@ pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search_type::{CHANNEL_TYPE_ID, VIDEO_TYPE_ID};
+    use crate::search_type::{CHANNEL_TYPE_ID, HISTORY_TYPE_ID, PLAYLIST_TYPE_ID, VIDEO_TYPE_ID};
 
     #[test]
-    fn registers_video_and_channel_searchable_types() {
+    fn registers_all_tube_searchable_types() {
         let types = searchable_types();
         let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
         assert!(
@@ -113,7 +116,15 @@ mod tests {
             ids.contains(&CHANNEL_TYPE_ID),
             "channel type registered: {ids:?}"
         );
-        // Both carry a thumbnail, so an OS palette reserves image space for them.
+        assert!(
+            ids.contains(&PLAYLIST_TYPE_ID),
+            "playlist type registered: {ids:?}"
+        );
+        assert!(
+            ids.contains(&HISTORY_TYPE_ID),
+            "history type registered: {ids:?}"
+        );
+        // Every result can carry a thumbnail, so an OS palette reserves image space.
         assert!(types.iter().all(|t| t.has_thumbnail));
     }
 
