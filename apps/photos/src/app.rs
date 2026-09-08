@@ -14,11 +14,11 @@
 //!
 //! # Where the pixels live
 //!
-//! The document holds a path and an [`Edits`] value. This struct holds the
-//! decoded original and the rendered result, both outside the CRDT, and
-//! re-derives the rendering whenever the path or the edits change. That check
-//! is what keeps a rotate from re-decoding the file, and what keeps the
-//! decoded buffer from being rebuilt on every frame.
+//! The document holds a portable content reference and an [`Edits`] value.
+//! This struct holds the decoded original and the rendered result, both
+//! outside the CRDT, and re-derives the rendering whenever that reference or
+//! the edits change. That check is what keeps a rotate from re-decoding the
+//! file, and what keeps the decoded buffer from being rebuilt on every frame.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -93,10 +93,11 @@ const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
 
 /// A four-column shelf is only useful while each photograph remains a
-/// recognisable, comfortably targetable card.  At tablet and phone widths a
-/// two-column shelf preserves both the picture and its independent favourite
-/// and removal affordances instead of squeezing all four into a tiny row.
+/// recognisable, comfortably targetable card. At tablet widths a two-column
+/// shelf works well; below this a single card preserves independent Details,
+/// favourite, and removal targets at the 44px touch minimum.
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
+const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
 
 #[derive(Clone)]
 struct ThumbnailJob {
@@ -141,9 +142,20 @@ enum Hit {
     CropToView,
     Reset,
     Copy,
+    Share,
     Save,
     More,
 }
+
+/// Order is stable for both the compact popup's keyboard traversal and its
+/// semantic menu. The commands themselves remain the normal toolbar actions.
+const COMPACT_MORE_ENTRIES: [Hit; 5] = [
+    Hit::CropToView,
+    Hit::Reset,
+    Hit::Copy,
+    Hit::Share,
+    Hit::Save,
+];
 
 /// Controls inside the in-grid album editor. They are intentionally a small
 /// local presentation state machine; every durable outcome is still one
@@ -250,6 +262,7 @@ const TOOLBAR: &[(Hit, &str, Icon, Face)] = &[
     ),
     (Hit::Reset, "photos-reset", Icon::Refresh, Face::IconOnly),
     (Hit::Copy, "photos-copy", Icon::Copy, Face::Labelled),
+    (Hit::Share, "photos-share", Icon::Send, Face::Labelled),
     (Hit::Save, "photos-save", Icon::Download, Face::Labelled),
     (
         Hit::More,
@@ -272,6 +285,7 @@ const SLOTS: &[Slot] = &[
     Slot::Spacer,
     Slot::Item(6),
     Slot::Item(7),
+    Slot::Item(8),
 ];
 
 /// Phone chrome keeps the two navigation verbs and the two fast rotations
@@ -286,7 +300,7 @@ const COMPACT_SLOTS: &[Slot] = &[
     Slot::Item(2),
     Slot::Item(3),
     Slot::Spacer,
-    Slot::Item(8),
+    Slot::Item(9),
 ];
 
 /// Width a button needs to show `face` with `label`.
@@ -344,7 +358,7 @@ fn faces_for_width(width: f32) -> Vec<Face> {
                 // Open keeps its tooltip and accessible name when compact;
                 // spending that width on the explicit More label is the
                 // clearer trade on a 390 px phone.
-                if index == 8 || (width >= 380.0 && index == 1) {
+                if index == 9 || (width >= 380.0 && index == 1) {
                     Face::Labelled
                 } else {
                     Face::IconOnly
@@ -395,6 +409,7 @@ pub struct PhotosApp {
     /// Presentation of each toolbar item at the width last laid out.
     faces: Vec<Face>,
     compact_more_open: bool,
+    compact_more_focus: usize,
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
@@ -443,6 +458,8 @@ pub struct PhotosApp {
     metadata_people_input: TextInput,
     metadata_tags_input: TextInput,
     metadata_captured_at_input: TextInput,
+    /// Tab order in the details sheet: four shared fields, Cancel, Save.
+    metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
     /// At most two viewportfuls of decoded thumbnails.  Originals are never
     /// scanned at draw time, and a large library cannot turn a frame into a
@@ -526,6 +543,7 @@ impl PhotosApp {
             separator_rects: Vec::new(),
             faces,
             compact_more_open: false,
+            compact_more_focus: 0,
             compact_more_hits: Vec::new(),
             picker: None,
             resource_invocation: None,
@@ -561,6 +579,7 @@ impl PhotosApp {
             metadata_people_input: TextInput::local().with_id("photos-metadata-people"),
             metadata_tags_input: TextInput::local().with_id("photos-metadata-tags"),
             metadata_captured_at_input: TextInput::local().with_id("photos-metadata-captured-at"),
+            metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
             library_thumbnails: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
@@ -601,9 +620,9 @@ impl PhotosApp {
         self.faces = want;
     }
 
-    /// Open `path` by writing it into `doc`. The bytes are read on the next
-    /// `sync`, so a failure to decode surfaces the same way whether the file
-    /// came from the chooser, the command line, or a peer.
+    /// Import `path` through the canonical durable action. The decoded source
+    /// path remains only in this process; the action writes portable metadata
+    /// and the staged content hash into the shared document.
     pub fn open_path(&mut self, doc: &mut AutoCommit, path: &str) {
         let bytes = std::fs::read(path).ok();
         match bytes.as_deref().and_then(pixels::decode) {
@@ -623,7 +642,12 @@ impl PhotosApp {
                 self.rendered = None;
                 self.viewer = None;
                 self.original_decode_failed = None;
-                PhotosDoc::set_image(doc, Some(&open));
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::ImportPhoto {
+                        photo: LibraryPhoto::from_image(open),
+                    },
+                );
                 self.notice = None;
             }
             None => {
@@ -684,6 +708,29 @@ impl PhotosApp {
                     .any(|slot| matches!(slot, Slot::Item(item) if *item == *index))
             })
             .filter_map(|(i, (_, b))| TOOLBAR.get(i).map(|item| (tr(item.1), b.get_rect())))
+            .collect()
+    }
+
+    /// Measured library-card geometry for screenshot and interaction
+    /// regressions. Every returned tuple is `(card, details, remove,
+    /// favorite)`; the three controls are their actual 44px hit rectangles,
+    /// not the smaller icon artwork inset inside them.
+    pub fn library_card_action_rects(&self) -> Vec<(Rect, Rect, Rect, Rect)> {
+        self.library_cards
+            .iter()
+            .filter_map(|(id, card, _)| {
+                let details = self
+                    .library_details_cards
+                    .iter()
+                    .find(|(candidate, _)| candidate == id)
+                    .map(|(_, bounds)| *bounds)?;
+                Some((
+                    *card,
+                    details,
+                    Rect::new(card.x1 - 88.0, card.y1 - 44.0, card.x1 - 44.0, card.y1),
+                    Rect::new(card.x1 - 44.0, card.y1 - 44.0, card.x1, card.y1),
+                ))
+            })
             .collect()
     }
 
@@ -946,6 +993,7 @@ impl PhotosApp {
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
+        self.metadata_editor_focus = 0;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
         // in the persistent status band made it wrap below a phone viewport.
@@ -959,6 +1007,7 @@ impl PhotosApp {
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
+        self.metadata_editor_focus = 0;
         self.notice = Some("Photo details discarded".to_owned());
     }
 
@@ -991,7 +1040,16 @@ impl PhotosApp {
         );
         self.metadata_editor = false;
         self.metadata_editor_id = None;
+        self.metadata_editor_focus = 0;
         self.notice = Some("Shared photo details saved".to_owned());
+    }
+
+    fn set_metadata_editor_focus(&mut self, focus: usize) {
+        self.metadata_editor_focus = focus.min(5);
+        self.metadata_folder_input.set_focus(focus == 0);
+        self.metadata_people_input.set_focus(focus == 1);
+        self.metadata_tags_input.set_focus(focus == 2);
+        self.metadata_captured_at_input.set_focus(focus == 3);
     }
 
     fn begin_edit_album(&mut self, doc: &AutoCommit) {
@@ -1224,6 +1282,44 @@ impl PhotosApp {
         if !self.metadata_editor {
             return false;
         }
+        if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    self.set_metadata_editor_focus(if modifiers.state().shift_key() {
+                        (self.metadata_editor_focus + 5) % 6
+                    } else {
+                        (self.metadata_editor_focus + 1) % 6
+                    });
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.cancel_metadata_editor();
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter)
+                    if modifiers.state().control_key() || modifiers.state().super_key() =>
+                {
+                    self.save_metadata_editor(doc);
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == 4 => {
+                    self.cancel_metadata_editor();
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == 5 => {
+                    self.save_metadata_editor(doc);
+                    *handled = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -1242,21 +1338,6 @@ impl PhotosApp {
                 node_id,
                 taffy,
             );
-        }
-        if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == winit::event::ElementState::Pressed
-        {
-            match &key.logical_key {
-                Key::Named(NamedKey::Escape) => self.cancel_metadata_editor(),
-                Key::Named(NamedKey::Enter)
-                    if modifiers.state().control_key() || modifiers.state().super_key() =>
-                {
-                    self.save_metadata_editor(doc);
-                }
-                _ => return true,
-            }
-            *handled = true;
-            return true;
         }
         if matches!(
             event,
@@ -1280,7 +1361,13 @@ impl PhotosApp {
         true
     }
 
-    fn perform_effect(&mut self, operation: crate::actions::PhotosOperation, doc: &AutoCommit) {
+    /// Perform a device-local operation and surface failures to canonical
+    /// operation dispatch. A local notice alone is not an invocation result.
+    fn perform_effect(
+        &mut self,
+        operation: crate::actions::PhotosOperation,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
         match operation {
             // Resource/search routing has already brought this Photos
             // instance forward. Viewing does not alter document or OS state.
@@ -1301,6 +1388,26 @@ impl PhotosApp {
             crate::actions::PhotosOperation::Copy => {
                 self.copy_to_clipboard();
             }
+            crate::actions::PhotosOperation::ShareReference { resource_id } => {
+                let exists = PhotosDoc::image(doc)
+                    .is_some_and(|image| crate::actions::resource_id(&image) == resource_id)
+                    || PhotosDoc::library(doc)
+                        .photos
+                        .iter()
+                        .any(|photo| photo.id == resource_id);
+                if exists {
+                    // This is deliberately a local clipboard handoff, not an
+                    // invented upload or recipient-delivery success. The
+                    // address identifies either the open editor image or an
+                    // unselected, addressable library card.
+                    ui::clipboard_copy(&format!("qos://resource/{resource_id}"));
+                    self.notice = Some(tr("photos-share-copied"));
+                } else {
+                    let error = tr("photos-share-failed");
+                    self.notice = Some(error.clone());
+                    return Err(error);
+                }
+            }
             crate::actions::PhotosOperation::Save { path } => {
                 if let Some(open) = PhotosDoc::image(doc) {
                     self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
@@ -1312,6 +1419,7 @@ impl PhotosApp {
             | crate::actions::PhotosOperation::ViewPerson { .. }
             | crate::actions::PhotosOperation::Open { path: Some(_) } => {}
         }
+        Ok(())
     }
 
     /// Navigate to an extant stable album id without producing a CRDT action.
@@ -1448,7 +1556,8 @@ impl PhotosApp {
         let edits = PhotosDoc::edits(doc);
         match hit {
             Hit::Open => {
-                self.perform_effect(crate::actions::PhotosOperation::Open { path: None }, doc);
+                let _ =
+                    self.perform_effect(crate::actions::PhotosOperation::Open { path: None }, doc);
             }
             Hit::Library => {
                 self.library_mode = true;
@@ -1471,13 +1580,27 @@ impl PhotosApp {
             }
             Hit::Reset => self.commit_edits(doc, Edits::default()),
             Hit::Copy => {
-                self.perform_effect(crate::actions::PhotosOperation::Copy, doc);
+                let _ = self.perform_effect(crate::actions::PhotosOperation::Copy, doc);
+            }
+            Hit::Share => {
+                if let Some(image) = PhotosDoc::image(doc) {
+                    let _ = self.perform_effect(
+                        crate::actions::PhotosOperation::ShareReference {
+                            resource_id: crate::actions::resource_id(&image),
+                        },
+                        doc,
+                    );
+                } else {
+                    self.notice = Some(tr("photos-share-failed"));
+                }
             }
             Hit::Save => {
-                self.perform_effect(crate::actions::PhotosOperation::Save { path: None }, doc);
+                let _ =
+                    self.perform_effect(crate::actions::PhotosOperation::Save { path: None }, doc);
             }
             Hit::More => {
                 self.compact_more_open = !self.compact_more_open;
+                self.compact_more_focus = 0;
             }
         }
     }
@@ -1520,10 +1643,13 @@ impl PhotosApp {
                 ("photos-crop", "photos-crop"),
                 ("photos-reset", "photos-reset"),
                 ("photos-copy", "photos-copy"),
+                ("photos-share", "photos-share"),
                 ("photos-save", "photos-save"),
             ]
             .into_iter()
-            .map(|(target_key, label_key)| {
+            .enumerate()
+            .map(|(index, (target_key, label_key))| {
+                let menu_hit = COMPACT_MORE_ENTRIES.get(index).copied();
                 let disabled = TOOLBAR
                     .iter()
                     .position(|(_, key, _, _)| *key == target_key)
@@ -1532,9 +1658,17 @@ impl PhotosApp {
                 AccessNode::new(Role::MenuItem)
                     .with_name(tr(label_key))
                     .with_state(AccessState {
+                        focusable: !disabled,
+                        focused: index == self.compact_more_focus,
                         disabled,
                         ..Default::default()
                     })
+                    .with_bounds(
+                        self.compact_more_hits
+                            .iter()
+                            .find(|(hit, _)| Some(*hit) == menu_hit)
+                            .map_or(Rect::ZERO, |(_, bounds)| *bounds),
+                    )
                     .with_action_target(format!("photos:toolbar:{target_key}"))
             })
             .collect();
@@ -1609,7 +1743,7 @@ impl PhotosApp {
                     if !self.album_editor {
                         let favorite_target = format!("photos:library-favorite:{id}");
                         let favorite_bounds =
-                            Rect::new(bounds.x1 - 32.0, bounds.y1 - 38.0, bounds.x1, bounds.y1);
+                            Rect::new(bounds.x1 - 44.0, bounds.y1 - 44.0, bounds.x1, bounds.y1);
                         children.push(
                             AccessNode::new(Role::ToggleButton)
                                 .with_name("Favorite")
@@ -1631,9 +1765,9 @@ impl PhotosApp {
                                 })
                                 .with_description("Removes this photograph from every album")
                                 .with_bounds(Rect::new(
-                                    bounds.x1 - 64.0,
-                                    bounds.y1 - 38.0,
-                                    bounds.x1 - 32.0,
+                                    bounds.x1 - 88.0,
+                                    bounds.y1 - 44.0,
+                                    bounds.x1 - 44.0,
                                     bounds.y1,
                                 ))
                                 .with_state(AccessState {
@@ -1649,9 +1783,9 @@ impl PhotosApp {
                                     "Edit shared folder, people, tags, and capture date",
                                 )
                                 .with_bounds(Rect::new(
-                                    bounds.x1 - 108.0,
-                                    bounds.y1 - 38.0,
-                                    bounds.x1 - 64.0,
+                                    bounds.x0 + 8.0,
+                                    bounds.y1 - 44.0,
+                                    (bounds.x0 + 108.0).min(bounds.x1 - 88.0),
                                     bounds.y1,
                                 ))
                                 .with_state(AccessState {
@@ -2301,14 +2435,16 @@ impl PhotosApp {
             return;
         }
         let bounds = self.canvas_rect;
-        let columns: usize = if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W {
+        let columns: usize = if bounds.width() < LIBRARY_ONE_COLUMN_MAX_W {
+            1
+        } else if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W {
             2
-        } else if bounds.width() >= 1_160.0 {
+        } else if bounds.width() >= 1_440.0 {
             5
         } else {
             4
         };
-        let gap = if columns == 2 { 8.0 } else { 12.0 };
+        let gap = if columns <= 2 { 8.0 } else { 12.0 };
         let card_w =
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
                 / columns as f64)
@@ -2397,7 +2533,7 @@ impl PhotosApp {
         // remains available through the canonical resource/search surface.
         let filter_y = heading_y + 31.0 + album_h;
         let mut filter_x = bounds.x0 + f64::from(PAD);
-        let compact_filters = columns == 2;
+        let compact_filters = columns <= 2;
         let mut filters = vec![(
             None,
             None,
@@ -2498,7 +2634,10 @@ impl PhotosApp {
         // The worker preserves source aspect ratio. A 3:2 shelf avoids the
         // oversized letterbox trays the old 16:10 geometry produced.
         let preview_h = (card_w * 0.667).clamp(76.0, 178.0);
-        let card_h = preview_h + if columns == 2 { 42.0 } else { 64.0 };
+        // The footer has two text lines and an honest 44px action row. Keep
+        // it roomy instead of letting desktop density turn controls into
+        // loose glyphs or make metadata collide with a filename.
+        let card_h = preview_h + 88.0;
         let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
         let visible = columns.saturating_mul(rows.max(1));
         for (index, item) in self.library_items.iter().take(visible).enumerate() {
@@ -2558,83 +2697,130 @@ impl PhotosApp {
                     1.5,
                 );
             }
+            let footer = Rect::new(card.x0, preview.y1, card.x1, card.y1);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &footer,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
                 theme.border_standard,
                 None,
-                &Rect::new(card.x0, card.y1 - 1.0, card.x1, card.y1),
+                &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
             );
-            let details_width = if columns == 2 { 18.0 } else { 50.0 };
+            let action_y = card.y1 - 44.0;
             let details = Rect::new(
-                card.x1 - 58.0 - details_width,
-                preview.y1 + 5.0,
-                card.x1 - 58.0,
-                preview.y1 + 27.0,
+                card.x0 + 8.0,
+                action_y,
+                (card.x0 + 108.0).min(card.x1 - 88.0),
+                card.y1,
             );
-            let display_name = if columns == 2 {
-                compact_label(name, 9)
-            } else {
-                name.clone()
-            };
+            let remove = Rect::new(card.x1 - 88.0, action_y, card.x1 - 44.0, card.y1);
+            let star = Rect::new(card.x1 - 44.0, action_y, card.x1, card.y1);
+            // Both text rows are explicitly constrained to this card. The
+            // action row owns the bottom 44px, so no title can collide with a
+            // neighboring column or a control.
+            let display_name =
+                compact_label(name, ((card_w - 18.0) / 8.0).floor().max(8.0) as usize);
             text_renderer.draw_text_weighted(
                 scene,
                 &display_name,
                 13.0,
                 theme.text_primary,
                 transform * Affine::translate((x + 9.0, preview.y1 + 9.0)),
-                Some((details.x0 - x - 14.0) as f32),
-                TextWeight::Regular,
+                Some((card_w - 18.0) as f32),
+                TextWeight::Medium,
             );
-            if !self.album_editor {
-                text_renderer.draw_text_weighted(
-                    scene,
-                    if columns == 2 { "⋯" } else { "Details" },
-                    11.0,
-                    theme.tokens.colors.accent[6],
-                    transform * Affine::translate((details.x0, details.y0 + 4.0)),
-                    Some(details.width() as f32),
-                    TextWeight::Medium,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    if favorite { "★" } else { "☆" },
-                    14.0,
-                    if favorite {
-                        theme.tokens.colors.accent[6]
-                    } else {
-                        theme.text_dim
-                    },
-                    transform * Affine::translate((card.x1 - 24.0, preview.y1 + 8.0)),
-                    Some(16.0),
-                    TextWeight::Medium,
-                );
-                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
-                text_renderer.draw_text_weighted(
-                    scene,
-                    if confirmed { "!" } else { "×" },
-                    16.0,
-                    if confirmed {
-                        theme.tokens.colors.semantic.danger
-                    } else {
-                        theme.text_dim
-                    },
-                    transform * Affine::translate((card.x1 - 50.0, preview.y1 + 7.0)),
-                    Some(16.0),
-                    TextWeight::Medium,
-                );
-                self.library_details_cards.push((id.clone(), details));
-            }
-            if columns != 2 && !item.metadata.is_empty() {
-                text_renderer.draw_text_weighted(
-                    scene,
+            if !item.metadata.is_empty() {
+                let metadata = compact_label(
                     &item.metadata,
+                    ((card_w - 18.0) / 6.5).floor().max(12.0) as usize,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &metadata,
                     11.0,
                     theme.text_dim,
                     transform * Affine::translate((x + 9.0, preview.y1 + 29.0)),
                     Some((card_w - 18.0) as f32),
                     TextWeight::Regular,
                 );
+            }
+            if !self.album_editor {
+                for (target, active) in [
+                    (details, details.contains(self.pointer)),
+                    (remove, remove.contains(self.pointer)),
+                    (star, star.contains(self.pointer)),
+                ] {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        if active {
+                            theme.bg_hover
+                        } else {
+                            theme.tokens.colors.neutral[3]
+                        },
+                        None,
+                        &Rect::new(
+                            target.x0 + 4.0,
+                            target.y0 + 4.0,
+                            target.x1 - 4.0,
+                            target.y1 - 4.0,
+                        ),
+                    );
+                }
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "Details",
+                    11.0,
+                    theme.tokens.colors.accent[6],
+                    transform * Affine::translate((details.x0 + 26.0, details.y0 + 14.0)),
+                    Some((details.width() - 30.0) as f32),
+                    TextWeight::Medium,
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(
+                        details.x0 + 10.0,
+                        details.y0 + 14.0,
+                        details.x0 + 26.0,
+                        details.y0 + 30.0,
+                    ),
+                    Icon::Pencil,
+                    theme.tokens.colors.accent[6],
+                    1.5,
+                );
+                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(remove.center(), (16.0, 16.0)),
+                    if confirmed { Icon::Check } else { Icon::Trash2 },
+                    if confirmed {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.text_dim
+                    },
+                    1.5,
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(star.center(), (17.0, 17.0)),
+                    Icon::Star,
+                    if favorite {
+                        theme.tokens.colors.accent[6]
+                    } else {
+                        theme.text_dim
+                    },
+                    1.5,
+                );
+                self.library_details_cards.push((id.clone(), details));
             }
             if self.album_editor && self.album_editor_members.contains(id) {
                 scene.fill(
@@ -2999,9 +3185,9 @@ impl PhotosApp {
             ));
             input.draw(scene, transform, text_renderer, theme, presence);
         }
-        let y = panel.y1 - 48.0;
-        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 96.0, y + 34.0);
-        let save = Rect::new(panel.x1 - 88.0, y, panel.x1 - 16.0, y + 34.0);
+        let y = panel.y1 - 56.0;
+        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 112.0, y + 44.0);
+        let save = Rect::new(panel.x1 - 96.0, y, panel.x1 - 16.0, y + 44.0);
         for (hit, rect, label, color) in [
             (
                 MetadataEditorHit::Cancel,
@@ -3016,13 +3202,22 @@ impl PhotosApp {
                 theme.tokens.colors.accent[6],
             ),
         ] {
-            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
+            let focused = matches!(hit, MetadataEditorHit::Cancel)
+                && self.metadata_editor_focus == 4
+                || matches!(hit, MetadataEditorHit::Save) && self.metadata_editor_focus == 5;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                if focused { theme.bg_hover } else { color },
+                None,
+                &rect,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
                 Some((rect.width() - 16.0) as f32),
                 TextWeight::Medium,
             );
@@ -3251,7 +3446,7 @@ impl Widget for PhotosApp {
                     return Err(tr("photos-save-failed"));
                 }
             }
-            other => self.perform_effect(other, doc),
+            other => self.perform_effect(other, doc)?,
         }
         Ok(true)
     }
@@ -3640,6 +3835,43 @@ impl Widget for PhotosApp {
             self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
+        // The phone overflow is a real keyboard menu, not a pointer-only
+        // drawing. Its entries are normal canonical toolbar actions, so this
+        // just supplies focus traversal and activation for the compact locus.
+        if self.compact_more_open
+            && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.compact_more_open = false;
+                }
+                Key::Named(NamedKey::ArrowDown) => self.step_compact_more_focus(true),
+                Key::Named(NamedKey::ArrowUp) => self.step_compact_more_focus(false),
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(hit) = self.focused_compact_more_hit()
+                        && self.is_toolbar_hit_enabled(hit)
+                    {
+                        self.pending.set(Some(hit));
+                        self.compact_more_open = false;
+                        self.drain_pending(doc);
+                    }
+                }
+                Key::Character(text) if text == " " => {
+                    if let Some(hit) = self.focused_compact_more_hit()
+                        && self.is_toolbar_hit_enabled(hit)
+                    {
+                        self.pending.set(Some(hit));
+                        self.compact_more_open = false;
+                        self.drain_pending(doc);
+                    }
+                }
+                _ => return,
+            }
+            *handled = true;
+            return;
+        }
+
         // The labeled compact overflow is painted above both the viewer and
         // the library.  Give it first refusal of clicks so an action in the
         // popup cannot also select a photograph behind it.
@@ -3820,8 +4052,11 @@ impl Widget for PhotosApp {
                 .find(|(_, card, _)| card.contains(self.pointer))
                 .cloned()
         {
-            if !self.album_editor && self.pointer.x >= card.x1 - 64.0 {
-                if self.pointer.x >= card.x1 - 32.0 {
+            if !self.album_editor
+                && self.pointer.y >= card.y1 - 44.0
+                && self.pointer.x >= card.x1 - 88.0
+            {
+                if self.pointer.x >= card.x1 - 44.0 {
                     self.library_remove_confirm = None;
                     self.commit_library_action(
                         doc,
@@ -3843,14 +4078,6 @@ impl Widget for PhotosApp {
                         "Click × again to remove it from the library and every album".to_owned(),
                     );
                 }
-            } else if self.pointer.x >= card.x1 - 32.0 {
-                self.commit_library_action(
-                    doc,
-                    &crate::actions::PhotosAction::SetFavorite {
-                        photo_id,
-                        favorite: !favorite,
-                    },
-                );
             } else {
                 self.library_remove_confirm = None;
                 self.commit_library_action(
@@ -3967,6 +4194,34 @@ impl Widget for PhotosApp {
 }
 
 impl PhotosApp {
+    fn is_toolbar_hit_enabled(&self, hit: Hit) -> bool {
+        self.buttons
+            .iter()
+            .find(|(candidate, _)| *candidate == hit)
+            .is_some_and(|(_, button)| button.is_enabled())
+    }
+
+    fn focused_compact_more_hit(&self) -> Option<Hit> {
+        COMPACT_MORE_ENTRIES.get(self.compact_more_focus).copied()
+    }
+
+    fn step_compact_more_focus(&mut self, forward: bool) {
+        for _ in 0..COMPACT_MORE_ENTRIES.len() {
+            self.compact_more_focus = if forward {
+                (self.compact_more_focus + 1) % COMPACT_MORE_ENTRIES.len()
+            } else {
+                (self.compact_more_focus + COMPACT_MORE_ENTRIES.len() - 1)
+                    % COMPACT_MORE_ENTRIES.len()
+            };
+            if self
+                .focused_compact_more_hit()
+                .is_some_and(|hit| self.is_toolbar_hit_enabled(hit))
+            {
+                break;
+            }
+        }
+    }
+
     /// Draw the phone-only action menu over the current surface. Its entries
     /// reuse the canonical toolbar actions, so hiding their buttons never
     /// creates a second edit/export implementation.
@@ -3985,10 +4240,11 @@ impl PhotosApp {
             (Hit::CropToView, tr("photos-crop")),
             (Hit::Reset, tr("photos-reset")),
             (Hit::Copy, tr("photos-copy")),
+            (Hit::Share, tr("photos-share")),
             (Hit::Save, tr("photos-save")),
         ];
         let width = 178.0;
-        let row_h = 38.0;
+        let row_h = 44.0;
         let panel = Rect::new(
             self.toolbar_rect.x1 - width - f64::from(PAD),
             self.toolbar_rect.y1 + 4.0,
@@ -4021,6 +4277,15 @@ impl PhotosApp {
                 .iter()
                 .find(|(candidate, _)| *candidate == hit)
                 .is_some_and(|(_, button)| button.is_enabled());
+            if index == self.compact_more_focus && enabled {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.bg_hover,
+                    None,
+                    &row,
+                );
+            }
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
@@ -4030,7 +4295,7 @@ impl PhotosApp {
                 } else {
                     theme.text_dim
                 },
-                transform * Affine::translate((row.x0 + 12.0, row.y0 + 10.0)),
+                transform * Affine::translate((row.x0 + 12.0, row.y0 + 13.0)),
                 Some((row.width() - 24.0) as f32),
                 TextWeight::Medium,
             );
@@ -4163,6 +4428,35 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_share_reference_returns_a_canonical_operation_failure() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let payload = qos_actions::EncodedAction::encode_operation(
+            PHOTOS_OPERATION_TYPE,
+            &PhotosOperation::ShareReference {
+                resource_id: "photos.photo:missing".into(),
+            },
+        )
+        .expect("share operation encodes");
+
+        let error = Widget::invoke_resource_operation(
+            &mut app,
+            qos_actions::OperationKind::Effect,
+            PHOTOS_OPERATION_TYPE,
+            &payload.payload,
+            &doc,
+            &ROOT,
+        )
+        .expect_err("a missing resource cannot claim that its reference was shared");
+        assert_eq!(error, tr("photos-share-failed"));
+        assert_eq!(
+            app.notice.as_deref(),
+            Some(tr("photos-share-failed").as_str())
+        );
+    }
+
+    #[test]
     fn folder_and_person_views_are_local_filters_with_honest_stale_results() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
@@ -4269,6 +4563,60 @@ mod tests {
             .expect("opened image has status text");
         assert_eq!(status.role, Role::StaticText);
         assert_eq!(status.live, Some(Politeness::Polite));
+    }
+
+    #[test]
+    fn compact_more_is_a_keyboard_menu_with_a_share_action() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
+        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.sync(&mut doc, &ROOT);
+        app.compact_more_open = true;
+
+        // Crop and Reset start disabled, so Down must land on Copy rather
+        // than trapping a keyboard user on unavailable commands.
+        app.step_compact_more_focus(true);
+        assert_eq!(app.focused_compact_more_hit(), Some(Hit::Copy));
+        app.step_compact_more_focus(true);
+        assert_eq!(app.focused_compact_more_hit(), Some(Hit::Share));
+
+        let toolbar = app.toolbar_semantics();
+        let menu = toolbar
+            .children
+            .iter()
+            .find(|node| node.role == Role::Menu)
+            .expect("narrow overflow exposes a menu");
+        assert!(menu.children.iter().any(|item| {
+            item.action_target.as_deref() == Some("photos:toolbar:photos-share")
+                && item.state.focused
+                && item.state.focusable
+        }));
+    }
+
+    #[test]
+    fn metadata_sheet_focus_is_a_six_stop_keyboard_cycle() {
+        let mut app = PhotosApp::new();
+        for focus in 0..6 {
+            app.set_metadata_editor_focus(focus);
+            assert_eq!(app.metadata_editor_focus, focus);
+            assert_eq!(app.metadata_folder_input.is_focused(), focus == 0);
+            assert_eq!(app.metadata_people_input.is_focused(), focus == 1);
+            assert_eq!(app.metadata_tags_input.is_focused(), focus == 2);
+            assert_eq!(app.metadata_captured_at_input.is_focused(), focus == 3);
+        }
+        app.set_metadata_editor_focus(99);
+        assert_eq!(app.metadata_editor_focus, 5);
+        assert!(
+            !app.metadata_folder_input.is_focused()
+                && !app.metadata_people_input.is_focused()
+                && !app.metadata_tags_input.is_focused()
+                && !app.metadata_captured_at_input.is_focused(),
+            "button focus must leave a single semantic keyboard owner"
+        );
     }
 
     #[test]
