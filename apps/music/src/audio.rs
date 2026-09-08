@@ -55,6 +55,133 @@ pub struct AudioEngine {
     volume: f32,
 }
 
+/// A device-local bounded-range transfer for an offline cache request. It
+/// exposes only aggregate progress and a terminal result; paths and bytes stay
+/// within the storage/audio layers.
+pub struct OfflineDownload {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fetched: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    expected: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    result: std::sync::mpsc::Receiver<Result<(), String>>,
+}
+
+impl OfflineDownload {
+    /// Start downloading a resolved source into the device-local cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this build cannot perform network transfers or
+    /// when the local transfer thread cannot be created.
+    pub fn start(
+        track_id: String,
+        uri: String,
+        fallback: Option<String>,
+        cache_root: std::path::PathBuf,
+    ) -> Result<Self, String> {
+        #[cfg(all(feature = "audio", feature = "live"))]
+        {
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let (tx, result) = std::sync::mpsc::channel();
+            let root = cache_root;
+            let partial = root.join("partials").join(format!(
+                "{}-{}.part",
+                std::process::id(),
+                next_stream_id()
+            ));
+            let parent = partial
+                .parent()
+                .ok_or_else(|| "offline cache path has no parent".to_string())?;
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            let cancel_thread = cancel.clone();
+            let fetched_thread = fetched.clone();
+            let expected_thread = expected.clone();
+            std::thread::Builder::new()
+                .name("qos-music-offline-dl".into())
+                .spawn(move || {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let outcome = (|| -> Result<(), String> {
+                        let mut file =
+                            std::fs::File::create(&partial).map_err(|error| error.to_string())?;
+                        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let mut wrote = download_into(
+                            &uri,
+                            &mut file,
+                            &ready,
+                            &fetched_thread,
+                            &expected_thread,
+                            &cancel_thread,
+                        );
+                        if wrote == 0
+                            && let Some(fallback) = fallback
+                        {
+                            fetched_thread.store(0, Relaxed);
+                            expected_thread.store(0, Relaxed);
+                            file.set_len(0).map_err(|error| error.to_string())?;
+                            std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0))
+                                .map_err(|error| error.to_string())?;
+                            wrote = download_into(
+                                &fallback,
+                                &mut file,
+                                &ready,
+                                &fetched_thread,
+                                &expected_thread,
+                                &cancel_thread,
+                            );
+                        }
+                        let declared = expected_thread.load(Relaxed);
+                        if cancel_thread.load(Relaxed) {
+                            return Err("offline download cancelled".into());
+                        }
+                        if wrote == 0 || (declared > 0 && wrote < declared) {
+                            return Err("source did not deliver a complete audio file".into());
+                        }
+                        std::io::Write::flush(&mut file).map_err(|error| error.to_string())?;
+                        crate::storage::install_completed_media_file(
+                            &root,
+                            &track_id,
+                            &partial,
+                            crate::storage::media_cache_quota(),
+                        )
+                        .map_err(|error| error.to_string())
+                    })();
+                    if outcome.is_err() {
+                        let _ = std::fs::remove_file(&partial);
+                    }
+                    let _ = tx.send(outcome);
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(Self {
+                cancel,
+                fetched,
+                expected,
+                result,
+            })
+        }
+        #[cfg(not(all(feature = "audio", feature = "live")))]
+        {
+            let _ = (track_id, uri, fallback, cache_root);
+            Err("this Music build cannot download offline media".into())
+        }
+    }
+    pub fn cancel(&self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[must_use]
+    pub fn progress(&self) -> Option<f32> {
+        let expected = self.expected.load(std::sync::atomic::Ordering::Relaxed);
+        (expected > 0).then(|| {
+            (self.fetched.load(std::sync::atomic::Ordering::Relaxed) as f32 / expected as f32)
+                .clamp(0.0, 1.0)
+        })
+    }
+    pub fn take_result(&self) -> Option<Result<(), String>> {
+        self.result.try_recv().ok()
+    }
+}
+
 #[cfg(feature = "audio")]
 struct Inner {
     playbin: gstreamer::Element,
@@ -821,7 +948,15 @@ fn spawn_stream_download(
             // segment). Both stream progressively: `ready` flips after the first
             // staged chunk so audio starts without waiting for the full download.
             tracing::info!(target: "music::audio", %uri, has_fallback = fallback.is_some(), "stream staging: begin (primary source)");
-            let mut wrote = download_into(&uri, &mut file, &ready, &fetched, &expected);
+            let never_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut wrote = download_into(
+                &uri,
+                &mut file,
+                &ready,
+                &fetched,
+                &expected,
+                &never_cancel,
+            );
             if wrote == 0
                 && let Some(fb) = fallback
             {
@@ -832,7 +967,16 @@ fn spawn_stream_download(
                 // bytes against the wrong total.
                 fetched.store(0, Relaxed);
                 expected.store(0, Relaxed);
-                wrote = download_into(&fb, &mut file, &ready, &fetched, &expected);
+                let _ = file.set_len(0);
+                let _ = std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(0));
+                wrote = download_into(
+                    &fb,
+                    &mut file,
+                    &ready,
+                    &fetched,
+                    &expected,
+                    &never_cancel,
+                );
             }
             let want = expected.load(Relaxed);
             if want > 0 && wrote < want {
@@ -854,19 +998,28 @@ fn spawn_stream_download(
 /// `ready` after the first staged chunk so playback can start progressively.
 /// Returns the number of bytes written.
 #[cfg(all(feature = "audio", feature = "live"))]
+#[allow(
+    clippy::too_many_lines,
+    reason = "range validation, bounded streaming, media sniffing, and cancellation must remain in one auditable transfer loop"
+)]
 fn download_into(
     uri: &str,
     file: &mut std::fs::File,
     ready: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     fetched: &std::sync::Arc<std::sync::atomic::AtomicU64>,
     expected: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> u64 {
     const CHUNK: u64 = 1_048_576;
 
+    use std::io::Read;
     use std::sync::atomic::Ordering::Relaxed;
     let Ok(client) = reqwest::blocking::Client::builder()
         .user_agent(ua_for_uri(uri))
-        .timeout(std::time::Duration::from_secs(30))
+        // A blocking request cannot be interrupted by another thread. Keep its
+        // deadline short so `cancel()` is observed between bounded requests,
+        // rather than leaving a user waiting for a 30-second transfer timeout.
+        .timeout(std::time::Duration::from_secs(2))
         .build()
     else {
         return 0;
@@ -875,6 +1028,9 @@ fn download_into(
     expected.store(clen.unwrap_or(0), Relaxed);
     let mut off = 0u64;
     loop {
+        if cancel.load(Relaxed) {
+            break;
+        }
         if let Some(c) = clen
             && off >= c
         {
@@ -889,7 +1045,7 @@ fn download_into(
             .get(uri)
             .header(reqwest::header::RANGE, format!("bytes={off}-{end}"))
             .send();
-        let Ok(resp) = resp else {
+        let Ok(mut resp) = resp else {
             tracing::debug!(target: "music::audio", %uri, off, "stream fetch: request failed");
             break;
         };
@@ -912,19 +1068,58 @@ fn download_into(
             tracing::warn!(target: "music::audio", %uri, content_type = %ct, "stream fetch: non-media Content-Type — discarding, will try fallback");
             break;
         }
-        let Ok(bytes) = resp.bytes() else { break };
-        if bytes.is_empty() {
-            break;
+        // Do not use `Response::bytes()`: a server ignoring Range could force
+        // an unbounded allocation. Read at most this requested range plus one
+        // sentinel byte, in a fixed buffer, and reject an oversized response.
+        let mut remaining = want.saturating_add(1);
+        let mut n = 0u64;
+        let mut first = Vec::new();
+        let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
+        while remaining > 0 {
+            if cancel.load(Relaxed) {
+                return 0;
+            }
+            let cap = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+            let Some(read_buffer) = buffer.get_mut(..cap) else {
+                return 0;
+            };
+            let Ok(read) = resp.read(read_buffer) else {
+                return 0;
+            };
+            if read == 0 {
+                break;
+            }
+            remaining = remaining.saturating_sub(read as u64);
+            if first.len() < 1024 {
+                let end = (1024 - first.len()).min(read);
+                if let Some(chunk) = buffer.get(..end) {
+                    first.extend_from_slice(chunk);
+                } else {
+                    return 0;
+                }
+            }
+            if n.saturating_add(read as u64) > want {
+                tracing::warn!(target: "music::audio", %uri, off, "stream fetch: source ignored bounded range");
+                return 0;
+            }
+            if off == 0 && crate::backend::proxy::body_sniffs_as_html(&first) {
+                tracing::warn!(target: "music::audio", %uri, "stream fetch: body sniffs as HTML — discarding, will try fallback");
+                return 0;
+            }
+            let Some(chunk) = buffer.get(..read) else {
+                return 0;
+            };
+            if std::io::Write::write_all(file, chunk).is_err() {
+                return 0;
+            }
+            n = n.saturating_add(read as u64);
         }
-        if off == 0 && crate::backend::proxy::body_sniffs_as_html(&bytes) {
-            tracing::warn!(target: "music::audio", %uri, "stream fetch: body sniffs as HTML — discarding, will try fallback");
-            break;
-        }
-        if std::io::Write::write_all(file, &bytes).is_err() {
-            break;
+        if n == 0 || remaining == 0 {
+            // `remaining == 0` means the extra sentinel was consumed: reject
+            // the response rather than accepting a full ignored-range body.
+            return 0;
         }
         let _ = std::io::Write::flush(file);
-        let n = bytes.len() as u64;
         off += n;
         fetched.store(off, Relaxed);
         // Progressive start: the first staged chunk (the moov header + initial
@@ -997,6 +1192,81 @@ impl Drop for AudioEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "audio", feature = "live"))]
+    #[test]
+    fn bounded_download_observes_cancel_before_connecting() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let address = listener.local_addr().expect("address");
+        let path =
+            std::env::temp_dir().join(format!("qos-music-cancel-{}.part", std::process::id()));
+        let mut file = std::fs::File::create(&path).expect("partial");
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        assert_eq!(
+            download_into(
+                &format!("http://{address}/never-contacted"),
+                &mut file,
+                &ready,
+                &fetched,
+                &expected,
+                &cancel,
+            ),
+            0
+        );
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(all(feature = "audio", feature = "live"))]
+    #[test]
+    fn bounded_download_rejects_server_ignoring_range() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let body = vec![0x55; 1_048_577];
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("headers");
+            stream.write_all(&body).expect("body");
+        });
+        let path =
+            std::env::temp_dir().join(format!("qos-music-oversize-{}.part", std::process::id()));
+        let mut file = std::fs::File::create(&path).expect("partial");
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fetched = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let expected = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert_eq!(
+            download_into(
+                &format!("http://{address}/media"),
+                &mut file,
+                &ready,
+                &fetched,
+                &expected,
+                &cancel,
+            ),
+            0
+        );
+        server.join().expect("server");
+        assert!(std::fs::metadata(&path).expect("partial metadata").len() <= 1_048_576);
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn stub_tracks_uri_and_volume() {

@@ -188,6 +188,10 @@ enum Action {
     ToggleLike(String),
     /// Toggle an album's saved-to-library state.
     ToggleSaveAlbum(String),
+    SetOffline {
+        track: String,
+        keep: bool,
+    },
     /// Toggle whether the user follows an artist.
     ToggleFollow(String),
     /// Switch the active search filter tab (All / Songs / Albums / …).
@@ -282,6 +286,9 @@ pub struct MusicApp {
     /// overlaid onto the shared library projection after every reload, never
     /// serialized into Automerge or offered as document actions.
     device_cache: BTreeMap<String, CacheState>,
+    /// Content-addressed media objects + manifest, strictly device-local.
+    media_cache: crate::storage::MediaCache,
+    media_cache_root: PathBuf,
     /// Tests and hermetic screenshot fixtures never read or write a person's
     /// actual local profile. The live app enables it.
     persist_device_profile: bool,
@@ -559,7 +566,14 @@ pub struct MusicApp {
     /// Reserved for a future byte-backed downloader. The current product does
     /// not simulate downloads: a progress bar without durable playable bytes
     /// would be a false offline-completion claim.
-    downloads: HashMap<String, Instant>,
+    downloads: HashMap<String, crate::audio::OfflineDownload>,
+    offline_resolves: HashMap<u64, String>,
+    offline_invocation: Option<(
+        qos_actions::InvocationId,
+        std::collections::BTreeSet<String>,
+    )>,
+    offline_results: Vec<qos_actions::InvocationUpdate>,
+    offline_errors: HashMap<String, String>,
 
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
     /// path the Ctrl+K palette takes), encodes and dispatches each on-screen
@@ -579,6 +593,12 @@ enum ShotStage {
     /// A bundled track playing, so the now-playing bar shows cover art + a live
     /// equalizer on the current row.
     NowPlaying,
+    /// A deterministic, local-only download state for an offscreen capture.
+    Downloading,
+    /// A deterministic durable-cache success state for an offscreen capture.
+    OfflineCached,
+    /// A deterministic terminal download error that exposes the Retry affordance.
+    OfflineError,
     /// The synced-lyrics view with a highlighted current line at ~40s.
     Lyrics,
     /// A Ctrl+K playlist-membership result activated through its canonical View
@@ -646,12 +666,18 @@ impl MusicApp {
             search_input.set_text(&query);
         }
         let persist_device_profile = load_device_profile && !cfg!(test);
-        let mut device_profile = persist_device_profile
+        let device_profile = persist_device_profile
             .then(crate::storage::load_device_profile)
             .unwrap_or_default();
-        // Older builds persisted synthetic Cached markers without media files.
-        // Migrate those claims away rather than showing a stale green badge.
-        device_profile.cache.clear();
+        let media_cache = persist_device_profile
+            .then(crate::storage::load_media_cache)
+            .unwrap_or_default();
+        let media_cache_root = crate::storage::media_cache_dir();
+        let device_cache = media_cache
+            .entries
+            .keys()
+            .map(|track_id| (track_id.clone(), CacheState::Cached))
+            .collect();
         Self {
             lib: Library::default(),
             library_heads: None,
@@ -659,7 +685,9 @@ impl MusicApp {
                 &Library::default(),
             ),
             library_search_builds: 0,
-            device_cache: device_profile.cache,
+            device_cache,
+            media_cache,
+            media_cache_root,
             persist_device_profile,
             pb: device_profile.playback,
             view,
@@ -761,6 +789,10 @@ impl MusicApp {
             search_edit_at: preset_search_at,
             live_query_sent: None,
             downloads: HashMap::new(),
+            offline_resolves: HashMap::new(),
+            offline_invocation: None,
+            offline_results: Vec::new(),
+            offline_errors: HashMap::new(),
             actions: ui::ActionHost::new(),
         }
     }
@@ -1000,7 +1032,56 @@ impl MusicApp {
     /// Retire the old simulated-download seam. The render loop still invokes
     /// this, but it can never manufacture a false "cached" completion state.
     fn advance_downloads(&mut self, _state: &mut AutoCommit) {
-        self.downloads.clear();
+        let mut complete = Vec::new();
+        let mut progress = Vec::new();
+        for (track_id, download) in &self.downloads {
+            if let Some(fraction) = download.progress() {
+                progress.push((track_id.clone(), fraction));
+            }
+            if let Some(result) = download.take_result() {
+                complete.push((track_id.clone(), result));
+            }
+        }
+        for (track_id, fraction) in progress {
+            self.update_device_cache(&track_id, CacheState::Downloading(fraction));
+        }
+        for (track_id, result) in complete {
+            self.downloads.remove(&track_id);
+            match result {
+                Ok(()) => {
+                    self.media_cache =
+                        crate::storage::load_media_cache_from(&self.media_cache_root);
+                    if self
+                        .media_cache
+                        .object_path(&self.media_cache_root, &track_id)
+                        .is_some()
+                    {
+                        self.update_device_cache(&track_id, CacheState::Cached);
+                        self.settle_offline_track(&track_id, None);
+                        self.toast = Some((
+                            format!(
+                                "Saved “{}” for offline playback",
+                                self.track_label(&track_id)
+                            ),
+                            Instant::now(),
+                        ));
+                    } else {
+                        self.update_device_cache(&track_id, CacheState::Streamed);
+                        self.settle_offline_track(
+                            &track_id,
+                            Some("download completed without a durable media object".into()),
+                        );
+                    }
+                }
+                Err(error) => {
+                    self.update_device_cache(&track_id, CacheState::Streamed);
+                    self.offline_errors.insert(track_id.clone(), error.clone());
+                    self.settle_offline_track(&track_id, Some(error.clone()));
+                    self.toast =
+                        Some((format!("Offline download failed: {error}"), Instant::now()));
+                }
+            }
+        }
     }
 
     /// Mirror each playlist's persisted cover URL into the image cache so a
@@ -1975,6 +2056,28 @@ impl MusicApp {
             Action::MoveQueueItem { from, to } => self.on_move_queue_item(from, to, state),
             Action::ToggleLike(id) => self.on_toggle_like(&id, state),
             Action::ToggleSaveAlbum(id) => self.on_toggle_save_album(&id, state),
+            Action::SetOffline { track, keep } => {
+                if keep {
+                    if let Err(error) = self.request_offline_download(&track) {
+                        self.toast =
+                            Some((format!("Offline download failed: {error}"), Instant::now()));
+                    }
+                } else {
+                    if let Some(download) = self.downloads.remove(&track) {
+                        download.cancel();
+                    }
+                    self.offline_resolves.retain(|_, pending| pending != &track);
+                    self.offline_errors.remove(&track);
+                    if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
+                        self.toast = Some((
+                            format!("Couldn’t remove offline media: {error}"),
+                            Instant::now(),
+                        ));
+                    }
+                    self.update_device_cache(&track, CacheState::Streamed);
+                    self.settle_offline_track(&track, Some("offline download cancelled".into()));
+                }
+            }
             Action::ToggleFollow(id) => self.on_toggle_follow(&id, state),
             Action::SelectSearchTab(tab) => self.on_select_search_tab(tab),
             Action::AddToPlaylist { playlist, track } => {
@@ -2421,6 +2524,9 @@ impl MusicApp {
     /// selected id (for example an old bundled/demo entry), it reports a clear
     /// failure and stops transport rather than simulating playback.
     fn start_stream(&mut self, track_id: &str) -> Option<u64> {
+        if self.play_cached_track_if_available(track_id) {
+            return None;
+        }
         let t = self.lib.track(track_id)?;
         let yt_id = t.yt_id.clone();
 
@@ -2471,6 +2577,90 @@ impl MusicApp {
                 self.audio.stop();
                 None
             }
+        }
+    }
+
+    /// Prefer a verified local object before constructing a resolver request.
+    /// The `file://` URI never crosses the resource/action boundary; it stays
+    /// inside this device's audio engine and remains usable after restart.
+    fn play_cached_track_if_available(&mut self, track_id: &str) -> bool {
+        let Ok(Some(path)) = self.media_cache.touch(&self.media_cache_root, track_id) else {
+            return false;
+        };
+        let uri = format!("file://{}", path.display());
+        self.audio.load(&uri);
+        if self.pb.playing {
+            self.audio.play();
+        }
+        self.update_device_cache(track_id, CacheState::Cached);
+        true
+    }
+
+    fn request_offline_download(&mut self, track_id: &str) -> Result<(), String> {
+        if self.downloads.contains_key(track_id)
+            || self.offline_resolves.values().any(|id| id == track_id)
+        {
+            return Ok(());
+        }
+        let video_id = self
+            .lib
+            .track(track_id)
+            .ok_or_else(|| "offline-cache target is no longer in the library".to_string())?
+            .yt_id
+            .clone();
+        let request_id = self
+            .next_worker_request_id()
+            .ok_or_else(|| "offline request identity space is exhausted".to_string())?;
+        self.ensure_worker();
+        let worker = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| "music worker is unavailable".to_string())?;
+        worker.request(StreamRequest::Resolve {
+            track_id: track_id.to_string(),
+            video_id,
+            request_id,
+        })?;
+        self.offline_resolves
+            .insert(request_id, track_id.to_string());
+        self.offline_errors.remove(track_id);
+        self.update_device_cache(track_id, CacheState::Downloading(0.0));
+        Ok(())
+    }
+
+    fn settle_offline_track(&mut self, track_id: &str, error: Option<String>) {
+        let Some((invocation, empty)) =
+            self.offline_invocation
+                .as_mut()
+                .and_then(|(invocation, pending)| {
+                    pending
+                        .remove(track_id)
+                        .then_some((*invocation, pending.is_empty()))
+                })
+        else {
+            return;
+        };
+        if error.is_some() || empty {
+            self.offline_invocation = None;
+            let update = match error {
+                Some(message) => qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "music.offline_download_failed".into(),
+                        message,
+                        details: Some(serde_json::json!({"track_id": track_id})),
+                        retryable: true,
+                    },
+                },
+                None => qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput {
+                        value: Some(serde_json::json!({"state":"cached"})),
+                        resources: Vec::new(),
+                    },
+                },
+            };
+            self.offline_results.push(update);
         }
     }
 
@@ -2622,14 +2812,18 @@ impl MusicApp {
         Ok(request)
     }
 
-    pub(crate) fn apply_resource_play_track(&mut self, id: &str) -> Result<u64, String> {
+    pub(crate) fn apply_resource_play_track(&mut self, id: &str) -> Result<Option<u64>, String> {
         if !self.lib.tracks.contains_key(id) {
             return Err("track is no longer in the library".into());
         }
         self.pb.queue = vec![id.to_string()];
         self.shuffle_order.clear();
         self.play_index(0);
+        if self.play_cached_track_if_available(id) {
+            return Ok(None);
+        }
         self.start_stream(id)
+            .map(Some)
             .ok_or_else(|| "stream resolver could not start".to_string())
     }
 
@@ -2715,6 +2909,10 @@ impl MusicApp {
     /// the audio engine, folds real search hits into the in-memory library and
     /// records the bound backend. Needs no document handle — search results are
     /// merged into the document lazily when a track is *played*.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive worker protocol keeps each request and terminal state adjacent"
+    )]
     fn drain_worker(&mut self) {
         let updates = match &self.worker {
             Some(w) => w.poll(),
@@ -2797,12 +2995,48 @@ impl MusicApp {
                     track_id,
                     request_id,
                     stream,
-                } => self.apply_resolved_stream(&track_id, request_id, &stream),
+                } => {
+                    if let Some(cache_track) = self.offline_resolves.remove(&request_id) {
+                        match crate::audio::OfflineDownload::start(
+                            cache_track.clone(),
+                            stream.url.clone(),
+                            stream.fallback_url.clone(),
+                            self.media_cache_root.clone(),
+                        ) {
+                            Ok(download) => {
+                                self.downloads.insert(cache_track, download);
+                            }
+                            Err(error) => {
+                                self.update_device_cache(&cache_track, CacheState::Streamed);
+                                self.offline_errors
+                                    .insert(cache_track.clone(), error.clone());
+                                self.settle_offline_track(&cache_track, Some(error.clone()));
+                                self.toast = Some((
+                                    format!("Offline download failed: {error}"),
+                                    Instant::now(),
+                                ));
+                            }
+                        }
+                    } else {
+                        self.apply_resolved_stream(&track_id, request_id, &stream);
+                    }
+                }
                 StreamUpdate::ResolveFailed {
                     track_id,
                     request_id,
                     error,
-                } => self.apply_resolve_failure(&track_id, request_id, &error),
+                } => {
+                    if let Some(cache_track) = self.offline_resolves.remove(&request_id) {
+                        self.update_device_cache(&cache_track, CacheState::Streamed);
+                        self.offline_errors
+                            .insert(cache_track.clone(), error.clone());
+                        self.settle_offline_track(&cache_track, Some(error.clone()));
+                        self.toast =
+                            Some((format!("Offline download failed: {error}"), Instant::now()));
+                    } else {
+                        self.apply_resolve_failure(&track_id, request_id, &error);
+                    }
+                }
                 StreamUpdate::Note(_) => {}
             }
         }
@@ -3433,11 +3667,20 @@ impl MusicApp {
     /// frame: a few rows show the animated download spinner at different
     /// progress, alongside the idle download affordance on the rest.
     pub fn snap_downloading(&mut self) {
-        self.view = View::Songs;
-        self.toast = Some((
-            "Offline downloads are unavailable: no durable audio cache is configured".into(),
-            Instant::now(),
-        ));
+        self.shot_stage = Some(ShotStage::Downloading);
+        self.view = View::Downloads;
+    }
+
+    /// Stage a populated, durable cache without touching the real device cache.
+    pub fn snap_offline_cached(&mut self) {
+        self.shot_stage = Some(ShotStage::OfflineCached);
+        self.view = View::Downloads;
+    }
+
+    /// Stage a failed local download and its explicit retry control.
+    pub fn snap_offline_error(&mut self) {
+        self.shot_stage = Some(ShotStage::OfflineError);
+        self.view = View::Downloads;
     }
 
     /// Stage the Search screen showing a multi-type result set + the Spotify
@@ -3842,6 +4085,22 @@ impl MusicApp {
             }
             ShotStage::NowPlaying => {
                 self.stage_play_bundled(48_000.0);
+            }
+            ShotStage::Downloading => {
+                for (id, progress) in [("tk_g1", 0.32), ("tk_g2", 0.71)] {
+                    self.update_device_cache(id, CacheState::Downloading(progress));
+                }
+            }
+            ShotStage::OfflineCached => {
+                for id in ["tk_g1", "tk_g2"] {
+                    self.update_device_cache(id, CacheState::Cached);
+                }
+            }
+            ShotStage::OfflineError => {
+                self.offline_errors.insert(
+                    "tk_g1".into(),
+                    "Network connection ended before the download finished".into(),
+                );
             }
             ShotStage::Lyrics => {
                 // ~40s in lands mid-song so a synced line is highlighted.
@@ -5202,21 +5461,21 @@ mod tests {
             keep: true,
         })
         .unwrap();
-        let error = app
-            .invoke_resource_operation(
+        assert!(
+            app.invoke_resource_operation(
                 qos_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &keep,
                 &doc,
                 &automerge::ROOT,
             )
-            .expect_err("metadata-only cache request must be refused");
-        assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Streamed);
-        assert_eq!(doc.get_heads(), heads);
-        assert!(
-            error.contains("durable audio bytes"),
-            "the canonical result explains why it cannot honestly promise offline playback"
+            .expect("request queues a real resolver/download lifecycle")
         );
+        assert!(matches!(
+            app.lib.cache_state("tk_g2"),
+            CacheState::Downloading(_)
+        ));
+        assert_eq!(doc.get_heads(), heads);
     }
 
     #[test]
@@ -5238,7 +5497,7 @@ mod tests {
                 &doc,
                 &automerge::ROOT,
             )
-            .is_err()
+            .is_ok()
         );
         let evict = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
             tracks: vec!["tk_g1".into(), "tk_g2".into()],
@@ -5259,6 +5518,36 @@ mod tests {
             app.device_cache.is_empty(),
             "one operation evicts the full batch"
         );
+    }
+
+    #[test]
+    fn verified_media_cache_reopens_after_restart_without_a_resolver() {
+        let (mut app, _doc) = app_with_doc();
+        let root =
+            std::env::temp_dir().join(format!("qos-music-offline-playback-{}", std::process::id()));
+        app.media_cache_root = root.clone();
+        app.media_cache
+            .install_bytes(&root, "tk_g1", b"durable media bytes", 1024)
+            .expect("install complete local media");
+        // Model a restart: reload the manifest/object pair into a fresh local
+        // cache projection, then start the known track with no worker at all.
+        app.media_cache = crate::storage::load_media_cache_from(&root);
+        app.device_cache.insert("tk_g1".into(), CacheState::Cached);
+        app.pb.current = Some("tk_g1".into());
+        app.pb.queue = vec!["tk_g1".into()];
+        app.pb.playing = true;
+        assert_eq!(
+            app.start_stream("tk_g1"),
+            None,
+            "no network resolver is queued"
+        );
+        assert!(
+            app.audio
+                .current_uri()
+                .is_some_and(|uri| uri.starts_with("file://")),
+            "the audio engine reads the durable local object"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6945,6 +7234,30 @@ mod tests {
             !app.row_menu_hits.is_empty(),
             "the songs table registers per-row right-click targets"
         );
+    }
+
+    #[test]
+    fn downloads_rows_expose_direct_cancel_remove_and_retry_actions() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Downloads;
+        app.update_device_cache("tk_g1", CacheState::Downloading(0.32));
+        app.update_device_cache("tk_g2", CacheState::Cached);
+        app.offline_errors
+            .insert("tk_g3".into(), "network ended".into());
+        draw_once(&mut app, &mut doc);
+
+        let has_action = |track: &str, keep: bool| {
+            app.hits.iter().any(|hit| {
+                matches!(
+                    &hit.action,
+                    Action::SetOffline { track: id, keep: candidate }
+                        if id == track && *candidate == keep
+                )
+            })
+        };
+        assert!(has_action("tk_g1", false), "active download has Cancel/X");
+        assert!(has_action("tk_g2", false), "cached media has Remove");
+        assert!(has_action("tk_g3", true), "failed download has Retry");
     }
 
     // ---- 10. shuffle actually reorders playback ----------------------------

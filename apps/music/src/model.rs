@@ -78,8 +78,6 @@ pub struct Playlist {
 
 /// Per-track cache state. `Cached` is reserved exclusively for a durable
 /// local media file which the audio engine can play without network access.
-/// Current Music builds do not create that state until a byte-backed cache is
-/// implemented.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum CacheState {
     /// Not cached — streamed live from the source.
