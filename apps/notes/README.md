@@ -17,9 +17,10 @@ takes the full width.
 cargo run -p notes --release
 ```
 
-The binary opens a window, restores the workspace from
-`~/notes/` (creating a starter "Welcome" page on first launch), and runs
-until you close it. The background saver flushes every change with a
+The binary opens a window and restores the workspace from `~/notes/`. A fresh
+workspace is intentionally empty and presents a prominent **New note** action;
+the sidebar's **+** creates later root or child pages. The background saver
+flushes every change with a
 500 ms debounce; the status bar shows "Saving…" while a write is
 queued and "Saved" once it lands.
 
@@ -134,9 +135,6 @@ sidebar tests; they are deliberately not listed as missing features.
   rename the target page, the link still navigates correctly but the
   visible text in the source page stays the old title until you
   manually re-type it.
-- **Inline-mark toggles aren't on the CRDT undo path.** `Ctrl-B` /
-  `Ctrl-I` / `Ctrl-E` toggle marks immediately; undo only walks the
-  text edits, not the mark transitions.
 - **Popover anchoring is line-bottom, not caret-pixel.** The link
   popover and slash menu open at the bottom-left of the current line
   rather than directly under the caret. Reads as "close enough" for
@@ -148,9 +146,9 @@ sidebar tests; they are deliberately not listed as missing features.
 - **No simultaneous independent carets.** A single user can make a free-form
   selection across blocks, but the editor does not expose multiple local
   carets/selections at once. Remote collaborator carets are still shown.
-- **Blocks do not have a dedicated drag handle.** Pages can be dragged to
-  reorder or re-parent them. Block order is changed through ordinary editing;
-  there is not yet a separate block-drag affordance.
+- **No custom tag or comment model yet.** Pages, blocks, page links and inline
+  formatting are durable collaborative resources/actions today. Tags and
+  comments are deliberately not presented as half-finished local-only data.
 
 ## Architecture
 
@@ -164,6 +162,8 @@ sidebar tests; they are deliberately not listed as missing features.
   scrollable row list with inline rename + keyboard shortcuts.
 - `main_panel.rs` — `MainPanel`; hosts the `BlockEditor` from `ui`
   plus the page title.
+- `actions.rs` / `doc.rs` — canonical page, block and inline-mark actions;
+  formatting and links are native Automerge Text marks, not local chrome.
 - `status_bar.rs` — `StatusBar`; bottom strip with save indicator,
   page path, page count + word count.
 - `shortcuts_overlay.rs` — `ShortcutsOverlay`; Notes' shortcut grid inside the

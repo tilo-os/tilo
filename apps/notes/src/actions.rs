@@ -44,6 +44,7 @@ use crate::doc::NotesDoc;
 use crate::model::{PageId, PageMeta};
 use crate::num;
 use ui::widget::BlockEditOp;
+use ui::widget::marks::{Mark, MarkSpan};
 
 /// Registry `type_id` for every Notes action.
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
@@ -165,6 +166,69 @@ pub enum NotesAction {
     /// Notes path allowed to mutate collaborative block data: widgets emit a
     /// semantic delta, and the action validates and applies it atomically.
     ApplyBlockOps { page: String, ops: Vec<BlockEditOp> },
+    /// Replace the Notes-owned inline formatting and page-link marks on one
+    /// stable block. The ranges are UTF-8 byte offsets in the block text;
+    /// [`crate::doc::NotesDoc`] validates them and writes native Automerge
+    /// marks, so ordinary collaborative text splices keep their anchors.
+    SetBlockMarks {
+        page: String,
+        block_id: String,
+        marks: Vec<InlineMarkSpan>,
+    },
+}
+
+/// Serializable inline formatting stored in a Notes block's native Automerge
+/// text marks. Keeping this small wire type in Notes (rather than serializing
+/// a widget enum) makes it a durable, replayable action payload for peers and
+/// agents alike.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InlineMark {
+    Bold,
+    Italic,
+    Code,
+    Underline,
+    Strikethrough,
+    Link { page: String },
+}
+
+/// A half-open UTF-8 byte range with one inline mark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlineMarkSpan {
+    pub start: usize,
+    pub end: usize,
+    pub mark: InlineMark,
+}
+
+impl InlineMarkSpan {
+    pub fn from_ui(span: &MarkSpan) -> Self {
+        let mark = match &span.mark {
+            Mark::Bold => InlineMark::Bold,
+            Mark::Italic => InlineMark::Italic,
+            Mark::Code => InlineMark::Code,
+            Mark::Underline => InlineMark::Underline,
+            Mark::Strikethrough => InlineMark::Strikethrough,
+            Mark::Link(page) => InlineMark::Link {
+                page: page.to_string(),
+            },
+        };
+        Self {
+            start: span.range.start,
+            end: span.range.end,
+            mark,
+        }
+    }
+
+    pub fn to_ui(&self) -> Option<MarkSpan> {
+        let mark = match &self.mark {
+            InlineMark::Bold => Mark::Bold,
+            InlineMark::Italic => Mark::Italic,
+            InlineMark::Code => Mark::Code,
+            InlineMark::Underline => Mark::Underline,
+            InlineMark::Strikethrough => Mark::Strikethrough,
+            InlineMark::Link { page } => Mark::Link(page.parse().ok()?),
+        };
+        Some(MarkSpan::new(self.start..self.end, mark))
+    }
 }
 
 /// Durable, browseable history metadata for a Notes mutation.
@@ -174,6 +238,9 @@ pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
         NotesAction::UpsertPage(page) => ("Update page", page.id.as_str(), page.title.as_str()),
         NotesAction::DeletePage { id } => ("Delete page", id.as_str(), "Page"),
         NotesAction::ApplyBlockOps { page, .. } => ("Edit note", page.as_str(), "Note"),
+        NotesAction::SetBlockMarks { page, block_id, .. } => {
+            ("Format note", page.as_str(), block_id.as_str())
+        }
     };
     context.action_label = label.to_string();
     context.resource = Some(qos_actions::ActionResource {
@@ -256,6 +323,17 @@ impl Action for NotesAction {
                     .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
                 NotesDoc::apply_block_ops(doc, page, ops).map_err(ActionError::Refused)?;
             }
+            NotesAction::SetBlockMarks {
+                page,
+                block_id,
+                marks,
+            } => {
+                let page = page
+                    .parse::<PageId>()
+                    .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
+                NotesDoc::set_block_marks(doc, page, block_id, marks)
+                    .map_err(ActionError::Refused)?;
+            }
         }
         Ok(())
     }
@@ -328,6 +406,20 @@ pub fn apply_block_ops_action(page: PageId, ops: Vec<BlockEditOp>) -> NotesActio
     NotesAction::ApplyBlockOps {
         page: page.to_string(),
         ops,
+    }
+}
+
+/// Replace a block's Notes-owned inline formatting through the same action
+/// executor that owns its text and structure.
+pub fn set_block_marks_action(
+    page: PageId,
+    block_id: impl Into<String>,
+    marks: Vec<InlineMarkSpan>,
+) -> NotesAction {
+    NotesAction::SetBlockMarks {
+        page: page.to_string(),
+        block_id: block_id.into(),
+        marks,
     }
 }
 
@@ -651,6 +743,10 @@ mod tests {
         }
     }
 
+    fn resource_count(resource: &Resource) -> usize {
+        1 + resource.children.iter().map(resource_count).sum::<usize>()
+    }
+
     /// A document seeded with a small page tree: a root "Projects" with two
     /// children, plus a second root "Inbox".
     fn seeded() -> (AutoCommit, PageId, PageId, PageId, PageId) {
@@ -856,11 +952,8 @@ mod tests {
             blocks: HashMap::new(),
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
-        fn count(resource: &Resource) -> usize {
-            1 + resource.children.iter().map(count).sum::<usize>()
-        }
         assert!(
-            count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
+            resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
             "notebook context must remain bounded"
         );
         let late = pages.last().expect("late page");
@@ -1080,6 +1173,9 @@ mod tests {
             }
             NotesAction::ApplyBlockOps { .. } => {
                 panic!("new-child built the wrong action: ApplyBlockOps")
+            }
+            NotesAction::SetBlockMarks { .. } => {
+                panic!("new-child built the wrong action: SetBlockMarks")
             }
         }
     }
