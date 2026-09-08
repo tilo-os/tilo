@@ -1,11 +1,12 @@
 //! Automerge document bridge — the "our own library layer that syncs
 //! between devices" part of the spec.
 //!
-//! The entire library (catalog + playlists + cache state) and the live
-//! playback state are mirrored into the shared `ui::State::doc`. Because
+//! The user-authored library (catalog, playlists, likes, saved albums and
+//! followed artists) is mirrored into the shared `ui::State::doc`. Because
 //! Automerge is a CRDT, two devices that start from the same base document
-//! converge: editing a playlist on a laptop and toggling play on a phone
-//! both replicate. The schema:
+//! converge when they edit that library. Playback, downloaded bytes/cache
+//! choices and credentials deliberately do **not** enter this document: they
+//! are properties of the current device and its audio policy. The schema:
 //!
 //! ```text
 //! root
@@ -15,15 +16,15 @@
 //! │   └── "tracks"  (Map<id, {title, album_id, artist_id, track_no,
 //! │                            duration_s, yt_id, plays}>)
 //! ├── "playlists" (List<{id, name, description, tracks: List<str>}>)
-//! ├── "cache"     (Map<track_id, "cached" | "downloading:<f>" | "streamed">)
-//! └── "playback"  (Map<current, queue: List<str>, queue_index, playing,
-//!                       position_ms, shuffle, repeat, volume>)
+//! ├── "liked"     (List<track_id>)
+//! ├── "saved_albums" (List<album_id>)
+//! └── "followed_artists" (List<artist_id>)
 //! ```
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{Album, Artist, CacheState, Library, Playback, Playlist, RepeatMode, Track};
+use crate::model::{Album, Artist, Library, Playback, Playlist, Track};
 
 // ---- small scalar readers -------------------------------------------------
 
@@ -40,16 +41,6 @@ fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
 fn get_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
     match doc.get(obj, key) {
         Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
-        _ => None,
-    }
-}
-
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
         _ => None,
     }
 }
@@ -88,26 +79,6 @@ fn list_strings(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     out
 }
 
-// ---- cache state codec ----------------------------------------------------
-
-fn cache_to_str(c: CacheState) -> String {
-    match c {
-        CacheState::Streamed => "streamed".into(),
-        CacheState::Cached => "cached".into(),
-        CacheState::Downloading(f) => format!("downloading:{f}"),
-    }
-}
-
-fn cache_from_str(s: &str) -> CacheState {
-    if s == "cached" {
-        CacheState::Cached
-    } else if let Some(rest) = s.strip_prefix("downloading:") {
-        CacheState::Downloading(rest.parse().unwrap_or(0.0))
-    } else {
-        CacheState::Streamed
-    }
-}
-
 // ---- public API -----------------------------------------------------------
 
 /// True once the document has been seeded with a library.
@@ -120,7 +91,7 @@ pub fn is_seeded(doc: &AutoCommit) -> bool {
 /// seeding (an existing document from a corrupt or pathological state); a
 /// failure on a single item within a container (an artist, an album) skips
 /// just that item and continues with its siblings.
-pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
+pub fn seed(doc: &mut AutoCommit, lib: &Library, _playback: &Playback) {
     let Ok(library) = doc.put_object(&ROOT, "library", ObjType::Map) else {
         return;
     };
@@ -164,14 +135,6 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
         write_playlist(doc, &playlists, i, p);
     }
 
-    // Cache state.
-    let Ok(cache) = doc.put_object(&ROOT, "cache", ObjType::Map) else {
-        return;
-    };
-    for (id, st) in &lib.cache {
-        let _ = doc.put(&cache, id.as_str(), cache_to_str(*st));
-    }
-
     // Liked songs + saved albums.
     let Ok(liked) = doc.put_object(&ROOT, "liked", ObjType::List) else {
         return;
@@ -191,8 +154,6 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
     for (i, id) in lib.followed_artists.iter().enumerate() {
         let _ = doc.insert(&followed, i, id.as_str());
     }
-
-    write_playback(doc, playback);
 }
 
 fn write_track(doc: &mut AutoCommit, tracks: &ObjId, t: &Track) {
@@ -222,34 +183,6 @@ fn write_playlist(doc: &mut AutoCommit, playlists: &ObjId, index: usize, p: &Pla
     for (i, tid) in p.track_ids.iter().enumerate() {
         let _ = doc.insert(&list, i, tid.as_str());
     }
-}
-
-/// Overwrite the whole `playback` map. Cheap (a dozen scalars) and avoids
-/// having to diff individual fields.
-pub fn write_playback(doc: &mut AutoCommit, pb: &Playback) {
-    let Ok(m) = doc.put_object(&ROOT, "playback", ObjType::Map) else {
-        return;
-    };
-    match &pb.current {
-        Some(c) => {
-            let _ = doc.put(&m, "current", c.as_str());
-        }
-        None => {
-            let _ = doc.put(&m, "current", "");
-        }
-    }
-    let Ok(q) = doc.put_object(&m, "queue", ObjType::List) else {
-        return;
-    };
-    for (i, tid) in pb.queue.iter().enumerate() {
-        let _ = doc.insert(&q, i, tid.as_str());
-    }
-    let _ = doc.put(&m, "queue_index", pb.queue_index as i64);
-    let _ = doc.put(&m, "playing", pb.playing);
-    let _ = doc.put(&m, "position_ms", pb.position_ms as i64);
-    let _ = doc.put(&m, "shuffle", pb.shuffle);
-    let _ = doc.put(&m, "repeat", pb.repeat.as_str());
-    let _ = doc.put(&m, "volume", i64::from(pb.volume));
 }
 
 /// A live (YouTube-Music) search result to merge into the library. Kept a plain
@@ -324,16 +257,6 @@ pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
             },
         );
     }
-}
-
-/// Set the cache/download state of a single track.
-pub fn set_cache(doc: &mut AutoCommit, track_id: &str, state: CacheState) {
-    let Some(cache) =
-        get_map(doc, &ROOT, "cache").or_else(|| doc.put_object(&ROOT, "cache", ObjType::Map).ok())
-    else {
-        return;
-    };
-    let _ = doc.put(&cache, track_id, cache_to_str(state));
 }
 
 /// Locate a playlist map object by its `id` field. Returns the playlist's
@@ -654,14 +577,6 @@ pub fn load_library(doc: &AutoCommit) -> Library {
         }
     }
 
-    if let Some(cache) = get_map(doc, &ROOT, "cache") {
-        for key in doc.keys(&cache) {
-            if let Some(s) = get_str(doc, &cache, &key) {
-                lib.cache.insert(key, cache_from_str(&s));
-            }
-        }
-    }
-
     if let Some(liked) = get_list(doc, &ROOT, "liked") {
         for id in list_strings(doc, &liked) {
             lib.liked.insert(id);
@@ -679,27 +594,6 @@ pub fn load_library(doc: &AutoCommit) -> Library {
     }
 
     lib
-}
-
-/// Read the playback state out of the document.
-pub fn load_playback(doc: &AutoCommit) -> Playback {
-    let Some(m) = get_map(doc, &ROOT, "playback") else {
-        return Playback::default();
-    };
-    let current = get_str(doc, &m, "current").filter(|s| !s.is_empty());
-    let queue = get_list(doc, &m, "queue")
-        .map(|l| list_strings(doc, &l))
-        .unwrap_or_default();
-    Playback {
-        current,
-        queue,
-        queue_index: get_i64(doc, &m, "queue_index").unwrap_or(0).max(0) as usize,
-        playing: get_bool(doc, &m, "playing").unwrap_or(false),
-        position_ms: get_i64(doc, &m, "position_ms").unwrap_or(0).max(0) as u64,
-        shuffle: get_bool(doc, &m, "shuffle").unwrap_or(false),
-        repeat: RepeatMode::parse(&get_str(doc, &m, "repeat").unwrap_or_default()),
-        volume: get_i64(doc, &m, "volume").unwrap_or(80).clamp(0, 100) as u8,
-    }
 }
 
 #[cfg(test)]
@@ -728,35 +622,13 @@ mod tests {
     }
 
     #[test]
-    fn playback_round_trips() {
+    fn seeding_contains_no_device_effect_maps() {
         let mut doc = AutoCommit::new();
         let lib = seed::sample_library();
         let pb = seed::sample_playback(&lib);
         seed(&mut doc, &lib, &pb);
-        let loaded = load_playback(&doc);
-        assert_eq!(loaded.current, pb.current);
-        assert_eq!(loaded.queue, pb.queue);
-        assert_eq!(loaded.playing, pb.playing);
-        assert_eq!(loaded.repeat, pb.repeat);
-        assert_eq!(loaded.volume, pb.volume);
-    }
-
-    #[test]
-    fn cache_state_codec_round_trips() {
-        for st in [
-            CacheState::Streamed,
-            CacheState::Cached,
-            CacheState::Downloading(0.42),
-        ] {
-            let s = cache_to_str(st);
-            let back = cache_from_str(&s);
-            match (st, back) {
-                (CacheState::Downloading(a), CacheState::Downloading(b)) => {
-                    assert!((a - b).abs() < 1e-4);
-                }
-                (a, b) => assert_eq!(a, b),
-            }
-        }
+        assert!(get_map(&doc, &ROOT, "playback").is_none());
+        assert!(get_map(&doc, &ROOT, "cache").is_none());
     }
 
     #[test]
@@ -865,23 +737,5 @@ mod tests {
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b_loaded).unwrap();
         assert!(load_library(&a).is_liked("tk_v2"));
-    }
-
-    #[test]
-    fn two_devices_converge_on_playback() {
-        // Device A seeds, device B loads A's state, B toggles playing, A merges.
-        let mut a = AutoCommit::new();
-        let lib = seed::sample_library();
-        seed(&mut a, &lib, &seed::sample_playback(&lib));
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let mut pb = load_playback(&b);
-        pb.playing = false;
-        pb.volume = 33;
-        write_playback(&mut b, &pb);
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
-        let merged = load_playback(&a);
-        assert!(!merged.playing);
-        assert_eq!(merged.volume, 33);
     }
 }
