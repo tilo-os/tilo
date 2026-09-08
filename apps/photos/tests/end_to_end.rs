@@ -841,7 +841,7 @@ fn every_toolbar_control_is_inside_the_window_at_every_size() {
 
         let window = hz.window_rect();
         let items = hz.app.toolbar_item_rects();
-        let expected_visible = if w < 600.0 { 5 } else { 8 };
+        let expected_visible = if w < 600.0 { 5 } else { 9 };
         assert_eq!(
             items.len(),
             expected_visible,
@@ -860,6 +860,65 @@ fn every_toolbar_control_is_inside_the_window_at_every_size() {
                 r.x0,
                 r.x1
             );
+        }
+    }
+}
+
+#[test]
+fn library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+    for (w, h) in [(1280.0, 800.0), (390.0, 844.0)] {
+        let mut hz = Harness::new(w, h);
+        hz.app.open_path(&mut hz.state.doc, &path);
+        let mut library = PhotosDoc::library(&hz.state.doc);
+        let seed = library.photos[0].clone();
+        for suffix in ["dusk", "trail", "museum", "market"] {
+            let mut extra = seed.clone();
+            extra.id = format!("{}:{suffix}", seed.id);
+            extra.image.name = format!("{suffix}-photograph-with-a-long-name.png");
+            extra.tags = vec!["a deliberately long but bounded metadata label".into()];
+            library.add_photo(extra);
+        }
+        PhotosDoc::set_library(&mut hz.state.doc, &library);
+        hz.app.show_library();
+        hz.frame();
+        hz.frame();
+
+        let layouts = hz.app.library_card_action_rects();
+        assert!(
+            !layouts.is_empty(),
+            "{w}x{h}: no library cards were measured"
+        );
+        for (card, details, remove, favorite) in &layouts {
+            for (name, control) in [
+                ("details", details),
+                ("remove", remove),
+                ("favorite", favorite),
+            ] {
+                assert!(
+                    control.x0 >= card.x0
+                        && control.y0 >= card.y0
+                        && control.x1 <= card.x1
+                        && control.y1 <= card.y1,
+                    "{w}x{h}: {name} control {control:?} escapes card {card:?}"
+                );
+                assert!(
+                    control.height() >= 44.0 - f64::EPSILON,
+                    "{w}x{h}: {name} is below the 44px target minimum: {control:?}"
+                );
+            }
+        }
+        for (index, (card, ..)) in layouts.iter().enumerate() {
+            for (other, ..) in layouts.iter().skip(index + 1) {
+                assert!(
+                    card.x1 <= other.x0
+                        || other.x1 <= card.x0
+                        || card.y1 <= other.y0
+                        || other.y1 <= card.y0,
+                    "{w}x{h}: neighboring cards overlap: {card:?} and {other:?}"
+                );
+            }
         }
     }
 }

@@ -47,6 +47,7 @@ impl PhotosSearchProvider {
     pub fn new(doc: &AutoCommit) -> Self {
         let provider = Self::empty();
         let library = PhotosDoc::library(doc);
+        let mut rows = Vec::with_capacity(1 + library.photos.len() + library.albums.len());
         let root = SearchResult::for_action(
             PHOTO_SEARCH_KIND,
             "Photo library",
@@ -54,11 +55,11 @@ impl PhotosSearchProvider {
         )
         .with_subtitle("Import and browse photographs")
         .with_icon(Icon::Image);
-        let _ = provider.catalog.upsert(
-            "photos.library",
-            "Photo library\0photos.library\0open\0Import photograph",
+        rows.push((
+            "photos.library".to_owned(),
+            "Photo library\0photos.library\0open\0Import photograph".to_owned(),
             root,
-        );
+        ));
         for photo in &library.photos {
             let result = SearchResult::for_action(
                 PHOTO_SEARCH_KIND,
@@ -70,8 +71,10 @@ impl PhotosSearchProvider {
                 photo.image.width, photo.image.height
             ))
             .with_icon(Icon::Image);
+            // Omit repeated kind/action boilerplate: it creates huge shared
+            // postings in a large library without helping find a photograph.
             let searchable = format!(
-                "{}\0photos.photo\0{} x {} pixels\0open\0favorite\0clockwise\0{}\0{}\0{}\0{}\0{}",
+                "{}\0{} x {} pixels\0clockwise\0{}\0{}\0{}\0{}\0{}",
                 photo.image.name,
                 photo.image.width,
                 photo.image.height,
@@ -85,9 +88,7 @@ impl PhotosSearchProvider {
                 photo.tags.join(" "),
                 photo.captured_at.as_deref().unwrap_or_default(),
             );
-            let _ = provider
-                .catalog
-                .upsert(photo.id.clone(), searchable, result);
+            rows.push((photo.id.clone(), searchable, result));
         }
         for album in &library.albums {
             let result = SearchResult::for_action(
@@ -102,10 +103,9 @@ impl PhotosSearchProvider {
                 album.name,
                 album.photo_ids.len()
             );
-            let _ = provider
-                .catalog
-                .upsert(album.id.clone(), searchable, result);
+            rows.push((album.id.clone(), searchable, result));
         }
+        let _ = provider.catalog.replace_all(rows);
         provider.index_metadata_views(&library);
         provider
     }
