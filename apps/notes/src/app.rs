@@ -1049,8 +1049,45 @@ impl NotesApp {
             let body = storage::read_page_body(&self.root, id).unwrap_or_default();
             self.workspace.set_selected(Some(id));
             self.load_page_with_resolver(id, &title, body);
+            // `load_page_with_resolver` creates a fresh, unbound editor. This
+            // matters even when opening the page already selected (for example
+            // a brokered block reveal): force the next sync to bind it back to
+            // the canonical UUID-addressed block list instead of leaving a
+            // markdown-only editor whose random block ids cannot be revealed.
+            self.bound_page = None;
             self.sidebar.sync_from_workspace(&self.workspace);
             self.persist();
+        }
+    }
+
+    /// Execute Notes' one typed view operation locally. Search, agents and
+    /// collaboration invoke this through [`Widget::invoke_resource_operation`];
+    /// the private jump palette and in-document links construct the identical
+    /// operation and arrive here too, so every open path validates the same
+    /// durable page/block resource before changing presentation state.
+    fn open_notes_operation(
+        &mut self,
+        operation: actions::NotesOperation,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        match operation {
+            actions::NotesOperation::OpenPage { page, block_id } => {
+                if self.workspace.get(page).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                if let Some(block_id) = block_id.as_ref()
+                    && !NotesDoc::page_block_snapshots(doc, page)
+                        .iter()
+                        .any(|(id, _)| id == block_id)
+                {
+                    return Err("block no longer exists".into());
+                }
+                self.navigate_to(page);
+                if let Some(block_id) = block_id {
+                    self.pending_block_reveal = Some((page, block_id));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1108,6 +1145,65 @@ impl NotesApp {
             self.bound_page = None;
             self.self_dirty = true;
         }
+    }
+
+    /// Persist the editor's rich inline spans as native Automerge text marks.
+    /// Text and structure already flow through `ApplyBlockOps`; formatting and
+    /// page links need their own typed action because they do not alter the
+    /// plain string. Comparing against the document avoids re-emitting an
+    /// action for ordinary typing: Automerge carries its native mark anchors
+    /// forward with the text splice.
+    fn drain_inline_marks(&mut self, state: &mut AutoCommit) {
+        // Before the late-join handshake, the visible Markdown editor is a
+        // local preview and its page has deliberately not been created in the
+        // shared doc yet. Waiting for seed/adoption avoids a noisy stale-page
+        // action and then migrates the same spans on the first bound sync.
+        if !self.adopted {
+            return;
+        }
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let in_doc = NotesDoc::page_block_marks(state, page)
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        for (block_id, marks) in self.main.inline_marks() {
+            if in_doc
+                .get(&block_id)
+                .is_some_and(|current| current == &marks)
+            {
+                continue;
+            }
+            let action = actions::set_block_marks_action(page, block_id, marks);
+            if let Err(error) = self.actions.try_dispatch_with_context(
+                state,
+                actions::NOTES_ACTION_TYPE,
+                &action,
+                actions::history_context(&action),
+            ) {
+                tracing::warn!(%error, page = %page, "notes: rejected inline-mark operation; reconciling");
+                self.bound_page = None;
+                self.self_dirty = true;
+                return;
+            }
+        }
+    }
+
+    /// Rehydrate the rich spans the shared widget intentionally does not own.
+    /// Native mark positions are read only for the bound page and only once a
+    /// page has crossed the explicit marks-action migration marker, keeping a
+    /// legacy local Markdown page's first bind intact long enough to migrate.
+    fn hydrate_inline_marks(&mut self, state: &AutoCommit) {
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        if !NotesDoc::page_marks_are_canonical(state, page) {
+            return;
+        }
+        let marks = NotesDoc::page_block_marks(state, page)
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        self.main.set_inline_marks(&marks);
     }
 
     /// Complete a first-note request from the empty-state button. This runs
@@ -1501,24 +1597,7 @@ impl Widget for NotesApp {
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        match operation {
-            actions::NotesOperation::OpenPage { page, block_id } => {
-                if self.workspace.get(page).is_none() {
-                    return Err("page no longer exists".into());
-                }
-                if let Some(block_id) = block_id.as_ref()
-                    && !NotesDoc::page_block_snapshots(doc, page)
-                        .iter()
-                        .any(|(id, _)| id == block_id)
-                {
-                    return Err("block no longer exists".into());
-                }
-                self.navigate_to(page);
-                if let Some(block_id) = block_id {
-                    self.pending_block_reveal = Some((page, block_id));
-                }
-            }
-        }
+        self.open_notes_operation(operation, doc)?;
         Ok(true)
     }
 
@@ -1536,6 +1615,8 @@ impl Widget for NotesApp {
         // drain their retained UUID operations here through the same action
         // host/history path as pointer and keyboard edits.
         self.drain_block_ops(state);
+        self.hydrate_inline_marks(state);
+        self.drain_inline_marks(state);
         self.refresh_search_blocks(state);
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
             && self.bound_page == Some(*page)
@@ -1870,7 +1951,7 @@ impl Widget for NotesApp {
         if self.handle_new_child_shortcut(event, *modifiers, state, handled) {
             return;
         }
-        if self.handle_palette_capture(event, focus_target, handled) {
+        if self.handle_palette_capture(event, state, focus_target, handled) {
             return;
         }
         if self.handle_narrow_drawer(
@@ -1885,7 +1966,7 @@ impl Widget for NotesApp {
         ) {
             return;
         }
-        if self.handle_link_click(event, handled) {
+        if self.handle_link_click(event, state, handled) {
             return;
         }
         self.route_to_children(
@@ -2248,6 +2329,7 @@ impl NotesApp {
     fn handle_palette_capture(
         &mut self,
         event: &WindowEvent,
+        state: &AutoCommit,
         focus_target: &mut Option<NodeId>,
         handled: &mut bool,
     ) -> bool {
@@ -2260,8 +2342,16 @@ impl NotesApp {
             return false;
         }
         let consumed = self.palette.handle_key(event);
-        if let Some(entry) = self.palette.take_selection() {
-            self.navigate_to(entry.id);
+        if let Some(entry) = self.palette.take_selection()
+            && let Err(error) = self.open_notes_operation(
+                actions::NotesOperation::OpenPage {
+                    page: entry.id,
+                    block_id: None,
+                },
+                state,
+            )
+        {
+            tracing::warn!(%error, page = %entry.id, "notes: palette open target went stale");
         }
         if !consumed {
             return false;
@@ -2363,7 +2453,12 @@ impl NotesApp {
     }
 
     /// Click on a link mark navigates.
-    fn handle_link_click(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn handle_link_click(
+        &mut self,
+        event: &WindowEvent,
+        state: &AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
         let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -2375,7 +2470,16 @@ impl NotesApp {
         let Some(id) = self.link_under_last_mouse() else {
             return false;
         };
-        self.navigate_to(id);
+        if let Err(error) = self.open_notes_operation(
+            actions::NotesOperation::OpenPage {
+                page: id,
+                block_id: None,
+            },
+            state,
+        ) {
+            tracing::warn!(%error, page = %id, "notes: link target went stale");
+            return false;
+        }
         *handled = true;
         true
     }
@@ -2451,6 +2555,7 @@ impl NotesApp {
         // Apply them before its next sync so a widget never writes the shared
         // document behind the action/history/undo path.
         self.drain_block_ops(state);
+        self.drain_inline_marks(state);
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
@@ -2707,6 +2812,49 @@ mod tests {
             Some(1),
             "the canonical block action reveals the exact editor block"
         );
+    }
+
+    #[test]
+    fn canonical_inline_marks_rehydrate_after_a_collaborative_rebind() {
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        let block = app.search_blocks[&welcome][0].id.clone();
+        let original = app
+            .main
+            .editor()
+            .blocks()
+            .iter()
+            .find(|candidate| candidate.id == block)
+            .expect("search block belongs to the bound editor")
+            .text()
+            .to_string();
+        assert!(original.len() >= 4);
+        let marks = vec![crate::actions::InlineMarkSpan {
+            start: 0,
+            end: 4,
+            mark: crate::actions::InlineMark::Underline,
+        }];
+        let action = crate::actions::set_block_marks_action(welcome, block.clone(), marks.clone());
+        app.perform_action(&mut state.doc, &action);
+        assert!(NotesDoc::page_marks_are_canonical(&state.doc, welcome));
+
+        // Simulate a remote structural refresh. The widget rebuilds plain
+        // text/kinds, then Notes hydrates the native mark state back into the
+        // live rich line rather than dropping formatting on rebind.
+        app.bound_page = None;
+        app.sync(&mut state.doc, &state.root);
+        let restored = app
+            .main
+            .editor()
+            .blocks()
+            .iter()
+            .find(|candidate| candidate.id == block)
+            .expect("same durable block rebinds")
+            .line
+            .marks()
+            .iter()
+            .map(crate::actions::InlineMarkSpan::from_ui)
+            .collect::<Vec<_>>();
+        assert_eq!(restored, marks);
     }
 
     #[test]
