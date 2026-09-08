@@ -78,6 +78,9 @@ pub struct SettingsApp {
     account_resources: Vec<accounts::Account>,
     account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
+    local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
+    local_operation: Option<qos_actions::InvocationId>,
+    local_operation_token: Option<String>,
     /// Deterministic, secret-free inventory used only by visual acceptance
     /// captures. Live construction always leaves this `None`.
     account_directory_override: Option<crate::accounts::AccountDirectory>,
@@ -120,6 +123,9 @@ impl SettingsApp {
             account_resources: accounts::AccountStore::load().all().to_vec(),
             account_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
+            local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            local_operation: None,
+            local_operation_token: None,
             account_directory_override: None,
             account_form_override: None,
             deterministic_hardware_for_shot: false,
@@ -316,12 +322,17 @@ impl SettingsApp {
                 ))
             }
             Category::Displays => panes::display::build(),
-            Category::MouseKeyboard => panes::mouse_keyboard::build(),
+            Category::MouseKeyboard => Box::new(
+                panes::mouse_keyboard::MouseKeyboardPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),
             Category::TimeDate => panes::time_date::build(),
             Category::Users => panes::users::build(),
             Category::Printers => panes::printers::build(),
-            Category::Power => panes::power::build(),
+            Category::Power => Box::new(
+                panes::power::PowerPane::new().with_operation_status(&self.local_operation_status),
+            ),
             Category::Appearance => panes::appearance::build(),
             Category::Accessibility => panes::accessibility::build(),
             Category::Notifications => panes::notifications::build(),
@@ -345,7 +356,10 @@ impl SettingsApp {
             Category::AgentModels => panes::agent_models::build(),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
-            Category::Updates => panes::updates::build(),
+            Category::Updates => Box::new(
+                panes::updates::UpdatesPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::About => panes::about::build(),
         }
     }
@@ -382,6 +396,145 @@ impl SettingsApp {
             shell.set_content(content);
         }
     }
+
+    /// Route a canonical device-local operation into the exact one-shot
+    /// document latch consumed by its pane.  The pane remains the sole owner
+    /// of the privileged command, its availability checks, progress UI, and
+    /// final success/error notice; this adapter deliberately never performs a
+    /// second system call.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the three device-local protocols are kept together to audit their pane-latch routing"
+    )]
+    fn start_local_device_operation(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use automerge::transaction::Transactable;
+
+        if kind != qos_actions::OperationKind::Effect {
+            return Err("device-local settings commands must be effect operations".into());
+        }
+        if self.local_operation.is_some() {
+            return Err("another device-local Settings operation is still running".into());
+        }
+        let accepted = match type_id {
+            crate::actions::UPDATE_OPERATION_TYPE => {
+                let operation: crate::actions::UpdateOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Updates);
+                match operation {
+                    crate::actions::UpdateOperation::Check => {
+                        doc.put(path, panes::updates::CHECK_KEY, true)
+                    }
+                    crate::actions::UpdateOperation::Restart => {
+                        doc.put(path, panes::updates::RESTART_KEY, true)
+                    }
+                    crate::actions::UpdateOperation::ReviewRollback => {
+                        doc.put(path, panes::updates::ROLLBACK_KEY, true)
+                    }
+                    crate::actions::UpdateOperation::Rollback => {
+                        doc.put(path, panes::updates::ROLLBACK_CONFIRM_KEY, true)
+                    }
+                    crate::actions::UpdateOperation::RefreshFirmware => {
+                        doc.put(path, panes::updates::FIRMWARE_REFRESH_KEY, true)
+                    }
+                    crate::actions::UpdateOperation::InstallFirmware => {
+                        doc.put(path, panes::updates::FIRMWARE_INSTALL_KEY, true)
+                    }
+                    crate::actions::UpdateOperation::SetSchedule { schedule } => {
+                        if !["System schedule", "Daily", "Weekly"].contains(&schedule.as_str()) {
+                            return Err("unsupported update schedule".into());
+                        }
+                        doc.put(path, panes::updates::SCHEDULE_KEY, schedule)
+                    }
+                    crate::actions::UpdateOperation::SetMetered { allowed } => {
+                        doc.put(path, panes::updates::METERED_KEY, allowed)
+                    }
+                }
+            }
+            crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE => {
+                let operation: crate::actions::KeyboardSourceOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::MouseKeyboard);
+                let mut prefs = crate::prefs::SystemPrefs::load().input;
+                prefs.normalise_keyboard_sources();
+                match operation {
+                    crate::actions::KeyboardSourceOperation::Add { label } => {
+                        let available =
+                            crate::input_sources::installed_catalog()
+                                .iter()
+                                .any(|entry| {
+                                    entry.label == label
+                                        && !prefs.keyboard_layouts.contains(&entry.id)
+                                });
+                        if !available
+                            || prefs.keyboard_layouts.len()
+                                >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+                        {
+                            return Err("keyboard input source is no longer available".into());
+                        }
+                        doc.put(path, panes::mouse_keyboard::ADD_SOURCE_PICKER_KEY, label)
+                            .and_then(|()| {
+                                doc.put(path, panes::mouse_keyboard::ADD_SOURCE_KEY, true)
+                            })
+                    }
+                    crate::actions::KeyboardSourceOperation::MoveUp { index } => {
+                        if index == 0 || index >= prefs.keyboard_layouts.len() {
+                            return Err("keyboard input source can no longer move up".into());
+                        }
+                        doc.put(path, format!("input.source.{index}.up"), true)
+                    }
+                    crate::actions::KeyboardSourceOperation::MoveDown { index } => {
+                        if index + 1 >= prefs.keyboard_layouts.len() {
+                            return Err("keyboard input source can no longer move down".into());
+                        }
+                        doc.put(path, format!("input.source.{index}.down"), true)
+                    }
+                    crate::actions::KeyboardSourceOperation::Remove { index } => {
+                        if prefs.keyboard_layouts.len() <= 1
+                            || index >= prefs.keyboard_layouts.len()
+                        {
+                            return Err("keyboard input source can no longer be removed".into());
+                        }
+                        doc.put(path, format!("input.source.{index}.remove"), true)
+                    }
+                }
+            }
+            crate::actions::POWER_OPERATION_TYPE => {
+                let operation: crate::actions::PowerOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Power);
+                match operation {
+                    crate::actions::PowerOperation::SetChargeLimit { percent } => {
+                        let available = os_actions::charge_capability()
+                            .is_some_and(|capability| capability.choices.contains(&percent));
+                        if !available {
+                            return Err(
+                                "battery charge-cap control is unavailable on this device".into()
+                            );
+                        }
+                        doc.put(path, panes::power::CHARGE_LIMIT_KEY, format!("{percent}%"))
+                    }
+                }
+            }
+            _ => return Ok(None),
+        };
+        accepted.map_err(|error| error.to_string())?;
+        let token = crate::actions::local_operation_token(type_id, payload)?;
+        self.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Running {
+                token: token.clone(),
+            });
+        self.local_operation_token = Some(token);
+        // The latch has only been admitted. The selected pane reports the
+        // actual terminal result through `poll_resource_operation`.
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
 }
 
 impl Widget for SettingsApp {
@@ -389,6 +542,9 @@ impl Widget for SettingsApp {
         &[
             crate::actions::OPEN_PANE_OPERATION_TYPE,
             crate::actions::ACCOUNT_OPERATION_TYPE,
+            crate::actions::UPDATE_OPERATION_TYPE,
+            crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
+            crate::actions::POWER_OPERATION_TYPE,
         ]
     }
 
@@ -655,6 +811,10 @@ impl Widget for SettingsApp {
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "local account and presentation operation routing stays auditable in one dispatch point"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -663,6 +823,17 @@ impl Widget for SettingsApp {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Result<bool, String> {
+        if type_id == crate::actions::UPDATE_OPERATION_TYPE
+            && kind == qos_actions::OperationKind::View
+        {
+            let operation: crate::actions::UpdateOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            if matches!(operation, crate::actions::UpdateOperation::ReviewRollback) {
+                self.select(Category::Updates);
+                return Ok(true);
+            }
+            return Err("operation kind does not match update operation".into());
+        }
         if type_id == crate::actions::ACCOUNT_OPERATION_TYPE {
             let operation: crate::actions::AccountOperation =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -765,6 +936,19 @@ impl Widget for SettingsApp {
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if matches!(
+            type_id,
+            crate::actions::UPDATE_OPERATION_TYPE
+                | crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE
+                | crate::actions::POWER_OPERATION_TYPE
+        ) && kind == qos_actions::OperationKind::Effect
+        {
+            let start = self.start_local_device_operation(kind, type_id, payload, doc, path)?;
+            if matches!(start, Some(ui::widget::ResourceOperationStart::Accepted)) {
+                self.local_operation = Some(invocation);
+            }
+            return Ok(start);
+        }
         if type_id != crate::actions::ACCOUNT_OPERATION_TYPE {
             return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
         }
@@ -857,6 +1041,49 @@ impl Widget for SettingsApp {
         doc: &automerge::AutoCommit,
         path: &automerge::ObjId,
     ) -> Option<qos_actions::InvocationUpdate> {
+        if self.local_operation == Some(invocation) {
+            // These contracts explicitly advertise `cancellable: false`.
+            // Once the pane has admitted a system command it may be touching
+            // firmware, boot configuration, or durable input preferences, so
+            // a cancellation request cannot honestly stop or cancel history.
+            let _ = cancellation_requested;
+            let terminal = self.local_operation_status.get();
+            match terminal {
+                crate::actions::LocalOperationStatus::Succeeded { token, message }
+                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
+                {
+                    self.local_operation = None;
+                    self.local_operation_token = None;
+                    self.local_operation_status
+                        .set(crate::actions::LocalOperationStatus::Idle);
+                    return Some(qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput {
+                            value: Some(serde_json::Value::String(message)),
+                            resources: Vec::new(),
+                        },
+                    });
+                }
+                crate::actions::LocalOperationStatus::Failed { token, message }
+                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
+                {
+                    self.local_operation = None;
+                    self.local_operation_token = None;
+                    self.local_operation_status
+                        .set(crate::actions::LocalOperationStatus::Idle);
+                    return Some(qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "device_local_operation_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
+                _ => return None,
+            }
+        }
         if self
             .account_probe
             .as_ref()
@@ -1037,6 +1264,235 @@ mod tests {
         // Re-selecting the same category is a no-op (no spurious rebuild).
         app.select(Category::Users);
         assert!(!app.take_structure_dirty());
+    }
+
+    #[test]
+    fn canonical_update_operation_is_accepted_not_completed_until_the_pane_reports() {
+        use automerge::{ReadDoc, Value};
+
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        let start = app
+            .start_resource_operation_with_document(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::UPDATE_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .expect("the check operation is valid");
+        assert!(matches!(
+            start,
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        assert_eq!(app.selected(), Category::Updates);
+        assert!(matches!(
+            doc.get(&root, panes::updates::CHECK_KEY),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+        ));
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &root)
+                .is_none(),
+            "latch admission must not create a successful history entry"
+        );
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &crate::actions::UpdateOperation::Check,
+                ),
+                message: "checked".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &root)
+                .is_none(),
+            "a local invocation emits exactly one terminal update"
+        );
+    }
+
+    #[test]
+    fn non_cancellable_local_operation_ignores_cancel_until_the_pane_finishes() {
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+        app.start_resource_operation_with_document(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::UPDATE_OPERATION_TYPE,
+            &payload,
+            &mut doc,
+            &root,
+        )
+        .unwrap();
+        assert!(
+            app.poll_resource_operation(invocation, true, &doc, &root)
+                .is_none(),
+            "cancellation cannot claim to stop an admitted system command"
+        );
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &crate::actions::UpdateOperation::Check,
+                ),
+                message: "checked".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, true, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn unrelated_pane_status_cannot_finish_a_pending_local_operation() {
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+        app.start_resource_operation_with_document(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::UPDATE_OPERATION_TYPE,
+            &payload,
+            &mut doc,
+            &root,
+        )
+        .unwrap();
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::POWER_OPERATION_TYPE,
+                    &crate::actions::PowerOperation::SetChargeLimit { percent: 80 },
+                ),
+                message: "unrelated UI change".into(),
+            });
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &root)
+                .is_none()
+        );
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &crate::actions::UpdateOperation::Check,
+                ),
+                message: "checked".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn overwritten_schedule_value_cannot_complete_the_original_invocation() {
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let invocation = qos_actions::InvocationId::new();
+        let daily = crate::actions::UpdateOperation::SetSchedule {
+            schedule: "Daily".into(),
+        };
+        let payload = serde_json::to_vec(&daily).unwrap();
+        app.start_resource_operation_with_document(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::UPDATE_OPERATION_TYPE,
+            &payload,
+            &mut doc,
+            &root,
+        )
+        .unwrap();
+        let weekly = crate::actions::UpdateOperation::SetSchedule {
+            schedule: "Weekly".into(),
+        };
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &weekly,
+                ),
+                message: "weekly changed".into(),
+            });
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &root)
+                .is_none()
+        );
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &daily,
+                ),
+                message: "daily changed".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn pane_reported_local_error_becomes_a_failed_terminal_update() {
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let invocation = qos_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
+        app.start_resource_operation_with_document(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::UPDATE_OPERATION_TYPE,
+            &payload,
+            &mut doc,
+            &root,
+        )
+        .unwrap();
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Failed {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &crate::actions::UpdateOperation::Check,
+                ),
+                message: "offline".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn local_operation_rejects_an_update_schedule_outside_the_panes_choices() {
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let payload = serde_json::to_vec(&crate::actions::UpdateOperation::SetSchedule {
+            schedule: "Whenever".into(),
+        })
+        .unwrap();
+        assert!(
+            app.start_local_device_operation(
+                qos_actions::OperationKind::Effect,
+                crate::actions::UPDATE_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .is_err()
+        );
     }
 
     #[test]
