@@ -574,17 +574,24 @@ fn back_button(theme: &Theme, bus: &ActionBus) -> Flex {
         .accessible_name("Go back")
 }
 
-pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool) -> Flex {
-    // The search field is a CRDT-bound TextInput so its text lives in the
-    // document (survives navigation rebuilds) and would sync to peers. It is
+pub fn top_bar(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    can_back: bool,
+    search_query: &ui::LocalState<String>,
+) -> Flex {
+    // The search field uses the toolkit's process-local TextInput binding. It
+    // survives navigation rebuilds in this app instance but never enters the
+    // document or syncs to peers. It is
     // ALWAYS present — its own placeholder draws the "Search" hint while empty —
     // so the user can click into it and type from a cold start. (An earlier
     // build swapped the input for a static label while empty, which meant the
     // input was absent from the tree until a query already existed, so there was
     // nothing to focus and free-text search was unreachable.)
-    let search_input = TextInput::new(vec![])
+    let search_input = TextInput::from_state(search_query)
         .with_id("search_input")
-        .with_on_change_path("search_query")
+        .with_kind(ui::widget::TextInputKind::Search)
         .with_plain_chrome()
         .with_font_size(15.0)
         .with_placeholder("Search");
@@ -1044,6 +1051,7 @@ pub fn search(
     } else {
         Vec::new()
     };
+    let visible_results = videos.len() + playlists.len() + creators.len();
 
     let body = if model.search_loading {
         // While a fetch is in flight, show a skeleton — NEVER a premature "No
@@ -1082,21 +1090,59 @@ pub fn search(
             col = col.push(grid_with_id(cards, "playlist_grid"));
         }
         if !videos.is_empty() {
-            let cards: Vec<Flex> = videos
-                .iter()
-                .map(|v| video_card(model, theme, bus, imgs, v))
-                .collect();
-            col = col.push(grid(cards));
+            if visible_results == 1 {
+                // A lone desktop result should read as an intentionally focused
+                // outcome, not a lost card in a kilometre-wide grid. Constrain
+                // and center the same honest card; narrow layouts retain the
+                // full responsive grid once more than one result exists.
+                if let Some(video) = videos.first() {
+                    col = col.push(
+                        Flex::row()
+                            .id("sparse_video_result")
+                            .fill_w()
+                            .justify(Justify::Center)
+                            .push(
+                                Flex::col()
+                                    .w(Len::Px(440.0))
+                                    .push(video_card(model, theme, bus, imgs, video)),
+                            ),
+                    );
+                }
+            } else {
+                let cards: Vec<Flex> = videos
+                    .iter()
+                    .map(|v| video_card(model, theme, bus, imgs, v))
+                    .collect();
+                col = col.push(grid(cards));
+            }
         }
         col
     };
-    // No result-count header (the query already lives once in the top-bar
-    // field): the type filter sits at the top, results below it.
+    // Retain compact result context so a sparse wide result set is not an
+    // unlabelled card floating in an otherwise empty lane. The top bar already
+    // presents the active query, so do not repeat it here.
+    let summary = (!model.search_loading
+        && model.search_error.is_none()
+        && !query.trim().is_empty()
+        && visible_results > 0)
+        .then(|| {
+            let noun = if visible_results == 1 {
+                "result"
+            } else {
+                "results"
+            };
+            Flex::col()
+                .id("search_results_summary")
+                .gap(3.0)
+                .push(text("Search results", 20.0))
+                .push(dim(theme, format!("{visible_results} {noun} shown"), 13.0))
+        });
     let col = Flex::col()
         .fill_w()
         .pad(24.0)
         .gap(18.0)
         .push(search_type_chips(model, theme, bus))
+        .push_if(summary.is_some(), summary.unwrap_or_else(Flex::col))
         .push(body);
     scroll(col)
 }
@@ -2447,12 +2493,15 @@ fn palette_row(
         .push(icon(Icon::ChevronRight, 14.0, theme.text_dim))
 }
 
-/// The Ctrl+K global command palette overlay. Renders a dimming scrim (click to
-/// close) with a centred card: a bound query field + live-filtered results
-/// drawn from the [`crate::search_type`] provider seam (so it shares the exact
-/// contract the coming global-search framework will use). Returns `None` when
-/// the palette is closed so the caller can skip it entirely.
-pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Option<Flex> {
+/// Tube's in-app Ctrl+K overlay. The host-wide palette receives the canonical
+/// [`ui::search::SearchProvider`] separately; this lightweight local overlay
+/// keeps the current query immediate while typing. Returns `None` when closed.
+pub fn command_palette(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    palette_query: &ui::LocalState<String>,
+) -> Option<Flex> {
     if !model.palette_open {
         return None;
     }
@@ -2465,9 +2514,9 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
     // Always-present, placeholder-backed input (same reachability fix as the
     // top-bar search box): the field must exist in the tree even while empty so
     // it can be focused and typed into — that's the whole point of the palette.
-    let input = TextInput::new(vec![])
+    let input = TextInput::from_state(palette_query)
         .with_id("palette_input")
-        .with_on_change_path("palette_query")
+        .with_kind(ui::widget::TextInputKind::Search)
         .with_plain_chrome()
         .with_font_size(16.0)
         .with_placeholder("Search videos and channels…");
@@ -2517,7 +2566,8 @@ pub fn command_palette(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Opt
 
     let card = Flex::col()
         .id("palette_card")
-        .w(Len::Px(560.0))
+        .w(Len::Pct(0.94))
+        .max_w(560.0)
         .gap(10.0)
         .pad(14.0)
         .surface(Surface {
@@ -2638,11 +2688,10 @@ mod search_screen_tests {
         out
     }
 
-    /// The search screen has no result-count header (the query already appears
-    /// once in the top-bar field), and its type-filter chips are present so
-    /// results can be narrowed by kind.
+    /// Search preserves query/result context after the top bar scrolls away,
+    /// and its type-filter chips remain available to narrow by kind.
     #[test]
-    fn search_screen_has_type_chips_and_no_count_header() {
+    fn search_screen_has_type_chips_and_result_context() {
         use crate::model::Route;
 
         fn has_id(w: &dyn Widget, id: &str) -> bool {
@@ -2685,12 +2734,83 @@ mod search_screen_tests {
             has_id(&screen, "search_type_chips"),
             "the Video·Playlist·Creator chips are present"
         );
+        assert!(
+            has_id(&screen, "search_results_summary"),
+            "a sparse result set retains visible result-count context"
+        );
+        assert!(
+            has_id(&screen, "sparse_video_result"),
+            "a lone result uses the centered, constrained desktop composition"
+        );
         for label in ["video", "playlist", "creator"] {
             assert!(
                 has_id(&screen, &format!("type_chip_{label}")),
                 "the {label} type chip is present",
             );
         }
+    }
+
+    #[test]
+    fn palette_keeps_a_touch_safe_inset_at_the_narrow_breakpoint() {
+        fn rect_for_id(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+            if w.test_id() == Some(id) {
+                return Some(w.get_rect());
+            }
+            w.children()
+                .iter()
+                .find_map(|child| rect_for_id(*child, id))
+        }
+
+        let mut model = crate::sample::model();
+        model.palette_open = true;
+        model.palette_query = "rust".into();
+        let palette_query = ui::LocalState::new(model.palette_query.clone());
+        let theme = Theme::dark();
+        let bus = crate::action::new_bus();
+        let mut palette =
+            command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
+        let (w, h) = (560.0f32, 720.0f32);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: length(w),
+                        height: length(h),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .expect("root layout node");
+        let mut tr = TextRenderer::new();
+        let map = node_map.clone();
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w),
+                    height: AvailableSpace::Definite(h),
+                },
+                |known, available, node_id, _, _| {
+                    map.get(&node_id).map_or(taffy::Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, &mut tr)
+                    })
+                },
+            )
+            .expect("palette layout");
+        palette.apply_layout(&taffy, child, Point::ORIGIN);
+        let card = rect_for_id(&palette, "palette_card").expect("palette card rect");
+        assert!(
+            card.x0 >= 16.0 && card.x1 <= 544.0,
+            "card has safe side insets: {card:?}"
+        );
+        assert!(
+            (card.width() - 526.4).abs() < 1.0,
+            "94% narrow width preserves the 560px max-width composition: {card:?}"
+        );
     }
 
     /// Rendered through the real `search` screen with an image store that has
