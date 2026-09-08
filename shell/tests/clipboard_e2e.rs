@@ -1780,6 +1780,38 @@ fn translated_keysyms(keymap_text: &str, trace: &[(u32, bool)]) -> Vec<u32> {
     symbols
 }
 
+/// Assert the observable layout carried by a compiled XKB wire map.
+///
+/// libxkbcommon 1.8 expands `de(nodeadkeys)` and omits the variant label from
+/// its serialized text, whereas newer versions retain the include. These
+/// physical positions distinguish the intended layout from both US and normal
+/// German dead-key behavior without depending on compiler metadata.
+fn assert_de_nodeadkeys_keymap(keymap: &str) {
+    let symbols = translated_keysyms(
+        keymap,
+        &[
+            (21, true),
+            (21, false),
+            (42, true),
+            (12, true),
+            (12, false),
+            (43, true),
+            (43, false),
+            (42, false),
+        ],
+    );
+    assert_eq!(
+        symbols,
+        vec![
+            keysyms::KEY_z,
+            keysyms::KEY_Shift_L,
+            keysyms::KEY_question,
+            keysyms::KEY_apostrophe
+        ],
+        "the client received a keymap other than the persisted de:nodeadkeys layout"
+    );
+}
+
 /// A GUI application can spawn helpers. Put it in its own process group so a
 /// failed live-client probe cannot leave an Electron renderer attached to the
 /// developer's machine after the isolated compositor is gone.
@@ -2346,10 +2378,7 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
         .keyboard_keymap
         .clone()
         .expect("wait above established a keymap");
-    assert!(
-        keymap.contains("nodeadkeys"),
-        "the client received a keymap other than the persisted de:nodeadkeys layout"
-    );
+    assert_de_nodeadkeys_keymap(&keymap);
     let (rate, delay) = client
         .state
         .keyboard_repeat_info
