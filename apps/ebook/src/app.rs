@@ -3145,11 +3145,10 @@ impl BooksApp {
     /// `None` when no book is open.
     pub(crate) fn book_resource_ctx(&self) -> Option<crate::actions::BookResourceCtx> {
         let book = self.open_book()?;
-        let (book_id, book_title) = (book.id.clone(), book.title.clone());
+        let book_id = book.id.clone();
         let block = self.page_top_block;
         Some(crate::actions::BookResourceCtx {
             book_id,
-            book_title,
             chapter: self.chapter,
             bookmark_block: block,
             bookmark_excerpt: self.block_excerpt(block),
@@ -13348,7 +13347,7 @@ mod interaction_tests {
         // The EncodedAction the palette would dispatch for "Delete comment".
         let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
         let spec_encoded = {
-            let hl_res = resources[0]
+            let hl_res = resources[0].children[0]
                 .children
                 .iter()
                 .find(|r| r.kind == "ebook.highlight")
@@ -13437,7 +13436,7 @@ mod interaction_tests {
         // from the same live selection the swatch sees.
         let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
         let spec_encoded = {
-            let spec = resources[0]
+            let spec = resources[0].children[0]
                 .actions
                 .iter()
                 .find(|a| a.id == "highlight-selection")
