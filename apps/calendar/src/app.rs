@@ -2268,6 +2268,29 @@ impl CalendarApp {
         self.dirty = true;
     }
 
+    /// Persist a sidebar disclosure preference through the same shared account
+    /// store that owns visibility. This keeps a collapse/expand choice stable
+    /// across restarts, while never claiming success if Settings' store cannot
+    /// be written.
+    fn toggle_account_collapsed(&mut self, id: &str) {
+        let mut updated = self.accounts.clone();
+        let Some(account) = updated.accounts.iter_mut().find(|account| account.id == id) else {
+            self.status = Some("That calendar account is no longer configured".into());
+            return;
+        };
+        account.collapsed = !account.collapsed;
+
+        if !self.demo
+            && let Err(error) = updated.persist()
+        {
+            self.status = Some(format!("Couldn't save account sidebar state: {error}"));
+            return;
+        }
+
+        self.accounts = updated;
+        self.dirty = true;
+    }
+
     /// Every calendar an event can be filed under: the local on-device
     /// calendar plus each remote `CalDAV` collection configured in Settings
     /// (the shared [`AccountStore`]). This is the selector's option list —
@@ -2674,7 +2697,13 @@ impl CalendarApp {
                 View::Agenda => {
                     let area = self.view_rect();
                     let hidden = self.hidden_calendar_ids();
-                    self.agenda.layout(area, &self.model, self.anchor, &hidden);
+                    self.agenda.layout(
+                        area,
+                        &self.model,
+                        self.anchor,
+                        &hidden,
+                        self.calendar_filter.as_deref(),
+                    );
                 }
                 View::Month => {}
             }
@@ -2922,9 +2951,7 @@ impl CalendarApp {
                 self.toggle_calendar_visibility(&id);
             }
             Action::ToggleAccountCollapsed(id) => {
-                if let Some(acc) = self.accounts.accounts.iter_mut().find(|a| a.id == id) {
-                    acc.collapsed = !acc.collapsed;
-                }
+                self.toggle_account_collapsed(&id);
             }
             Action::Sync => self.start_sync(doc),
             Action::Export => self.export_ics(),
@@ -3176,10 +3203,7 @@ impl CalendarApp {
         self.model
             .events_on(date)
             .into_iter()
-            .filter(|event| {
-                self.event_in_selected_calendar(event)
-                    && (event.visible_under(&hidden) || self.calendar_filter.is_some())
-            })
+            .filter(|event| self.event_in_selected_calendar(event) && event.visible_under(&hidden))
             .collect()
     }
 
@@ -3194,7 +3218,7 @@ impl CalendarApp {
                 self.model.events.iter().any(|event| {
                     event.occurs_on(*date)
                         && self.event_in_selected_calendar(event)
-                        && (event.visible_under(&hidden) || self.calendar_filter.is_some())
+                        && event.visible_under(&hidden)
                 })
             })
             .collect()
@@ -5304,6 +5328,10 @@ impl Widget for CalendarApp {
         self.actions.take_committed()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete operation dispatch keeps every canonical Calendar view/effect route and its truthful state transition in one auditable match"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -5382,7 +5410,25 @@ impl Widget for CalendarApp {
                 self.selection = None;
                 self.narrow_screen = NarrowScreen::Calendar;
                 self.blur_editor();
-                self.status = Some(format!("Showing {}", calendar.label));
+                self.status = Some(if calendar.visible {
+                    format!("Showing {}", calendar.label)
+                } else {
+                    format!(
+                        "{} is hidden — enable it in the sidebar to show its events",
+                        calendar.label
+                    )
+                });
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CalendarOperation::ShowAllCalendars,
+            ) => {
+                self.calendar_filter = None;
+                self.detail_open = false;
+                self.selection = None;
+                self.narrow_screen = NarrowScreen::Calendar;
+                self.blur_editor();
+                self.status = Some("Showing all calendars".into());
             }
             (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
                 self.view = View::Month;
@@ -5754,6 +5800,7 @@ impl Widget for CalendarApp {
                                 self.anchor,
                                 self.today,
                                 &hidden,
+                                self.calendar_filter.as_deref(),
                                 self.last_mouse,
                             )
                             .into_iter()
@@ -5776,14 +5823,6 @@ impl Widget for CalendarApp {
             {
                 Self::draw_empty_onboarding(scene, t, text_renderer, theme, area, title, hint);
             }
-            self.draw_status(
-                scene,
-                t,
-                text_renderer,
-                theme,
-                self.content_rect.x0,
-                &mut hits,
-            );
         }
 
         if detail_drawn {
@@ -5824,6 +5863,19 @@ impl Widget for CalendarApp {
             if matches!(self.selection, Some(Sel::Task(_))) {
                 hits.extend(self.draw_task_popover(scene, t, text_renderer, theme));
             }
+        }
+
+        // Transport feedback is painted after the optional editor card. A
+        // sync can finish while someone is editing; leaving the message under
+        // the modal would make an offline/conflict/error state invisible at
+        // precisely the moment it needs acknowledgement and recovery.
+        if self.status.is_some() {
+            let status_x0 = if self.content_rect.area() > 0.0 {
+                self.content_rect.x0
+            } else {
+                self.detail_rect.x0
+            };
+            self.draw_status(scene, t, text_renderer, theme, status_x0, &mut hits);
         }
 
         // Sidebar last so the overlay flap (and its scrim) paint over the
@@ -8607,6 +8659,89 @@ mod tests {
             draws(&mut app, &mut tr, &theme, eid),
             "re-checking the calendar restores the event with no re-sync"
         );
+    }
+
+    #[test]
+    fn selecting_a_hidden_collection_never_reveals_its_events() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let mut hidden_event = app.model.events[0].clone();
+        hidden_event.id = Uuid::new_v4();
+        hidden_event.calendar_id = Some("icloud/holidays".into());
+        let day = hidden_event.start.date();
+        app.model.events.push(hidden_event);
+        app.calendar_filter = Some("icloud/holidays".into());
+
+        assert!(
+            app.visible_events_on(day).is_empty(),
+            "the collection filter narrows results but never bypasses the sidebar visibility setting"
+        );
+    }
+
+    #[test]
+    fn opening_a_hidden_collection_explains_why_its_events_are_not_shown() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::OpenCalendar {
+            id: "icloud/holidays".into(),
+        })
+        .expect("operation serializes");
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("hidden collection still opens")
+        );
+        assert_eq!(app.calendar_filter.as_deref(), Some("icloud/holidays"));
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.contains("is hidden")),
+            "the collection view must explain its intentionally empty result"
+        );
+    }
+
+    #[test]
+    fn show_all_calendars_operation_clears_a_collection_filter() {
+        let mut app = CalendarApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.calendar_filter = Some("work/default".into());
+        let root = <CalendarApp as qos_actions::ResourceProvider>::resource(
+            &app,
+            &doc,
+            "calendar.calendar",
+        )
+        .expect("calendar root is addressable");
+        assert!(
+            root.actions
+                .iter()
+                .any(|action| action.id == "show-all-calendars"),
+            "the recovery route is advertised through the canonical root"
+        );
+        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::ShowAllCalendars)
+            .expect("operation serializes");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::View,
+                crate::actions::CALENDAR_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("show-all operation is accepted")
+        );
+        assert!(app.calendar_filter.is_none());
+        assert_eq!(app.status.as_deref(), Some("Showing all calendars"));
     }
 
     #[test]

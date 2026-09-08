@@ -103,6 +103,7 @@ pub enum CalendarOperation {
     OpenCalendar {
         id: String,
     },
+    ShowAllCalendars,
     ShowMonth,
     ShowWeek,
     ShowDay,
@@ -135,6 +136,7 @@ fn calendar_operation(
         | CalendarOperation::OpenTask { .. }
         | CalendarOperation::OpenProject { .. }
         | CalendarOperation::OpenCalendar { .. }
+        | CalendarOperation::ShowAllCalendars
         | CalendarOperation::ShowMonth
         | CalendarOperation::ShowWeek
         | CalendarOperation::ShowDay
@@ -1249,6 +1251,12 @@ pub fn calendar_root(ctx: &CalendarResourceCtx) -> Resource {
         )
         .retry_policy(RetryPolicy::Idempotent),
     );
+    root = root.with_action(calendar_operation(
+        "show-all-calendars",
+        "Show all calendars",
+        OperationKind::View,
+        &CalendarOperation::ShowAllCalendars,
+    ));
     let mut sync = calendar_operation(
         "sync",
         "Sync calendars",
@@ -1350,6 +1358,10 @@ pub fn calendar_root(ctx: &CalendarResourceCtx) -> Resource {
     root
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bounded eager resource projection keeps every entity's canonical ownership and action construction in one auditable routing table"
+)]
 pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = calendar_root(ctx);
     // Reserve one bounded node per visible collection context (plus an
