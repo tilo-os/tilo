@@ -68,7 +68,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .shot_handler(render_shot)
             .allowed_live_options(&["--open"])
             .max_positionals(1)
-            .scenarios(&["empty", "settings", "metadata", "fullscreen"]),
+            .scenarios(&[
+                "empty",
+                "error",
+                "native-error",
+                "playing",
+                "paused",
+                "settings",
+                "metadata",
+                "library",
+                "library-focus",
+                "recent",
+                "fullscreen",
+            ]),
     )?;
     Ok(())
 }
@@ -119,7 +131,16 @@ fn render_shot_to_png(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    };
+    }
+    .with_reduce_motion(
+        ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+            .into_iter()
+            .filter_map(|key| std::env::var(key).ok())
+            .any(|value| {
+                let value = value.trim();
+                !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+            }),
+    );
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -129,6 +150,9 @@ fn render_shot_to_png(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
+    // The offscreen renderer bypasses the regular app loop, so explicitly
+    // propagate the accessibility motion preference before building the scene.
+    widget.set_motion_reduced(theme.reduce_motion);
     widget.sync(&mut state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
