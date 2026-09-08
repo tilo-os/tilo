@@ -81,6 +81,16 @@ fn installed_notification_apps(
     installed_notification_apps_from(existing, &desktop_entry::cache::cached_scan().entries)
 }
 
+/// Secret-free, bounded app inventory used by Settings' canonical resource
+/// tree.  This deliberately returns only stable identity plus display name:
+/// notification contents and any sender data never leave the pane.
+pub(crate) fn resource_notification_apps(prefs: &NotificationPrefs) -> Vec<(String, String)> {
+    installed_notification_apps(&prefs.per_app)
+        .into_iter()
+        .map(|app| (app.id, app.name))
+        .collect()
+}
+
 /// Merge the qOS registry with the system's freedesktop application catalog.
 /// A host app's desktop-file id and a Flatpak's `X-Flatpak` id are the same
 /// stable identities the notification service verifies from launch/cgroup

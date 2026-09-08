@@ -38,8 +38,8 @@ use serde::{Deserialize, Serialize};
 
 use qos_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
-    RetryPolicy,
+    Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::categories::Category;
@@ -55,6 +55,16 @@ pub const OPEN_PANE_OPERATION_TYPE: &str = "settings.open-pane";
 /// Stable action id shared by every pane resource.
 pub const OPEN_PANE_ACTION: &str = "open";
 pub const ACCOUNT_OPERATION_TYPE: &str = "settings.account-operation";
+/// Typed commands whose executor is the Updates pane on this device.  They
+/// never replicate: a staged image, reboot permission, and firmware inventory
+/// are properties of one machine, not of a shared preference document.
+pub const UPDATE_OPERATION_TYPE: &str = "settings.update-operation";
+/// Typed commands for the per-user keyboard-source roster.  The compositor
+/// owns application of this local durable preference.
+pub const KEYBOARD_SOURCE_OPERATION_TYPE: &str = "settings.keyboard-source-operation";
+/// Hardware capability command, intentionally separate from portable Power
+/// preferences because a charge cap only exists on some devices.
+pub const POWER_OPERATION_TYPE: &str = "settings.power-operation";
 
 /// Device-local account-management commands. Payloads contain only stable ids
 /// and provider kinds; credentials are collected by the Settings form and
@@ -71,6 +81,87 @@ pub enum AccountOperation {
     CancelReauthentication,
     Test { id: String },
     Remove { id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UpdateOperation {
+    Check,
+    Restart,
+    ReviewRollback,
+    Rollback,
+    RefreshFirmware,
+    InstallFirmware,
+    SetSchedule { schedule: String },
+    SetMetered { allowed: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KeyboardSourceOperation {
+    Add { label: String },
+    MoveUp { index: usize },
+    MoveDown { index: usize },
+    Remove { index: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PowerOperation {
+    SetChargeLimit { percent: u32 },
+}
+
+/// Lifecycle reported by the pane that actually executes a device-local
+/// command. Unlike a document action this is intentionally process-local and
+/// never replicated or persisted as a preference.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum LocalOperationStatus {
+    #[default]
+    Idle,
+    Running {
+        token: String,
+    },
+    Succeeded {
+        token: String,
+        message: String,
+    },
+    Failed {
+        token: String,
+        message: String,
+    },
+}
+
+/// Stable local lifecycle token. It is deliberately separate from the wire
+/// payload: panes compare only the command they consumed, so an unrelated UI
+/// action can never complete an agent's pending invocation.
+///
+/// # Errors
+///
+/// Returns an error when the type id or serialized payload is not a supported
+/// device-local Settings operation.
+pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, String> {
+    match type_id {
+        UPDATE_OPERATION_TYPE => {
+            let operation: UpdateOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        KEYBOARD_SOURCE_OPERATION_TYPE => {
+            let operation: KeyboardSourceOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        POWER_OPERATION_TYPE => {
+            let operation: PowerOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        _ => Err("unknown device-local operation type".into()),
+    }
+}
+
+pub fn local_operation_token_for<T: Serialize>(type_id: &str, operation: &T) -> String {
+    format!(
+        "{type_id}:{}",
+        serde_json::to_string(operation).unwrap_or_default()
+    )
 }
 
 /// Stable resource identity for a Settings pane.
@@ -193,12 +284,32 @@ impl Action for SettingsAction {
 /// obsolete UI could silently create an unrelated value.  Draft (`.edit`),
 /// confirmation, and navigation keys are intentionally absent: they are local
 /// presentation state, not collaborative resources.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the allow-list is a deliberately auditable stale-action boundary"
+)]
 fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), ActionError> {
     let text =
         || matches!(value, SettingValue::Text(text) if !text.is_empty() && text.len() <= 1024);
     let boolean = || matches!(value, SettingValue::Bool(_));
     let finite_float = || matches!(value, SettingValue::Float(number) if number.is_finite());
     let presentation_key = matches!(key.rsplit_once('.'), Some((_, "edit" | "error")));
+    let valid_notification_app_key = key
+        .strip_prefix("notifications.app.")
+        .and_then(|rest| rest.rsplit_once('.'))
+        .is_some_and(|(id, field)| {
+            id.len() <= 160
+                && !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+                && match field {
+                    "banners" | "previews" | "sounds" | "badges" | "priority"
+                    | "priority_contacts" => boolean(),
+                    "mute" => text(),
+                    _ => false,
+                }
+        });
     let allowed = match key {
         "appearance.theme"
         | "appearance.text_size"
@@ -218,9 +329,18 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.reader_rate"
         | "a11y.reader_voice"
         | "time.timezone"
+        | "power.profile"
+        | "power.blank"
+        | "power.suspend"
         | "power.lid"
         | "power.power_key"
-        | "power.critical" => text(),
+        | "power.critical"
+        | "power.profile_idle.saver"
+        | "power.profile_idle.balanced"
+        | "power.profile_idle.performance"
+        | "input.accel_profile"
+        | "input.compose_key"
+        | "input.keyboard_layout" => text(),
         "appearance.high_contrast"
         | "appearance.reduce_motion"
         | "a11y.high_contrast"
@@ -243,6 +363,7 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "notifications.play_sounds"
         | "notifications.show_on_lock_screen"
         | "notifications.show_badges"
+        | "notifications.focus.enabled"
         | "network.wifi_enabled"
         | "bluetooth.enabled"
         | "audio.muted"
@@ -250,15 +371,28 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "display.night_light"
         | "input.natural_scroll"
         | "input.tap_to_click"
+        | "input.tap_drag"
+        | "input.disable_while_typing"
+        | "input.middle_emulation"
+        | "input.left_handed"
+        | "input.touchpad_gestures"
+        | "text.check_spelling"
+        | "text.auto_correct"
         | "power.auto_suspend"
         | "updates.auto" => boolean(),
         "audio.volume"
         | "display.brightness"
         | "display.scale"
         | "input.pointer_speed"
+        | "input.touchpad_pointer_speed"
+        | "input.mouse_pointer_speed"
         | "input.key_repeat" => finite_float(),
+        "notifications.focus.start" | "notifications.focus.end" | "notifications.focus.days" => {
+            text()
+        }
         key if key.starts_with("shortcuts.") && !presentation_key => text(),
         key if key.starts_with("default_apps.") && !presentation_key => text(),
+        _ if valid_notification_app_key => true,
         // Device-mesh resources are discovered at runtime. Their stable
         // namespace is the stale-target boundary; only its documented scalar
         // preferences can enter it.
@@ -414,6 +548,50 @@ fn setting_contract() -> ActionContract {
     }
 }
 
+/// Contract for commands that are meaningful only on the current device.  It
+/// makes the non-collaborative locus explicit in palette, history and agent
+/// clients without pretending a completed local command is a replicated
+/// preference change.
+fn local_operation_contract(tags: &[&str]) -> ActionContract {
+    ActionContract {
+        // The on-screen pane performs the privileged work after admission, so
+        // a resource invocation is a tracked background operation, not an
+        // immediate document write. It cannot be stopped safely once a system
+        // command has started.
+        retry: RetryPolicy::AtMostOnce,
+        // No device-local operation publishes a captured inverse action. A
+        // person may be able to make a new compensating choice later, but
+        // that is not an undo contract.
+        reversible: false,
+        execution: ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "string" }),
+        },
+        tags: tags.iter().map(|tag| (*tag).into()).collect(),
+        ..ActionContract::default()
+    }
+}
+
+fn local_operation_spec<T: Serialize>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    kind: OperationKind,
+    type_id: &str,
+    operation: &T,
+    tags: &[&str],
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, kind, type_id, operation)
+        .ok()
+        .map(|spec| spec.with_contract(local_operation_contract(tags)))
+}
+
+fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> EncodedAction {
+    EncodedAction::encode_operation(type_id, operation).unwrap_or_else(|_| EncodedAction {
+        type_id: type_id.into(),
+        payload: Vec::new(),
+    })
+}
+
 fn float_prompt_spec(
     id: &str,
     label: &str,
@@ -442,11 +620,12 @@ fn float_prompt_spec(
 fn choice_prompt_spec(
     id: &str,
     label: &str,
-    key: &'static str,
+    key: impl Into<String>,
     placeholder: &str,
     options: &'static [&'static str],
     fallback: String,
 ) -> ActionSpec {
+    let key = key.into();
     ActionSpec::typed(
         id,
         label,
@@ -460,7 +639,7 @@ fn choice_prompt_spec(
             let v = args
                 .text("choice")
                 .map_or_else(|| fallback.clone(), str::to_string);
-            encode(&set_text_action(key, v))
+            encode(&set_text_action(key.clone(), v))
         },
     )
     .with_contract(setting_contract())
@@ -479,7 +658,10 @@ pub fn provide_resources_with_accounts(
     doc: &AutoCommit,
     account_inventory: &[accounts::Account],
 ) -> Vec<Resource> {
-    let d = SystemPrefs::default();
+    // Dynamic child resources (installed handlers, input-source roster and
+    // hardware-adjacent preferences) must describe this device's current
+    // durable state, not merely the compile-time defaults.
+    let d = SystemPrefs::load();
     let mut root = Resource::new("settings.root", "settings.root", "Settings");
     for category in Category::ALL.iter().copied() {
         let mut pane = match category {
@@ -498,6 +680,7 @@ pub fn provide_resources_with_accounts(
             Category::DeviceMesh => device_mesh_section(doc),
             Category::Updates => updates_section(doc, &d),
             Category::ExternalAccounts => accounts_section(account_inventory),
+            Category::DefaultApps => default_apps_section(doc),
             _ => Resource::new(
                 pane_resource_id(category),
                 "settings.section",
@@ -517,6 +700,90 @@ pub fn provide_resources_with_accounts(
         root = root.with_child(pane);
     }
     vec![root]
+}
+
+/// Personal defaults are a bounded, device-discovered hierarchy: each file
+/// type or URI scheme is a resource and its action accepts only packages that
+/// currently declare support for that type.  The choices are intentionally
+/// rebuilt with the installed-app catalogue rather than exposing one broad
+/// "set a default" text field; that gives keyboard users and agents the same
+/// safe, discoverable operation as the picker in the pane.
+fn default_apps_section(doc: &AutoCommit) -> Resource {
+    default_apps_section_with_candidates(doc, &crate::panes::personal_apps::installed_candidates())
+}
+
+fn default_apps_section_with_candidates(
+    doc: &AutoCommit,
+    candidates: &[desktop_policy::AppCandidate],
+) -> Resource {
+    use desktop_policy::{AppCandidate, ResourceKind};
+
+    fn key(resource: &ResourceKind) -> String {
+        format!("default_apps.{}", resource.as_str().replace(':', "."))
+    }
+    fn option(app: &AppCandidate) -> String {
+        format!("{} — {}", app.display_name, app.package_id)
+    }
+
+    let mut kinds: Vec<ResourceKind> = candidates
+        .iter()
+        .flat_map(|candidate| candidate.resources.iter().cloned())
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+
+    let mut section = Resource::new(
+        pane_resource_id(Category::DefaultApps),
+        "settings.default-apps",
+        Category::DefaultApps.label(),
+    );
+    for kind in kinds {
+        let mut choices: Vec<String> = candidates
+            .iter()
+            .filter(|candidate| candidate.handles(&kind))
+            .map(option)
+            .collect();
+        choices.sort();
+        choices.dedup();
+        if choices.is_empty() {
+            continue;
+        }
+        let Some(first_choice) = choices.first().cloned() else {
+            continue;
+        };
+        let setting_key = key(&kind);
+        let fallback = doc_str(doc, &setting_key).unwrap_or(first_choice);
+        let action_key = setting_key.clone();
+        let spec = ActionSpec::typed(
+            "set-handler",
+            "Set default application",
+            "Choose an installed application",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required_owned("choice", ParamType::Text, "Installed application")
+                    .with_choices(choices),
+            ],
+            move |args| {
+                let value = args
+                    .text("choice")
+                    .map_or_else(|| fallback.clone(), str::to_string);
+                encode(&set_text_action(action_key.clone(), value))
+            },
+        )
+        .with_contract(setting_contract());
+        // `ResourceKind` already validates the type vocabulary at manifest
+        // ingestion; retaining it verbatim here keeps MIME and scheme ids
+        // collision-free and makes an agent address exactly one handler.
+        section = section.with_child(
+            Resource::new(
+                format!("settings.default-app:{}", kind.as_str()),
+                "settings.default-app-handler",
+                kind.display_label(),
+            )
+            .with_action(spec),
+        );
+    }
+    section
 }
 
 fn account_operation_spec(
@@ -638,6 +905,10 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
     section
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered resource declaration mirrors the Notifications hierarchy"
+)]
 fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
@@ -691,6 +962,102 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         ),
         "lock-screen notifications",
     ));
+    sec = sec.with_action(bool_flip_spec(
+        "badges",
+        panes::notifications::BADGES_KEY,
+        b(
+            panes::notifications::BADGES_KEY,
+            d.notifications.show_badges,
+        ),
+        "notification badges",
+    ));
+    sec = sec.with_action(bool_flip_spec(
+        "focus-enabled",
+        panes::notifications::FOCUS_ENABLED_KEY,
+        b(
+            panes::notifications::FOCUS_ENABLED_KEY,
+            d.notifications.focus.enabled,
+        ),
+        "scheduled quiet hours",
+    ));
+    for (id, label, key, options, fallback) in [
+        (
+            "focus-start",
+            "Set focus start time",
+            panes::notifications::FOCUS_START_KEY,
+            &[
+                "18:00", "20:00", "22:00", "23:00", "00:00", "06:00", "07:00", "08:00", "09:00",
+            ][..],
+            "22:00",
+        ),
+        (
+            "focus-end",
+            "Set focus end time",
+            panes::notifications::FOCUS_END_KEY,
+            &[
+                "18:00", "20:00", "22:00", "23:00", "00:00", "06:00", "07:00", "08:00", "09:00",
+            ][..],
+            "07:00",
+        ),
+        (
+            "focus-days",
+            "Set focus days",
+            panes::notifications::FOCUS_DAYS_KEY,
+            &["Every day", "Weekdays", "Weekends"][..],
+            "Every day",
+        ),
+    ] {
+        sec = sec.with_action(choice_prompt_spec(
+            id,
+            label,
+            key,
+            "Choose a focus schedule value",
+            options,
+            doc_str(doc, key).unwrap_or_else(|| fallback.into()),
+        ));
+    }
+    for (app_id, app_name) in
+        crate::panes::notifications::resource_notification_apps(&d.notifications)
+    {
+        let mut resource = Resource::new(
+            format!("settings.notification-app:{app_id}"),
+            "settings.notification-app",
+            app_name,
+        );
+        for (id, field, label) in [
+            ("banners", "banners", "notification banners"),
+            ("previews", "previews", "message previews"),
+            ("sounds", "sounds", "notification sounds"),
+            ("badges", "badges", "notification badges"),
+            ("priority", "priority", "priority during focus"),
+            (
+                "priority-contacts",
+                "priority_contacts",
+                "priority contacts during focus",
+            ),
+        ] {
+            let key = format!("notifications.app.{app_id}.{field}");
+            let default = match field {
+                "banners" => d.notifications.show_banners,
+                "previews" => d.notifications.show_previews,
+                "sounds" => d.notifications.play_sounds,
+                "badges" => d.notifications.show_badges,
+                _ => false,
+            };
+            resource = resource.with_action(bool_flip_spec(id, &key, b(&key, default), label));
+        }
+        let key = format!("notifications.app.{app_id}.mute");
+        resource = resource.with_action(choice_prompt_spec(
+            "mute",
+            "Mute notifications temporarily",
+            key,
+            "Not muted, For 1 hour, For 8 hours, For 24 hours",
+            &["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
+            doc_str(doc, &format!("notifications.app.{app_id}.mute"))
+                .unwrap_or_else(|| "Not muted".into()),
+        ));
+        sec = sec.with_child(resource);
+    }
     sec
 }
 
@@ -815,6 +1182,10 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     sec
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered resource declaration mirrors the Input hierarchy"
+)]
 fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
@@ -875,9 +1246,177 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         0.0,
         1.0,
     ));
+    for (id, key, label) in [
+        (
+            "tap-drag",
+            panes::mouse_keyboard::TAP_DRAG_KEY,
+            "tap and drag",
+        ),
+        (
+            "disable-while-typing",
+            panes::mouse_keyboard::DWT_KEY,
+            "disable touchpad while typing",
+        ),
+        (
+            "middle-emulation",
+            panes::mouse_keyboard::MIDDLE_EMULATION_KEY,
+            "middle-button emulation",
+        ),
+        (
+            "left-handed",
+            panes::mouse_keyboard::LEFT_HANDED_KEY,
+            "left-handed pointer buttons",
+        ),
+        (
+            "touchpad-gestures",
+            panes::mouse_keyboard::GESTURES_KEY,
+            "touchpad gestures",
+        ),
+        (
+            "spell-checking",
+            panes::mouse_keyboard::CHECK_SPELLING_KEY,
+            "spell checking while typing",
+        ),
+        (
+            "auto-correct",
+            panes::mouse_keyboard::AUTO_CORRECT_KEY,
+            "automatic spelling correction",
+        ),
+    ] {
+        sec = sec.with_action(bool_flip_spec(id, key, b(key, false), label));
+    }
+    for (id, label, key, options, fallback) in [
+        (
+            "acceleration-profile",
+            "Set pointer acceleration profile",
+            panes::mouse_keyboard::ACCEL_PROFILE_KEY,
+            &["Adaptive", "Flat"][..],
+            "Adaptive",
+        ),
+        (
+            "compose-key",
+            "Set compose key",
+            panes::mouse_keyboard::COMPOSE_KEY,
+            &[
+                "Disabled",
+                "Right Alt",
+                "Menu",
+                "Caps Lock",
+                "Right Super",
+                "Left Super",
+            ][..],
+            "Disabled",
+        ),
+    ] {
+        sec = sec.with_action(choice_prompt_spec(
+            id,
+            label,
+            key,
+            "Choose an input preference",
+            options,
+            doc_str(doc, key).unwrap_or_else(|| fallback.into()),
+        ));
+    }
+    // Input-source edits are device-local commands: they mutate the local
+    // compositor roster rather than a portable setting.  Keep each installed
+    // source bounded and addressable, matching the rows in the pane.
+    let mut sources = d.input.keyboard_layouts.clone();
+    if sources.is_empty() {
+        sources.push(d.input.keyboard_layout.clone());
+    }
+    let catalog = crate::input_sources::installed_catalog();
+    let mut add_choices: Vec<String> = catalog
+        .iter()
+        .filter(|entry| !sources.contains(&entry.id))
+        .map(|entry| entry.label.clone())
+        .collect();
+    add_choices.sort();
+    if !add_choices.is_empty()
+        && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+    {
+        let Some(fallback) = add_choices.first().cloned() else {
+            return sec;
+        };
+        let choices = add_choices;
+        sec = sec.with_action(
+            ActionSpec::typed_operation(
+                "add-source",
+                "Add keyboard input source",
+                "Choose an installed keyboard layout",
+                OperationKind::Effect,
+                KEYBOARD_SOURCE_OPERATION_TYPE,
+                vec![
+                    ActionParam::required_owned("label", ParamType::Text, "Installed layout")
+                        .with_choices(choices),
+                ],
+                move |args| {
+                    let label = args
+                        .text("label")
+                        .map_or_else(|| fallback.clone(), str::to_string);
+                    encode_local_operation(
+                        KEYBOARD_SOURCE_OPERATION_TYPE,
+                        &KeyboardSourceOperation::Add { label },
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "input-source"])),
+        );
+    }
+    for (index, source) in sources.iter().enumerate() {
+        let label = catalog
+            .iter()
+            .find(|entry| entry.id == *source)
+            .map_or_else(|| source.clone(), |entry| entry.label.clone());
+        let mut resource = Resource::new(
+            format!("settings.input-source:{source}"),
+            "settings.input-source",
+            label,
+        );
+        if index > 0
+            && let Some(action) = local_operation_spec(
+                "move-up",
+                "Move input source up",
+                OperationKind::Effect,
+                KEYBOARD_SOURCE_OPERATION_TYPE,
+                &KeyboardSourceOperation::MoveUp { index },
+                &["device-local", "input-source"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        if index + 1 < sources.len()
+            && let Some(action) = local_operation_spec(
+                "move-down",
+                "Move input source down",
+                OperationKind::Effect,
+                KEYBOARD_SOURCE_OPERATION_TYPE,
+                &KeyboardSourceOperation::MoveDown { index },
+                &["device-local", "input-source"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        if sources.len() > 1
+            && let Some(action) = local_operation_spec(
+                "remove",
+                "Remove input source",
+                OperationKind::Effect,
+                KEYBOARD_SOURCE_OPERATION_TYPE,
+                &KeyboardSourceOperation::Remove { index },
+                &["device-local", "input-source"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        sec = sec.with_child(resource);
+    }
     sec
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered resource declaration mirrors the Power hierarchy"
+)]
 fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
@@ -889,6 +1428,78 @@ fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         b(panes::power::AUTO_SUSPEND_KEY, d.power.auto_suspend),
         "automatic suspend",
     ));
+    // These choices deliberately mirror the controls' durable document
+    // values, not the power daemon's transient availability. A hardware-only
+    // capability is exported below only when the local probe says it exists.
+    let suspend_options = &[
+        "5 minutes",
+        "10 minutes",
+        "15 minutes",
+        "30 minutes",
+        "45 minutes",
+        "1 hour",
+        "Never",
+    ];
+    for (id, label, key, options, fallback) in [
+        (
+            "profile",
+            "Set power profile",
+            panes::power::PROFILE_KEY,
+            &["Power Saver", "Balanced", "Performance"][..],
+            "Balanced",
+        ),
+        (
+            "suspend-after",
+            "Set idle suspend delay",
+            panes::power::SUSPEND_KEY,
+            suspend_options,
+            "30 minutes",
+        ),
+        (
+            "blank-after",
+            "Set screen blank delay",
+            panes::power::BLANK_KEY,
+            &[
+                "1 minute",
+                "5 minutes",
+                "10 minutes",
+                "15 minutes",
+                "30 minutes",
+                "Never",
+            ][..],
+            "10 minutes",
+        ),
+        (
+            "saver-suspend",
+            "Set Power Saver suspend delay",
+            panes::power::SAVER_SUSPEND_KEY,
+            suspend_options,
+            "15 minutes",
+        ),
+        (
+            "balanced-suspend",
+            "Set Balanced suspend delay",
+            panes::power::BALANCED_SUSPEND_KEY,
+            suspend_options,
+            "30 minutes",
+        ),
+        (
+            "performance-suspend",
+            "Set Performance suspend delay",
+            panes::power::PERFORMANCE_SUSPEND_KEY,
+            suspend_options,
+            "Never",
+        ),
+    ] {
+        sec = sec.with_action(choice_prompt_spec(
+            id,
+            label,
+            key,
+            "Choose a power preference",
+            options,
+            s(key, fallback),
+        ));
+    }
     let power_actions = &["Suspend", "Lock screen", "Do nothing"];
     let cur_lid = s(panes::power::LID_KEY, d.power.lid_close_action.display());
     sec = sec.with_action(choice_prompt_spec(
@@ -923,6 +1534,35 @@ fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         power_actions,
         cur_crit,
     ));
+    if let Some(capability) = os_actions::charge_capability() {
+        let fallback = capability.current;
+        let choices: Vec<String> = capability.choices.iter().map(u32::to_string).collect();
+        sec = sec.with_action(
+            ActionSpec::typed_operation(
+                "set-charge-cap",
+                "Set battery charge cap",
+                "Choose a supported charge percentage",
+                OperationKind::Effect,
+                POWER_OPERATION_TYPE,
+                vec![
+                    ActionParam::required_owned("percent", ParamType::Text, "Charge percentage")
+                        .with_choices(choices),
+                ],
+                move |args| {
+                    let percent = args
+                        .text("percent")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .unwrap_or(fallback);
+                    encode_local_operation(
+                        POWER_OPERATION_TYPE,
+                        &PowerOperation::SetChargeLimit { percent },
+                    )
+                },
+            )
+            .with_contract(local_operation_contract(&["device-local", "hardware"]))
+            .privileged(),
+        );
+    }
     sec
 }
 
@@ -1137,6 +1777,10 @@ pub fn accessibility_text_binding(action_id: &str) -> Option<qos_actions::Action
     .ok()
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered local-operation declarations mirror the Updates pane"
+)]
 fn updates_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
@@ -1147,6 +1791,104 @@ fn updates_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         b(panes::updates::AUTO_KEY, d.updates.auto),
         "automatic updates",
     ));
+    for (id, label, operation) in [
+        ("check", "Check for updates", UpdateOperation::Check),
+        (
+            "restart",
+            "Restart into staged update",
+            UpdateOperation::Restart,
+        ),
+        (
+            "rollback",
+            "Roll back to previous image",
+            UpdateOperation::Rollback,
+        ),
+        (
+            "refresh-firmware",
+            "Refresh firmware updates",
+            UpdateOperation::RefreshFirmware,
+        ),
+        (
+            "install-firmware",
+            "Install firmware updates",
+            UpdateOperation::InstallFirmware,
+        ),
+    ] {
+        if let Some(mut action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            UPDATE_OPERATION_TYPE,
+            &operation,
+            &["device-local", "system-update"],
+        ) {
+            if matches!(
+                operation,
+                UpdateOperation::Check | UpdateOperation::RefreshFirmware
+            ) {
+                action.contract.retry = RetryPolicy::Idempotent;
+            }
+            if matches!(
+                operation,
+                UpdateOperation::Restart
+                    | UpdateOperation::Rollback
+                    | UpdateOperation::InstallFirmware
+            ) {
+                action = action.destructive();
+            }
+            sec = sec.with_action(action);
+        }
+    }
+    // Reviewing the rollback caveats only navigates to the already-visible
+    // pane. It does not start an operation or create a history entry.
+    if let Ok(review) = ActionSpec::operation(
+        "review-rollback",
+        "Review rollback",
+        OperationKind::View,
+        UPDATE_OPERATION_TYPE,
+        &UpdateOperation::ReviewRollback,
+    ) {
+        sec = sec.with_action(review);
+    }
+    for (id, label, schedule) in [
+        (
+            "schedule-system",
+            "Use system update schedule",
+            "System schedule",
+        ),
+        ("schedule-daily", "Check for updates daily", "Daily"),
+        ("schedule-weekly", "Check for updates weekly", "Weekly"),
+    ] {
+        if let Some(mut action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            UPDATE_OPERATION_TYPE,
+            &UpdateOperation::SetSchedule {
+                schedule: schedule.into(),
+            },
+            &["device-local", "system-update"],
+        ) {
+            action.contract.retry = RetryPolicy::Idempotent;
+            sec = sec.with_action(action);
+        }
+    }
+    for (id, label, allowed) in [
+        ("allow-metered", "Allow updates on metered networks", true),
+        ("avoid-metered", "Avoid updates on metered networks", false),
+    ] {
+        if let Some(mut action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            UPDATE_OPERATION_TYPE,
+            &UpdateOperation::SetMetered { allowed },
+            &["device-local", "system-update"],
+        ) {
+            action.contract.retry = RetryPolicy::Idempotent;
+            sec = sec.with_action(action);
+        }
+    }
     sec
 }
 
@@ -1560,6 +2302,192 @@ mod tests {
     }
 
     #[test]
+    fn power_resource_covers_every_non_hardware_preference_control() {
+        let resources = provide_resources(&AutoCommit::new());
+        let power = find(&resources, &pane_resource_id(Category::Power));
+        let ids: std::collections::HashSet<&str> = power
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for id in [
+            "profile",
+            "auto_suspend",
+            "suspend-after",
+            "blank-after",
+            "saver-suspend",
+            "balanced-suspend",
+            "performance-suspend",
+            "lid",
+            "power_key",
+            "critical",
+        ] {
+            assert!(ids.contains(id), "missing canonical Power action: {id}");
+        }
+        if let Some(action) = power
+            .actions
+            .iter()
+            .find(|action| action.id == "set-charge-cap")
+        {
+            assert_eq!(action.kind, OperationKind::Effect);
+            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+            assert_eq!(action.operation_type.as_deref(), Some(POWER_OPERATION_TYPE));
+        }
+    }
+
+    #[test]
+    fn notification_and_input_resources_cover_their_durable_preferences() {
+        let resources = provide_resources(&AutoCommit::new());
+        let notifications = find(&resources, &pane_resource_id(Category::Notifications));
+        let notification_ids: std::collections::HashSet<&str> = notifications
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for id in [
+            "badges",
+            "focus-enabled",
+            "focus-start",
+            "focus-end",
+            "focus-days",
+        ] {
+            assert!(
+                notification_ids.contains(id),
+                "missing canonical Notifications action: {id}"
+            );
+        }
+        let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
+        let input_ids: std::collections::HashSet<&str> = input
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for id in [
+            "tap-drag",
+            "disable-while-typing",
+            "middle-emulation",
+            "left-handed",
+            "touchpad-gestures",
+            "spell-checking",
+            "auto-correct",
+            "acceleration-profile",
+            "compose-key",
+        ] {
+            assert!(
+                input_ids.contains(id),
+                "missing canonical input action: {id}"
+            );
+        }
+        assert!(
+            input.children.iter().all(|source| {
+                source.kind != "settings.input-source"
+                    || source.actions.iter().all(|action| {
+                        action.locus == ExecutionLocus::ClientLocal
+                            && action.operation_type.as_deref()
+                                == Some(KEYBOARD_SOURCE_OPERATION_TYPE)
+                    })
+            }),
+            "each input-source row exposes only local typed commands"
+        );
+    }
+
+    #[test]
+    fn update_operations_are_typed_local_effects_with_destructive_guards() {
+        let resources = provide_resources(&AutoCommit::new());
+        let updates = find(&resources, &pane_resource_id(Category::Updates));
+        for id in [
+            "check",
+            "restart",
+            "rollback",
+            "refresh-firmware",
+            "install-firmware",
+        ] {
+            let action = updates
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("missing update operation: {id}"));
+            assert_eq!(action.kind, OperationKind::Effect);
+            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+            assert_eq!(
+                action.operation_type.as_deref(),
+                Some(UPDATE_OPERATION_TYPE)
+            );
+            assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+        }
+        for id in ["restart", "rollback", "install-firmware"] {
+            assert!(
+                updates
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .is_some_and(|action| !matches!(
+                        action.contract.confirmation,
+                        qos_actions::ConfirmationPolicy::None
+                    ))
+            );
+        }
+        let review = updates
+            .actions
+            .iter()
+            .find(|action| action.id == "review-rollback")
+            .expect("rollback review is discoverable");
+        assert_eq!(review.kind, OperationKind::View);
+        assert!(matches!(
+            review.contract.execution,
+            ExecutionMode::Immediate
+        ));
+    }
+
+    #[test]
+    fn accepted_local_operations_advertise_background_string_results() {
+        fn walk(resource: &Resource, out: &mut Vec<ActionSpec>) {
+            out.extend(
+                resource
+                    .actions
+                    .iter()
+                    .filter(|action| {
+                        matches!(
+                            action.operation_type.as_deref(),
+                            Some(
+                                UPDATE_OPERATION_TYPE
+                                    | KEYBOARD_SOURCE_OPERATION_TYPE
+                                    | POWER_OPERATION_TYPE
+                            )
+                        ) && action.kind == OperationKind::Effect
+                    })
+                    .cloned(),
+            );
+            for child in &resource.children {
+                walk(child, out);
+            }
+        }
+
+        let mut actions = Vec::new();
+        for root in provide_resources(&AutoCommit::new()) {
+            walk(&root, &mut actions);
+        }
+        assert!(!actions.is_empty());
+        for action in actions {
+            assert!(matches!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            ));
+            assert!(action.contract.validate_declaration().is_empty());
+            assert!(
+                action
+                    .contract
+                    .result
+                    .validate(&qos_actions::ActionOutput {
+                        value: Some(serde_json::Value::String("done".into())),
+                        resources: Vec::new(),
+                    })
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn accessibility_controls_bind_to_their_exported_typed_actions() {
         let resources = provide_resources(&AutoCommit::new());
         let accessibility = find(&resources, &pane_resource_id(Category::Accessibility));
@@ -1748,5 +2676,61 @@ mod tests {
             .build_json(&typo)
             .expect_err("unknown theme is invalid");
         assert!(error.to_string().contains("must be one of"), "{error}");
+    }
+
+    #[test]
+    fn default_app_handlers_are_bounded_canonical_child_resources() {
+        use desktop_policy::{AppCandidate, ResourceKind};
+
+        let pdf = ResourceKind::extension("pdf").expect("valid extension");
+        let browser = AppCandidate {
+            package_id: "org.qos.Reader".into(),
+            display_name: "Reader".into(),
+            resources: [pdf.clone()].into(),
+        };
+        let alternate = AppCandidate {
+            package_id: "org.qos.Archive".into(),
+            display_name: "Archive".into(),
+            resources: [pdf].into(),
+        };
+        let section =
+            default_apps_section_with_candidates(&AutoCommit::new(), &[browser, alternate]);
+        let handler = section
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "settings.default-app:ext:pdf")
+            .expect("a resource for each declared file type");
+        let action = handler
+            .actions
+            .iter()
+            .find(|action| action.id == "set-handler")
+            .expect("handler resource has one canonical mutation");
+        assert_eq!(action.params().len(), 1);
+        assert_eq!(action.params()[0].choices.len(), 2);
+        let args = serde_json::Map::from_iter([(
+            "choice".to_owned(),
+            serde_json::Value::String("Reader — org.qos.Reader".to_owned()),
+        )]);
+        let encoded = action
+            .build_json(&args)
+            .expect("declared handler is accepted");
+        let mut doc = AutoCommit::new();
+        registry()
+            .decode(&encoded)
+            .expect("settings action decodes")
+            .apply(&mut doc)
+            .expect("handler selection is a valid setting target");
+        assert_eq!(
+            doc_str(&doc, "default_apps.ext.pdf").as_deref(),
+            Some("Reader — org.qos.Reader")
+        );
+        let invalid = serde_json::Map::from_iter([(
+            "choice".to_owned(),
+            serde_json::Value::String("Unknown — org.qos.Unknown".to_owned()),
+        )]);
+        assert!(
+            action.build_json(&invalid).is_err(),
+            "a stale or undiscovered handler is refused before dispatch"
+        );
     }
 }
