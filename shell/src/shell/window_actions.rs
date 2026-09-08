@@ -386,6 +386,7 @@ mod tests {
             let mut tree = st.tree_mut();
             let changes = tree.export_changes_since(&baseline);
             tree.flush_to_disk();
+            drop(tree);
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("opening a hosted app must leave a loadable state file");
             (changes, restarted)

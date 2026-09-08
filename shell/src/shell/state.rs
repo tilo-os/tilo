@@ -203,8 +203,10 @@ mod identity_fs_tests {
             std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
 
-        let mut tree = WorkspaceTree::default();
-        tree.fs_acl_path = Some(acl.clone());
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(acl.clone()),
+            ..WorkspaceTree::default()
+        };
         let started = Instant::now();
         tree.export_fs_capabilities();
         assert!(
@@ -269,8 +271,10 @@ mod identity_fs_tests {
             std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
             std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
-        let mut tree = WorkspaceTree::default();
-        tree.fs_acl_path = Some(acl);
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(acl),
+            ..WorkspaceTree::default()
+        };
         tree.export_fs_capabilities();
         for _ in 0..300 {
             if log.exists() {
@@ -393,14 +397,14 @@ mod identity_fs_tests {
         let mut room_a = Workspace::test_default(WorkspaceId(1), "A");
         let mut room_b = Workspace::test_default(WorkspaceId(2), "B");
         let room_a_id = room_a.room;
-        let room_a_scope = room_a.room.to_string();
-        let room_b_scope = room_b.room.to_string();
-        let relay_a = crate::shell::network::room_topic_id(room_a.room).to_string();
-        let relay_b = crate::shell::network::room_topic_id(room_b.room).to_string();
+        let primary_room_scope = room_a.room.to_string();
+        let secondary_room_scope = room_b.room.to_string();
+        let primary_relay_scope = crate::shell::network::room_topic_id(room_a.room).to_string();
+        let secondary_relay_scope = crate::shell::network::room_topic_id(room_b.room).to_string();
         room_a.capabilities.extend([
             CapOverride::new(
                 Subject::User(alice),
-                Scope::Room(room_a_scope),
+                Scope::Room(primary_room_scope),
                 Effect::Grant,
                 Verb::Read,
             ),
@@ -421,34 +425,36 @@ mod identity_fs_tests {
         ]);
         room_b.capabilities.push(CapOverride::new(
             Subject::User(bob),
-            Scope::Room(room_b_scope),
+            Scope::Room(secondary_room_scope),
             Effect::Grant,
             Verb::Read,
         ));
-        let mut tree = WorkspaceTree::default();
-        tree.fs_acl_path = Some(output.clone());
-        tree.workspaces = vec![room_a, room_b];
+        let mut tree = WorkspaceTree {
+            fs_acl_path: Some(output.clone()),
+            workspaces: vec![room_a, room_b],
+            ..WorkspaceTree::default()
+        };
         tree.export_fs_capabilities();
 
         let exported: Vec<CapOverride> =
             serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
         assert!(exported.iter().any(|capability| {
             capability.subject == Subject::User(alice)
-                && capability.scope == Scope::Room(relay_a.clone())
+                && capability.scope == Scope::Room(primary_relay_scope.clone())
                 && capability.effect == Effect::Grant
         }));
         assert!(exported.iter().any(|capability| {
             capability.subject == Subject::User(alice)
-                && capability.scope == Scope::Room(relay_a.clone())
+                && capability.scope == Scope::Room(primary_relay_scope.clone())
                 && capability.effect == Effect::Restrict
         }));
         assert!(exported.iter().any(|capability| {
             capability.subject == Subject::User(bob)
-                && capability.scope == Scope::Room(relay_b.clone())
+                && capability.scope == Scope::Room(secondary_relay_scope.clone())
         }));
         assert!(exported.iter().all(|capability| {
             !(capability.subject == Subject::User(alice)
-                && capability.scope == Scope::Room(relay_b.clone()))
+                && capability.scope == Scope::Room(secondary_relay_scope.clone()))
         }));
         assert!(exported.iter().any(|capability| {
             capability.subject == Subject::User(alice)
@@ -463,7 +469,7 @@ mod identity_fs_tests {
             serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
         assert!(after_revoke.iter().all(|capability| {
             !(capability.subject == Subject::User(alice)
-                && capability.scope == Scope::Room(relay_a.clone()))
+                && capability.scope == Scope::Room(primary_relay_scope.clone()))
         }));
     }
 }
@@ -2951,6 +2957,10 @@ impl WorkspaceTree {
     /// map so the revocation reaches a peer already holding the grant —
     /// but the room document is not persisted, so that deletion has to
     /// be re-issued after a restart.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "room-document projection keeps all capability map updates in one Automerge transaction"
+    )]
     pub fn sync_room_doc(&mut self, room: RoomId) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -4574,6 +4584,10 @@ impl WorkspaceTree {
     /// Never panics: every doc write is best-effort (the cache is the
     /// source of truth), so a write that fails just skips the nested
     /// entries it would have contained rather than aborting the seed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cache seeding constructs one complete durable document snapshot"
+    )]
     pub fn seed_doc_from_cache(&mut self) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
         let _ = self
@@ -6066,6 +6080,10 @@ impl WorkspaceTree {
     /// appended the tab to the destination's *first existing group* while
     /// the cache created a new group, so any subsequent doc resync undid the
     /// topology the person had just created.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the document mirror applies the cross-strip topology change atomically"
+    )]
     pub fn doc_move_tab_across_strips(
         &mut self,
         src_strip: StripId,
@@ -6754,6 +6772,11 @@ impl WorkspaceTree {
     /// Materialize another device's continuation as synchronized placeholder
     /// tabs. This never activates a workspace, strip, or group; the compositor
     /// opens the matching local apps through its normal authorized launch path.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "continuation materialization grows strips and groups until the validated placement indices exist before indexing them"
+    )]
     pub fn materialize_continuation_workspace(
         &mut self,
         _source_device: &str,
@@ -10858,6 +10881,10 @@ mod peer_window_merge_tests {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ownership-transfer regression keeps signing, persistence, replay, and rejection checks together"
+    )]
     #[test]
     fn ownership_transfer_requires_both_signatures_survives_restart_and_rejects_replay() {
         let directory = tempfile::tempdir().unwrap();

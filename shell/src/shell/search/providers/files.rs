@@ -103,9 +103,11 @@ impl NameIndex {
                     .push(position);
             }
             for end in entry.facts.leaf.char_indices().map(|(at, _)| at).skip(1) {
-                if end <= 64 {
+                if end <= 64
+                    && let Some(prefix) = entry.facts.leaf.get(..end)
+                {
                     leaf_prefix
-                        .entry(entry.facts.leaf[..end].to_string())
+                        .entry(prefix.to_string())
                         .or_default()
                         .push(position);
                 }
@@ -162,7 +164,6 @@ impl NameIndex {
                 sort_short_postings(prefix, positions);
             }
         }
-        let entries = entries;
         let shared = |postings: HashMap<String, Vec<usize>>| {
             postings
                 .into_iter()
@@ -259,13 +260,15 @@ struct RankedQueryCache {
     pending: Option<PendingRankedQuery>,
 }
 
+type RankWorker = (
+    Arc<Mutex<Option<RankRequest>>>,
+    mpsc::SyncSender<()>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+);
+
 impl FilesProvider {
-    fn rank_worker() -> (
-        Arc<Mutex<Option<RankRequest>>>,
-        mpsc::SyncSender<()>,
-        Arc<AtomicUsize>,
-        Arc<AtomicUsize>,
-    ) {
+    fn rank_worker() -> RankWorker {
         // A single coalescing worker is deliberately shared by every
         // keystroke.  The one-slot mailbox retains only the newest request;
         // a cancelled current rank checks at small chunks and then picks it
@@ -286,6 +289,10 @@ impl FilesProvider {
                     let Some(request) = request else {
                         continue;
                     };
+                    #[allow(
+                        clippy::arithmetic_side_effects,
+                        reason = "the sole rank worker increments from zero once per dequeued request and decrements before it receives another"
+                    )]
                     let current = worker_active.fetch_add(1, Ordering::Relaxed) + 1;
                     worker_peak.fetch_max(current, Ordering::Relaxed);
                     let mut positions = Vec::new();
@@ -308,10 +315,9 @@ impl FilesProvider {
                                 .cmp(&left.0)
                                 .then_with(|| left.1.cmp(&right.1))
                                 .then_with(|| {
-                                    request.entries[left.2]
-                                        .facts
-                                        .lower
-                                        .cmp(&request.entries[right.2].facts.lower)
+                                    request.entries.get(left.2).map(|entry| &entry.facts.lower).cmp(
+                                        &request.entries.get(right.2).map(|entry| &entry.facts.lower),
+                                    )
                                 })
                         });
                         let positions = Arc::new(
@@ -479,7 +485,7 @@ impl FilesProvider {
             previous.cancelled.store(true, Ordering::Relaxed);
         }
         let needle = needle.to_string();
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let (sender, result_rx) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
         let request = RankRequest {
             generation,
@@ -498,7 +504,7 @@ impl FilesProvider {
             cache.pending = Some(PendingRankedQuery {
                 generation,
                 needle,
-                receiver,
+                receiver: result_rx,
                 cancelled,
             });
         }
@@ -520,10 +526,10 @@ impl FilesProvider {
                 .cmp(&left.0)
                 .then_with(|| left.1.cmp(&right.1))
                 .then_with(|| {
-                    entries[left.2]
-                        .facts
-                        .lower
-                        .cmp(&entries[right.2].facts.lower)
+                    entries
+                        .get(left.2)
+                        .map(|entry| &entry.facts.lower)
+                        .cmp(&entries.get(right.2).map(|entry| &entry.facts.lower))
                 })
         });
         Arc::new(
@@ -539,6 +545,10 @@ impl FilesProvider {
     /// permission/mount change) nor a giant match list.  A page inspects at
     /// most `budget.max_work` retained entries; `last_scanned` is kept as
     /// instrumentation and regression protection for the palette path.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded paging operation keeps cursor validation, ranked-plan selection, and result accounting consistent"
+    )]
     fn page_name_hits(
         &self,
         ctx: &SearchContext<'_>,
@@ -594,9 +604,8 @@ impl FilesProvider {
         let needs_ranked_plan = needle_chars > 2 && entries.len() > budget.max_work;
         let ranked_candidates = match (rarest_gram.as_ref(), rarest_path_trigram.as_ref()) {
             (Some(leaf), Some(path)) if leaf.len() <= path.len() => Some(leaf.clone()),
-            (Some(_), Some(path)) => Some(path.clone()),
+            (Some(_) | None, Some(path)) => Some(path.clone()),
             (Some(leaf), None) => Some(leaf.clone()),
-            (None, Some(path)) => Some(path.clone()),
             (None, None) => None,
         };
         // Exact postings remain a retained accelerator/consistency check,
@@ -759,16 +768,16 @@ impl SearchProvider for FilesProvider {
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
-        self.name_index
-            .lock()
-            .map(|index| {
+        self.name_index.lock().map_or_else(
+            |_| "unavailable".into(),
+            |index| {
                 format!(
                     "{}:{}",
                     index.generation,
                     self.ranked_query_epoch.load(Ordering::Relaxed)
                 )
-            })
-            .unwrap_or_else(|_| "unavailable".into())
+            },
+        )
     }
 
     fn query_page(
@@ -2218,6 +2227,10 @@ mod tests {
         assert_eq!(page.results[0].title, "zreport.md");
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the concurrent-search regression retains its shared state guards until stale-plan assertions complete"
+    )]
     #[test]
     fn rapid_broad_edits_keep_one_worker_and_never_publish_a_stale_plan() {
         let mut paths = (0..100_000)

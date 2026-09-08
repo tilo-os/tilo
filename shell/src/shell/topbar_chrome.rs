@@ -99,6 +99,10 @@ impl CenterWidget {
 /// be reused. Time fields split by mode since each variant consumes a
 /// different grain of `chrono::Local::now()`.
 #[derive(Default, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag independently invalidates retained top-bar paint and hit-test data; combining them would hide cache dependencies"
+)]
 struct CacheFingerprint {
     /// Full rect, not just size — the per-frame draw repopulates hit
     /// rects from `self.rect`'s corners, so a hit must imply those are
@@ -2417,13 +2421,20 @@ impl TopBarChrome {
         let control_at = |index: usize| controls.get(index).copied();
         match logical_key {
             winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowLeft) => {
-                if let Some(target) = control_at((current + controls.len() - 1) % controls.len()) {
+                let previous = current
+                    .checked_sub(1)
+                    .unwrap_or_else(|| controls.len().saturating_sub(1));
+                if let Some(target) = control_at(previous) {
                     self.focused_control = Some(target.to_string());
                     *handled = true;
                 }
             }
             winit::keyboard::Key::Named(winit::keyboard::NamedKey::ArrowRight) => {
-                if let Some(target) = control_at((current + 1) % controls.len()) {
+                let next = current
+                    .checked_add(1)
+                    .filter(|&index| index < controls.len())
+                    .unwrap_or(0);
+                if let Some(target) = control_at(next) {
                     self.focused_control = Some(target.to_string());
                     *handled = true;
                 }
@@ -2957,7 +2968,7 @@ mod tests {
     fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let node = bar.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy
             .new_with_children(
                 Style {
@@ -2985,7 +2996,7 @@ mod tests {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &theme,
+            theme,
             &PresenceCtx::default(),
         );
     }
@@ -3031,7 +3042,7 @@ mod tests {
             "activity headline width {width} exceeds reserved center lane {max_width}"
         );
         assert!(
-            height <= f32::from(TOPBAR_HEIGHT_PX) - 4.0,
+            height <= TOPBAR_HEIGHT_PX - 4.0,
             "activity headline height {height} must fit in the 48px topbar"
         );
     }

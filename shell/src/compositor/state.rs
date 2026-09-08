@@ -2126,6 +2126,10 @@ impl State {
 // resolves the target `WlSurface` and its tile origin for normal Wayland
 // enter/motion delivery.
 impl RemoteInputSink for State {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Remote-input dispatch must keep the ordered Smithay serial, focus, and seat mutations together so a peer event cannot observe a partially-applied input state."
+    )]
     fn apply(&mut self, peer: MsgPeerId, surface: SurfaceId, event: InputEvent) {
         tracing::debug!(
             target: "shell::compositor::state",
@@ -2734,6 +2738,18 @@ fn constrain_transient_rect(mut rect: Rect, bounds: Rect) -> Rect {
     rect
 }
 
+/// Convert client-supplied logical popup geometry without allowing an extreme
+/// coordinate plus size to overflow before it reaches the compositor's
+/// floating-point scene space.
+fn popup_rect_from_parent(parent: Rect, geometry: Rectangle<i32, Logical>) -> Rect {
+    Rect::new(
+        parent.x0 + f64::from(geometry.loc.x),
+        parent.y0 + f64::from(geometry.loc.y),
+        parent.x0 + f64::from(geometry.loc.x.saturating_add(geometry.size.w)),
+        parent.y0 + f64::from(geometry.loc.y.saturating_add(geometry.size.h)),
+    )
+}
+
 impl State {
     fn popup_parent_rect(&self, id: SurfaceId, depth: usize) -> Option<Rect> {
         if depth > 16 {
@@ -2749,12 +2765,7 @@ impl State {
             .iter()
             .find(|popup| surface_id(popup.surface.wl_surface()) == id)?;
         let parent = self.popup_parent_rect(popup.parent, depth.saturating_add(1))?;
-        Some(Rect::new(
-            parent.x0 + f64::from(popup.geometry.loc.x),
-            parent.y0 + f64::from(popup.geometry.loc.y),
-            parent.x0 + f64::from(popup.geometry.loc.x + popup.geometry.size.w),
-            parent.y0 + f64::from(popup.geometry.loc.y + popup.geometry.size.h),
-        ))
+        Some(popup_rect_from_parent(parent, popup.geometry))
     }
 
     fn popup_constraint_output(&self, parent: SurfaceId) -> Rectangle<i32, Logical> {
@@ -2825,12 +2836,7 @@ impl State {
                 let geometry = popup.geometry;
                 Some((
                     surface_id(popup.surface.wl_surface()),
-                    Rect::new(
-                        parent.x0 + f64::from(geometry.loc.x),
-                        parent.y0 + f64::from(geometry.loc.y),
-                        parent.x0 + f64::from(geometry.loc.x + geometry.size.w),
-                        parent.y0 + f64::from(geometry.loc.y + geometry.size.h),
-                    ),
+                    popup_rect_from_parent(parent, geometry),
                 ))
             })
             .collect()
@@ -2870,8 +2876,8 @@ impl State {
                 let bounds = Rect::new(
                     f64::from(output.loc.x),
                     f64::from(output.loc.y),
-                    f64::from(output.loc.x + output.size.w),
-                    f64::from(output.loc.y + output.size.h),
+                    f64::from(output.loc.x.saturating_add(output.size.w)),
+                    f64::from(output.loc.y.saturating_add(output.size.h)),
                 );
                 Some((
                     surface_id(popup.wl_surface()),
@@ -3077,6 +3083,10 @@ impl XdgActivationHandler for State {
         }
     }
 
+    #[allow(
+        clippy::collapsible_if,
+        reason = "The nested host-launch branch keeps the one-shot activation token's relocation decision visually separate from its post-relocation label mutation."
+    )]
     fn request_activation(
         &mut self,
         token: XdgActivationToken,
@@ -3092,7 +3102,7 @@ impl XdgActivationHandler for State {
         let _ = self.xdg_activation_state.remove_token(&token);
         let target = surface_id(&surface);
         let actual_app_id = tab_binding::app_id_for_surface(&self.workspace_tree, target);
-        let app_id_matches_target = data.app_id.as_deref().map_or(true, |requested| {
+        let app_id_matches_target = data.app_id.as_deref().is_none_or(|requested| {
             actual_app_id.is_some_and(|actual| app_ids_match(requested, actual))
         });
         if let Some(host_launch) = host_launch.as_ref() {
@@ -3749,12 +3759,7 @@ mod popup_geometry_tests {
     }
 
     fn popup_screen_rect(parent: Rect, geometry: Rectangle<i32, Logical>) -> Rect {
-        Rect::new(
-            parent.x0 + f64::from(geometry.loc.x),
-            parent.y0 + f64::from(geometry.loc.y),
-            parent.x0 + f64::from(geometry.loc.x + geometry.size.w),
-            parent.y0 + f64::from(geometry.loc.y + geometry.size.h),
-        )
+        popup_rect_from_parent(parent, geometry)
     }
 
     fn draw_rect(scene: &mut Scene, rect: Rect, color: Color) {
@@ -3807,6 +3812,23 @@ mod popup_geometry_tests {
     }
 
     #[test]
+    fn popup_scene_rect_saturates_extreme_client_geometry() {
+        let parent = Rect::new(10.0, 20.0, 110.0, 120.0);
+        let geometry = Rectangle::new((i32::MAX - 4, i32::MAX - 2).into(), (64, 64).into());
+
+        let rect = popup_rect_from_parent(parent, geometry);
+
+        assert_eq!(rect.x1, parent.x0 + f64::from(i32::MAX));
+        assert_eq!(rect.y1, parent.y0 + f64::from(i32::MAX));
+        assert!(rect.x1.is_finite() && rect.y1.is_finite());
+    }
+
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::too_many_lines,
+        reason = "The single raster fixture keeps normal and scaled popup geometry in one scene contract; its fixed, viewport-bounded coordinates are explicitly checked before rendering."
+    )]
     fn popup_and_ime_geometry_fixture_renders_normal_and_scaled_edges()
     -> Result<(), Box<dyn std::error::Error>> {
         let output = Rectangle::new((0, 0).into(), (800, 500).into());
@@ -4177,7 +4199,7 @@ mod tick_hook_tests {
     #[test]
     fn packed_nonzero_client_surface_id_keeps_its_own_scale() {
         let mut state = make_state();
-        let id = (17_u64 << 32) | 42;
+        let id = (17_u64 << 32) | 0x002a;
         state.surface_scales.insert(id, 1.5);
         assert_eq!(state.surface_scale(id), 1.5);
         assert_ne!(state.surface_scale(42), 1.5);

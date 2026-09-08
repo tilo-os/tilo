@@ -1748,15 +1748,14 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
         // the same surface in different groups.
         if crate::compositor::tab_binding::app_id_for_surface(rendered, want.surface_id)
             .is_some_and(|app_id| app_id.starts_with("anon-"))
-        {
-            if crate::compositor::tab_binding::rebind_toplevel_for_app_id(
+            && crate::compositor::tab_binding::rebind_toplevel_for_app_id(
                 rendered,
                 want.surface_id,
                 want.app_id.clone(),
                 Some(&want.title),
-            ) {
-                changed = true;
-            }
+            )
+        {
+            changed = true;
         }
         for ws in &mut rendered.workspaces {
             for strip in &mut ws.strips {
@@ -2993,7 +2992,7 @@ mod tests {
             "org.example.ExternalEditor",
             Placement::TabIn(anchor),
         );
-        let surface = 0xC0FFEE;
+        let surface = 0x00C0_FFEE;
         crate::compositor::tab_binding::adopt_toplevel(
             &mut source,
             surface,
@@ -3103,7 +3102,7 @@ mod tests {
             .iter()
             .position(|tab| tab.id == local_tab)
             .expect("local tab index");
-        let to = if from == 0 { 1 } else { 0 };
+        let to = usize::from(from == 0);
         assert!(future_peer.reorder_tab_within_group(local_group, from, to));
         let future_changes = future_peer.export_changes_since(&future_base);
         rendered

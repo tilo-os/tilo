@@ -430,6 +430,10 @@ fn flatpak_application_id(info_path: &Path) -> Option<String> {
     None
 }
 
+#[allow(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "Systemd scope unit names use the literal lowercase `.scope` suffix; accepting a differently cased unit would not identify a Flatpak application scope."
+)]
 fn flatpak_cgroup_matches(cgroup: &str, app_id: &str) -> bool {
     let raw_prefix = format!("app-flatpak-{app_id}");
     let escaped_prefix = format!("app-flatpak-{}", systemd_escape(app_id));
@@ -458,8 +462,11 @@ fn systemd_escape(value: &str) -> String {
             const HEX: &[u8; 16] = b"0123456789abcdef";
             out.push('\\');
             out.push('x');
-            out.push(char::from(HEX[usize::from(byte >> 4)]));
-            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            for nibble in [byte >> 4, byte & 0x0f] {
+                out.push(char::from(
+                    HEX.get(usize::from(nibble)).copied().unwrap_or(b'0'),
+                ));
+            }
         }
         out
     })
@@ -701,6 +708,20 @@ mod tests {
         assert_ne!(a, 0);
         assert_ne!(c, 0);
         assert!(c > a, "ids must be monotonic: {a} then {c}");
+    }
+
+    #[test]
+    fn systemd_escape_and_scope_match_handle_flatpak_ids_without_indexing() {
+        assert_eq!(systemd_escape("org.example.App"), "org.example.App");
+        assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
+        assert!(flatpak_cgroup_matches(
+            "0::/app.slice/app-flatpak-org.example\\x20App-42.scope",
+            "org.example App"
+        ));
+        assert!(!flatpak_cgroup_matches(
+            "0::/app.slice/app-flatpak-org.example\\x20App-42.SCOPE",
+            "org.example App"
+        ));
     }
 
     #[test]
