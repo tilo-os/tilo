@@ -281,6 +281,15 @@ impl MainPanel {
         self.set_title_value(title);
         let specs = crate::markdown::parse(body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
+        // `BlockEditor::bind_blocks` adopts the durable plain text/kinds from
+        // the CRDT and therefore rebuilds its lines. Preserve the parsed
+        // Markdown marks long enough for the app to migrate them into native
+        // marks on an existing local page; a collaborative snapshot replaces
+        // these immediately after binding when it already has canonical marks.
+        let parsed_marks = blocks
+            .iter()
+            .map(|block| block.line.marks().to_vec())
+            .collect::<Vec<_>>();
         self.editor = BlockEditor::new();
         self.editor.set_blocks(blocks);
         self.editor.set_local_author(self.local_author.clone());
@@ -288,6 +297,9 @@ impl MainPanel {
         // The app action-seeds a new document before binding. This only adopts
         // the action-owned list; it must not create or mutate it itself.
         self.editor.bind_blocks(state, blocks_list);
+        for (block, marks) in self.editor.blocks_mut().iter_mut().zip(parsed_marks) {
+            block.line.set_marks(marks);
+        }
         self.editor.set_focus(true);
         self.editor
             .focus_block(0, ui::widget::CursorPlacement::Start);
@@ -373,6 +385,59 @@ impl MainPanel {
         self.pending_block_ops
             .extend(self.editor.take_pending_semantic_ops());
         std::mem::take(&mut self.pending_block_ops)
+    }
+
+    /// Snapshot the inline formatting carried by every live durable block.
+    /// Notes turns a changed snapshot into native Automerge marks through a
+    /// typed action; the editor deliberately remains a pure input widget.
+    pub fn inline_marks(&self) -> Vec<(String, Vec<crate::actions::InlineMarkSpan>)> {
+        self.editor
+            .blocks()
+            .iter()
+            .map(|block| {
+                (
+                    block.id.clone(),
+                    block
+                        .line
+                        .marks()
+                        .iter()
+                        .map(crate::actions::InlineMarkSpan::from_ui)
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Apply the Notes-owned native-mark snapshot read from the collaborative
+    /// document. Unknown/malformed spans were already excluded by the document
+    /// reader, but a final text-boundary check keeps an interrupted rebind from
+    /// ever painting an invalid range.
+    pub fn set_inline_marks(
+        &mut self,
+        marks: &std::collections::HashMap<String, Vec<crate::actions::InlineMarkSpan>>,
+    ) {
+        let mut changed = false;
+        for block in self.editor.blocks_mut() {
+            let next = marks
+                .get(&block.id)
+                .into_iter()
+                .flatten()
+                .filter_map(crate::actions::InlineMarkSpan::to_ui)
+                .filter(|span| {
+                    span.range.start < span.range.end
+                        && span.range.end <= block.text().len()
+                        && block.text().is_char_boundary(span.range.start)
+                        && block.text().is_char_boundary(span.range.end)
+                })
+                .collect::<Vec<_>>();
+            if block.line.marks() != next {
+                block.line.set_marks(next);
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty = true;
+        }
     }
 
     /// Re-serialise the editor's content into the cached `body` and
