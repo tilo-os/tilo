@@ -240,7 +240,21 @@ impl CalcModel {
             }];
             m.active_fn = 0;
         }
+        // Screenshot-only: exercise the visible, truthful parse-error state.
+        // The live app never injects this expression.
+        if std::env::var_os("QOS_CALC_ERROR_DEMO").is_some() {
+            m.apply_error_demo();
+        }
         m
+    }
+
+    /// Configure the deterministic invalid-expression frame used only by the
+    /// headless visual-review hook. Keeping it as a pure transition makes the
+    /// fixture testable without changing global process environment.
+    fn apply_error_demo(&mut self) {
+        self.mode = Mode::Calc;
+        self.expr = "sqrt(".into();
+        self.after_equals = false;
     }
 
     /// Evaluation context derived from the current model.
@@ -754,6 +768,18 @@ mod tests {
         };
         apply_key(&mut m, &Key::Ins("+"));
         assert_eq!(m.expr, "5+");
+    }
+
+    #[test]
+    fn error_demo_is_calc_only_and_guarantees_a_renderable_parse_error() {
+        let mut m = CalcModel::seeded();
+        m.after_equals = true;
+        m.apply_error_demo();
+
+        assert_eq!(m.mode, Mode::Calc);
+        assert_eq!(m.expr, "sqrt(");
+        assert!(!m.after_equals);
+        assert!(engine::evaluate(&m.expr, &m.ctx()).is_err());
     }
 
     #[test]
