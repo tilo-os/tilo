@@ -9647,20 +9647,16 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                if crate::shell::search::providers::applications::launch_installed_app(
+                let _ = crate::shell::search::providers::applications::launch_installed_app(
                     chrome,
                     "dev.qos.settings",
                     "Settings",
-                )
-                .is_err()
-                {
-                    // The settings package is optional in small/headless
-                    // sessions. Keep the affordance usable by falling back
-                    // to the in-shell workspace settings surface.
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.ws_settings = true;
-                    st.bump();
-                }
+                );
+                // A missing Settings package is already reported by the
+                // ordinary launcher as an actionable failure notification.
+                // Workspace settings controls sharing, members and room
+                // policy; opening it as a fallback would silently change the
+                // meaning of this personal/device-settings action.
             }
             RootAction::Privacy | RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
@@ -17609,6 +17605,47 @@ mod palette_dispatch_tests {
             std::env::remove_var("QOS_LAUNCHER_BIN");
         }
         crate::shell::launcher::set_wayland_socket_path(None);
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn missing_personal_settings_reports_launch_failure_without_opening_workspace_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An empty registry makes the personal Settings package genuinely
+        // unavailable; the ordinary launcher owns wording and notification
+        // lifetime for that error.
+        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
+        unsafe {
+            std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
+        }
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
+
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+
+        let state = chrome.borrow();
+        assert!(!state.overlays.quick_settings, "the source popover closes");
+        assert!(
+            !state.overlays.ws_settings,
+            "an unavailable personal Settings app must not redirect into workspace sharing"
+        );
+        assert!(
+            state
+                .notifications()
+                .iter()
+                .any(|notification| notification.title.contains("Settings")),
+            "the ordinary launch failure must remain visible to the user"
+        );
+        drop(state);
+
+        // SAFETY: restore the process-wide override before releasing the serial lock.
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+        }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
     }
