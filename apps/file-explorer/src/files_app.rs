@@ -976,25 +976,26 @@ impl FileExplorerWidget {
         // compact widths alike.
         if self.is_loading || self.error.is_some() {
             let message = self.error.clone().unwrap_or_else(|| t("files-loading"));
-            let mut state = Column::new().push(Box::new(Text::new(&message)));
+            let message_row = Row::new()
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(Text::new(&message)))
+                .push(Box::new(Spacer::new()));
+            let mut content = Column::new()
+                .with_vertical_padding(sp.s1)
+                .with_horizontal_padding(sp.s3, sp.s3)
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(message_row));
             if self.error.is_some() {
                 let sink = self.cmds.clone();
                 let retry = ui::widget::Button::new("files.retry", &t("files-try-again"), None)
                     .on_effect(move || crate::command::push(&sink, FileCommand::Refresh));
-                state = state.push(Box::new(retry));
-            }
-            let centered = Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(state))
-                .push(Box::new(Spacer::new()));
-            return Box::new(
-                Column::new()
-                    .with_vertical_padding(sp.s1)
-                    .with_horizontal_padding(sp.s3, sp.s3)
+                let retry_row = Row::new()
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(centered))
-                    .push(Box::new(Spacer::new())),
-            );
+                    .push(Box::new(retry))
+                    .push(Box::new(Spacer::new()));
+                content = content.push(Box::new(retry_row));
+            }
+            return Box::new(content.push(Box::new(Spacer::new())));
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
@@ -6233,11 +6234,15 @@ impl FileExplorerWidget {
     /// folder may entail hundreds of thousands of entries, so entries,
     /// templates, places, and remote projections stay behind their retained
     /// search providers rather than being copied into this root page.
-    #[allow(
-        clippy::expect_used,
-        reason = "ActionSpec's infallible builders serialize fixed, known-good action payloads"
-    )]
     fn action_directory_folder_root(&self) -> Resource {
+        let mut folder = self.folder_resource_base();
+        Self::append_navigation_actions(&mut folder);
+        self.append_favorite_action(&mut folder);
+        self.append_creation_actions(&mut folder);
+        folder
+    }
+
+    fn folder_resource_base(&self) -> Resource {
         let mut folder = Resource::new(
             crate::search_provider::folder_resource_id(&self.current_path),
             "files.folder",
@@ -6264,32 +6269,170 @@ impl FileExplorerWidget {
                 ..ActionContract::default()
             }));
         }
-        let new_folder = ActionSpec::prompted_operation(
-            "new-folder",
-            "New folder",
-            "Folder name",
-            "New Folder",
-            OperationKind::Effect,
-            "files.new-folder",
-            |name| {
-                EncodedAction::encode_operation("files.new-folder", &name)
-                    .expect("folder name is serializable")
-            },
-        )
-        .with_contract(ActionContract {
-            availability: if self.current_path.is_dir() {
-                Availability::Available
-            } else {
-                Availability::Unavailable {
-                    code: "location_unavailable".into(),
-                    reason: "The current location cannot contain a new folder".into(),
-                }
-            },
-            permission: PermissionRequirement::Write,
-            reversible: false,
-            ..ActionContract::default()
-        });
-        folder.actions.push(new_folder);
+        folder
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "these fixed command payloads are locally constructed and serializable"
+    )]
+    fn append_navigation_actions(folder: &mut Resource) {
+        for (id, label, verb, kind) in [
+            ("up", "Parent folder", "up", OperationKind::View),
+            ("back", "Back", "back", OperationKind::View),
+            ("forward", "Forward", "forward", OperationKind::View),
+            (
+                "open-terminal",
+                "Open terminal here",
+                "terminal",
+                OperationKind::Effect,
+            ),
+            (
+                "toggle-hidden",
+                "Toggle hidden files",
+                "hidden",
+                OperationKind::View,
+            ),
+            ("list", "Use list view", "list", OperationKind::View),
+            ("grid", "Use grid view", "grid", OperationKind::View),
+            (
+                "sort-name",
+                "Sort by name",
+                "sort-name",
+                OperationKind::View,
+            ),
+            (
+                "sort-size",
+                "Sort by size",
+                "sort-size",
+                OperationKind::View,
+            ),
+            (
+                "sort-type",
+                "Sort by type",
+                "sort-type",
+                OperationKind::View,
+            ),
+            (
+                "sort-modified",
+                "Sort by modified date",
+                "sort-modified",
+                OperationKind::View,
+            ),
+            (
+                "sort-ascending",
+                "Sort ascending",
+                "sort-ascending",
+                OperationKind::View,
+            ),
+            (
+                "sort-descending",
+                "Sort descending",
+                "sort-descending",
+                OperationKind::View,
+            ),
+            (
+                "zoom-in",
+                "Increase item size",
+                "zoom-in",
+                OperationKind::View,
+            ),
+            (
+                "zoom-out",
+                "Decrease item size",
+                "zoom-out",
+                OperationKind::View,
+            ),
+        ] {
+            folder.actions.push(
+                ActionSpec::operation(id, label, kind, "files.folder-command", &verb)
+                    .expect("folder command is serializable")
+                    .with_contract(if kind == OperationKind::View {
+                        ActionContract::view()
+                    } else {
+                        ActionContract::default()
+                    }),
+            );
+        }
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "the selected fixed folder-command payload is serializable"
+    )]
+    fn append_favorite_action(&self, folder: &mut Resource) {
+        let current_is_favorite = self
+            .favs
+            .borrow()
+            .favorites
+            .iter()
+            .any(|favorite| favorite.path == self.current_path);
+        let (id, label, verb) = if current_is_favorite {
+            (
+                "remove-favorite",
+                "Remove from Favourites",
+                "remove-favorite",
+            )
+        } else {
+            ("add-favorite", "Add to Favourites", "add-favorite")
+        };
+        folder.actions.push(
+            ActionSpec::operation(
+                id,
+                label,
+                OperationKind::Effect,
+                "files.folder-command",
+                &verb,
+            )
+            .expect("favourite command is serializable")
+            .with_contract(ActionContract {
+                availability: if self.current_path.is_dir() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_unavailable".into(),
+                        reason: "The current location cannot be a favourite".into(),
+                    }
+                },
+                permission: PermissionRequirement::Write,
+                retry: RetryPolicy::AtMostOnce,
+                ..ActionContract::default()
+            }),
+        );
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "new-folder, paste, and empty-trash payloads are fixed local values"
+    )]
+    fn append_creation_actions(&self, folder: &mut Resource) {
+        folder.actions.push(
+            ActionSpec::prompted_operation(
+                "new-folder",
+                "New folder",
+                "Folder name",
+                "New Folder",
+                OperationKind::Effect,
+                "files.new-folder",
+                |name| {
+                    EncodedAction::encode_operation("files.new-folder", &name)
+                        .expect("folder name is serializable")
+                },
+            )
+            .with_contract(ActionContract {
+                availability: if self.current_path.is_dir() {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        code: "location_unavailable".into(),
+                        reason: "The current location cannot contain a new folder".into(),
+                    }
+                },
+                permission: PermissionRequirement::Write,
+                reversible: false,
+                ..ActionContract::default()
+            }),
+        );
         folder.actions.push(
             ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
                 .expect("file operation payload is serializable")
@@ -6310,7 +6453,26 @@ impl FileExplorerWidget {
                     ..ActionContract::default()
                 }),
         );
-        folder
+        if self.is_trash_view() {
+            folder.actions.push(
+                ActionSpec::operation(
+                    "empty-trash",
+                    t("files-menu-empty-trash"),
+                    OperationKind::Effect,
+                    "files.folder-command",
+                    &"empty-trash",
+                )
+                .expect("empty-trash command is serializable")
+                .destructive()
+                .with_contract(ActionContract {
+                    permission: PermissionRequirement::Write,
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    ..ActionContract::default()
+                }),
+            );
+        }
     }
 
     /// Construct the complete action contract for one already-projected row.
@@ -6563,196 +6725,10 @@ impl Widget for FileExplorerWidget {
         reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
     )]
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
-        let mut folder = Resource::new(
-            crate::search_provider::folder_resource_id(&self.current_path),
-            "files.folder",
-            self.current_path.display().to_string(),
-        );
-        if let Ok(spec) = ActionSpec::operation(
-            "refresh",
-            "Refresh folder",
-            OperationKind::Effect,
-            "files.refresh",
-            &"",
-        ) {
-            folder.actions.push(spec.with_contract(ActionContract {
-                availability: if self.current_path.exists() {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "location_missing".into(),
-                        reason: "The current folder no longer exists".into(),
-                    }
-                },
-                permission: PermissionRequirement::Read,
-                retry: RetryPolicy::Idempotent,
-                ..ActionContract::default()
-            }));
-        }
-        for (id, label, verb, kind) in [
-            ("up", "Parent folder", "up", OperationKind::View),
-            ("back", "Back", "back", OperationKind::View),
-            ("forward", "Forward", "forward", OperationKind::View),
-            (
-                "open-terminal",
-                "Open terminal here",
-                "terminal",
-                OperationKind::Effect,
-            ),
-            (
-                "toggle-hidden",
-                "Toggle hidden files",
-                "hidden",
-                OperationKind::View,
-            ),
-            ("list", "Use list view", "list", OperationKind::View),
-            ("grid", "Use grid view", "grid", OperationKind::View),
-            (
-                "sort-name",
-                "Sort by name",
-                "sort-name",
-                OperationKind::View,
-            ),
-            (
-                "sort-size",
-                "Sort by size",
-                "sort-size",
-                OperationKind::View,
-            ),
-            (
-                "sort-type",
-                "Sort by type",
-                "sort-type",
-                OperationKind::View,
-            ),
-            (
-                "sort-modified",
-                "Sort by modified date",
-                "sort-modified",
-                OperationKind::View,
-            ),
-            (
-                "sort-ascending",
-                "Sort ascending",
-                "sort-ascending",
-                OperationKind::View,
-            ),
-            (
-                "sort-descending",
-                "Sort descending",
-                "sort-descending",
-                OperationKind::View,
-            ),
-            (
-                "zoom-in",
-                "Increase item size",
-                "zoom-in",
-                OperationKind::View,
-            ),
-            (
-                "zoom-out",
-                "Decrease item size",
-                "zoom-out",
-                OperationKind::View,
-            ),
-        ] {
-            folder.actions.push(
-                ActionSpec::operation(id, label, kind, "files.folder-command", &verb)
-                    .expect("folder command is serializable")
-                    .with_contract(if kind == OperationKind::View {
-                        ActionContract::view()
-                    } else {
-                        ActionContract::default()
-                    }),
-            );
-        }
-        let current_is_favorite = self
-            .favs
-            .borrow()
-            .favorites
-            .iter()
-            .any(|favorite| favorite.path == self.current_path);
-        let (favorite_id, favorite_label, favorite_verb) = if current_is_favorite {
-            (
-                "remove-favorite",
-                "Remove from Favourites",
-                "remove-favorite",
-            )
-        } else {
-            ("add-favorite", "Add to Favourites", "add-favorite")
-        };
-        folder.actions.push(
-            ActionSpec::operation(
-                favorite_id,
-                favorite_label,
-                OperationKind::Effect,
-                "files.folder-command",
-                &favorite_verb,
-            )
-            .expect("favourite command is serializable")
-            .with_contract(ActionContract {
-                availability: if self.current_path.is_dir() {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "location_unavailable".into(),
-                        reason: "The current location cannot be a favourite".into(),
-                    }
-                },
-                permission: PermissionRequirement::Write,
-                retry: RetryPolicy::AtMostOnce,
-                ..ActionContract::default()
-            }),
-        );
-        let new_folder = ActionSpec::prompted_operation(
-            "new-folder",
-            "New folder",
-            "Folder name",
-            "New Folder",
-            OperationKind::Effect,
-            "files.new-folder",
-            |name| {
-                EncodedAction::encode_operation("files.new-folder", &name)
-                    .expect("folder name is serializable")
-            },
-        )
-        .with_contract(ActionContract {
-            availability: if self.current_path.is_dir() {
-                Availability::Available
-            } else {
-                Availability::Unavailable {
-                    code: "location_unavailable".into(),
-                    reason: "The current location cannot contain a new folder".into(),
-                }
-            },
-            permission: PermissionRequirement::Write,
-            // Creation is a host-filesystem effect. The app does not retain a
-            // durable inverse, so advertising an undo boundary here would let
-            // the shared history promise something it cannot perform.
-            reversible: false,
-            ..ActionContract::default()
-        });
-        folder.actions.push(new_folder);
-        if self.is_trash_view() {
-            folder.actions.push(
-                ActionSpec::operation(
-                    "empty-trash",
-                    t("files-menu-empty-trash"),
-                    OperationKind::Effect,
-                    "files.folder-command",
-                    &"empty-trash",
-                )
-                .expect("empty-trash command is serializable")
-                .destructive()
-                .with_contract(ActionContract {
-                    permission: PermissionRequirement::Write,
-                    risk: RiskLevel::Destructive,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    retry: RetryPolicy::AtMostOnce,
-                    ..ActionContract::default()
-                }),
-            );
-        } else if let Some(template_dir) = templates::templates_dir() {
+        let mut folder = self.action_directory_folder_root();
+        if !self.is_trash_view()
+            && let Some(template_dir) = templates::templates_dir()
+        {
             // Each resource is an existing regular template, not an arbitrary
             // local source path supplied by a caller. Invocation rechecks this
             // bounded catalogue before copying, so a stale action cannot turn
@@ -6791,26 +6767,6 @@ impl Widget for FileExplorerWidget {
                 folder.children.push(template_resource);
             }
         }
-        let paste =
-            ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
-                .expect("file operation payload is serializable")
-                .with_contract(ActionContract {
-                    availability: if self.clipboard.is_empty() {
-                        Availability::Unavailable {
-                            code: "clipboard_empty".into(),
-                            reason: "Copy or cut files before pasting".into(),
-                        }
-                    } else {
-                        Availability::Available
-                    },
-                    permission: PermissionRequirement::Write,
-                    risk: RiskLevel::Low,
-                    confirmation: ConfirmationPolicy::None,
-                    retry: RetryPolicy::AtMostOnce,
-                    reversible: false,
-                    ..ActionContract::default()
-                });
-        folder.actions.push(paste);
         // Search, the sidebar, assistive technology and headless agents all
         // address the same View operation for a place. These children are not
         // limited to the currently visible directory.
@@ -9272,6 +9228,37 @@ mod command_path_tests {
         assert_eq!(resolved.id.as_str(), id);
         assert!(resolved.actions.iter().any(|action| action.id == "open"));
         assert!(resolved.actions.iter().any(|action| action.id == "rename"));
+    }
+
+    #[test]
+    fn paged_folder_root_preserves_the_canonical_folder_actions() {
+        let d = tempfile::tempdir().unwrap();
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let doc = automerge::AutoCommit::new();
+        let eager = Widget::resources(&w, &doc)
+            .into_iter()
+            .next()
+            .expect("folder root is exported");
+        let page = Widget::action_directory_resource_page(&w, &doc, &[], 1)
+            .expect("Files supports bounded action-directory pages");
+        let paged = page
+            .resources
+            .into_iter()
+            .next()
+            .expect("the first page contains the folder root");
+        let resolved = Widget::resource(&w, &doc, eager.id.as_str())
+            .expect("the canonical folder id resolves on demand");
+        let ids = |resource: &Resource| {
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(paged.id, eager.id);
+        assert_eq!(ids(&paged), ids(&eager));
+        assert_eq!(ids(&resolved), ids(&eager));
     }
 
     #[test]

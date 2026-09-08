@@ -877,6 +877,20 @@ fn render_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
     }
 
+    // A live frame paints immediately after layout.  Prime that same phase
+    // before geometry-driven demo scenarios: FileView publishes only visible
+    // folder drop targets during its clipped draw, so `dropmove` must not see
+    // a stale, directory-sized target registry.
+    let mut priming_scene = Scene::new();
+    widget.draw_with_presence(
+        &mut priming_scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &presence,
+        &permission,
+    );
+
     // Post-layout scenarios need the laid-out geometry.
     apply_post_layout_scenario(&mut widget, scenario, (w, h), &mut state, child, &taffy);
 
