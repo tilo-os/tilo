@@ -1015,7 +1015,7 @@ where
         request: <WpImageDescriptionV1 as Resource>::Request,
         data: &ImageDescriptionData,
         _dh: &DisplayHandle,
-        _data_init: &mut DataInit<'_, D>,
+        data_init: &mut DataInit<'_, D>,
     ) {
         if let wp_image_description_v1::Request::GetInformation { information } = request {
             let Some((primaries, transfer)) = data.information() else {
@@ -1025,7 +1025,7 @@ where
                 );
                 return;
             };
-            let info = _data_init.init(information, data.clone());
+            let info = data_init.init(information, data.clone());
             let (r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y) = data.protocol_primaries();
             info.primaries(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
             if let Some(primaries) = primaries {
