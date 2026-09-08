@@ -48,8 +48,9 @@ use qos_actions::{
 };
 
 use crate::doc::SheetsDoc;
+use crate::doc::{ChartKind, ChartSnapshot, CommentReply, CommentThread};
 use crate::model::{
-    Addr, CellFormat, Currency, DateStyle, TimeStyle, col_to_letters, letters_to_col,
+    Addr, CellFormat, Currency, DateStyle, TimeStyle, a1_to_addr, col_to_letters, letters_to_col,
 };
 use crate::settings::DocSettings;
 
@@ -116,6 +117,14 @@ pub fn cell_resource_id(sheet_id: &str, col: u32, row: u32) -> String {
     format!("sheets.cell:{sheet_id}:{col}:{row}")
 }
 
+pub fn chart_resource_id(sheet_id: &str, chart_id: &str) -> String {
+    format!("sheets.chart:{sheet_id}:{chart_id}")
+}
+
+pub fn comment_resource_id(sheet_id: &str, comment_id: &str) -> String {
+    format!("sheets.comment:{sheet_id}:{comment_id}")
+}
+
 pub fn open_sheet_address(sheet_id: &str) -> ActionAddress {
     ActionAddress::new(sheet_resource_id(sheet_id), "open")
 }
@@ -176,6 +185,7 @@ pub const MAX_IMPORTED_CELLS: usize = 64 * 1024;
 const MAX_IMPORT_RAW_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SHEET_NAME_CHARS: usize = 100;
 const TAB_COLOR_COUNT: u32 = 6;
+const MAX_ANNOTATION_BYTES: usize = 4 * 1024;
 
 /// One cell's write within a batched [`SheetsAction::SetCells`]: its raw
 /// value/formula and, when `fmt` is `Some`, the format to set alongside it. An
@@ -333,6 +343,60 @@ pub enum SheetsAction {
         date_format: Option<DateStyle>,
         time_format: Option<TimeStyle>,
     },
+    /// Add or replace a durable chart with an exact selected source range.
+    PutChart {
+        sheet: usize,
+        sheet_id: String,
+        chart_id: String,
+        title: String,
+        kind: String,
+        c0: u32,
+        r0: u32,
+        c1: u32,
+        r1: u32,
+    },
+    DeleteChart {
+        sheet: usize,
+        sheet_id: String,
+        chart_id: String,
+    },
+    /// One threaded annotation lives at a stable cell/range anchor.
+    PutComment {
+        sheet: usize,
+        sheet_id: String,
+        comment_id: String,
+        c0: u32,
+        r0: u32,
+        c1: u32,
+        r1: u32,
+        author: String,
+        body: String,
+    },
+    ReplyComment {
+        sheet: usize,
+        sheet_id: String,
+        comment_id: String,
+        reply_id: String,
+        author: String,
+        body: String,
+    },
+    EditComment {
+        sheet: usize,
+        sheet_id: String,
+        comment_id: String,
+        body: String,
+    },
+    DeleteComment {
+        sheet: usize,
+        sheet_id: String,
+        comment_id: String,
+    },
+    SetCommentResolved {
+        sheet: usize,
+        sheet_id: String,
+        comment_id: String,
+        resolved: bool,
+    },
 }
 
 /// Durable, browseable history metadata for a workbook mutation.
@@ -368,6 +432,10 @@ fn range_resource(label: &'static str, sheet_id: &str, cells: usize) -> HistoryR
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "history labels are exhaustive over the replayable Sheets action enum and stay adjacent to its action semantics"
+)]
 fn history_resource(action: &SheetsAction) -> HistoryResource {
     match action {
         SheetsAction::ImportSheets { sheets } => (
@@ -461,6 +529,82 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
             "sheets.workbook".to_string(),
             "sheets.workbook",
             "Workbook".to_string(),
+        ),
+        SheetsAction::PutChart {
+            sheet_id,
+            chart_id,
+            title,
+            ..
+        } => (
+            "Update chart",
+            format!("sheets.chart:{sheet_id}:{chart_id}"),
+            "sheets.chart",
+            title.clone(),
+        ),
+        SheetsAction::DeleteChart {
+            sheet_id, chart_id, ..
+        } => (
+            "Delete chart",
+            format!("sheets.chart:{sheet_id}:{chart_id}"),
+            "sheets.chart",
+            "Chart".into(),
+        ),
+        SheetsAction::PutComment {
+            sheet_id,
+            comment_id,
+            c0,
+            r0,
+            ..
+        } => (
+            "Add comment",
+            format!("sheets.comment:{sheet_id}:{comment_id}"),
+            "sheets.comment",
+            format!("{}{}", column_label(*c0), r0 + 1),
+        ),
+        SheetsAction::ReplyComment {
+            sheet_id,
+            comment_id,
+            ..
+        } => (
+            "Reply to comment",
+            format!("sheets.comment:{sheet_id}:{comment_id}"),
+            "sheets.comment",
+            "Comment thread".into(),
+        ),
+        SheetsAction::EditComment {
+            sheet_id,
+            comment_id,
+            ..
+        } => (
+            "Edit comment",
+            format!("sheets.comment:{sheet_id}:{comment_id}"),
+            "sheets.comment",
+            "Comment thread".into(),
+        ),
+        SheetsAction::DeleteComment {
+            sheet_id,
+            comment_id,
+            ..
+        } => (
+            "Delete comment",
+            format!("sheets.comment:{sheet_id}:{comment_id}"),
+            "sheets.comment",
+            "Comment thread".into(),
+        ),
+        SheetsAction::SetCommentResolved {
+            sheet_id,
+            comment_id,
+            resolved,
+            ..
+        } => (
+            if *resolved {
+                "Resolve comment"
+            } else {
+                "Reopen comment"
+            },
+            format!("sheets.comment:{sheet_id}:{comment_id}"),
+            "sheets.comment",
+            "Comment thread".into(),
         ),
     }
 }
@@ -607,6 +751,128 @@ impl Action for SheetsAction {
                         time_format: *time_format,
                     },
                 );
+            }
+            SheetsAction::PutChart {
+                sheet_id,
+                chart_id,
+                title,
+                kind,
+                c0,
+                r0,
+                c1,
+                r1,
+                ..
+            } => {
+                SheetsDoc::put_chart(
+                    doc,
+                    resolve_sheet(doc, sheet_id)?,
+                    &ChartSnapshot {
+                        id: chart_id.clone(),
+                        title: title.clone(),
+                        kind: ChartKind::parse(kind).unwrap_or(ChartKind::Column),
+                        start: (*c0, *r0),
+                        end: (*c1, *r1),
+                    },
+                );
+            }
+            SheetsAction::DeleteChart {
+                sheet_id, chart_id, ..
+            } => SheetsDoc::delete_chart(doc, resolve_sheet(doc, sheet_id)?, chart_id),
+            SheetsAction::PutComment {
+                sheet_id,
+                comment_id,
+                c0,
+                r0,
+                c1,
+                r1,
+                author,
+                body,
+                ..
+            } => {
+                SheetsDoc::put_comment(
+                    doc,
+                    resolve_sheet(doc, sheet_id)?,
+                    &CommentThread {
+                        id: comment_id.clone(),
+                        start: (*c0, *r0),
+                        end: (*c1, *r1),
+                        author: author.clone(),
+                        body: body.clone(),
+                        resolved: false,
+                        replies: Vec::new(),
+                    },
+                );
+            }
+            SheetsAction::ReplyComment {
+                sheet_id,
+                comment_id,
+                reply_id,
+                author,
+                body,
+                ..
+            } => {
+                let sheet = resolve_sheet(doc, sheet_id)?;
+                if SheetsDoc::comments(doc, sheet)
+                    .iter()
+                    .any(|thread| thread.id == *comment_id)
+                {
+                    SheetsDoc::put_comment_reply(
+                        doc,
+                        sheet,
+                        comment_id,
+                        &CommentReply {
+                            id: reply_id.clone(),
+                            author: author.clone(),
+                            body: body.clone(),
+                        },
+                    );
+                } else {
+                    return refuse("comment thread no longer exists");
+                }
+            }
+            SheetsAction::SetCommentResolved {
+                sheet_id,
+                comment_id,
+                resolved,
+                ..
+            } => {
+                let sheet = resolve_sheet(doc, sheet_id)?;
+                if !SheetsDoc::comments(doc, sheet)
+                    .iter()
+                    .any(|thread| thread.id == *comment_id)
+                {
+                    return refuse("comment thread no longer exists");
+                }
+                SheetsDoc::set_comment_resolved(doc, sheet, comment_id, *resolved);
+            }
+            SheetsAction::EditComment {
+                sheet_id,
+                comment_id,
+                body,
+                ..
+            } => {
+                let sheet = resolve_sheet(doc, sheet_id)?;
+                if !SheetsDoc::comments(doc, sheet)
+                    .iter()
+                    .any(|thread| thread.id == *comment_id)
+                {
+                    return refuse("comment thread no longer exists");
+                }
+                SheetsDoc::edit_comment_body(doc, sheet, comment_id, body);
+            }
+            SheetsAction::DeleteComment {
+                sheet_id,
+                comment_id,
+                ..
+            } => {
+                let sheet = resolve_sheet(doc, sheet_id)?;
+                if !SheetsDoc::comments(doc, sheet)
+                    .iter()
+                    .any(|thread| thread.id == *comment_id)
+                {
+                    return refuse("comment thread no longer exists");
+                }
+                SheetsDoc::delete_comment(doc, sheet, comment_id);
             }
         }
         Ok(())
@@ -998,7 +1264,121 @@ fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> 
             }
         }
         SheetsAction::SetDocSettings { .. } => Ok(()),
+        SheetsAction::PutChart {
+            sheet,
+            sheet_id,
+            chart_id,
+            title,
+            kind,
+            c0,
+            r0,
+            c1,
+            r1,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if Uuid::parse_str(chart_id).is_err()
+                || title.trim().is_empty()
+                || title.len() > MAX_ANNOTATION_BYTES
+                || ChartKind::parse(kind).is_none()
+                || !valid_range(*c0, *r0, *c1, *r1)
+            {
+                return refuse("chart payload is invalid");
+            }
+            Ok(())
+        }
+        SheetsAction::DeleteChart {
+            sheet,
+            sheet_id,
+            chart_id,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if Uuid::parse_str(chart_id).is_ok() {
+                Ok(())
+            } else {
+                refuse("chart identity is invalid")
+            }
+        }
+        SheetsAction::PutComment {
+            sheet,
+            sheet_id,
+            comment_id,
+            c0,
+            r0,
+            c1,
+            r1,
+            author,
+            body,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if Uuid::parse_str(comment_id).is_err()
+                || !valid_range(*c0, *r0, *c1, *r1)
+                || !valid_annotation(author)
+                || !valid_annotation(body)
+            {
+                return refuse("comment payload is invalid");
+            }
+            Ok(())
+        }
+        SheetsAction::ReplyComment {
+            sheet,
+            sheet_id,
+            comment_id,
+            reply_id,
+            author,
+            body,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if Uuid::parse_str(comment_id).is_err()
+                || Uuid::parse_str(reply_id).is_err()
+                || !valid_annotation(author)
+                || !valid_annotation(body)
+            {
+                return refuse("comment reply payload is invalid");
+            }
+            Ok(())
+        }
+        SheetsAction::SetCommentResolved {
+            sheet,
+            sheet_id,
+            comment_id,
+            ..
+        }
+        | SheetsAction::DeleteComment {
+            sheet,
+            sheet_id,
+            comment_id,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if Uuid::parse_str(comment_id).is_ok() {
+                Ok(())
+            } else {
+                refuse("comment identity is invalid")
+            }
+        }
+        SheetsAction::EditComment {
+            sheet,
+            sheet_id,
+            comment_id,
+            body,
+        } => {
+            validate_sheet(doc, *sheet, sheet_id)?;
+            if Uuid::parse_str(comment_id).is_ok() && valid_annotation(body) {
+                Ok(())
+            } else {
+                refuse("comment edit payload is invalid")
+            }
+        }
     }
+}
+
+fn valid_range(c0: u32, r0: u32, c1: u32, r1: u32) -> bool {
+    valid_addr(c0, r0) && valid_addr(c1, r1) && c0 <= c1 && r0 <= r1
+}
+
+fn valid_annotation(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.len() <= MAX_ANNOTATION_BYTES
+        && !value.chars().any(char::is_control)
 }
 
 /// The `restructure` shift map for inserting a blank row above `at`.
@@ -1074,6 +1454,9 @@ fn restructure(doc: &mut Doc, sheet: usize, map: impl Fn(Addr) -> Option<Addr>) 
     for (addr, fmt) in fmts {
         SheetsDoc::set_cell_format(doc, sheet, addr, fmt);
     }
+    // Charts and discussion anchors describe the same coordinate system as
+    // cells, so structural edits must move them in this exact replay action.
+    SheetsDoc::remap_annotation_anchors(doc, sheet, map);
 }
 
 /// Register Sheets' action decoder for palette execution + remote replay.
@@ -1198,6 +1581,142 @@ pub fn set_formats_action(
             })
             .collect(),
     }
+}
+
+pub fn put_chart_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    title: &str,
+    kind: ChartKind,
+    start: Addr,
+    end: Addr,
+) -> SheetsAction {
+    SheetsAction::PutChart {
+        sheet,
+        sheet_id: sheet_id.into(),
+        chart_id: Uuid::new_v4().to_string(),
+        title: title.to_string(),
+        kind: kind.code().to_string(),
+        c0: start.0,
+        r0: start.1,
+        c1: end.0,
+        r1: end.1,
+    }
+}
+
+pub fn put_comment_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    start: Addr,
+    end: Addr,
+    author: &str,
+    body: &str,
+) -> SheetsAction {
+    SheetsAction::PutComment {
+        sheet,
+        sheet_id: sheet_id.into(),
+        comment_id: Uuid::new_v4().to_string(),
+        c0: start.0,
+        r0: start.1,
+        c1: end.0,
+        r1: end.1,
+        author: author.to_string(),
+        body: body.to_string(),
+    }
+}
+
+pub fn reply_comment_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    comment_id: impl Into<String>,
+    author: &str,
+    body: &str,
+) -> SheetsAction {
+    SheetsAction::ReplyComment {
+        sheet,
+        sheet_id: sheet_id.into(),
+        comment_id: comment_id.into(),
+        reply_id: Uuid::new_v4().to_string(),
+        author: author.to_string(),
+        body: body.to_string(),
+    }
+}
+
+pub fn edit_comment_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    comment_id: impl Into<String>,
+    body: &str,
+) -> SheetsAction {
+    SheetsAction::EditComment {
+        sheet,
+        sheet_id: sheet_id.into(),
+        comment_id: comment_id.into(),
+        body: body.to_string(),
+    }
+}
+
+pub fn set_comment_resolved_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    comment_id: impl Into<String>,
+    resolved: bool,
+) -> SheetsAction {
+    SheetsAction::SetCommentResolved {
+        sheet,
+        sheet_id: sheet_id.into(),
+        comment_id: comment_id.into(),
+        resolved,
+    }
+}
+
+pub fn delete_comment_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    comment_id: impl Into<String>,
+) -> SheetsAction {
+    SheetsAction::DeleteComment {
+        sheet,
+        sheet_id: sheet_id.into(),
+        comment_id: comment_id.into(),
+    }
+}
+
+/// Parse the accessible chart editor's compact, copyable current-value form:
+/// `Title | column | B2:E9`. Keeping the parser beside the action builders
+/// ensures agents, Ctrl+K and future native editors all author the exact same
+/// stable-ID upsert payload.
+pub fn edit_chart_form_action(
+    sheet: usize,
+    sheet_id: impl Into<String>,
+    chart_id: impl Into<String>,
+    form: &str,
+) -> Option<SheetsAction> {
+    let mut parts = form.split('|').map(str::trim);
+    let (Some(title), Some(kind), Some(range), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    let (start, end) = range.split_once(':').map_or_else(
+        || {
+            let addr = a1_to_addr(range)?;
+            Some((addr, addr))
+        },
+        |(start, end)| Some((a1_to_addr(start)?, a1_to_addr(end)?)),
+    )?;
+    let kind = ChartKind::parse(&kind.to_ascii_lowercase())?;
+    Some(SheetsAction::PutChart {
+        sheet,
+        sheet_id: sheet_id.into(),
+        chart_id: chart_id.into(),
+        title: title.to_string(),
+        kind: kind.code().to_string(),
+        c0: start.0.min(end.0),
+        r0: start.1.min(end.1),
+        c1: start.0.max(end.0),
+        r1: start.1.max(end.1),
+    })
 }
 
 pub fn add_sheet_action(name: &str) -> SheetsAction {
@@ -1497,7 +2016,12 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
     workbook
 }
 
-pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one canonical resource tree keeps every agent and Ctrl+K operation addressable from the same projection"
+)]
+pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut projection = doc.clone();
     let mut workbook = workbook_root(ctx);
     for (idx, searchable) in ctx.searchable_sheets.iter().enumerate() {
         let name = &searchable.name;
@@ -1593,6 +2117,149 @@ pub fn provide_resources(ctx: &SheetsResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             },
         ));
 
+        // Charts and threads are canonical children, not popup-only state.
+        // Each carries its UUID resource identity through deletion/resolution.
+        for chart in SheetsDoc::charts(&mut projection, idx) {
+            let chart_id = chart.id.clone();
+            let current_form = format!(
+                "{} | {} | {}:{}",
+                chart.title,
+                chart.kind.code(),
+                crate::model::addr_to_a1(chart.start.0, chart.start.1),
+                crate::model::addr_to_a1(chart.end.0, chart.end.1),
+            );
+            let chart_resource = Resource::new(
+                chart_resource_id(&stable, &chart_id),
+                "sheets.chart",
+                chart.title.clone(),
+            )
+            .with_action(operation(
+                "open",
+                "Open chart range",
+                OperationKind::View,
+                SheetsOperation::RevealCell {
+                    sheet_id: stable.clone(),
+                    col: chart.start.0,
+                    row: chart.start.1,
+                },
+            ))
+            .with_action(ActionSpec::prompted(
+                "edit",
+                "Edit chart",
+                "Title | type | source range",
+                format!("Current: {current_form}"),
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let chart_id = chart_id.clone();
+                    move |form: &str| {
+                        edit_chart_form_action(idx, stable.clone(), chart_id.clone(), form)
+                            .map_or_else(
+                                || {
+                                    encode(&SheetsAction::PutChart {
+                                        sheet: idx,
+                                        sheet_id: stable.clone(),
+                                        chart_id: chart_id.clone(),
+                                        title: String::new(),
+                                        kind: "invalid".into(),
+                                        c0: 1,
+                                        r0: 1,
+                                        c1: 0,
+                                        r1: 0,
+                                    })
+                                },
+                                |action| encode(&action),
+                            )
+                    }
+                },
+            ))
+            .with_action(immediate_spec(
+                "delete",
+                "Delete chart",
+                &SheetsAction::DeleteChart {
+                    sheet: idx,
+                    sheet_id: stable.clone(),
+                    chart_id,
+                },
+            ));
+            sheet = sheet.with_child(chart_resource);
+        }
+        for thread in SheetsDoc::comments(&mut projection, idx) {
+            let comment_id = thread.id.clone();
+            let action = set_comment_resolved_action(
+                idx,
+                stable.clone(),
+                comment_id.clone(),
+                !thread.resolved,
+            );
+            let label = if thread.resolved {
+                "Reopen comment"
+            } else {
+                "Resolve comment"
+            };
+            let comment = Resource::new(
+                comment_resource_id(&stable, &comment_id),
+                "sheets.comment",
+                format!("{}{}", column_label(thread.start.0), thread.start.1 + 1),
+            )
+            .with_action(operation(
+                "open",
+                "Open comment anchor",
+                OperationKind::View,
+                SheetsOperation::RevealCell {
+                    sheet_id: stable.clone(),
+                    col: thread.start.0,
+                    row: thread.start.1,
+                },
+            ))
+            .with_action(ActionSpec::prompted(
+                "edit",
+                "Edit comment",
+                "Comment",
+                "comment…",
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let comment_id = comment_id.clone();
+                    move |body: &str| {
+                        encode(&edit_comment_action(
+                            idx,
+                            stable.clone(),
+                            comment_id.clone(),
+                            body.trim(),
+                        ))
+                    }
+                },
+            ))
+            .with_action(ActionSpec::prompted(
+                "reply",
+                "Reply to comment",
+                "Reply",
+                "reply…",
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let comment_id = comment_id.clone();
+                    move |body: &str| {
+                        encode(&reply_comment_action(
+                            idx,
+                            stable.clone(),
+                            comment_id.clone(),
+                            "You",
+                            body.trim(),
+                        ))
+                    }
+                },
+            ))
+            .with_action(immediate_spec("toggle-resolved", label, &action))
+            .with_action(immediate_spec(
+                "delete",
+                "Delete comment",
+                &delete_comment_action(idx, stable.clone(), comment_id),
+            ));
+            sheet = sheet.with_child(comment);
+        }
+
         workbook = workbook.with_child(sheet);
     }
 
@@ -1643,6 +2310,14 @@ impl ResourceProvider for crate::app::SheetsApp {
             let tail = id.strip_prefix("sheets.range:")?;
             let (sheet_id, _) = tail.split_once(':')?;
             return SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).map(|_| range.clone());
+        }
+        if let Some(annotation) = workbook
+            .children
+            .iter()
+            .flat_map(|sheet| sheet.children.iter())
+            .find(|child| child.id.0 == id)
+        {
+            return Some(annotation.clone());
         }
 
         // Cells are intentionally not children of a sheet: a 100k-row file
@@ -1901,6 +2576,32 @@ mod tests {
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "=SUM(B1:B3)");
         let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
         assert_eq!(snap.fmt.get(&(0, 1)).copied(), Some(CellFormat::Number));
+    }
+
+    #[test]
+    fn chart_editor_form_keeps_id_and_updates_title_kind_and_range() {
+        let action = edit_chart_form_action(
+            4,
+            "sheet-id",
+            "00000000-0000-4000-8000-000000000099",
+            "Revenue | line | D3:B1",
+        )
+        .expect("valid edit form");
+        assert_eq!(
+            action,
+            SheetsAction::PutChart {
+                sheet: 4,
+                sheet_id: "sheet-id".into(),
+                chart_id: "00000000-0000-4000-8000-000000000099".into(),
+                title: "Revenue".into(),
+                kind: "line".into(),
+                c0: 1,
+                r0: 0,
+                c1: 3,
+                r1: 2
+            }
+        );
+        assert!(edit_chart_form_action(0, "s", "id", "broken").is_none());
     }
 
     #[test]

@@ -36,7 +36,7 @@ use ui::widget::{EditOutcome, EditableLabel, TextInput, Widget};
 use uuid::Uuid;
 
 use crate::actions::{self, SheetsAction, SheetsResourceCtx};
-use crate::doc::SheetsDoc;
+use crate::doc::{ChartKind, ChartSnapshot, CommentThread, SheetsDoc};
 use crate::fill;
 use crate::formula;
 use crate::grid::{Grid, GridCmd};
@@ -51,6 +51,10 @@ const MENUBAR_H: f64 = 44.0;
 const FORMULA_H: f64 = 34.0;
 const TABS_H: f64 = 34.0;
 const NAME_BOX_W: f64 = 92.0;
+/// Every painted chart/comment command gets a normal touch target, not a
+/// text-baseline-sized link. Kept as a shared constant so the renderer and
+/// regression test cannot silently drift apart.
+const ANNOTATION_ACTION_H: f64 = 44.0;
 /// Importing is deliberately bounded before a parsed workbook can become a
 /// durable action stream.  This is large enough for useful real-world sheets,
 /// while keeping one user-selected file from monopolising a collaborator's
@@ -331,6 +335,17 @@ enum TabAction {
     SetColor(Option<u32>),
 }
 
+#[derive(Clone)]
+enum AnnotationClick {
+    Open(Addr),
+    EditChart(String),
+    DeleteChart(String),
+    Reply(String),
+    EditComment(String),
+    ToggleComment(String, bool),
+    DeleteComment(String),
+}
+
 /// An in-progress inline rename of a sheet tab.
 struct TabRename {
     idx: usize,
@@ -409,6 +424,10 @@ fn tab_action_label(act: TabAction) -> &'static str {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the loading shot flag joins existing independent retained interaction, worker, and presentation flags; these are not mutually exclusive states"
+)]
 pub struct SheetsApp {
     grid: Grid,
     rect: Rect,
@@ -452,6 +471,13 @@ pub struct SheetsApp {
     /// Whether a drag that began in the formula bar is selecting text.
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
+    /// Durable chart/comment records for the active sheet; refreshed together
+    /// with its formula snapshot, never created as an app-local side store.
+    sheet_charts: Vec<ChartSnapshot>,
+    sheet_comments: Vec<CommentThread>,
+    /// Rebuilt on paint: annotation cards stay a visual projection of the
+    /// shared records, while their click routes dispatch canonical actions.
+    annotation_clicks: Vec<(Rect, AnnotationClick)>,
     /// Query-ready workbook projection, rebuilt only when document heads
     /// change so global search never reads the CRDT synchronously.
     searchable_sheets: Vec<actions::SearchableSheet>,
@@ -481,6 +507,10 @@ pub struct SheetsApp {
     last_status_label: String,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
+    /// Snapshot-only counterpart to the real startup loading state. This lets
+    /// headless visual regression cover the loading affordance after the shot
+    /// harness has seeded its deterministic sample workbook.
+    shots_loading: bool,
     /// One-shot frame duties: startup seeding, repaint, undo checkpoint.
     pending: Pending,
     last_press: Option<(Instant, Addr)>,
@@ -607,6 +637,9 @@ impl SheetsApp {
             formula_char_x: Vec::new(),
             formula_bar_selecting: false,
             sheet_names: Vec::new(),
+            sheet_charts: Vec::new(),
+            sheet_comments: Vec::new(),
+            annotation_clicks: Vec::new(),
             searchable_sheets: Vec::new(),
             search_projection_heads: None,
             search_provider: crate::search_provider::SheetSearchProvider::new(&[]),
@@ -615,6 +648,7 @@ impl SheetsApp {
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
             shots_status: false,
+            shots_loading: false,
             pending: Pending {
                 seeded: false,
                 redraw: true,
@@ -761,6 +795,42 @@ impl SheetsApp {
             })
             .collect();
         let mut specs = vec![
+            immediate(
+                "insert-column-chart",
+                "Create column chart from selection",
+                actions::put_chart_action(
+                    sheet,
+                    sheet_id.clone(),
+                    "Selection chart",
+                    ChartKind::Column,
+                    (c0, r0),
+                    (c1, r1),
+                ),
+            ),
+            immediate(
+                "insert-line-chart",
+                "Create line chart from selection",
+                actions::put_chart_action(
+                    sheet,
+                    sheet_id.clone(),
+                    "Selection chart",
+                    ChartKind::Line,
+                    (c0, r0),
+                    (c1, r1),
+                ),
+            ),
+            immediate(
+                "comment-selection",
+                "Comment on selection",
+                actions::put_comment_action(
+                    sheet,
+                    sheet_id.clone(),
+                    (c0, r0),
+                    (c1, r1),
+                    "You",
+                    "New comment",
+                ),
+            ),
             immediate(
                 "sum-selection",
                 "Sum selection",
@@ -937,6 +1007,34 @@ impl SheetsApp {
         self.open_menu = OpenMenu::File;
     }
 
+    /// Shots hook: exercise the same loading veil real persistent launches
+    /// display while their bounded workbook load is still in flight.
+    pub fn shots_show_loading(&mut self) {
+        self.shots_loading = true;
+    }
+
+    /// Shots hook: stage a failed import acknowledgement in the normal status
+    /// surface. The production path supplies the same text from its worker.
+    pub fn shots_show_error(&mut self) {
+        self.status = "Excel import failed: the workbook is password protected".into();
+        self.arm_status_bubble_for_shots();
+    }
+
+    /// Shots hook: stage the collaboration acknowledgement used when an
+    /// incoming revision supersedes the value currently being edited.
+    pub fn shots_show_conflict(&mut self) {
+        self.status = "Budget was updated by a collaborator; showing the latest value".into();
+        self.arm_status_bubble_for_shots();
+    }
+
+    /// Shots hook: prove that acknowledgement remains visible with animations
+    /// suppressed for the reduced-motion preference.
+    pub fn shots_show_reduced_motion(&mut self) {
+        self.set_motion_reduced(true);
+        self.status = "Changes saved".into();
+        self.arm_status_bubble_for_shots();
+    }
+
     /// Shots hook: open the Format menu.
     pub fn shots_open_format_menu(&mut self) {
         self.open_menu = OpenMenu::Format;
@@ -999,8 +1097,8 @@ impl SheetsApp {
 
     /// Shots hook: open the Ctrl+K command palette so the captured frame shows
     /// the action list with labels + descriptions.
-    pub fn shots_open_command_palette(&mut self) {
-        self.open_command_palette();
+    pub fn shots_open_command_palette(&mut self, doc: &AutoCommit) {
+        self.open_command_palette(doc);
     }
 
     /// Shots hook: offset both axes so the scrollbar thumbs visibly prove the
@@ -1065,6 +1163,63 @@ impl SheetsApp {
         self.paste(doc);
         self.grid.select_only((5, 1));
         self.reload(doc);
+    }
+
+    /// Shots hook: add the two durable chart types and a range-anchored thread
+    /// through the same replayable action path used by Ctrl+K and agents.
+    pub fn shots_seed_charts_and_comments(&mut self, doc: &mut AutoCommit) {
+        let sheet_id = self.sheet_identity(self.active_sheet);
+        let charts = [
+            actions::put_chart_action(
+                self.active_sheet,
+                sheet_id.clone(),
+                "Quarterly spend",
+                ChartKind::Column,
+                (1, 1),
+                (4, 6),
+            ),
+            actions::put_chart_action(
+                self.active_sheet,
+                sheet_id.clone(),
+                "Monthly trend",
+                ChartKind::Line,
+                (1, 1),
+                (3, 6),
+            ),
+        ];
+        for chart in &charts {
+            self.perform_action(doc, chart);
+        }
+        let comment = actions::put_comment_action(
+            self.active_sheet,
+            sheet_id.clone(),
+            (1, 1),
+            (4, 1),
+            "Alex",
+            "Check the rent increase before sending this budget.",
+        );
+        let SheetsAction::PutComment { comment_id, .. } = &comment else {
+            return;
+        };
+        let comment_id = comment_id.clone();
+        self.perform_action(doc, &comment);
+        self.perform_action(
+            doc,
+            &actions::reply_comment_action(
+                self.active_sheet,
+                sheet_id.clone(),
+                comment_id.clone(),
+                "Sam",
+                "I will verify the change.",
+            ),
+        );
+        self.perform_action(
+            doc,
+            &actions::set_comment_resolved_action(self.active_sheet, sheet_id, comment_id, true),
+        );
+        self.reload(doc);
+        self.status = "2 charts and 1 resolved comment thread added".into();
+        self.arm_status_bubble_for_shots();
     }
 
     /// The document's effective locale (per-doc overrides over global).
@@ -1465,6 +1620,8 @@ impl SheetsApp {
         }
         let cur = self.default_currency();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
+        self.sheet_charts = SheetsDoc::charts(doc, self.active_sheet);
+        self.sheet_comments = SheetsDoc::comments(doc, self.active_sheet);
         let values = formula::recalculate(&snap.raw);
 
         // Effective per-cell formats: an explicit cell format wins; a
@@ -2892,7 +3049,7 @@ impl SheetsApp {
     /// Rebuilt each time so argument prefills (e.g. the active cell reference)
     /// stay current. Every entry is wired to a real mutation in
     /// [`dispatch_command`]; nothing here is a stub.
-    fn open_command_palette(&mut self) {
+    fn open_command_palette(&mut self, doc: &AutoCommit) {
         // Close any other overlay so the palette owns the surface.
         self.open_menu = OpenMenu::None;
         self.settings_panel = SettingsPanel::None;
@@ -2905,8 +3062,7 @@ impl SheetsApp {
             crate::model::addr_to_a1(c, r)
         };
         self.palette.clear();
-        let scratch = AutoCommit::new();
-        let resources = actions::provide_resources(&self.sheets_resource_ctx(), &scratch);
+        let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
         let mut actions = qos_actions::flatten(&resources);
         actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
         for action in actions {
@@ -3965,6 +4121,339 @@ impl SheetsApp {
         scene.pop_layer();
     }
 
+    /// A non-blocking veil while a persistent workbook is decoded on the
+    /// capacity-one worker. The normal chrome remains visible so the launch
+    /// feels intentional, but the grid cannot be edited until its CRDT receipt
+    /// has been merged. This is deliberately drawn from state rather than a
+    /// timer, so reduced motion and a slow disk behave identically.
+    fn draw_loading_veil(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let loading = (self.run.persists() && self.persistence_started && !self.pending.seeded)
+            || self.shots_loading;
+        if !loading {
+            return;
+        }
+        let veil = self.grid_rect;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base.with_alpha_factor(0.88),
+            None,
+            &veil,
+        );
+        let label = "Opening workbook…";
+        let size = theme.tokens.typography.scale.base;
+        let (width, _) = tr.measure(label, size, None);
+        let origin = Point::new(
+            veil.center().x - f64::from(width) / 2.0,
+            veil.center().y - 4.0,
+        );
+        tr.draw_text(
+            scene,
+            label,
+            size,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((origin.x, origin.y)),
+            None,
+        );
+    }
+
+    /// Render the active sheet's small, data-derived chart collection. Charts
+    /// intentionally sample only their selected rectangle and cap the plotted
+    /// points, so a broad range cannot turn a paint into an unbounded formula
+    /// or path build.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded chart card paint keeps layout, hit targets, and both chart renderers in one frame-local path"
+    )]
+    fn draw_charts(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(cache) = &self.cache else { return };
+        let max_cards = 3usize;
+        for (index, chart) in self.sheet_charts.iter().take(max_cards).enumerate() {
+            let width = self.grid_rect.width().clamp(180.0, 300.0);
+            let height = 176.0;
+            let x1 = self.grid_rect.x1 - 14.0;
+            let y0 = self.grid_rect.y0 + 14.0 + index as f64 * (height + 10.0);
+            if y0 + height > self.grid_rect.y1 {
+                break;
+            }
+            let card = Rect::new(x1 - width, y0, x1, y0 + height);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(card, 8.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &RoundedRect::from_rect(card, 8.0),
+            );
+            tr.draw_text(
+                scene,
+                &chart.title,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((card.x0 + 12.0, card.y0 + 21.0)),
+                None,
+            );
+            let controls = Rect::new(
+                card.x0 + 12.0,
+                card.y0 + 26.0,
+                card.x1 - 12.0,
+                card.y0 + 26.0 + ANNOTATION_ACTION_H,
+            );
+            let actions = [
+                ("Open", AnnotationClick::Open(chart.start)),
+                ("Edit", AnnotationClick::EditChart(chart.id.clone())),
+                ("Delete", AnnotationClick::DeleteChart(chart.id.clone())),
+            ];
+            let action_width = controls.width() / actions.len() as f64;
+            for (index, (label, action)) in actions.into_iter().enumerate() {
+                let button = Rect::new(
+                    controls.x0 + index as f64 * action_width,
+                    controls.y0,
+                    controls.x0 + (index + 1) as f64 * action_width,
+                    controls.y1,
+                );
+                let (label_width, _) = tr.measure(label, theme.tokens.typography.scale.xs, None);
+                tr.draw_text(
+                    scene,
+                    label,
+                    theme.tokens.typography.scale.xs,
+                    theme.tokens.colors.accent[5],
+                    transform
+                        * Affine::translate((
+                            button.center().x - f64::from(label_width) / 2.0,
+                            button.center().y + 4.0,
+                        )),
+                    None,
+                );
+                self.annotation_clicks.push((button, action));
+            }
+            let plot = Rect::new(
+                card.x0 + 14.0,
+                card.y0 + 86.0,
+                card.x1 - 14.0,
+                card.y1 - 16.0,
+            );
+            let mut points = Vec::new();
+            for row in chart.start.1..=chart.end.1 {
+                for col in chart.start.0..=chart.end.0 {
+                    if let Some(CellValue::Number(value)) = cache.values.get(&(col, row)) {
+                        points.push(*value);
+                    }
+                    if points.len() == 48 {
+                        break;
+                    }
+                }
+                if points.len() == 48 {
+                    break;
+                }
+            }
+            if points.is_empty() {
+                tr.draw_text(
+                    scene,
+                    "Select numeric cells to plot",
+                    theme.tokens.typography.scale.sm,
+                    theme.tokens.colors.text_tertiary,
+                    transform * Affine::translate((plot.x0, plot.center().y)),
+                    None,
+                );
+                continue;
+            }
+            let max = points.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let min = points.iter().copied().fold(f64::INFINITY, f64::min);
+            let span = (max - min).abs().max(1.0);
+            let accent = theme.tokens.colors.accent[5];
+            match chart.kind {
+                ChartKind::Column => {
+                    for (i, value) in points.iter().enumerate() {
+                        let step = plot.width() / points.len() as f64;
+                        let h = ((value - min) / span * plot.height()).max(2.0);
+                        let bar = Rect::new(
+                            plot.x0 + i as f64 * step + 2.0,
+                            plot.y1 - h,
+                            plot.x0 + (i + 1) as f64 * step - 2.0,
+                            plot.y1,
+                        );
+                        scene.fill(Fill::NonZero, transform, accent, None, &bar);
+                    }
+                }
+                ChartKind::Line => {
+                    for (i, pair) in points.windows(2).enumerate() {
+                        let [first, second] = pair else { continue };
+                        let step = if points.len() > 1 {
+                            plot.width() / (points.len() - 1) as f64
+                        } else {
+                            0.0
+                        };
+                        let point = |offset: usize, value: f64| {
+                            Point::new(
+                                plot.x0 + (i + offset) as f64 * step,
+                                plot.y1 - (value - min) / span * plot.height(),
+                            )
+                        };
+                        scene.stroke(
+                            &Stroke::new(2.0),
+                            transform,
+                            accent,
+                            None,
+                            &Line::new(point(0, *first), point(1, *second)),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact threaded-comment card deliberately co-locates visible state and its bounded click targets"
+    )]
+    fn draw_comment_threads(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(thread) = self.sheet_comments.first() else {
+            return;
+        };
+        let width = self.grid_rect.width().clamp(200.0, 310.0);
+        let card = Rect::new(
+            self.grid_rect.x0 + 14.0,
+            self.grid_rect.y0 + 14.0,
+            self.grid_rect.x0 + 14.0 + width,
+            self.grid_rect.y0 + 192.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(card, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.accent[5],
+            None,
+            &RoundedRect::from_rect(card, 8.0),
+        );
+        let range = if thread.start == thread.end {
+            crate::model::addr_to_a1(thread.start.0, thread.start.1)
+        } else {
+            format!(
+                "{}:{}",
+                crate::model::addr_to_a1(thread.start.0, thread.start.1),
+                crate::model::addr_to_a1(thread.end.0, thread.end.1)
+            )
+        };
+        let heading = format!(
+            "{} · {}{}",
+            range,
+            thread.author,
+            if thread.resolved { " · Resolved" } else { "" }
+        );
+        tr.draw_text(
+            scene,
+            &heading,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((card.x0 + 12.0, card.y0 + 22.0)),
+            None,
+        );
+        let body: String = thread.body.chars().take(56).collect();
+        tr.draw_text(
+            scene,
+            &body,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_tertiary,
+            transform * Affine::translate((card.x0 + 12.0, card.y0 + 48.0)),
+            None,
+        );
+        let detail = format!(
+            "{} {} · {}",
+            thread.replies.len(),
+            if thread.replies.len() == 1 {
+                "reply"
+            } else {
+                "replies"
+            },
+            if thread.resolved { "Reopen" } else { "Resolve" }
+        );
+        tr.draw_text(
+            scene,
+            &detail,
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.accent[5],
+            transform * Affine::translate((card.x0 + 12.0, card.y0 + 84.0)),
+            None,
+        );
+        let controls = Rect::new(
+            card.x0 + 12.0,
+            card.y0 + 112.0,
+            card.x1 - 12.0,
+            card.y0 + 112.0 + ANNOTATION_ACTION_H,
+        );
+        let actions = [
+            ("Reply", AnnotationClick::Reply(thread.id.clone())),
+            ("Edit", AnnotationClick::EditComment(thread.id.clone())),
+            ("Open", AnnotationClick::Open(thread.start)),
+            ("Delete", AnnotationClick::DeleteComment(thread.id.clone())),
+        ];
+        let action_width = controls.width() / actions.len() as f64;
+        for (index, (label, action)) in actions.into_iter().enumerate() {
+            let button = Rect::new(
+                controls.x0 + index as f64 * action_width,
+                controls.y0,
+                controls.x0 + (index + 1) as f64 * action_width,
+                controls.y1,
+            );
+            let (label_width, _) = tr.measure(label, theme.tokens.typography.scale.xs, None);
+            tr.draw_text(
+                scene,
+                label,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.accent[5],
+                transform
+                    * Affine::translate((
+                        button.center().x - f64::from(label_width) / 2.0,
+                        button.center().y + 4.0,
+                    )),
+                None,
+            );
+            self.annotation_clicks.push((button, action));
+        }
+        // The state-changing resolve/reopen affordance has its own normal
+        // target height and remains distinct from the action band.
+        self.annotation_clicks.push((
+            Rect::new(
+                card.x0 + 12.0,
+                card.y0 + 58.0,
+                card.x1 - 12.0,
+                card.y0 + 58.0 + ANNOTATION_ACTION_H,
+            ),
+            AnnotationClick::ToggleComment(thread.id.clone(), !thread.resolved),
+        ));
+    }
+
     fn draw_dropdown(
         &self,
         scene: &mut Scene,
@@ -4625,7 +5114,7 @@ impl Widget for SheetsApp {
         kind: qos_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == qos_actions::OperationKind::Document {
@@ -4670,7 +5159,7 @@ impl Widget for SheetsApp {
             | actions::SheetsOperation::ExportOds { path: Some(_) } => {
                 return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
             }
-            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(),
+            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
             actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
             actions::SheetsOperation::ToggleFormulaView => {
                 let on = self.grid.toggle_formula_view();
@@ -4931,8 +5420,12 @@ impl Widget for SheetsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.annotation_clicks.clear();
         self.draw_chrome(scene, transform, text_renderer, theme);
         self.grid.draw(scene, transform, text_renderer, theme);
+        self.draw_charts(scene, transform, text_renderer, theme);
+        self.draw_comment_threads(scene, transform, text_renderer, theme);
+        self.draw_loading_veil(scene, transform, text_renderer, theme);
         // The transient floating status bubble sits above the grid + tab strip
         // (the reclaimed home of the old bottom status text), below the modal
         // overlays that follow.
@@ -5133,6 +5626,10 @@ impl Widget for SheetsApp {
     /// The worksheet is a custom-painted cell canvas, so surface the active
     /// cell, current selection and sheet tabs rather than exporting an opaque
     /// drawing surface to assistive technology.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete custom-canvas semantic tree stays co-located with the widget contract so its virtual bounds and interaction state remain auditable"
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
@@ -5148,15 +5645,160 @@ impl Widget for SheetsApp {
                     .with_state(AccessState::new().selected(index == self.active_sheet))
             })
             .collect();
-        let sheet = AccessNode::new(Role::Table)
-            .with_name("Worksheet")
-            .with_value(format!("Selected range {}", self.grid.selection_label()))
-            .with_children(vec![AccessNode::new(Role::Row).with_children(vec![
+        // The painted grid is virtualized, so its semantic tree must be too:
+        // expose every currently visible row/cell (plus a bounded pre-layout
+        // window), never the workbook's full declared million-row extent.
+        // Row/column positions retain the complete-table context for readers.
+        let window = self.grid.accessibility_window();
+        let header_cells = window
+            .columns
+            .iter()
+            .map(|&column| {
+                let letter = crate::model::col_to_letters(column);
+                AccessNode::new(Role::Cell)
+                    .with_name(format!("Column {letter}"))
+                    .with_value(letter)
+                    .with_position(column as usize + 1, window.total_columns as usize)
+            })
+            .collect();
+        let mut rows = Vec::with_capacity(window.rows.len().saturating_add(1));
+        rows.push(
+            AccessNode::new(Role::Row)
+                .with_name("Column headers")
+                .with_children(header_cells),
+        );
+        rows.extend(window.rows.into_iter().map(|row| {
+            let selected = row.cells.iter().any(|cell| cell.selected);
+            let cells = row
+                .cells
+                .into_iter()
+                .map(|cell| {
+                    let reference = crate::model::addr_to_a1(cell.addr.0, cell.addr.1);
+                    let column = crate::model::col_to_letters(cell.addr.0);
+                    let value = if cell.raw.is_empty() || cell.display == cell.raw {
+                        cell.display
+                    } else {
+                        format!("{} (input: {})", cell.display, cell.raw)
+                    };
                     AccessNode::new(Role::Cell)
-                        .with_name(active_name)
-                        .with_value(self.grid.active_display_raw())
-                        .with_state(AccessState::new().selected(true)),
-                ])]);
+                        .with_name(reference)
+                        .with_description(format!("Column {column}, row {}", cell.addr.1 + 1))
+                        .with_optional_value((!value.is_empty()).then_some(value))
+                        .with_position(cell.addr.0 as usize + 1, window.total_columns as usize)
+                        .with_bounds(cell.bounds)
+                        .with_state(
+                            AccessState::new()
+                                .selected(cell.selected)
+                                .focused(cell.addr == active),
+                        )
+                })
+                .collect();
+            AccessNode::new(Role::Row)
+                .with_name(format!("Row {}", row.index + 1))
+                .with_position(row.index as usize + 1, window.total_rows as usize)
+                .with_state(AccessState::new().selected(selected))
+                .with_key(u64::from(row.index))
+                .with_bounds(row.bounds)
+                .with_children(cells)
+        }));
+        let sheet_name = self
+            .sheet_names
+            .get(self.active_sheet)
+            .cloned()
+            .unwrap_or_else(|| "Worksheet".into());
+        let sheet = AccessNode::new(Role::Table)
+            .with_name(sheet_name)
+            .with_description(format!(
+                "Worksheet; selected range {}; {} columns by {} rows; only the visible grid window is announced",
+                self.grid.selection_label(),
+                window.total_columns,
+                window.total_rows,
+            ))
+            .with_value(format!("Active cell {active_name}"))
+            .with_bounds(window.bounds)
+            .with_state(
+                AccessState::new().focusable(true).busy(
+                    (self.run.persists() && self.persistence_started && !self.pending.seeded)
+                        || self.shots_loading,
+                ),
+            )
+            .with_children(rows);
+        let annotations = AccessNode::new(Role::List)
+            .with_name("Comments and charts")
+            .with_children(
+                self.sheet_charts
+                    .iter()
+                    .map(|chart| {
+                        let target = format!("sheets.annotation:chart:{}", chart.id);
+                        AccessNode::new(Role::ListItem)
+                            .with_name(format!("{} chart", chart.title))
+                            .with_description(format!(
+                                "{}:{}; open, edit, or delete from the chart card",
+                                crate::model::addr_to_a1(chart.start.0, chart.start.1),
+                                crate::model::addr_to_a1(chart.end.0, chart.end.1)
+                            ))
+                            .with_children(vec![
+                                AccessNode::new(Role::Button)
+                                    .with_name("Open chart range")
+                                    .with_action_target(format!("{target}:open"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Edit chart")
+                                    .with_description(format!(
+                                        "Current value: {} | {} | {}:{}",
+                                        chart.title,
+                                        chart.kind.code(),
+                                        crate::model::addr_to_a1(chart.start.0, chart.start.1),
+                                        crate::model::addr_to_a1(chart.end.0, chart.end.1),
+                                    ))
+                                    .with_action_target(format!("{target}:edit"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Delete chart")
+                                    .with_action_target(format!("{target}:delete"))
+                                    .with_state(AccessState::new().focusable(true)),
+                            ])
+                    })
+                    .chain(self.sheet_comments.iter().map(|thread| {
+                        let target = format!("sheets.annotation:comment:{}", thread.id);
+                        AccessNode::new(Role::ListItem)
+                            .with_name(format!("Comment by {}", thread.author))
+                            .with_description(format!(
+                                "{}; {} replies; {}",
+                                thread.body,
+                                thread.replies.len(),
+                                if thread.resolved { "resolved" } else { "open" }
+                            ))
+                            .with_children(vec![
+                                AccessNode::new(Role::Button)
+                                    .with_name("Reply to comment")
+                                    .with_action_target(format!("{target}:reply"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Edit comment")
+                                    .with_value(thread.body.clone())
+                                    .with_action_target(format!("{target}:edit"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Open comment anchor")
+                                    .with_action_target(format!("{target}:open"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Delete comment")
+                                    .with_action_target(format!("{target}:delete"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name(if thread.resolved {
+                                        "Reopen comment"
+                                    } else {
+                                        "Resolve comment"
+                                    })
+                                    .with_action_target(format!("{target}:toggle"))
+                                    .with_state(AccessState::new().focusable(true)),
+                            ])
+                    }))
+                    .collect(),
+            );
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Spreadsheet")
@@ -5167,8 +5809,26 @@ impl Widget for SheetsApp {
                         .with_name("Sheets")
                         .with_children(tabs),
                     sheet,
+                    annotations,
                 ]),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(annotation) = self.annotation_click_from_target(target) else {
+            return false;
+        };
+        self.apply_annotation_click(annotation, state);
+        true
     }
 
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
@@ -5336,6 +5996,9 @@ impl SheetsApp {
             return;
         }
         if self.try_chrome_click(p, modifiers, state, handled) {
+            return;
+        }
+        if self.try_annotation_click(p, state, handled) {
             return;
         }
         self.try_grid_click(p, modifiers, state, handled);
@@ -5530,6 +6193,185 @@ impl SheetsApp {
         false
     }
 
+    fn try_annotation_click(
+        &mut self,
+        p: Point,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        let Some(action) = self
+            .annotation_clicks
+            .iter()
+            .find(|(rect, _)| rect.contains(p))
+            .map(|(_, action)| action.clone())
+        else {
+            return false;
+        };
+        self.apply_annotation_click(action, state);
+        *handled = true;
+        true
+    }
+
+    /// Open the exact prompted resource operation behind a painted annotation
+    /// control.  The entry is flattened from the current document, so the
+    /// pointer route, keyboard palette, agents and history all share one
+    /// stable `(resource_id, action_id)` address and one action builder.
+    fn open_annotation_editor(
+        &mut self,
+        doc: &AutoCommit,
+        resource_id: &str,
+        prefill: String,
+    ) -> bool {
+        let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
+        let entry = qos_actions::flatten(&resources)
+            .into_iter()
+            .find(|flat| flat.resource_id.as_str() == resource_id && flat.action.id == "edit")
+            .map(|flat| CommandEntry::from_flat_action(&flat));
+        let Some(entry) = entry else { return false };
+        self.palette.open_action_argument(entry, Some(prefill));
+        self.pending.redraw = true;
+        true
+    }
+
+    fn apply_annotation_click(&mut self, action: AnnotationClick, state: &mut AutoCommit) {
+        let sheet_id = self.sheet_identity(self.active_sheet);
+        match action {
+            AnnotationClick::Open(addr) => {
+                self.grid.select_only(addr);
+                self.status = format!("Opened {}", crate::model::addr_to_a1(addr.0, addr.1));
+            }
+            AnnotationClick::EditChart(id) => {
+                let Some(chart) = self.sheet_charts.iter().find(|chart| chart.id == id) else {
+                    self.status = "Chart no longer exists".into();
+                    return;
+                };
+                let form = format!(
+                    "{} | {} | {}:{}",
+                    chart.title,
+                    chart.kind.code(),
+                    crate::model::addr_to_a1(chart.start.0, chart.start.1),
+                    crate::model::addr_to_a1(chart.end.0, chart.end.1),
+                );
+                if self.open_annotation_editor(
+                    state,
+                    &actions::chart_resource_id(&sheet_id, &id),
+                    form,
+                ) {
+                    self.status = "Edit chart: title | type | source range".into();
+                } else {
+                    self.status = "Chart editor is no longer available".into();
+                }
+            }
+            AnnotationClick::DeleteChart(id) => {
+                self.perform_action(
+                    state,
+                    &SheetsAction::DeleteChart {
+                        sheet: self.active_sheet,
+                        sheet_id,
+                        chart_id: id,
+                    },
+                );
+                self.status = "Deleted chart".into();
+            }
+            AnnotationClick::Reply(id) => {
+                self.perform_action(
+                    state,
+                    &actions::reply_comment_action(
+                        self.active_sheet,
+                        sheet_id,
+                        id,
+                        "You",
+                        "Thanks — noted.",
+                    ),
+                );
+                self.status = "Replied to comment".into();
+            }
+            AnnotationClick::EditComment(id) => {
+                let Some(thread) = self.sheet_comments.iter().find(|thread| thread.id == id) else {
+                    self.status = "Comment no longer exists".into();
+                    return;
+                };
+                if self.open_annotation_editor(
+                    state,
+                    &actions::comment_resource_id(&sheet_id, &id),
+                    thread.body.clone(),
+                ) {
+                    self.status = "Editing comment".into();
+                } else {
+                    self.status = "Comment editor is no longer available".into();
+                }
+            }
+            AnnotationClick::ToggleComment(id, resolved) => {
+                self.perform_action(
+                    state,
+                    &actions::set_comment_resolved_action(
+                        self.active_sheet,
+                        sheet_id,
+                        id,
+                        resolved,
+                    ),
+                );
+                self.status = if resolved {
+                    "Resolved comment"
+                } else {
+                    "Reopened comment"
+                }
+                .into();
+            }
+            AnnotationClick::DeleteComment(id) => {
+                self.perform_action(
+                    state,
+                    &actions::delete_comment_action(self.active_sheet, sheet_id, id),
+                );
+                self.status = "Deleted comment".into();
+            }
+        }
+        self.reload(state);
+        self.pending.redraw = true;
+    }
+
+    fn annotation_click_from_target(&self, target: &str) -> Option<AnnotationClick> {
+        let mut parts = target.strip_prefix("sheets.annotation:")?.split(':');
+        let (Some(kind), Some(id), Some(operation), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return None;
+        };
+        match (kind, operation) {
+            ("chart", "open") if self.sheet_charts.iter().any(|chart| chart.id == id) => self
+                .sheet_charts
+                .iter()
+                .find(|chart| chart.id == id)
+                .map(|chart| AnnotationClick::Open(chart.start)),
+            ("chart", "edit") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                Some(AnnotationClick::EditChart(id.to_string()))
+            }
+            ("chart", "delete") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                Some(AnnotationClick::DeleteChart(id.to_string()))
+            }
+            ("comment", "open") => self
+                .sheet_comments
+                .iter()
+                .find(|thread| thread.id == id)
+                .map(|thread| AnnotationClick::Open(thread.start)),
+            ("comment", "reply") if self.sheet_comments.iter().any(|thread| thread.id == id) => {
+                Some(AnnotationClick::Reply(id.to_string()))
+            }
+            ("comment", "edit") if self.sheet_comments.iter().any(|thread| thread.id == id) => {
+                Some(AnnotationClick::EditComment(id.to_string()))
+            }
+            ("comment", "delete") if self.sheet_comments.iter().any(|thread| thread.id == id) => {
+                Some(AnnotationClick::DeleteComment(id.to_string()))
+            }
+            ("comment", "toggle") => self
+                .sheet_comments
+                .iter()
+                .find(|thread| thread.id == id)
+                .map(|thread| AnnotationClick::ToggleComment(id.to_string(), !thread.resolved)),
+            _ => None,
+        }
+    }
+
     /// Fallback: click lands on the grid body. Detects double-click (skipped
     /// while a formula is being edited, since grid clicks there are
     /// reference insertions in point mode) and drives the resulting
@@ -5657,7 +6499,7 @@ impl SheetsApp {
                 && let winit::keyboard::Key::Character(c) = &ke.logical_key
                 && c.as_str().eq_ignore_ascii_case("k")
             {
-                self.open_command_palette();
+                self.open_command_palette(state);
                 *handled = true;
                 return;
             }
@@ -7808,15 +8650,25 @@ mod tests {
     }
 
     #[test]
+    fn annotation_controls_keep_a_normal_touch_target() {
+        let height = std::hint::black_box(ANNOTATION_ACTION_H);
+        assert!(
+            height >= 40.0,
+            "chart/comment actions must not regress to text-line hit targets"
+        );
+    }
+
+    #[test]
     fn open_palette_captures_arrows_instead_of_moving_the_grid() {
         let (mut app, mut doc) = seeded_app();
         let start = app.grid.active(); // E2 = (4, 1)
-        app.open_command_palette();
-        assert!(
-            app.palette
-                .selected_id()
-                .is_some_and(|id| id.ends_with("go-to-cell"))
-        );
+        app.open_command_palette(&doc);
+        let first = app
+            .palette
+            .selected_id()
+            .expect("the palette has an initial highlighted entry")
+            .to_string();
+        assert!(first.ends_with("go-to-cell"));
 
         // ArrowDown is consumed by the palette and advances its highlight — the
         // grid selection behind it must NOT move.
@@ -7827,10 +8679,9 @@ mod tests {
             Modifiers::default(),
         );
         assert!(handled, "the palette must consume ArrowDown");
-        assert!(
-            app.palette
-                .selected_id()
-                .is_some_and(|id| id.ends_with("sum-selection")),
+        assert_ne!(
+            app.palette.selected_id(),
+            Some(first.as_str()),
             "highlight advanced"
         );
         assert_eq!(app.grid.active(), start, "the grid selection must not move");
@@ -7843,11 +8694,7 @@ mod tests {
             Modifiers::default(),
         );
         assert!(handled);
-        assert!(
-            app.palette
-                .selected_id()
-                .is_some_and(|id| id.ends_with("go-to-cell"))
-        );
+        assert_eq!(app.palette.selected_id(), Some(first.as_str()));
         assert_eq!(app.grid.active(), start);
     }
 
@@ -7855,7 +8702,7 @@ mod tests {
     fn palette_go_to_cell_jumps_the_selection() {
         let (mut app, mut doc) = seeded_app();
         assert_ne!(app.grid.active(), (1, 11));
-        app.open_command_palette();
+        app.open_command_palette(&doc);
         // Enter opens the argument step, pre-seeded (and fully selected) with
         // the active cell reference.
         feed(
@@ -8083,7 +8930,30 @@ mod tests {
         assert_eq!(tabs.role, ui::a11y::Role::TabBar);
         assert!(tabs.children.iter().any(|tab| tab.state.selected));
         let cell = &tree.children[1].children[0].children[0];
-        assert_eq!(cell.name.as_deref(), Some("B2"));
-        assert!(cell.state.selected);
+        assert_eq!(cell.name.as_deref(), Some("Column A"));
+        let visible_row = tree.children[1]
+            .children
+            .iter()
+            .find(|row| row.name.as_deref() == Some("Row 2"))
+            .expect("visible second worksheet row");
+        let cell = visible_row
+            .children
+            .iter()
+            .find(|cell| cell.name.as_deref() == Some("B2"))
+            .expect("active cell in complete visible table semantics");
+        assert!(cell.state.selected && cell.state.focused);
+        assert!(cell.bounds.is_some());
+    }
+
+    #[test]
+    fn loading_state_is_announced_as_busy_without_expanding_the_grid() {
+        use ui::widget::Widget as _;
+
+        let (mut app, _doc) = seeded_app();
+        app.shots_show_loading();
+        let tree = app.accessibility().expect("spreadsheet semantics");
+        let table = &tree.children[1];
+        assert!(table.state.busy);
+        assert!(table.children.len() < 30, "a11y remains viewport-bounded");
     }
 }
