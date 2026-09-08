@@ -76,6 +76,9 @@ const GRID_CELL_W: f64 = 112.0;
 const GRID_CELL_H: f64 = 104.0;
 const GRID_ICON: f64 = 46.0;
 const GRID_GAP: f64 = 16.0;
+/// Extra rows/cells painted around the clipped viewport to keep a partially
+/// visible boundary item alive through scroll settling.
+const VISIBLE_RANGE_OVERDRAW_ROWS: usize = 1;
 
 /// A folder drop target the view publishes each layout: a directory row's
 /// absolute on-screen rect and path. The host owns the drag (it captures the
@@ -333,15 +336,70 @@ impl FileView {
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + self.row_h())
     }
 
-    /// Republish the absolute rect of every folder row into the host's drop-
-    /// target sink, so the host can resolve which folder a drag is released
-    /// over. Only directories are targets — you can't drop a file *into* a file.
-    fn publish_drop_targets(&self) {
+    /// Return the small inclusive-overdraw slice that can intersect `vp`.
+    ///
+    /// `FileView` owns only a single, measured leaf in the scroll tree, so it
+    /// cannot use a recycling child list.  Calculating this range before the
+    /// paint loop gives us the same useful property: a 100k-entry directory
+    /// costs work proportional to the visible rows, not the directory size.
+    fn visible_range(&self, vp: Option<Rect>) -> std::ops::Range<usize> {
+        let Some(vp) = vp else {
+            return 0..self.entries.len();
+        };
+        match self.mode {
+            ViewMode::List => {
+                let start = ((vp.y0 - self.rect.y0 - self.header_h()) / self.row_h())
+                    .floor()
+                    .max(0.0) as usize;
+                let end = ((vp.y1 - self.rect.y0 - self.header_h()) / self.row_h())
+                    .ceil()
+                    .max(0.0) as usize;
+                start
+                    .saturating_sub(VISIBLE_RANGE_OVERDRAW_ROWS)
+                    .min(self.entries.len())
+                    ..end
+                        .saturating_add(VISIBLE_RANGE_OVERDRAW_ROWS)
+                        .min(self.entries.len())
+            }
+            ViewMode::Grid => {
+                let stride = self.cell_h() + self.grid_gap();
+                let start_row = ((vp.y0 - self.rect.y0 - self.pad_x()) / stride)
+                    .floor()
+                    .max(0.0) as usize;
+                let end_row = ((vp.y1 - self.rect.y0 - self.pad_x()) / stride)
+                    .ceil()
+                    .max(0.0) as usize;
+                let columns = self.columns.max(1);
+                start_row
+                    .saturating_sub(VISIBLE_RANGE_OVERDRAW_ROWS)
+                    .saturating_mul(columns)
+                    .min(self.entries.len())
+                    ..end_row
+                        .saturating_add(VISIBLE_RANGE_OVERDRAW_ROWS)
+                        .saturating_mul(columns)
+                        .min(self.entries.len())
+            }
+        }
+    }
+
+    /// Republish the visible folder rows into the host's drop-target sink.
+    /// A drag cannot be released on a row outside the clipped viewport, so
+    /// retaining off-screen folders only turns a directory-sized list into
+    /// needless work and allocation on every layout/paint pass.
+    fn publish_drop_targets(&self, vp: Option<Rect>) {
         let Some(sink) = &self.drop_targets else {
             return;
         };
         let mut out = Vec::new();
-        for (i, entry) in self.entries.iter().enumerate() {
+        let range = self.visible_range(vp);
+        for (offset, entry) in self
+            .entries
+            .get(range.clone())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let i = range.start + offset;
             if !entry.is_dir {
                 continue;
             }
@@ -582,11 +640,15 @@ impl FileView {
         theme: &Theme,
         vp: Option<Rect>,
     ) {
-        for (i, entry) in self.entries.iter().enumerate() {
-            let row = self.list_row_rect(i);
-            if cull(vp, row) {
-                continue;
-            }
+        let range = self.visible_range(vp);
+        for (offset, entry) in self
+            .entries
+            .get(range.clone())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let i = range.start + offset;
             self.draw_list_row(scene, transform, tr, theme, i, entry);
         }
         // Header last so it composites above the rows (and stays put while
@@ -990,11 +1052,16 @@ impl FileView {
         let tokens = &theme.tokens;
         let size = self.body_text(theme);
         let icon_size_px = GRID_ICON * self.scale;
-        for (i, entry) in self.entries.iter().enumerate() {
+        let range = self.visible_range(vp);
+        for (offset, entry) in self
+            .entries
+            .get(range.clone())
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let i = range.start + offset;
             let cell = self.cell_rect(i);
-            if cull(vp, cell) {
-                continue;
-            }
             let selected = self.selection.is_selected(i);
             let hovered = self.hover == Some(i) && !selected;
             if selected || hovered {
@@ -1167,7 +1234,6 @@ impl Widget for FileView {
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
         }
-        self.publish_drop_targets();
     }
 
     fn draw(
@@ -1185,6 +1251,7 @@ impl Widget for FileView {
         // the header hit-test can follow the pinned header on the next event.
         let vp = presence.viewport.get();
         self.last_vp = vp;
+        self.publish_drop_targets(vp);
         // Clear last frame's rename-field rect; the draw below republishes it
         // only if the renaming row is actually on screen.
         if let Some(sink) = &self.rename_rect {
@@ -2123,6 +2190,58 @@ mod tests {
     }
 
     #[test]
+    fn visible_range_avoids_scanning_a_large_directory() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(100_000), &sel, &sink);
+        v.rect = Rect::new(0.0, -34_000.0, 800.0, 3_366_000.0);
+
+        let list = v.visible_range(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
+        assert!(
+            list.start > 900,
+            "the viewport starts well into the directory"
+        );
+        assert!(
+            list.len() < 32,
+            "only visible rows plus overdraw are visited"
+        );
+
+        v.mode = ViewMode::Grid;
+        v.columns = 5;
+        let grid = v.visible_range(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
+        assert!(
+            grid.start > 1_000,
+            "the grid viewport starts well below row zero"
+        );
+        assert!(
+            grid.len() < 60,
+            "only visible grid cells plus overdraw are visited"
+        );
+    }
+
+    #[test]
+    fn drop_targets_are_limited_to_visible_folders() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let entries = (0..2_000)
+            .map(|i| {
+                let mut entry = items(1).pop().expect("fixture entry");
+                entry.is_dir = true;
+                entry.name = format!("folder-{i}");
+                entry
+            })
+            .collect::<Vec<_>>();
+        let targets = Rc::new(RefCell::new(Vec::new()));
+        let mut v = FileView::new(&entries, &sel, &sink).with_drop_targets(targets.clone());
+        v.rect = Rect::new(0.0, -10_000.0, 800.0, 58_000.0);
+        v.publish_drop_targets(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
+        assert!(
+            targets.borrow().len() < 32,
+            "the drag registry retains only folders a pointer can reach"
+        );
+    }
+
+    #[test]
     fn header_pins_to_the_viewport_top_once_scrolled() {
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2491,6 +2610,9 @@ mod tests {
         )
         .unwrap();
         v.apply_layout(&tree, node, Point::ZERO);
+        // Drop targets follow the clipped paint viewport, just as they do in
+        // the live Scrollable draw pass; all five rows fit this fixture.
+        v.publish_drop_targets(Some(Rect::new(0.0, 0.0, 600.0, 600.0)));
         let published = targets.borrow();
         let names: Vec<String> = published
             .iter()
