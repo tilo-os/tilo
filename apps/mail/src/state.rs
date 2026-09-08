@@ -381,9 +381,12 @@ impl MailState {
         )));
     }
 
-    pub fn set_active_account(&mut self, doc: &mut AutoCommit, idx: usize) {
+    /// Select a device-local account. Account identity/credentials live in the
+    /// shared qOS account store + secret vault, never in the collaborative mail
+    /// document, so this deliberately has no Automerge write.
+    pub fn set_active_account(&mut self, idx: usize) {
         self.accounts.set_active(idx);
-        MailDoc::set_active_account(doc, self.accounts.active);
+        self.dirty = true;
     }
 
     pub fn toggle_account_collapsed(&mut self, idx: usize) {
