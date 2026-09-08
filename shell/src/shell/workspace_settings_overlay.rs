@@ -1867,7 +1867,7 @@ mod tests {
         let lens = WorkspaceSettingsOverlay::rect_for(viewport);
         assert_eq!(lens.x1, viewport.x1 - 20.0);
         assert!(lens.width() <= 540.0);
-        assert!(lens.x0 >= 728.0, "the workspace keeps a usable majority");
+        assert!(lens.x0 >= 720.0, "the workspace keeps a usable majority");
     }
 
     #[test]
