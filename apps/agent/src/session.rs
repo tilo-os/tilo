@@ -2030,6 +2030,17 @@ impl Session {
     }
 }
 
+fn comment_text_anchor(block: &str, start: usize, end: usize) -> qos_actions::InteractionAnchor {
+    qos_actions::InteractionAnchor::Text {
+        region: "document".into(),
+        ranges: vec![qos_actions::InteractionTextRange {
+            block: block.to_string(),
+            start: u64::try_from(start).unwrap_or(u64::MAX),
+            end: u64::try_from(end).unwrap_or(u64::MAX),
+        }],
+    }
+}
+
 fn word_action_anchor(
     action: &WordProcessorAction,
     _focus: &str,
@@ -2122,6 +2133,14 @@ fn word_action_anchor(
         WordProcessorAction::ResolveComment { id } => qos_actions::InteractionAnchor::Objects {
             ids: vec![id.clone()],
         },
+        WordProcessorAction::AddComment {
+            block, start, end, ..
+        } => comment_text_anchor(block, *start, *end),
+        WordProcessorAction::ReplyToComment { comment, .. } => {
+            qos_actions::InteractionAnchor::Objects {
+                ids: vec![comment.clone()],
+            }
+        }
     }
 }
 
@@ -2177,6 +2196,42 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn comment_actions_anchor_their_shared_document_objects() {
+        let add = WordProcessorAction::AddComment {
+            block: "paragraph-7".into(),
+            start: 4,
+            end: 11,
+            author: "Scribe".into(),
+            date: "2026-09-08".into(),
+            text: "Please clarify.".into(),
+        };
+        assert_eq!(
+            word_action_anchor(&add, "unused-focus"),
+            qos_actions::InteractionAnchor::Text {
+                region: "document".into(),
+                ranges: vec![qos_actions::InteractionTextRange {
+                    block: "paragraph-7".into(),
+                    start: 4,
+                    end: 11,
+                }],
+            }
+        );
+
+        let reply = WordProcessorAction::ReplyToComment {
+            comment: "comment-3".into(),
+            author: "Scribe".into(),
+            date: "2026-09-08".into(),
+            text: "Done.".into(),
+        };
+        assert_eq!(
+            word_action_anchor(&reply, "unused-focus"),
+            qos_actions::InteractionAnchor::Objects {
+                ids: vec!["comment-3".into()],
+            }
+        );
     }
 
     fn task_run() -> runtime_collab::TaskRunEnvelope {
