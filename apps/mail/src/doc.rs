@@ -9,7 +9,6 @@
 //! ├── "flags"   (Map)  per-message mutable state, keyed by message-id string
 //! │     └── <id> (Map) { read: bool, starred: bool, folder: Str }
 //! ├── "messages" (Map)  externally-ingested message ids `{ present: Bool }`
-//! ├── "account" (Map)  IMAP/SMTP connection settings (the setup form)
 //! └── "draft"   (Map)  the message currently being composed
 //! ```
 //!
@@ -21,7 +20,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{AccountConfig, Draft, Folder, Mailbox, Message};
+use crate::model::{Draft, Folder, Mailbox, Message};
 
 pub struct MailDoc;
 
@@ -61,13 +60,6 @@ impl MailDoc {
                 ScalarValue::Boolean(b) => Some(*b),
                 _ => None,
             },
-            _ => None,
-        }
-    }
-
-    fn read_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
             _ => None,
         }
     }
@@ -136,21 +128,6 @@ impl MailDoc {
         match doc.get(&ROOT, "ui") {
             Ok(Some((Value::Object(ObjType::Map), ui))) => {
                 Self::read_str(doc, &ui, "compose_format")
-            }
-            _ => None,
-        }
-    }
-
-    /// Persist which account is active in the sidebar.
-    pub fn set_active_account(doc: &mut AutoCommit, idx: usize) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "active_account", idx as i64);
-    }
-
-    pub fn get_active_account(doc: &AutoCommit) -> Option<usize> {
-        match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => {
-                Self::read_i64(doc, &ui, "active_account").map(|v| v.max(0) as usize)
             }
             _ => None,
         }
@@ -251,43 +228,6 @@ impl MailDoc {
                 mb.touch_search_revision();
             }
         }
-    }
-
-    // ---- account config ----
-
-    pub fn store_account(doc: &mut AutoCommit, cfg: &AccountConfig) {
-        let acc = Self::map(doc, &ROOT, "account");
-        ui::doc::put_if_changed(doc, &acc, "display_name", cfg.display_name.as_str());
-        ui::doc::put_if_changed(doc, &acc, "email", cfg.email.as_str());
-        ui::doc::put_if_changed(doc, &acc, "imap_host", cfg.imap_host.as_str());
-        ui::doc::put_if_changed(doc, &acc, "imap_port", i64::from(cfg.imap_port));
-        ui::doc::put_if_changed(doc, &acc, "imap_tls", cfg.imap_tls);
-        ui::doc::put_if_changed(doc, &acc, "smtp_host", cfg.smtp_host.as_str());
-        ui::doc::put_if_changed(doc, &acc, "smtp_port", i64::from(cfg.smtp_port));
-        ui::doc::put_if_changed(doc, &acc, "smtp_tls", cfg.smtp_tls);
-        ui::doc::put_if_changed(doc, &acc, "username", cfg.username.as_str());
-        ui::doc::put_if_changed(doc, &acc, "auth", cfg.auth.as_key());
-    }
-
-    pub fn load_account(doc: &AutoCommit) -> Option<AccountConfig> {
-        let Ok(Some((Value::Object(ObjType::Map), acc))) = doc.get(&ROOT, "account") else {
-            return None;
-        };
-        Some(AccountConfig {
-            display_name: Self::read_str(doc, &acc, "display_name").unwrap_or_default(),
-            email: Self::read_str(doc, &acc, "email").unwrap_or_default(),
-            imap_host: Self::read_str(doc, &acc, "imap_host").unwrap_or_default(),
-            imap_port: Self::read_i64(doc, &acc, "imap_port").unwrap_or(993) as u16,
-            imap_tls: Self::read_bool(doc, &acc, "imap_tls").unwrap_or(true),
-            smtp_host: Self::read_str(doc, &acc, "smtp_host").unwrap_or_default(),
-            smtp_port: Self::read_i64(doc, &acc, "smtp_port").unwrap_or(465) as u16,
-            smtp_tls: Self::read_bool(doc, &acc, "smtp_tls").unwrap_or(true),
-            username: Self::read_str(doc, &acc, "username").unwrap_or_default(),
-            auth: Self::read_str(doc, &acc, "auth")
-                .map(|s| crate::model::AuthMethod::from_key(&s))
-                .unwrap_or_default(),
-            password: String::new(),
-        })
     }
 
     // ---- draft ----
@@ -654,32 +594,10 @@ mod tests {
     }
 
     #[test]
-    fn active_account_and_compose_format_round_trip() {
+    fn compose_format_round_trips() {
         let mut doc = AutoCommit::new();
-        assert_eq!(MailDoc::get_active_account(&doc), None);
-        MailDoc::set_active_account(&mut doc, 2);
-        assert_eq!(MailDoc::get_active_account(&doc), Some(2));
         MailDoc::set_compose_format(&mut doc, "text");
         assert_eq!(MailDoc::get_compose_format(&doc).as_deref(), Some("text"));
-    }
-
-    #[test]
-    fn account_round_trips() {
-        let mut doc = AutoCommit::new();
-        let cfg = AccountConfig {
-            email: "a@b.example".into(),
-            imap_host: "imap.b.example".into(),
-            imap_port: 993,
-            smtp_host: "smtp.b.example".into(),
-            smtp_port: 587,
-            username: "a@b.example".into(),
-            ..Default::default()
-        };
-        MailDoc::store_account(&mut doc, &cfg);
-        let loaded = MailDoc::load_account(&doc).unwrap();
-        assert_eq!(loaded.email, "a@b.example");
-        assert_eq!(loaded.smtp_port, 587);
-        assert!(loaded.imap_tls);
     }
 
     #[test]
@@ -695,32 +613,6 @@ mod tests {
         let loaded = MailDoc::load_draft(&doc);
         assert_eq!(loaded.to, "x@y.example");
         assert_eq!(loaded.subject, "Hi");
-    }
-
-    #[test]
-    fn repeated_store_account_keeps_doc_bounded() {
-        // The account form is mirrored into the CRDT every frame; with the
-        // change-guarded writes, re-storing an unchanged account is a no-op.
-        let mut doc = AutoCommit::new();
-        let cfg = AccountConfig {
-            email: "a@b.example".into(),
-            imap_host: "imap.b.example".into(),
-            imap_port: 993,
-            smtp_host: "smtp.b.example".into(),
-            smtp_port: 587,
-            username: "a@b.example".into(),
-            ..Default::default()
-        };
-        MailDoc::store_account(&mut doc, &cfg);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            MailDoc::store_account(&mut doc, &cfg);
-        }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-storing an unchanged account grew the document {a} -> {b}"
-        );
     }
 
     #[test]

@@ -102,7 +102,10 @@ pub enum MailOperation {
         folder: String,
     },
     RevealAccount {
-        index: usize,
+        /// Account ids come from the device-local account store, so an action
+        /// address keeps pointing at the same account when another account is
+        /// added, removed, or reordered.
+        id: String,
     },
     /// Reveal an already-loaded message. The app records normal mark-read
     /// semantics through its document action at the next mutable sync boundary.
@@ -462,15 +465,15 @@ pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
     }
 }
 
-/// The presentation context Mail hands [`provide_resources`]: the account label,
-/// the currently-open folder and its messages, the user's local-folder registry,
-/// and whether a draft is in progress. Everything here is derived from state the
-/// document already holds; nothing is fabricated.
+/// The presentation context Mail hands [`provide_resources`]: the device-local
+/// account list plus collaborative mailbox state (current folder/messages,
+/// local-folder registry, and draft). Connection accounts stay out of the
+/// Automerge document; their ids are nevertheless stable resource addresses.
 #[derive(Debug, Clone)]
 pub struct MailResourceCtx {
     pub mailbox_label: String,
     pub current_folder: Folder,
-    pub accounts: Vec<(usize, String, bool)>,
+    pub accounts: Vec<(String, String, bool)>,
     /// Loaded messages in the currently-open folder. Resource materialization
     /// applies its own bound so a large mailbox cannot inflate Ctrl+K snapshots.
     pub messages: Vec<MessageRow>,
@@ -694,9 +697,9 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     let mut root = mailbox_root(ctx);
     root = root.with_child(
         Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
-            ctx.accounts.iter().map(|(index, label, active)| {
+            ctx.accounts.iter().map(|(id, label, active)| {
                 Resource::new(
-                    format!("mail.account:{index}"),
+                    format!("mail.account:{id}"),
                     "mail.account",
                     if *active {
                         format!("{label} · Active")
@@ -707,7 +710,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
                 .with_action(view_spec(
                     "open",
                     "Open account",
-                    &MailOperation::RevealAccount { index: *index },
+                    &MailOperation::RevealAccount { id: id.clone() },
                 ))
             }),
         ),
@@ -1055,7 +1058,7 @@ mod tests {
         let mut ctx = MailResourceCtx {
             mailbox_label: "Scale".into(),
             current_folder: Folder::Inbox,
-            accounts: vec![(0, "Scale".into(), true)],
+            accounts: vec![("scale@example.test".into(), "Scale".into(), true)],
             messages: Vec::new(),
             custom_folders: Vec::new(),
             has_draft: false,
@@ -1085,6 +1088,32 @@ mod tests {
                 .all(|thread| { thread.kind == "mail.thread" && thread.children.len() == 1 })
         );
         assert!(message_resource(&ctx.messages[9_999]).actions.len() >= 5);
+    }
+
+    #[test]
+    fn account_resource_uses_a_durable_id_not_its_display_index() {
+        let ctx = MailResourceCtx {
+            mailbox_label: "Mailbox".into(),
+            current_folder: Folder::Inbox,
+            accounts: vec![
+                ("personal-42".into(), "Personal".into(), true),
+                ("work-99".into(), "Work".into(), false),
+            ],
+            messages: Vec::new(),
+            custom_folders: Vec::new(),
+            has_draft: false,
+            can_sync: false,
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        let address = qos_actions::ActionAddress::new("mail.account:work-99", "open");
+        let encoded = qos_actions::door::encode(&resources, &address, None)
+            .expect("the stable account address resolves through the mailbox tree");
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(MailOperation::RevealAccount {
+                id: "work-99".into()
+            })
+        );
     }
 
     /// The full undo covenant on one action: dispatched through the executor a
