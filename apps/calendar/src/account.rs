@@ -412,6 +412,7 @@ mod tests {
             color: 1,
             visible: true,
         });
+        a.collapsed = true;
         store.upsert(a);
         store.upsert(CalendarAccount::new(cfg("Home", "b@y.example")));
         store.persist_in(&root).expect("persist");
@@ -421,6 +422,7 @@ mod tests {
         assert_eq!(back.accounts[0].config.username, "a@x.example");
         assert_eq!(back.accounts[0].calendars.len(), 1);
         assert_eq!(back.accounts[0].calendars[0].name, "Team");
+        assert!(back.accounts[0].collapsed);
         std::fs::remove_dir_all(&root).ok();
     }
 
