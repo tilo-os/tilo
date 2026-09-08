@@ -10,8 +10,8 @@
 //!     560x720 responsive layout).
 //!   * `--scenario NAME`    — snap a specific surface into view for the frame:
 //!     `file`, `format`, `docsettings`, `editing`,
-//!     `pointmode`, `summary`, `multiselect`, `tabmenu`,
-//!     `commandpalette`.
+//!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `commandpalette`,
+//!     `loading`, `error`, `conflict`, `reducedmotion`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
 //! persistence, so a screenshot shows real formulas without ever touching the
@@ -75,6 +75,12 @@ const SCENARIOS: &[&str] = &[
     "fillseries",
     "scrollbars",
     "pasteformula",
+    "loading",
+    "error",
+    "conflict",
+    "reducedmotion",
+    "charts",
+    "comments",
 ];
 
 fn configure(app: &mut ui::App) {
@@ -121,10 +127,15 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("multiselect") => Box::new(|a, _d| a.shots_multi_select()),
         Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
         Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
-        Some("commandpalette") => Box::new(|a, _d| a.shots_open_command_palette()),
+        Some("commandpalette") => Box::new(|a, d| a.shots_open_command_palette(d)),
         Some("scrollbars") => Box::new(|a, _d| a.shots_scroll_both_axes()),
         Some("fillseries") => Box::new(sheets::SheetsApp::shots_fill_series),
         Some("pasteformula") => Box::new(sheets::SheetsApp::shots_paste_formula),
+        Some("loading") => Box::new(|a, _d| a.shots_show_loading()),
+        Some("error") => Box::new(|a, _d| a.shots_show_error()),
+        Some("conflict") => Box::new(|a, _d| a.shots_show_conflict()),
+        Some("reducedmotion") => Box::new(|a, _d| a.shots_show_reduced_motion()),
+        Some("charts" | "comments") => Box::new(sheets::SheetsApp::shots_seed_charts_and_comments),
         _ => Box::new(|_a, _d| {}),
     };
     render_shot_to_png(app, viewport, out, setup)
