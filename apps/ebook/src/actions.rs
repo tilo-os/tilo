@@ -812,7 +812,6 @@ impl HighlightPlan {
 #[derive(Debug, Clone)]
 pub struct BookResourceCtx {
     pub book_id: String,
-    pub book_title: String,
     pub chapter: usize,
     pub bookmark_block: usize,
     pub bookmark_excerpt: String,
@@ -820,6 +819,24 @@ pub struct BookResourceCtx {
     /// reader has a non-empty selection. Drives the book-level "Highlight
     /// selection" action, identical to what the toolbar swatch would dispatch.
     pub selection_highlight: Option<HighlightPlan>,
+}
+
+/// A deterministic, disambiguated label for a book resource. The title remains
+/// the first term so existing palette muscle memory keeps working, while the
+/// author is available to a person or agent choosing between editions with the
+/// same title.
+fn book_label(book: &crate::model::Book) -> String {
+    let title = if book.title.trim().is_empty() {
+        "Untitled"
+    } else {
+        book.title.trim()
+    };
+    let author = book.author.trim();
+    if author.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} — {author}")
+    }
 }
 
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
@@ -1082,11 +1099,7 @@ fn book_resource(
     let root = Resource::new(
         format!("ebook.book:{}", book.id),
         "ebook.book",
-        if book.title.trim().is_empty() {
-            "Untitled".to_string()
-        } else {
-            book.title.clone()
-        },
+        book_label(book),
     );
     let progress = BooksDoc::read_progress(doc, &book.id);
     let root = root.with_action(reveal_operation(
@@ -1151,7 +1164,6 @@ fn book_resource(
         ] {
             root = root.with_action(operation(id, label, kind, value));
         }
-        root = root.with_action(open_book_operation());
     }
 
     let annos = BooksDoc::annotations_for(doc, &book.id);
@@ -1169,18 +1181,27 @@ fn book_resource(
     root
 }
 
-/// Build the canonical resource tree for every book in the shelf. Search,
-/// agents and accessibility all resolve the same stable addresses from this
-/// tree, including resources that are not currently visible.
+/// Build the canonical resource tree for the library and every loaded book.
+/// The library root deliberately remains available even with an empty shelf:
+/// it is the stable, consent-gated entry point through which a palette or an
+/// agent can ask the user to choose an EPUB. Every book is a child of that
+/// root, and chapters plus annotations remain children of their book, so the
+/// tree mirrors the reader's navigable hierarchy end-to-end. Resource IDs are
+/// stable, so recursive action resolution preserves existing search links.
 pub fn provide_resources(
     books: &[crate::model::Book],
     current: Option<&BookResourceCtx>,
     doc: &AutoCommit,
 ) -> Vec<Resource> {
-    books
+    let books = books
         .iter()
         .map(|book| book_resource(book, current, doc))
-        .collect()
+        .collect::<Vec<_>>();
+    vec![
+        Resource::new("ebook.library", "ebook.library", "Books library")
+            .with_action(open_book_operation())
+            .with_children(books),
+    ]
 }
 
 impl ResourceProvider for crate::app::BooksApp {
@@ -1273,19 +1294,36 @@ mod tests {
         (app, doc, book_id, group)
     }
 
-    /// Ctrl+K on Books yields the whole shelf. The open book owns its chapter
-    /// and annotation resources, with highlight → comments nested beneath it.
+    /// Ctrl+K on Books yields one library root containing every book. The open
+    /// book owns its chapter and annotation resources, with highlight →
+    /// comments nested beneath it.
     #[test]
     fn ctrl_k_publishes_the_full_nested_tree() {
         let (app, doc, book_id, _group) = open_with_annotations();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), app.library().len(), "every shelf book");
-        assert!(resources.iter().all(|book| {
+        assert_eq!(resources.len(), 1, "one canonical library root");
+        let library = resources
+            .first()
+            .expect("library resource is always exported");
+        assert_eq!(library.id.as_str(), "ebook.library");
+        assert_eq!(
+            library.children.len(),
+            app.library().len(),
+            "every shelf book"
+        );
+        assert!(library.children.iter().all(|book| {
             book.actions
                 .iter()
                 .any(|action| action.id == "open" && action.kind == OperationKind::View)
         }));
-        let book = resources
+        assert!(
+            library
+                .actions
+                .iter()
+                .any(|action| action.id == "open-book" && action.kind == OperationKind::Effect)
+        );
+        let book = library
+            .children
             .iter()
             .find(|book| book.id.as_str() == format!("ebook.book:{book_id}"))
             .expect("open book resource");
@@ -1318,6 +1356,15 @@ mod tests {
         let cm_actions: Vec<&str> = comment.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(cm_actions.contains(&"edit-comment"), "{cm_actions:?}");
         assert!(cm_actions.contains(&"delete-comment"), "{cm_actions:?}");
+        for address in [
+            qos_actions::ActionAddress::new(book.id.as_str(), "open"),
+            qos_actions::ActionAddress::new(comment.id.as_str(), "open"),
+        ] {
+            assert!(
+                qos_actions::door::encode(&resources, &address, None).is_ok(),
+                "recursive resource address {address:?} resolves from the library root"
+            );
+        }
 
         assert!(
             book.children.iter().any(|r| r.kind == "ebook.bookmark"),
@@ -1350,6 +1397,20 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Delete comment")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn library_open_action_is_canonical_even_without_loaded_books() {
+        let doc = AutoCommit::new();
+        let resources = provide_resources(&[], None, &doc);
+        assert_eq!(resources.len(), 1);
+        let address = qos_actions::ActionAddress::new("ebook.library", "open-book");
+        let encoded = qos_actions::door::encode(&resources, &address, None)
+            .expect("library action resolves through the canonical tree");
+        assert_eq!(
+            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
+            Some(EbookOperation::OpenBook)
         );
     }
 
@@ -1587,7 +1648,7 @@ mod tests {
     fn palette_and_builder_encode_identically() {
         let (app, doc, _book, group) = open_with_annotations();
         let resources = Widget::resources(&app, &doc);
-        let hl = resources[0]
+        let hl = resources[0].children[0]
             .children
             .iter()
             .find(|r| r.kind == "ebook.highlight")
