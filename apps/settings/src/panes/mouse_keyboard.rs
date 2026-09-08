@@ -66,6 +66,7 @@ pub struct MouseKeyboardPane {
     auto_correct: bool,
     catalog: Vec<CatalogEntry>,
     pending_add_id: Option<String>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     structure_dirty: bool,
     commit_context_pending: bool,
@@ -80,6 +81,36 @@ impl Default for MouseKeyboardPane {
 }
 
 impl MouseKeyboardPane {
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    fn operation_succeeded(
+        &self,
+        operation: &crate::actions::KeyboardSourceOperation,
+        message: impl Into<String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
+            operation,
+        );
+        if matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        ) {
+            self.operation_status
+                .set(crate::actions::LocalOperationStatus::Succeeded {
+                    token,
+                    message: message.into(),
+                });
+        }
+    }
+
     pub fn new() -> Self {
         let mut prefs = SystemPrefs::load().input;
         prefs.normalise_keyboard_sources();
@@ -101,6 +132,7 @@ impl MouseKeyboardPane {
             auto_correct,
             catalog: installed_catalog(),
             pending_add_id: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             structure_dirty: false,
             commit_context_pending: false,
@@ -122,6 +154,7 @@ impl MouseKeyboardPane {
             auto_correct: true,
             catalog,
             pending_add_id: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             structure_dirty: false,
             commit_context_pending: false,
@@ -734,6 +767,12 @@ impl MouseKeyboardPane {
                 self.source_label(&self.last.keyboard_layout),
             );
             self.persist_keyboard_sources();
+            self.operation_succeeded(
+                &crate::actions::KeyboardSourceOperation::Add {
+                    label: self.source_label(&self.last.keyboard_layout),
+                },
+                "keyboard input source added",
+            );
             self.structure_dirty = true;
         }
     }
@@ -747,12 +786,20 @@ impl MouseKeyboardPane {
             if index > 0 && Self::consume_action(state, root, &up) {
                 self.last.keyboard_layouts.swap(index - 1, index);
                 self.persist_keyboard_sources();
+                self.operation_succeeded(
+                    &crate::actions::KeyboardSourceOperation::MoveUp { index },
+                    "keyboard input source moved up",
+                );
                 self.structure_dirty = true;
                 break;
             }
             if index + 1 < source_count && Self::consume_action(state, root, &down) {
                 self.last.keyboard_layouts.swap(index, index + 1);
                 self.persist_keyboard_sources();
+                self.operation_succeeded(
+                    &crate::actions::KeyboardSourceOperation::MoveDown { index },
+                    "keyboard input source moved down",
+                );
                 self.structure_dirty = true;
                 break;
             }
@@ -770,6 +817,10 @@ impl MouseKeyboardPane {
                     }
                 }
                 self.persist_keyboard_sources();
+                self.operation_succeeded(
+                    &crate::actions::KeyboardSourceOperation::Remove { index },
+                    "keyboard input source removed",
+                );
                 self.structure_dirty = true;
                 break;
             }

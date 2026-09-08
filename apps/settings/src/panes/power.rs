@@ -142,6 +142,7 @@ pub struct PowerPane {
     history: os_actions::BatteryHistory,
     charge_cap: Option<ChargeCapCapability>,
     charge_notice: Option<String>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     available_profiles: Vec<PowerProfile>,
     profile_notice: Option<String>,
     profile: PowerProfile,
@@ -161,6 +162,32 @@ impl Default for PowerPane {
 }
 
 impl PowerPane {
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    fn operation_finished(&self, percent: u32, result: Result<String, String>) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::POWER_OPERATION_TYPE,
+            &crate::actions::PowerOperation::SetChargeLimit { percent },
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
+    }
+
     pub fn new() -> Self {
         let profile_result = os_actions::get_power_profile();
         let available_result = os_actions::available_power_profiles();
@@ -201,6 +228,7 @@ impl PowerPane {
             history,
             charge_cap: os_actions::charge_capability(),
             charge_notice: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             available_profiles,
             profile_notice,
             profile,
@@ -235,6 +263,7 @@ impl PowerPane {
             history: os_actions::BatteryHistory::default(),
             charge_cap,
             charge_notice: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             available_profiles: PROFILES.iter().map(|(_, profile)| *profile).collect(),
             profile_notice: None,
             profile,
@@ -590,9 +619,14 @@ impl PowerPane {
                 self.battery.charge_limit = Some(limit);
                 self.charge_cap = Some(actual);
                 self.charge_notice = Some(format!("Hardware confirmed a {limit}% charge cap."));
+                self.operation_finished(
+                    limit,
+                    Ok(format!("hardware confirmed a {limit}% charge cap")),
+                );
             }
             Err(e) => {
                 self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
+                self.operation_finished(limit, Err(format!("Charge cap was not applied: {e}")));
                 warn!(target: "qos::settings", op = "set_charge_limit", error = %e, "battery cap failed");
             }
         }
