@@ -276,6 +276,10 @@ impl ApplicationsProvider {
         self.catalogue_results_for_with_hosts(needle, apps, installed, &[], open_target)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "catalogue-result construction keeps ranking, alias suppression, install state, and action metadata together so duplicate offerings cannot diverge"
+    )]
     fn catalogue_results_for_with_hosts(
         &self,
         needle: &str,

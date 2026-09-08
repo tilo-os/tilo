@@ -208,6 +208,10 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     std::process::ExitCode::SUCCESS
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "startup decisions must remain in one ordered, single-threaded entry point before the compositor and its long-lived services start"
+)]
 fn main() -> std::process::ExitCode {
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.

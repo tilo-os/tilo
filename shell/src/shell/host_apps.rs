@@ -141,8 +141,11 @@ fn deduplicate_host_apps(apps: Vec<HostApp>) -> Vec<HostApp> {
                 })
         });
         if let Some(index) = duplicate {
-            if app.is_flatpak() && !out[index].is_flatpak() {
-                out[index] = app;
+            if let Some(existing) = out.get_mut(index)
+                && app.is_flatpak()
+                && !existing.is_flatpak()
+            {
+                *existing = app;
             }
         } else {
             out.push(app);
@@ -246,6 +249,10 @@ pub fn launch_with_document(
 /// Host launch with a compositor-minted `xdg_activation_v1` token. The token
 /// travels only as the standard desktop environment variable and grants no
 /// qOS sandbox or service authority.
+///
+/// # Errors
+///
+/// Returns the same launch-resolution errors as [`launch_with_document`].
 pub fn launch_with_document_and_activation(
     desktop_id: &str,
     document: Option<&Path>,
@@ -256,21 +263,15 @@ pub fn launch_with_document_and_activation(
     // action's layout is still current.  A refusal before the worker starts
     // must retire that one-shot note or a later independently-opened window
     // could inherit this dead launch's destination.
-    let app = match find(desktop_id) {
-        Some(app) => app,
-        None => {
-            launcher::clear_pending_placement(desktop_id);
-            return Err(LaunchError::HostAppNotFound {
-                desktop_id: desktop_id.to_string(),
-            });
-        }
+    let Some(app) = find(desktop_id) else {
+        launcher::clear_pending_placement(desktop_id);
+        return Err(LaunchError::HostAppNotFound {
+            desktop_id: desktop_id.to_string(),
+        });
     };
-    let socket = match launcher::wayland_socket() {
-        Some(socket) => socket,
-        None => {
-            launcher::clear_pending_placement(&app.desktop_id);
-            return Err(LaunchError::NoDisplay);
-        }
+    let Some(socket) = launcher::wayland_socket() else {
+        launcher::clear_pending_placement(&app.desktop_id);
+        return Err(LaunchError::NoDisplay);
     };
     let launcher_bin = match launcher::resolve_launcher_bin() {
         Ok(launcher_bin) => launcher_bin,
@@ -538,7 +539,7 @@ mod tests {
             Err(LaunchError::HostAppNotFound { .. })
         ));
         assert!(
-            launcher::placement_for_toplevel(MISSING, 0xC105ED).is_none(),
+            launcher::placement_for_toplevel(MISSING, 0xC1_05_ED).is_none(),
             "a later unrelated window must not inherit a launch that was refused"
         );
     }

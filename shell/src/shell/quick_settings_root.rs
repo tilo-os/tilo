@@ -228,9 +228,8 @@ impl QuickSettingsRoot {
                 // Powered off and unavailable are distinct states. Only
                 // BlueZ's successful adapter read may expose this switch.
                 QuickSettingsControl::Bluetooth => state.bluetooth_available,
-                QuickSettingsControl::NightLight => true,
+                QuickSettingsControl::NightLight | QuickSettingsControl::AirplaneMode => true,
                 QuickSettingsControl::Vpn => !state.vpns.is_empty(),
-                QuickSettingsControl::AirplaneMode => true,
                 QuickSettingsControl::MobileData => state.radios.wwan_available,
             })
             .collect()
@@ -254,10 +253,9 @@ impl QuickSettingsRoot {
         }
         all.into_iter()
             .filter(|c| match c {
-                QuickSettingsControl::Wifi => true,
+                QuickSettingsControl::Wifi | QuickSettingsControl::NightLight => true,
                 QuickSettingsControl::Bluetooth => state.bluetooth_available,
                 QuickSettingsControl::Vpn => !state.vpns.is_empty(),
-                QuickSettingsControl::NightLight => true,
                 QuickSettingsControl::AirplaneMode => {
                     state.radios.wifi_available || state.radios.wwan_available
                 }
@@ -493,13 +491,12 @@ impl QuickSettingsRoot {
                 .iter()
                 .find(|v| v.connected)
                 .map_or("Not connected", |v| v.ssid.as_str()),
-            QuickSettingsControl::Wifi => "Off",
             QuickSettingsControl::Bluetooth if s.bluetooth => s
                 .bt_devices
                 .iter()
                 .find(|v| v.connected)
                 .map_or("Not connected", |v| v.name.as_str()),
-            QuickSettingsControl::Bluetooth => "Off",
+            QuickSettingsControl::Wifi | QuickSettingsControl::Bluetooth => "Off",
             QuickSettingsControl::Vpn => s
                 .vpns
                 .iter()
@@ -648,7 +645,7 @@ impl QuickSettingsRoot {
         }
         let base = 7_usize.saturating_add(controls.len());
         if i == base {
-            return self.cycle_power(state);
+            return Self::cycle_power(state);
         }
         RootAction::None
     }
@@ -713,7 +710,7 @@ impl QuickSettingsRoot {
             SliderCommit::Volume(*value * 100.)
         })
     }
-    fn cycle_power(&self, s: &mut QuickSettingsState) -> RootAction {
+    fn cycle_power(s: &mut QuickSettingsState) -> RootAction {
         s.power_profile = match s.power_profile {
             PowerProfile::Saver => PowerProfile::Balanced,
             PowerProfile::Balanced => PowerProfile::Performance,
@@ -787,7 +784,7 @@ impl QuickSettingsRoot {
             return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
         }
         if self.power_geometry(panel, state).contains(point) {
-            return self.cycle_power(state);
+            return Self::cycle_power(state);
         }
         RootAction::None
     }
@@ -898,6 +895,10 @@ impl QuickSettingsRoot {
         self.slider_drag.is_some() || self.edit_drag.is_pending()
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the retained-rendering entry point receives the scene, transform, text, theme, input, and current model together to produce one coherent frame"
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -981,6 +982,10 @@ impl QuickSettingsRoot {
             );
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "root controls share ordered retained painting and hit-region setup; splitting risks visual and accessibility divergence"
+    )]
     fn draw_root(
         &self,
         scene: &mut Scene,
@@ -1206,6 +1211,10 @@ impl QuickSettingsRoot {
             1.5,
         );
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a control's retained rendering needs its shared renderer context plus the explicit indexed control data for stable focus and geometry"
+    )]
     fn draw_control(
         &self,
         scene: &mut Scene,
@@ -1257,6 +1266,10 @@ impl QuickSettingsRoot {
             None,
             TextWeight::Semibold,
         );
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+        )]
         let sub = text.elide_to_width(
             Self::subline(c, s),
             theme.tokens.typography.scale.xs,
@@ -1306,6 +1319,10 @@ impl QuickSettingsRoot {
             );
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "edit-mode painting keeps list, drag ghost, insertion rail, and matching accessibility geometry in one ordered rendering pass"
+    )]
     fn draw_edit(
         &mut self,
         scene: &mut Scene,
@@ -1382,6 +1399,10 @@ impl QuickSettingsRoot {
                 r.x1 - self.scaled(10.),
                 r.y1 - self.scaled(9.),
             );
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+            )]
             let label = text.elide_to_width(
                 Self::label(c),
                 theme.tokens.typography.scale.sm,
@@ -1442,9 +1463,10 @@ impl QuickSettingsRoot {
                 .edit_drag
                 .insertion()
                 .map(|index| metrics.slot_lead(index) + self.scaled(4.));
-            let ghost_y0 = destination_top.map_or(ghost.y0 - self.scaled(6.), |top| {
-                (ghost.y0 - self.scaled(6.)).max(top)
-            });
+            let ghost_y0 = destination_top.map_or_else(
+                || ghost.y0 - self.scaled(6.),
+                |top| (ghost.y0 - self.scaled(6.)).max(top),
+            );
             let ghost = Rect::new(
                 ghost.x0 + self.scaled(6.),
                 ghost_y0,
@@ -1514,6 +1536,10 @@ impl QuickSettingsRoot {
                     ghost.x1 - self.scaled(10.),
                     ghost.y1 - self.scaled(9.),
                 );
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+                )]
                 let label = text.elide_to_width(
                     Self::label(control),
                     theme.tokens.typography.scale.sm,
@@ -1723,6 +1749,10 @@ mod tests {
             "Wi-Fi"
         );
     }
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "the test varies one hardware capability from the default fixture to isolate accessibility visibility"
+    )]
     #[test]
     fn accessibility_exposes_only_present_hardware_with_dynamic_network_name() {
         let root = QuickSettingsRoot::default();
@@ -1800,6 +1830,10 @@ mod tests {
                 .contains(&QuickSettingsControl::AirplaneMode)
         );
     }
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "the drag test builds its controller fixture incrementally to isolate the manipulated controls"
+    )]
     #[test]
     fn pointer_drag_uses_shared_controller_and_commits() {
         let mut root = QuickSettingsRoot::default();
@@ -1837,6 +1871,10 @@ mod tests {
         assert_eq!(full.x1, panel.x1 - QuickSettingsRoot::PAD);
         assert_eq!(full.width(), 368.);
     }
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "the touch-target test sets only the panel geometry on an otherwise default root fixture"
+    )]
     #[test]
     fn labelled_top_utilities_keep_independent_touch_targets() {
         let mut root = QuickSettingsRoot::default();

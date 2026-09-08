@@ -157,7 +157,6 @@ fn host_input_migration_updates(
     let mut updates = host_keyboard_updates(existing, &mut tracked_read);
     updates.extend(host_pointer_updates(existing, &mut tracked_read));
     updates.extend(host_key_repeat_updates(existing, &mut tracked_read));
-    drop(tracked_read);
 
     if host_read_succeeded || host_input_settings_complete(existing) {
         updates.insert(
@@ -218,17 +217,18 @@ fn host_keyboard_updates(
 fn parse_gnome_xkb_sources(value: &str) -> Vec<String> {
     let mut sources = Vec::new();
     let mut rest = value;
-    while let Some(start) = rest.find("('xkb', '") {
-        rest = &rest[start + 9..];
-        let Some(end) = rest.find('\'') else { break };
-        let id = rest[..end].replacen('+', ":", 1);
+    while let Some((_, xkb_source)) = rest.split_once("('xkb', '") {
+        let Some((source_id, remaining)) = xkb_source.split_once('\'') else {
+            break;
+        };
+        let id = source_id.replacen('+', ":", 1);
         if settings_store::hardware::KeyboardInputSource::parse(&id).is_some()
             && !sources.contains(&id)
             && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
         {
             sources.push(id);
         }
-        rest = &rest[end + 1..];
+        rest = remaining;
     }
     sources
 }
@@ -352,7 +352,7 @@ fn host_key_repeat_updates(
     updates.insert("key_repeat_delay_ms".into(), serde_json::json!(delay));
     updates.insert(
         "key_repeat_rate_hz".into(),
-        serde_json::json!((1_000_u32 / interval).clamp(1, 1_000)),
+        serde_json::json!(1_000_u32.checked_div(interval).unwrap_or(1).clamp(1, 1_000)),
     );
     updates
 }

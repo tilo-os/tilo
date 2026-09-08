@@ -44,9 +44,10 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
     let pending = app_id
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_and_instance_for_toplevel(id, surface_id));
-    let placement = pending
-        .map(|(placement, _)| placement)
-        .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
+    let placement = pending.map_or_else(
+        || crate::shell::placement::placement_for_new_window(tree, None),
+        |(placement, _)| placement,
+    );
     // If this window is what a document open asked for, record that here — the launch and the window it produced meet at this point.
     if let Some(id) = app_id.as_deref() {
         crate::shell::doc_open::claim_surface_for_document(id, surface_id);
@@ -269,9 +270,8 @@ pub fn rename_tab_for_app_id_with_title(
     new_app_id: String,
     authoritative_title: Option<&str>,
 ) -> bool {
-    let new_title = authoritative_title
-        .map(str::to_string)
-        .unwrap_or_else(|| tab_label_for_foreign(&new_app_id));
+    let new_title =
+        authoritative_title.map_or_else(|| tab_label_for_foreign(&new_app_id), str::to_string);
     for ws in &mut tree.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
@@ -305,9 +305,8 @@ pub fn rebind_toplevel_for_app_id(
     new_app_id: String,
     authoritative_title: Option<&str>,
 ) -> bool {
-    let title = authoritative_title
-        .map(str::to_string)
-        .unwrap_or_else(|| tab_label_for_foreign(&new_app_id));
+    let title =
+        authoritative_title.map_or_else(|| tab_label_for_foreign(&new_app_id), str::to_string);
     let anonymous =
         app_id_for_surface(tree, surface_id).is_some_and(|app_id| app_id.starts_with("anon-"));
     if anonymous
@@ -525,6 +524,10 @@ pub fn close_tab_for_destroyed_surface_and_persist(
 /// Remove `tab_id` from wherever it is in the tree, repairing its group's selection if it was in
 /// front. The undo for a placement whose window never came — a failed launch takes its
 /// placeholder away rather than leaving a dead card. [`close_tab_for_destroyed_surface`] is the same removal keyed on a surface.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "the locations are produced by a complete immutable traversal immediately above and the tree is not mutated until the indexed edits begin"
+)]
 pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
     let located = tree.workspaces.iter().enumerate().find_map(|(ws_idx, ws)| {
         ws.strips.iter().enumerate().find_map(|(strip_idx, strip)| {

@@ -27,6 +27,10 @@ pub enum ActivationDenial {
 /// Facts that do not require protocol objects. `app_id_matches` is true when
 /// no app id was supplied: the token itself is still an unguessable,
 /// single-use capability tied to its focused source and input serial.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Each independently auditable protocol fact maps to a distinct activation-denial reason; collapsing them would obscure the security decision recorded in logs and tests."
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActivationFacts {
     pub age: Duration,

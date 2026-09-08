@@ -3247,6 +3247,10 @@ impl ShellOverlayHost {
     /// poll, rows would keep painting the boot-time snapshot as the
     /// persisted tree grows. Cheap on the no-op path — one u64 compare
     /// against `last_chrome_revision`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The ordered tree-to-row reconciliation shares raw row pointers and retained tile state; splitting it would obscure its alias and ordering invariants."
+    )]
     fn resync_strips_from_tree(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -3741,6 +3745,10 @@ impl ShellOverlayHost {
     /// Drain close buttons from the rendered rows into the same lifecycle
     /// transaction used by keyboard closes. This is intentionally run in
     /// the input dispatch that produced the request, not on a later frame.
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "Exclusive access prevents aliases while raw row pointers are materialized as mutable rendered rows."
+    )]
     fn harvest_pending_tab_closes(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
@@ -5695,6 +5703,10 @@ impl ShellOverlayHost {
     /// Dispatch the selected palette row through the provider callback
     /// (`result:N`) or the legacy chrome-command dispatcher (`peer:*`,
     /// a bridge until peer commands get their own provider).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Argument validation, action dispatch, and one Automerge transaction must stay in their visible order to keep palette actions atomic."
+    )]
     fn activate_selected_result(&mut self, doc: &mut automerge::AutoCommit, root: &ObjId) {
         if let Some(result) = self.pending_palette_action.take() {
             let parsed = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
@@ -7747,6 +7759,11 @@ impl ShellOverlayHost {
     /// external writer must make this validated handoff after saving, or its
     /// file change takes effect at the next compositor session.  The shell's
     /// own shortcut guide does the handoff synchronously after its save.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error when `config` contains a conflicting or
+    /// malformed shortcut binding.
     pub fn set_shortcut_config(
         &mut self,
         config: settings_store::hardware::ShortcutConfig,
@@ -8412,6 +8429,10 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "the existing shell chord router remains one auditable precedence table"
     )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Each argument is a distinct input-event fact; bundling them would conceal the chord precedence table."
+    )]
     fn handle_shell_mod_chords(
         &mut self,
         logical_key: &Key,
@@ -8610,10 +8631,7 @@ impl ShellOverlayHost {
             // most browsers/terminals/editors, and the
             // shell would swallow it ahead of the client.
             "w" | "W" => {
-                if repeat {
-                    *handled = true;
-                    true
-                } else if self.close_focused_tab() {
+                if repeat || self.close_focused_tab() {
                     *handled = true;
                     true
                 } else {
@@ -9437,6 +9455,10 @@ impl ShellOverlayHost {
     /// Keyboard parity for the immediate-mode quick-settings root. Tab uses
     /// paint order, Enter/Space route through the same action dispatcher as a
     /// pointer click, and arrows adjust the two range controls in small steps.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keyboard focus and control adjustments intentionally use the same immediate-mode action path as pointer input."
+    )]
     fn handle_quick_settings_keyboard(
         &mut self,
         logical_key: &Key,
@@ -11386,6 +11408,10 @@ impl Widget for ShellOverlayHost {
         "ShellOverlayHost"
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The accessibility tree is kept as one ordered overlay projection so assistive focus order matches retained visual overlay order."
+    )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -15309,6 +15335,10 @@ impl ShellOverlayHost {
     /// lives in chrome rather than Settings: Settings owns delivery policy,
     /// while the shell is the only authority that actually received and
     /// retired these notifications.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The notification-history paint and hit rectangles share one layout calculation, preventing visual and input bounds from drifting."
+    )]
     fn draw_qs_notification_history(
         &mut self,
         scene: &mut Scene,
@@ -15316,6 +15346,7 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        const ROW_HEIGHT: f64 = 70.0;
         let rect = self.quick_settings_rect();
         let colors = &theme.tokens.colors;
         let back = self.qs_notification_back_rect();
@@ -15426,7 +15457,6 @@ impl ShellOverlayHost {
             Some(f64_to_f32_lossy(rect.width() - 24.0)),
         );
 
-        const ROW_HEIGHT: f64 = 70.0;
         let now = Instant::now();
         for (index, notification) in history
             .iter()
@@ -17423,6 +17453,10 @@ mod palette_dispatch_tests {
         assert!(!h.palette_visible);
     }
 
+    #[allow(
+        clippy::items_after_statements,
+        reason = "the local test helper is deliberately introduced beside the scenario that exercises it"
+    )]
     #[test]
     #[serial_test::serial(process_env)]
     fn quick_settings_settings_opens_personal_settings_app_not_workspace_settings() {
@@ -18803,6 +18837,10 @@ mod overlay_event_absorb_tests {
         handled
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the test renders bounded monotonic millisecond timestamps through the UI's f64 chart interface"
+    )]
     #[test]
     fn lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions() {
         let mut h = build_harness();
@@ -19312,6 +19350,11 @@ mod overlay_event_absorb_tests {
         );
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::unchecked_time_subtraction,
+        reason = "the deterministic notification-age fixture subtracts known earlier test instants"
+    )]
     #[test]
     fn notification_history_labels_age_and_severity_concisely() {
         let now = Instant::now();
@@ -20478,6 +20521,10 @@ mod tests {
         assert!(h.host.palette_visible());
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the input-routing test holds test state guards through each asserted event transition"
+    )]
     #[test]
     fn alt_tab_walks_the_window_strip_and_shift_reverses() {
         let tree = WorkspaceTree::bootstrap_demo();
@@ -21997,6 +22044,10 @@ mod resync_strips_tests {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resync regression retains the complete frame-by-frame topology scenario"
+    )]
     #[test]
     fn resync_drops_groups_removed_after_bump() {
         let (mut tree, strip_id, _) = one_group_seed();
@@ -22040,6 +22091,10 @@ mod resync_strips_tests {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resync regression keeps the complete document-revision and frame-topology scenario together"
+    )]
     #[test]
     fn resync_reorders_existing_groups_and_tabs_after_a_document_revision() {
         let (mut tree, strip_id, first_group) = one_group_seed();
@@ -22322,6 +22377,10 @@ mod resync_strips_tests {
         assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame-writeback regression keeps input, persistence, and next-frame assertions together"
+    )]
     #[test]
     fn active_tab_writeback_is_flushed_before_the_next_frame() {
         let (mut tree, strip_id, group_id) = one_group_seed();
@@ -22352,6 +22411,10 @@ mod resync_strips_tests {
         assert_eq!(restarted.active_group_for(strip_id), Some(group_id));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the accepted-room reorder regression retains the complete remote document and frame assertions"
+    )]
     #[test]
     fn accepted_room_reorder_resyncs_existing_remote_groups_and_tabs() {
         const HOST_SALT: u16 = 0x2222;

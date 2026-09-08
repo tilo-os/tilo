@@ -563,20 +563,24 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     }
     match key {
         ChordKey::Space => mods.alt,
-        ChordKey::Tab => false,
-        ChordKey::PageUp | ChordKey::PageDown => false,
-        ChordKey::PrintScreen => true,
-        ChordKey::ArrowLeft | ChordKey::ArrowRight | ChordKey::ArrowUp | ChordKey::ArrowDown => {
-            false
-        }
-        ChordKey::Escape => overlay_open,
-        ChordKey::Char(_) => false,
         // The shell visibly advertises F1 as the hardware-neutral route to
         // its desktop guide. Reserving it here is essential: otherwise a
         // focused client consumes the event before the guide dispatcher can
         // see it. Other function keys remain application-owned.
-        ChordKey::Function(1) => true,
-        ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
+        ChordKey::PrintScreen | ChordKey::Function(1) => true,
+        ChordKey::Escape => overlay_open,
+        ChordKey::Tab
+        | ChordKey::PageUp
+        | ChordKey::PageDown
+        | ChordKey::ArrowLeft
+        | ChordKey::ArrowRight
+        | ChordKey::ArrowUp
+        | ChordKey::ArrowDown
+        | ChordKey::Char(_)
+        | ChordKey::Delete
+        | ChordKey::Function(_)
+        | ChordKey::Other
+        | ChordKey::Modifier => false,
     }
 }
 
@@ -1826,9 +1830,9 @@ fn route_mouse_input(
         .seat
         .get_pointer()
         .is_some_and(|pointer| pointer.is_grabbed());
-    let to_client = ((matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
-        || smithay_grabbed)
-        && (state.client_input.pointer_focus.is_some() || smithay_grabbed))
+    let to_client = smithay_grabbed
+        || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
+            && state.client_input.pointer_focus.is_some())
         || (chrome_drag && !pressed);
     let consumed = if to_client {
         match evdev_button(button) {
@@ -2068,6 +2072,10 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
 }
 
 /// Where the pointer should be focused right now: the foreign tile under the cursor, or the implicit grab's owner while a button is held.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Pointer targeting is an ordered routing policy: separating the Chrome, client drag-and-drop, implicit-grab, and capture cases could reorder focus delivery during a held gesture."
+)]
 fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
     match state.client_input.grab {
         // A file carried out of the hosted file manager: the drop target is whichever client the pointer is over, so hit-test normally, as for a client's own drag below.
