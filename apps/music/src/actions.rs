@@ -208,8 +208,8 @@ pub enum MusicOperation {
     SetPlayback {
         playback: crate::model::Playback,
     },
-    /// Evict legacy local cache metadata. Music refuses `keep` until it owns a
-    /// durable audio-byte cache; metadata alone must never claim offline play.
+    /// Download durable, device-local media bytes or remove them from the
+    /// device-local cache. Neither the bytes nor their paths enter Automerge.
     SetOffline {
         tracks: Vec<String>,
         keep: bool,
@@ -724,14 +724,16 @@ fn local_offline_spec(id: &str, label: &str, tracks: Vec<String>, keep: bool) ->
         OperationKind::Effect,
         &MusicOperation::SetOffline { tracks, keep },
     );
-    if keep {
-        spec.unavailable(
-            "offline_audio_cache_unavailable",
-            "Offline downloads are unavailable: Music does not yet store durable audio bytes.",
-        )
-    } else {
-        spec
-    }
+    spec.execution(ExecutionMode::Background { cancellable: false })
+        .returns(ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "required": ["state"],
+                "properties": {
+                    "state": { "enum": ["cached", "removed"] }
+                }
+            }),
+        })
 }
 
 fn playlist_label(p: &PlaylistResource) -> String {
