@@ -1409,11 +1409,10 @@ impl OnboardingView {
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_vertical_padding(if compact {
-                    0.0
-                } else {
-                    theme.tokens.spacing.s2
-                })
+                // Keep the action visually separate from the confirmation
+                // field at every density. Compact pages save space in the
+                // surrounding column gaps, not by merging form controls.
+                .with_vertical_padding(theme.tokens.spacing.s2)
                 .push(actions(vec![Box::new(backup_button)])),
         ));
 
@@ -3925,8 +3924,6 @@ mod tests {
                         "onboarding.backup.passphrase",
                         "onboarding.backup.confirmation",
                         "onboarding.backup.button",
-                        "onboarding.backup.skip-acknowledged.row",
-                        "onboarding.backup.continue.button",
                     ] {
                         let control = widget_rect(control_id);
                         let earliest_offset = (control.y1 - content_viewport.y1).max(0.0);
@@ -3935,6 +3932,29 @@ mod tests {
                             control.height() <= content_viewport.height()
                                 && earliest_offset <= latest_offset + 0.5,
                             "Backup control must be fully reachable by scrolling at {width}x{height}: control={control_id} {control:?}, viewport={content_viewport:?}, max_offset={max_offset}, theme={}",
+                            theme.name,
+                        );
+                    }
+                    // Backup acknowledgement and progression are deliberately
+                    // persistent footer controls now; they must be visible in
+                    // the panel without scrolling, not reachable through the
+                    // scroll viewport above them.
+                    let footer_rects = [
+                        widget_rect("onboarding.backup.skip-acknowledged.row"),
+                        widget_rect("onboarding.backup.continue.button"),
+                    ];
+                    for control in footer_rects {
+                        assert!(
+                            // Footer uses the same s3 horizontal gutter as
+                            // the scrolling content above it.
+                            control.x0 >= panel.x0 + f64::from(theme.tokens.spacing.s3) - 0.5
+                                && control.x1
+                                    <= panel.x1 - f64::from(theme.tokens.spacing.s3) + 0.5
+                                && control.y0
+                                    >= content_viewport.y1 + f64::from(theme.tokens.spacing.s3)
+                                        - 0.5
+                                && control.y1 <= panel.y1 - 16.0,
+                            "Backup footer control must stay persistently visible and clear of scrolling content at {width}x{height}: control={control:?}, viewport={content_viewport:?}, panel={panel:?}, theme={}",
                             theme.name,
                         );
                     }
