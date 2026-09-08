@@ -367,6 +367,10 @@ impl Invalidation {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field records an independently recoverable setup or picker state; combining them would obscure cancellation and accessibility transitions"
+)]
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
@@ -715,6 +719,10 @@ impl OnboardingView {
         self.transition_started = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ordered composition keeps a single onboarding focus tree and its matching visual hierarchy together"
+    )]
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
         if let Some(page) = self.tour_page {
             return self.build_tour_composition(theme, panel_height, page);
@@ -1242,6 +1250,10 @@ impl OnboardingView {
         Box::new(body.push(Box::new(Card::new(Box::new(list)))))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "identity-backup controls and their explanatory recovery copy form one accessibility group"
+    )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
@@ -1728,7 +1740,9 @@ fn terminate_nearby_pairing(child: &mut Option<Child>) {
     // validated PID the process-group ID. A negative target is confined to
     // that group and cannot signal the compositor's own group.
     let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now() + Duration::from_millis(750);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(750))
+        .unwrap_or_else(Instant::now);
     loop {
         let leader_finished = child.try_wait().ok().flatten().is_some();
         // Signal 0 only checks whether any descendant still occupies the
@@ -1870,8 +1884,7 @@ impl Widget for OnboardingView {
                         let label =
                             std::env::var("HOSTNAME").unwrap_or_else(|_| "qOS device".into());
                         let identity_root = std::env::var_os("QOS_IDENTITY_ROOT")
-                            .map(PathBuf::from)
-                            .unwrap_or_else(|| PathBuf::from("/var/lib/qos"));
+                            .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from);
                         let requester = qos_relay::ProcessLease::capture(std::process::id());
                         let spawn =
                             requester
@@ -1912,7 +1925,7 @@ impl Widget for OnboardingView {
                                 self.error = None;
                             }
                             Err(error) => {
-                                self.error = Some(format!("Could not start nearby setup: {error}"))
+                                self.error = Some(format!("Could not start nearby setup: {error}"));
                             }
                         }
                     }
@@ -1951,7 +1964,17 @@ impl Widget for OnboardingView {
             .as_mut()
             .and_then(|child| child.try_wait().ok().flatten());
         if let Some(status) = nearby_finished {
-            let mut child = self.nearby_child.take().expect("nearby child exists");
+            #[allow(
+                clippy::zombie_processes,
+                reason = "The preceding `try_wait` returned this status and therefore already reaped the child; this binding only drains its buffered output."
+            )]
+            let Some(mut child) = self.nearby_child.take() else {
+                self.error = Some(
+                    "Nearby setup changed state unexpectedly. Choose Connect nearby to retry."
+                        .into(),
+                );
+                return;
+            };
             let mut stdout = String::new();
             let mut stderr = String::new();
             if let Some(mut stream) = child.stdout.take() {
@@ -1965,8 +1988,8 @@ impl Widget for OnboardingView {
                     Ok(result) => {
                         let fingerprint = result.get("identity").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
                         let path = result.get("record_path").and_then(serde_json::Value::as_str).map(PathBuf::from);
-                        if fingerprint.len() == 64 && path.is_some() {
-                            self.flow.complete_connected(MintedIdentity { fingerprint, path: path.expect("checked") });
+                        if let Some(path) = path.filter(|_| fingerprint.len() == 64) {
+                            self.flow.complete_connected(MintedIdentity { fingerprint, path });
                             self.identity_ready_page = false;
                             let _ = self.persist_progress(PersistedStage::IdentityReady);
                             self.error = None;
@@ -3703,6 +3726,10 @@ mod tests {
         let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the responsive-layout test must retain all supported viewport scenarios and alignment assertions"
+    )]
     #[test]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[

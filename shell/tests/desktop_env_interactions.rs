@@ -555,6 +555,7 @@ fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
                 .all(|tab| tab.id != opened),
             "the opened tab is absent from durable state before reconstruction"
         );
+        drop(tree);
     }
 
     let restarted = shell::shell::persist::load_tree_from(&state_path)

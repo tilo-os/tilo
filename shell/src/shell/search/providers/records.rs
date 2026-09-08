@@ -219,8 +219,8 @@ fn bring_into_this_room(
     chrome: &Chrome,
 ) {
     let here = {
-        let state = chrome.borrow();
-        let tree = state.tree();
+        let chrome_state = chrome.borrow();
+        let tree = chrome_state.tree();
         tree.active_workspace().map(|w| w.room)
     };
     if let Some(here) = here {
@@ -580,12 +580,12 @@ mod tests {
             .borrow_mut()
             .replace_scanned_records_for_test(vec![observed("a"), observed("b")]);
         let provider = RecordsProvider::with_index(Rc::clone(&index));
-        let state = chrome.borrow();
+        let chrome_state = chrome.borrow();
         let doc = automerge::AutoCommit::new();
         let context = || SearchContext {
             needle: "note",
             wanted: &[ResourceKind::Record],
-            chrome: &state,
+            chrome: &chrome_state,
             doc: &doc,
             doc_root: &automerge::ROOT,
         };
@@ -605,9 +605,9 @@ mod tests {
         index
             .borrow_mut()
             .replace_scanned_records_for_test(vec![observed("c"), observed("d")]);
-        let stale = provider.query_page(context(), Some(&cursor), SearchBudget::PALETTE);
+        let replacement_page = provider.query_page(context(), Some(&cursor), SearchBudget::PALETTE);
         assert!(
-            stale.stale_cursor,
+            replacement_page.stale_cursor,
             "same-count replacement must invalidate the cursor"
         );
     }

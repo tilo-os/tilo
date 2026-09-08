@@ -275,6 +275,11 @@ impl SelectedAction<'_> {
     /// Begin an invocation without fabricating success for a remote action
     /// whose current authority is still being checked. Agents can retain and
     /// poll the returned ticket just as the visual palette does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an argument-binding or provider refusal error; callers must
+    /// poll a pending disposition rather than treating it as success.
     pub fn invoke_disposition(
         &self,
         doc: &mut AutoCommit,
