@@ -93,6 +93,30 @@ fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
     }
 }
 
+/// Screen-reader description for one retained notification card. Kept beside
+/// the visual card's source/age helpers so both presentations expose the same
+/// hierarchy even when a busy compositor crosses a relative-time boundary.
+fn notification_history_accessible_description(
+    notification: &Notification,
+    now: Instant,
+) -> String {
+    let source = notification
+        .app_name
+        .as_deref()
+        .or(notification.app_id.as_deref())
+        .unwrap_or("System");
+    let severity = notification_severity_label(notification.severity);
+    let relative_time = notification_history_relative_time(notification, now);
+    if notification.body.is_empty() {
+        format!("{severity}. From {source}. {relative_time}")
+    } else {
+        format!(
+            "{severity}. From {source}. {relative_time}. {}",
+            notification.body
+        )
+    }
+}
+
 /// Resolve only addresses the action explicitly declared. Semantic resource
 /// ids such as `notes.page:abc` are labels within an app, not record ids or
 /// URIs; treating them as either would make History's Open control navigate
@@ -11523,6 +11547,12 @@ impl Widget for ShellOverlayHost {
                                     start.saturating_add(shown),
                                 )
                             };
+                            // One semantic snapshot has one clock edge. Calling
+                            // `Instant::now()` independently for each card can
+                            // label adjacent rows differently when a loaded
+                            // compositor crosses a relative-time boundary while
+                            // constructing the accessibility tree.
+                            let now = Instant::now();
                             let items = state
                                 .notification_history()
                                 .iter()
@@ -11531,28 +11561,14 @@ impl Widget for ShellOverlayHost {
                                 .take(shown)
                                 .enumerate()
                                 .map(|(index, notification)| {
-                                    let source = notification
-                                        .app_name
-                                        .as_deref()
-                                        .or(notification.app_id.as_deref())
-                                        .unwrap_or("System");
-                                    let severity =
-                                        notification_severity_label(notification.severity);
-                                    let relative_time = notification_history_relative_time(
-                                        notification,
-                                        Instant::now(),
-                                    );
-                                    let item_description = if notification.body.is_empty() {
-                                        format!("{severity}. From {source}. {relative_time}")
-                                    } else {
-                                        format!(
-                                            "{severity}. From {source}. {relative_time}. {}",
-                                            notification.body
-                                        )
-                                    };
                                     AccessNode::new(Role::ListItem)
                                         .with_name(notification.title.clone())
-                                        .with_description(item_description)
+                                        .with_description(
+                                            notification_history_accessible_description(
+                                                notification,
+                                                now,
+                                            ),
+                                        )
                                         .with_position(index.saturating_add(1), shown)
                                 })
                                 .collect();
@@ -19579,15 +19595,31 @@ mod overlay_event_absorb_tests {
             h.host.qs_notification_visible_rows().min(total),
             "screen readers receive every currently visible title/body card"
         );
-        assert!(
-            retained.children.iter().all(|item| {
-                item.description.as_deref().is_some_and(|description| {
-                    description.starts_with("Error. From System. just now.")
-                        && description.contains("Detailed recovery guidance")
-                })
-            }),
-            "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows"
-        );
+        let state = h.chrome.borrow();
+        let visible = h.host.qs_notification_visible_rows();
+        let start = h
+            .host
+            .qs_notification_history_start
+            .min(total.saturating_sub(visible));
+        for (item, notification) in retained.children.iter().zip(
+            state
+                .notification_history()
+                .iter()
+                .rev()
+                .skip(start)
+                .take(retained.children.len()),
+        ) {
+            let description = item
+                .description
+                .as_deref()
+                .expect("every retained card exposes its hierarchy");
+            assert!(
+                description.starts_with("Error. From System. ")
+                    && description.contains("Detailed recovery guidance")
+                    && description.contains(&notification.body),
+                "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows; got {description:?}"
+            );
+        }
     }
 
     #[test]
