@@ -50,11 +50,12 @@ impl AgendaView {
         model: &Model,
         anchor: NaiveDate,
         hidden_calendars: &HashSet<String>,
+        calendar_filter: Option<&str>,
     ) {
         self.scroll.set_viewport_rect(area);
         self.scroll.set_content_size(
             area.width() as f32,
-            content_height(model, anchor, hidden_calendars) as f32,
+            content_height(model, anchor, hidden_calendars, calendar_filter) as f32,
         );
     }
 
@@ -105,6 +106,7 @@ impl AgendaView {
         anchor: NaiveDate,
         today: NaiveDate,
         hidden_calendars: &HashSet<String>,
+        calendar_filter: Option<&str>,
         pointer: Point,
     ) -> Vec<(Rect, AgendaAction)> {
         let colors = &theme.tokens.colors;
@@ -127,7 +129,7 @@ impl AgendaView {
 
         let mut day = anchor;
         while day <= end {
-            let events = visible_events_on(model, day, hidden_calendars);
+            let events = visible_events_on(model, day, hidden_calendars, calendar_filter);
             let tasks: Vec<_> = model
                 .tasks
                 .iter()
@@ -398,20 +400,35 @@ fn visible_events_on<'a>(
     model: &'a Model,
     date: NaiveDate,
     hidden_calendars: &HashSet<String>,
+    calendar_filter: Option<&str>,
 ) -> Vec<&'a crate::model::Event> {
     model
         .events_on(date)
         .into_iter()
-        .filter(|event| event.visible_under(hidden_calendars))
+        .filter(|event| {
+            event.visible_under(hidden_calendars)
+                && calendar_filter.is_none_or(|calendar| {
+                    if calendar == "local" {
+                        event.calendar_id.is_none()
+                    } else {
+                        event.calendar_id.as_deref() == Some(calendar)
+                    }
+                })
+        })
         .collect()
 }
 
-fn content_height(model: &Model, anchor: NaiveDate, hidden_calendars: &HashSet<String>) -> f64 {
+fn content_height(
+    model: &Model,
+    anchor: NaiveDate,
+    hidden_calendars: &HashSet<String>,
+    calendar_filter: Option<&str>,
+) -> f64 {
     let end = anchor + Duration::days(DAYS_SHOWN);
     let mut height = 18.0;
     let mut day = anchor;
     while day <= end {
-        let events = visible_events_on(model, day, hidden_calendars).len();
+        let events = visible_events_on(model, day, hidden_calendars, calendar_filter).len();
         let tasks = model
             .tasks
             .iter()
@@ -473,7 +490,7 @@ mod tests {
             }],
             ..Model::default()
         };
-        assert_eq!(content_height(&model, anchor, &HashSet::new()), 128.0);
+        assert_eq!(content_height(&model, anchor, &HashSet::new(), None), 128.0);
     }
 
     #[test]
@@ -484,7 +501,37 @@ mod tests {
             ..Model::default()
         };
         let hidden = HashSet::from(["hidden".to_string()]);
-        assert_eq!(content_height(&model, anchor, &hidden), 26.0);
-        assert_eq!(content_height(&model, anchor, &HashSet::new()), 96.0);
+        assert_eq!(content_height(&model, anchor, &hidden, None), 26.0);
+        assert_eq!(content_height(&model, anchor, &HashSet::new(), None), 96.0);
+    }
+
+    #[test]
+    fn selected_calendar_filters_events_without_overriding_visibility() {
+        let anchor = date(1);
+        let model = Model {
+            events: vec![
+                event(1, None),
+                event(1, Some("work")),
+                event(1, Some("home")),
+            ],
+            ..Model::default()
+        };
+        assert_eq!(
+            visible_events_on(&model, anchor, &HashSet::new(), Some("work")).len(),
+            1
+        );
+        assert!(
+            visible_events_on(
+                &model,
+                anchor,
+                &HashSet::from(["work".to_string()]),
+                Some("work")
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
+            1
+        );
     }
 }
