@@ -838,17 +838,16 @@ impl OnboardingView {
             content = content.push(notice);
         }
         content = content.push(body);
-        // Every identity page keeps its choices outside the scroll region,
-        // except Backup. Its acknowledgement follows a form that can be
-        // taller than a compact accessible viewport; pinning it over that
-        // form made the initial frame bisect fields and explanatory copy.
-        // Keeping that one decision in the existing scroll flow preserves a
-        // clean viewport edge and still exposes the same keyboard actions.
+        // Every identity page keeps its primary progression choice outside
+        // the scroll region. Backup used to be the exception; on 960×540 that
+        // hid the acknowledgement/Continue action below a subtle scrollbar,
+        // making a fresh login look stuck. Reserve the same persistent footer
+        // contract here and keep only explanatory/form content scrollable.
         let footer_gap = spacing.s3;
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
         let footer_height = if backup_in_scroll {
-            0.0
+            FOOTER_HEIGHT + ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT
         } else {
             FOOTER_HEIGHT
                 + if acknowledgement_footer {
@@ -872,16 +871,7 @@ impl OnboardingView {
             // scroll viewport. Keep its first frame's edge in the gap between
             // the form card and recovery copy; the full-height 672 px dialog
             // retains room for the acknowledgement and Continue action.
-            .with_compact_bottom_content_inset(
-                520.0,
-                if backup_in_scroll
-                    && (theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast"))
-                {
-                    spacing.s12
-                } else {
-                    0.0
-                },
-            )
+            .with_compact_bottom_content_inset(520.0, 0.0)
             .with_child(Box::new(content));
         let scroll = if fill_panel {
             scroll.fill_parent_height()
@@ -894,10 +884,35 @@ impl OnboardingView {
             .push(Box::new(progress))
             .push(Box::new(scroll));
         if backup_in_scroll {
-            Box::new(composition)
+            Box::new(composition.push(self.backup_decision_footer(theme)))
         } else {
             Box::new(composition.push(self.identity_footer(theme)))
         }
+    }
+
+    fn backup_decision_footer(&self, theme: &Theme) -> Box<dyn Widget> {
+        if self.backup_was_verified {
+            return self.identity_actions();
+        }
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
+                .with_vertical_padding(theme.tokens.spacing.s2)
+                .with_gap(theme.tokens.spacing.s3)
+                .push(Box::new(
+                    Checkbox::new(
+                        "onboarding.backup.skip-acknowledged.box",
+                        KEY_BACKUP_SKIP_ACKNOWLEDGED,
+                    )
+                    .with_id("onboarding.backup.skip-acknowledged.row")
+                    .with_label(
+                        "I understand that without an encrypted backup, losing this device means losing this identity.",
+                    ),
+                ))
+                .push(self.identity_actions()),
+        )
     }
 
     fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
@@ -1179,6 +1194,7 @@ impl OnboardingView {
     }
 
     fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
+        let compact = self.rect.height() <= 540.0;
         let path = TextInput::new(Vec::new())
             .with_id("onboarding.connect.path.field")
             .with_on_change_path(KEY_CONNECT_PATH)
@@ -1196,7 +1212,7 @@ impl OnboardingView {
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing.s4)
+            .with_gap(if compact { spacing.s3 } else { spacing.s4 })
             .push(heading("Connect an existing identity", theme));
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
@@ -1221,7 +1237,7 @@ impl OnboardingView {
         let mut nearby = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing.s3)
+            .with_gap(if compact { spacing.s2 } else { spacing.s3 })
             .push(paragraph(
                 "On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.",
                 theme,
@@ -1250,7 +1266,7 @@ impl OnboardingView {
         let backup = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing.s3)
+            .with_gap(if compact { spacing.s2 } else { spacing.s3 })
             .push(Box::new(file_row))
             .push(Box::new(
                 Text::new("Backup passphrase").with_role(ui::tokens::typography::TextRole::Label),
@@ -1321,10 +1337,15 @@ impl OnboardingView {
                     .push(actions(vec![back_button()])),
             );
         }
+        let compact = self.rect.height() <= 540.0;
         let backup_fields = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3)
+            .with_gap(if compact {
+                theme.tokens.spacing.s2
+            } else {
+                theme.tokens.spacing.s3
+            })
             .push(Box::new(secret_input(
                 "onboarding.backup.passphrase",
                 &self.backup_passphrase,
@@ -1340,7 +1361,11 @@ impl OnboardingView {
         let mut backup = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s3)
+            .with_gap(if compact {
+                theme.tokens.spacing.s2
+            } else {
+                theme.tokens.spacing.s3
+            })
             .push(paragraph(
                 "Save an encrypted copy somewhere other than this device. Keep the file and its passphrase separately; together they can restore this identity. qOS verifies the finished file before reporting success.",
                 theme,
@@ -1384,14 +1409,22 @@ impl OnboardingView {
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_vertical_padding(theme.tokens.spacing.s2)
+                .with_vertical_padding(if compact {
+                    0.0
+                } else {
+                    theme.tokens.spacing.s2
+                })
                 .push(actions(vec![Box::new(backup_button)])),
         ));
 
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s4)
+            .with_gap(if compact {
+                theme.tokens.spacing.s3
+            } else {
+                theme.tokens.spacing.s4
+            })
             .push(heading("Back up your qOS identity", theme))
             .push(spaced_banner(
                 Banner::success("Your local identity was created")
@@ -1409,42 +1442,7 @@ impl OnboardingView {
                 theme,
             ));
         }
-        // Backup deliberately keeps this acknowledgement and its existing
-        // Continue action in the document flow. On compact/large-text
-        // displays a sticky version overlays the passphrase form, whereas a
-        // scrollable decision block keeps each field and button fully
-        // reachable without a clipped resting frame.
-        let decision = if self.backup_was_verified {
-            self.identity_actions()
-        } else {
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
-                    .with_vertical_padding(theme.tokens.spacing.s2)
-                    .with_gap(theme.tokens.spacing.s3)
-                    .push(Box::new(
-                        Checkbox::new(
-                            "onboarding.backup.skip-acknowledged.box",
-                            KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                        )
-                        .with_id("onboarding.backup.skip-acknowledged.row")
-                        .with_label(
-                            "I understand that without an encrypted backup, losing this device means losing this identity.",
-                        ),
-                    ))
-                    .push(self.identity_actions()),
-            )
-        };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(theme.tokens.spacing.s4)
-                .push(Box::new(page))
-                .push(decision),
-        )
+        Box::new(page)
     }
 
     fn done(&self, theme: &Theme) -> Box<dyn Widget> {
