@@ -2057,17 +2057,17 @@ pub fn draw_members_pane(
         theme,
     );
 
+    let mut member_row_context = MemberRowDrawContext {
+        scene,
+        transform,
+        workspace: ws,
+        local_user,
+        is_owner,
+        text_renderer,
+        theme,
+    };
     for row in &rows {
-        draw_member_row(
-            scene,
-            transform,
-            ws,
-            row,
-            local_user,
-            is_owner,
-            text_renderer,
-            theme,
-        );
+        draw_member_row(&mut member_row_context, row);
     }
 
     if !is_owner {
@@ -2118,19 +2118,29 @@ fn member_name_or_short_id(ws: &Workspace, user: &str) -> String {
 }
 
 /// Paint one [`MemberRow`] — avatar, name, role chip, Remove button.
-fn draw_member_row(
-    scene: &mut Scene,
+struct MemberRowDrawContext<'a> {
+    scene: &'a mut Scene,
     transform: Affine,
-    ws: &Workspace,
-    row: &MemberRow,
-    local_user: &UserId,
+    workspace: &'a Workspace,
+    local_user: &'a UserId,
     is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
+    text_renderer: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
+    let MemberRowDrawContext {
+        scene,
+        transform,
+        workspace,
+        local_user,
+        is_owner,
+        text_renderer,
+        theme,
+    } = context;
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    draw_row_card(scene, transform, row.row_rect, theme);
+    draw_row_card(scene, *transform, row.row_rect, theme);
 
     let avatar_size = 28.0_f64;
     let avatar = Rect::new(
@@ -2143,15 +2153,23 @@ fn draw_member_row(
     // lead with the person's known display name. Falling back to a shortened
     // key keeps an unrecognised invite identifiable without presenting raw
     // cryptographic material as normal desktop copy.
-    let name = ws_member_display_name(ws, row, local_user);
-    draw_avatar(scene, transform, avatar, &name, false, text_renderer, theme);
+    let name = ws_member_display_name(workspace, row, local_user);
+    draw_avatar(
+        scene,
+        *transform,
+        avatar,
+        &name,
+        false,
+        text_renderer,
+        theme,
+    );
 
     // Person ids are hex keys; a name alone doesn't say which row is you.
     let mut text_limit = row.role_rect.x0 - 12.0;
-    if &row.user == local_user {
+    if &row.user == *local_user {
         let you = draw_pill(
             scene,
-            transform,
+            *transform,
             Point::new(text_limit, row.row_rect.center().y),
             "You",
             Tint {
@@ -2173,7 +2191,7 @@ fn draw_member_row(
         &title_text,
         title_size,
         colors.text_primary,
-        at(transform, text_x, row.row_rect.y0 + 12.0),
+        at(*transform, text_x, row.row_rect.y0 + 12.0),
         None,
     );
 
@@ -2194,14 +2212,14 @@ fn draw_member_row(
         &detail_text,
         detail_size,
         colors.text_dim,
-        at(transform, text_x, row.row_rect.y0 + 32.0),
+        at(*transform, text_x, row.row_rect.y0 + 32.0),
         None,
     );
 
-    let can_manage_row = is_owner && !row.is_workspace_owner && &row.user != local_user;
+    let can_manage_row = *is_owner && !row.is_workspace_owner && &row.user != *local_user;
     draw_member_role_chip(
         scene,
-        transform,
+        *transform,
         row.role_rect,
         row.role,
         displayed_role,
@@ -2214,7 +2232,7 @@ fn draw_member_row(
 
     draw_danger_button(
         scene,
-        transform,
+        *transform,
         row.remove_rect,
         "Remove",
         can_manage_row,
