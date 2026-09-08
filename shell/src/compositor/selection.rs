@@ -924,14 +924,14 @@ impl ui::clipboard::ClipboardBackend for HostClipboard {
         if width == 0 || height == 0 || rgba.len() != expected_len {
             return false;
         }
-        if width > u32::MAX as usize
-            || height > u32::MAX as usize
-            || rgba.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES
-        {
+        let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+            return false;
+        };
+        if rgba.len() > ui::clipboard::MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
             return false;
         }
         let mut png = Vec::new();
-        let mut encoder = png::Encoder::new(&mut png, width as u32, height as u32);
+        let mut encoder = png::Encoder::new(&mut png, width, height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let Ok(mut writer) = encoder.write_header() else {

@@ -449,7 +449,7 @@ pub struct AppActionBroker {
 
 impl AppActionBroker {
     /// Construct the shell-facing facade around a real broker state for
-    /// LocalSet integration tests. Production construction remains owned by
+    /// `LocalSet` integration tests. Production construction remains owned by
     /// the shell bootstrap, so tests cannot accidentally bypass it in a
     /// non-test build.
     #[cfg(test)]
@@ -472,9 +472,9 @@ impl AppActionBroker {
         self.state.published_surfaces()
     }
 
-    /// Small inert routes for currently connected ActionDirectory sources.
+    /// Small inert routes for currently connected `ActionDirectory` sources.
     /// Shell search uses these to fan out bounded pull queries; capabilities
-    /// themselves remain owned by the broker LocalSet.
+    /// themselves remain owned by the broker `LocalSet`.
     pub fn action_directory_roots(
         &self,
     ) -> Vec<crate::shell::collab_broker_capnp::ActionDirectoryRoot> {
@@ -560,6 +560,11 @@ impl AppActionBroker {
 
     /// Dispatch a task to its assigned live agent. There is intentionally no
     /// offline queue or application launch fallback in this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no matching admitted live agent can accept the
+    /// task.
     pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
         self.state.dispatch_workspace_task(room, task_id)
     }
@@ -612,6 +617,11 @@ impl AppActionBroker {
 impl BrokerHandle {
     /// Apply a typed, handle-only MLS membership transaction at the trusted
     /// workspace lifecycle boundary. Apps cannot call this interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when lifecycle authority is unavailable or rejects the
+    /// transaction.
     pub fn apply_mls_authority_transaction(
         &self,
         transaction: runtime_collab::MlsAuthorityTransaction,
@@ -919,9 +929,7 @@ impl DrainQueues {
                     &entry.cluster_id,
                     &entry.record_id,
                 );
-                if !ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
-                    Err(ValidationError::DocumentRouteMismatch)
-                } else {
+                if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
                     let state = ch.state_for(artifact);
                     state.artifacts.insert(artifact, ArtifactKind::Note);
                     state.artifact_apps.insert(artifact, entry.app_id.clone());
@@ -932,6 +940,8 @@ impl DrainQueues {
                         std::time::SystemTime::now(),
                         Duration::from_secs(300),
                     )
+                } else {
+                    Err(ValidationError::DocumentRouteMismatch)
                 }
             };
             match (mutation, validation) {
@@ -1159,7 +1169,7 @@ fn spawn_inner(
             }
         }
         Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed")
+            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
         }
     }
     // Who is waiting on a cooperative scrollback answer, keyed by

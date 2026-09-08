@@ -429,12 +429,9 @@ fn e2e_launch_failure_notifications_visual_review() {
         (1280_u32, 720_u32, 1280.0_f32, 720.0_f32),
         (1600, 900, 1600.0, 900.0),
     ] {
-        let mut renderer = match try_new_renderer(width, height) {
-            Some(renderer) => renderer,
-            None => {
-                eprintln!("offscreen: no wgpu adapter — launch notification review skipped");
-                return;
-            }
+        let Some(mut renderer) = try_new_renderer(width, height) else {
+            eprintln!("offscreen: no wgpu adapter — launch notification review skipped");
+            return;
         };
         let mut h = Harness::new_at(&tree, layout_width, layout_height);
         {
@@ -692,6 +689,10 @@ fn render_frame_to(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the drag-reorder integration scenario couples input, layout, and golden-frame assertions"
+)]
 #[test]
 fn e2e_tab_drag_reorder() {
     let _guard = TEST_LOCK
@@ -1369,6 +1370,12 @@ fn assert_frames_visibly_differ(before: &Path, after: &Path) {
     );
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::arithmetic_side_effects,
+    reason = "the region is clamped to finite image bounds before its intentional pixel-address conversion and indexing"
+)]
 fn assert_region_visibly_differs(before: &Path, after: &Path, region: Rect, minimum: usize) {
     let before = decode_rgba(before);
     let after = decode_rgba(after);
@@ -1379,8 +1386,8 @@ fn assert_region_visibly_differs(before: &Path, after: &Path, region: Rect, mini
     );
     let x0 = region.x0.floor().max(0.0) as u32;
     let y0 = region.y0.floor().max(0.0) as u32;
-    let x1 = region.x1.ceil().min(f64::from(before.width)) as u32;
-    let y1 = region.y1.ceil().min(f64::from(before.height)) as u32;
+    let x1 = region.x1.ceil().clamp(0.0, f64::from(before.width)) as u32;
+    let y1 = region.y1.ceil().clamp(0.0, f64::from(before.height)) as u32;
     assert!(
         x0 < x1 && y0 < y1,
         "comparison region must intersect the frame"

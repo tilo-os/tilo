@@ -305,6 +305,10 @@ fn focus_change_transfers_a_held_key_then_releases_it_once_at_the_new_focus() {
 /// out of the client as well, then prove the same cached config drives the
 /// actual navigation action.  F1 is intentionally non-configurable desktop
 /// help and must follow the same foreign-client boundary.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the wire-level ownership scenario keeps both client input and compositor assertions in one transcript"
+)]
 #[test]
 fn custom_shortcut_and_f1_are_owned_before_a_focused_foreign_client() {
     let mut h = Harness::new();
