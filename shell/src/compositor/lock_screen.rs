@@ -225,7 +225,7 @@ pub fn build_accessibility_tree(
     view: &LockView<'_>,
 ) -> TreeUpdate {
     let (width, height) = combined_extent(outputs);
-    let output = primary_output(outputs).unwrap_or(LockOutput {
+    let output = primary_output(outputs).unwrap_or_else(|| LockOutput {
         origin: (0.0, 0.0),
         size: (width.max(1.0), height.max(1.0)),
         scale: 1.0,
@@ -399,9 +399,9 @@ pub fn draw_lock_scene_with_wallpaper(
     for output in outputs {
         let layout = LockLayout::for_output(*output, theme);
         if Some(*output) == primary {
-            draw_lock_widget(&mut scene, layout, theme, text, view);
+            draw_lock_widget(&mut scene, &layout, theme, text, view);
         } else {
-            draw_secondary_lock_widget(&mut scene, layout, theme, text, view);
+            draw_secondary_lock_widget(&mut scene, &layout, theme, text, view);
         }
     }
 
@@ -411,7 +411,7 @@ pub fn draw_lock_scene_with_wallpaper(
 /// Draw the interactive lock widget from one already-bounded layout.
 fn draw_lock_widget(
     scene: &mut Scene,
-    layout: LockLayout,
+    layout: &LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
@@ -481,7 +481,7 @@ fn draw_lock_widget(
 /// affordance: focus and assistive technology point at the sole primary field.
 fn draw_secondary_lock_widget(
     scene: &mut Scene,
-    layout: LockLayout,
+    layout: &LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
@@ -578,7 +578,7 @@ fn draw_centered_text(
     );
 }
 
-fn draw_lock_icon(scene: &mut Scene, layout: LockLayout, theme: &Theme) {
+fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     let cx = layout.icon.center().x;
     let body_width = layout.icon.width() * 0.72;
     let body_height = layout.icon.height() * 0.50;
@@ -623,7 +623,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: LockLayout, theme: &Theme) {
 
 fn draw_password_field(
     scene: &mut Scene,
-    layout: LockLayout,
+    layout: &LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
@@ -681,7 +681,7 @@ fn draw_password_field(
 
 fn draw_status(
     scene: &mut Scene,
-    layout: LockLayout,
+    layout: &LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
@@ -965,6 +965,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the layout width is a bounded screen coordinate passed to the text renderer's f32 API"
+    )]
     #[test]
     fn accessible_lock_layout_reserves_every_text_row() {
         let output = LockOutput {

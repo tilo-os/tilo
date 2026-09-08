@@ -213,7 +213,9 @@ impl XwaylandSupervisor {
         match result {
             Ok(false) => return,
             Ok(true) => {
-                let update = self.keyboard_update.take().expect("update exists");
+                let Some(update) = self.keyboard_update.take() else {
+                    return;
+                };
                 tracing::info!(
                     sources = ?update.requested.source_ids,
                     active = update.requested.active_index,

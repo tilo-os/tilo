@@ -249,7 +249,7 @@ impl LiveAppActionsProvider {
                     ready.push((key.clone(), page));
                     false
                 }
-                Ok(Err(_)) | Ok(Ok(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                Ok(Err(_) | Ok(_)) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     false
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => true,
@@ -641,16 +641,16 @@ impl SearchProvider for LiveAppActionsProvider {
                 .cloned();
             if let Some(page) = page {
                 for row in page.rows {
-                    if let Some(descriptor) = row.descriptor {
-                        if let Some(result) = self.directory_action_result(
+                    if let Some(descriptor) = row.descriptor
+                        && let Some(result) = self.directory_action_result(
                             &root,
                             &page.revision,
                             &descriptor,
                             &needle,
                             &root_actor,
-                        ) {
-                            results.push(result);
-                        }
+                        )
+                    {
+                        results.push(result);
                     }
                 }
             }
@@ -1124,7 +1124,7 @@ mod tests {
         assert!(provider.directory_pending.borrow().is_empty());
 
         let invalidations: Rc<RefCell<std::collections::HashSet<DirectoryCacheKey>>> =
-            Rc::new(RefCell::new(Default::default()));
+            Rc::new(RefCell::new(std::collections::HashSet::default()));
         let (start_sender, start_receiver) = tokio::sync::oneshot::channel();
         let key = (7, "actor-a".into(), "new-needle".into());
         let ticket = directory_start_ticket(

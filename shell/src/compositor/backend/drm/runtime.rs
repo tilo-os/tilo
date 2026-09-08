@@ -734,6 +734,10 @@ impl DrmDispatchState {
     /// starts at its zero value; [`Self::finalize_startup_scanouts`] is
     /// what actually populates `live`/`output_meta`/`pointer`. Extracted
     /// from that constructor to keep it a readable top-level sequence.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "startup inputs are independently acquired resources; bundling them would obscure their ownership transfer into the dispatch loop"
+    )]
     fn new(
         session_state: SessionState,
         cards: BTreeMap<u64, CardHandle>,
@@ -870,6 +874,10 @@ impl DrmDispatchState {
     /// presenter after it has dropped the scanouts for a removed card.  The
     /// card's original libseat fd remains in `retiring_cards` until that
     /// acknowledgement reaches the loop thread.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "hotplug reconciliation must keep topology, scanout, cursor, acknowledgement, and redraw updates in one ordered transaction"
+    )]
     fn rescan_outputs_with_removal_ack(
         &mut self,
         reason: &str,
@@ -1469,7 +1477,7 @@ impl DrmDispatchState {
             let input = self
                 .keyboard
                 .as_ref()
-                .and_then(|keyboard| keyboard.repeat_event(keycode));
+                .map(|keyboard| keyboard.repeat_event(keycode));
             if let Some(input) = input {
                 self.events.push(BackendEvent::Input(input));
             }
@@ -3122,9 +3130,9 @@ impl KeyboardXkb {
 
     /// Produce the same repeated `KeyboardInput` winit emits without
     /// mutating xkb's down/up state a second time.
-    fn repeat_event(&self, keycode: xkb::Keycode) -> Option<WindowEvent> {
+    fn repeat_event(&self, keycode: xkb::Keycode) -> WindowEvent {
         let sym = self.state.key_get_one_sym(keycode);
-        let logical = keysym_to_winit_key(sym.raw())?;
+        let logical = keysym_to_winit_key(sym.raw());
         let mut input = keyboard_input_event(
             logical,
             text_for(sym.key_char(), self.current_mods()),
@@ -3134,7 +3142,7 @@ impl KeyboardXkb {
         if let WindowEvent::KeyboardInput { event, .. } = &mut input {
             event.repeat = true;
         }
-        Some(input)
+        input
     }
 
     /// Read the current effective Ctrl/Shift/Alt/Super state as a winit `ModifiersState`.
@@ -3177,10 +3185,14 @@ impl KeyboardXkb {
         };
 
         // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
-        let input = keysym_to_winit_key(sym.raw()).map(|logical| {
-            let text = text_for(sym.key_char(), new_mods);
-            keyboard_input_event(logical, text, pressed, keycode.raw().saturating_sub(8))
-        });
+        let logical = keysym_to_winit_key(sym.raw());
+        let text = text_for(sym.key_char(), new_mods);
+        let input = Some(keyboard_input_event(
+            logical,
+            text,
+            pressed,
+            keycode.raw().saturating_sub(8),
+        ));
 
         KeyOutcome {
             input,
@@ -3191,7 +3203,7 @@ impl KeyboardXkb {
 
 /// Map an xkb keysym to a winit logical [`Key`]: special keys become
 /// `Key::Named`, printable Unicode becomes `Key::Character`; bare modifiers and unmapped keys return `None` (carried by `ModifiersChanged` instead).
-fn keysym_to_winit_key(raw: u32) -> Option<Key> {
+fn keysym_to_winit_key(raw: u32) -> Key {
     // Keep the function row intact. These are not printable keysyms, so they
     // must be named explicitly rather than falling through to `key_char()`.
     let function = match raw {
@@ -3222,7 +3234,7 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
         _ => None,
     };
     if let Some(function) = function {
-        return Some(Key::Named(function));
+        return Key::Named(function);
     }
     let named = match raw {
         keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(NamedKey::Enter),
@@ -3270,13 +3282,13 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
         _ => None,
     };
     if let Some(n) = named {
-        return Some(Key::Named(n));
+        return Key::Named(n);
     }
     // Printable character (handles layout + shift + caps via the keysym).
     if let Some(c) = Keysym::new(raw).key_char()
         && !c.is_control()
     {
-        return Some(Key::Character(SmolStr::new(c.to_string())));
+        return Key::Character(SmolStr::new(c.to_string()));
     }
     // Never drop an otherwise valid physical key merely because this adapter
     // does not have a named-key spelling for its keysym. The seat still must
@@ -3284,7 +3296,7 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
     // interpret the xkb keymap they were sent. Returning an unidentified
     // logical key preserves that protocol event while keeping it out of shell
     // chord matching.
-    Some(Key::Unidentified(NativeKey::Xkb(raw)))
+    Key::Unidentified(NativeKey::Xkb(raw))
 }
 
 /// The typed text for a key event, or `None`. Suppressed under Ctrl/Super (chords, not text) and for control characters — matching winit, keeping control bytes out of text inputs.
@@ -3613,68 +3625,65 @@ mod tests {
         use smithay::input::keyboard::keysyms as ks;
         assert!(matches!(
             keysym_to_winit_key(ks::KEY_Return),
-            Some(Key::Named(NamedKey::Enter))
+            Key::Named(NamedKey::Enter)
         ));
         assert!(matches!(
             keysym_to_winit_key(ks::KEY_Escape),
-            Some(Key::Named(NamedKey::Escape))
+            Key::Named(NamedKey::Escape)
         ));
         assert!(matches!(
             keysym_to_winit_key(ks::KEY_Tab),
-            Some(Key::Named(NamedKey::Tab))
+            Key::Named(NamedKey::Tab)
         ));
         assert!(matches!(
             keysym_to_winit_key(ks::KEY_BackSpace),
-            Some(Key::Named(NamedKey::Backspace))
+            Key::Named(NamedKey::Backspace)
         ));
         assert!(matches!(
             keysym_to_winit_key(ks::KEY_Left),
-            Some(Key::Named(NamedKey::ArrowLeft))
+            Key::Named(NamedKey::ArrowLeft)
         ));
         assert!(matches!(
             keysym_to_winit_key(ks::KEY_space),
-            Some(Key::Named(NamedKey::Space))
+            Key::Named(NamedKey::Space)
         ));
         assert_eq!(
             keysym_to_winit_key(ks::KEY_Print),
-            Some(Key::Named(NamedKey::PrintScreen))
+            Key::Named(NamedKey::PrintScreen)
         );
         // Letter keysyms carry case from the keysym itself (US 'a' vs 'A').
         match keysym_to_winit_key(ks::KEY_a) {
-            Some(Key::Character(s)) => assert_eq!(s.as_str(), "a"),
+            Key::Character(s) => assert_eq!(s.as_str(), "a"),
             other => panic!("KEY_a mapped to {other:?}"),
         }
         match keysym_to_winit_key(ks::KEY_A) {
-            Some(Key::Character(s)) => assert_eq!(s.as_str(), "A"),
+            Key::Character(s) => assert_eq!(s.as_str(), "A"),
             other => panic!("KEY_A mapped to {other:?}"),
         }
         assert_eq!(
             keysym_to_winit_key(ks::KEY_Control_L),
-            Some(Key::Named(NamedKey::Control))
+            Key::Named(NamedKey::Control)
         );
         assert_eq!(
             keysym_to_winit_key(ks::KEY_Shift_L),
-            Some(Key::Named(NamedKey::Shift))
+            Key::Named(NamedKey::Shift)
         );
-        assert_eq!(
-            keysym_to_winit_key(ks::KEY_F11),
-            Some(Key::Named(NamedKey::F11))
-        );
+        assert_eq!(keysym_to_winit_key(ks::KEY_F11), Key::Named(NamedKey::F11));
         assert_eq!(
             keysym_to_winit_key(ks::KEY_Caps_Lock),
-            Some(Key::Named(NamedKey::CapsLock))
+            Key::Named(NamedKey::CapsLock)
         );
         assert_eq!(
             keysym_to_winit_key(ks::KEY_Multi_key),
-            Some(Key::Named(NamedKey::Compose))
+            Key::Named(NamedKey::Compose)
         );
         assert_eq!(
             keysym_to_winit_key(ks::KEY_ISO_Level3_Shift),
-            Some(Key::Named(NamedKey::AltGraph))
+            Key::Named(NamedKey::AltGraph)
         );
         assert!(matches!(
             keysym_to_winit_key(0xffff_0bad),
-            Some(Key::Unidentified(NativeKey::Xkb(0xffff_0bad)))
+            Key::Unidentified(NativeKey::Xkb(0xffff_0bad))
         ));
     }
 
@@ -3695,7 +3704,7 @@ mod tests {
         ] {
             assert_eq!(
                 keysym_to_winit_key(raw),
-                Some(Key::Named(want)),
+                Key::Named(want),
                 "keysym {raw:#x} must map to {want:?}"
             );
         }
@@ -5231,9 +5240,7 @@ mod tests {
         let key = xkb::Keycode::new(38); // evdev KEY_A + 8
         assert!(keyboard.key_repeats(key));
         let _ = keyboard.process(key, true);
-        let WindowEvent::KeyboardInput { event, .. } =
-            keyboard.repeat_event(key).expect("A has a repeat event")
-        else {
+        let WindowEvent::KeyboardInput { event, .. } = keyboard.repeat_event(key) else {
             panic!("repeat must use the keyboard-input wire")
         };
         assert_eq!(event.logical_key, Key::Character("a".into()));

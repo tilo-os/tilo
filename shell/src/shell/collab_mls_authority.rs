@@ -4,6 +4,7 @@
 //! typed commands containing only random handles registered by [`MlsVaultProvider`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 #[cfg(unix)]
@@ -51,14 +52,26 @@ pub struct ProvisionedMlsState {
 /// Platform-vault capability boundary. Implementations validate opaque handles
 /// against their own registry; callers never provide keys or paths.
 pub trait MlsVaultProvider: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error when the opaque group handle cannot be provisioned.
     fn checkout(&self, handle: MlsVaultHandle) -> Result<ProvisionedMlsState, MlsAuthorityError>;
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot durably store the group.
     fn persist(
         &self,
         handle: MlsVaultHandle,
         group: &ChannelGroup,
         governance_signer: &SigningKey,
     ) -> Result<(), MlsAuthorityError>;
+    /// # Errors
+    ///
+    /// Returns an error when the opaque key-package handle is unavailable.
     fn key_package(&self, handle: MlsKeyPackageHandle) -> Result<KeyPackage, MlsAuthorityError>;
+    /// # Errors
+    ///
+    /// Returns an error when the receipt cannot be resolved to a digest.
     fn snapshot_digest(
         &self,
         receipt: MlsSnapshotReceipt,
@@ -67,6 +80,10 @@ pub trait MlsVaultProvider: Send + Sync {
 
     /// Test/fault-injection seam after the outbox is durable. Production
     /// providers leave the default implementation unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a provider-injected durability failure.
     fn after_governance_durable(&self) -> Result<(), MlsAuthorityError> {
         Ok(())
     }
@@ -143,6 +160,10 @@ pub struct SecretServiceMlsVault {
 impl SecretServiceMlsVault {
     /// Open at the session-owned state root selected by the launcher. No home
     /// directory fallback is accepted because that would weaken key custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when session state or vault material cannot be opened.
     pub fn open_for_session() -> Result<Self, MlsAuthorityError> {
         let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
             MlsAuthorityError::VaultUnavailable(
@@ -209,6 +230,14 @@ impl SecretServiceMlsVault {
 
     /// Register a freshly provisioned endpoint group and governance signer,
     /// returning the only value later transactions may present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the group or signer cannot be stored securely.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the registry guard remains held through durable registry persistence so a concurrent registration cannot overwrite this new record"
+    )]
     pub fn register_group(
         &self,
         group: &ChannelGroup,
@@ -242,6 +271,15 @@ impl SecretServiceMlsVault {
 
     /// Durably register a public MLS key package behind an unguessable handle.
     /// It is consumed only by the typed authority coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the key package or registry cannot be persisted.
+    #[allow(
+        clippy::significant_drop_tightening,
+        clippy::needless_pass_by_value,
+        reason = "key-package registration atomically persists the encoded package and its private registry mapping"
+    )]
     pub fn register_key_package(
         &self,
         package: KeyPackage,
@@ -262,6 +300,15 @@ impl SecretServiceMlsVault {
     /// Durably store a signed encrypted compaction envelope before issuing its
     /// opaque receipt. Wrong-channel, plaintext, unsigned and non-compaction
     /// envelopes are refused even if this is called outside broker ingress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the envelope is unauthorized or receipt state
+    /// cannot be persisted.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "receipt insertion and registry persistence remain serialized to prevent a persisted envelope without its opaque receipt"
+    )]
     pub fn mint_snapshot_receipt(
         &self,
         channel: ChannelId,
@@ -322,6 +369,10 @@ impl SecretServiceMlsVault {
 }
 
 impl MlsVaultProvider for SecretServiceMlsVault {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the registry record borrows the guard while its sealed group and signer are loaded as one coherent provisioning snapshot"
+    )]
     fn checkout(&self, handle: MlsVaultHandle) -> Result<ProvisionedMlsState, MlsAuthorityError> {
         let registry = self
             .registry
@@ -345,6 +396,10 @@ impl MlsVaultProvider for SecretServiceMlsVault {
         })
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the selected vault record must remain stable while its sealed state is written"
+    )]
     fn persist(
         &self,
         handle: MlsVaultHandle,
@@ -366,6 +421,10 @@ impl MlsVaultProvider for SecretServiceMlsVault {
             .map_err(|error| MlsAuthorityError::Persistence(error.to_string()))
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the registry mapping remains stable while the referenced package is loaded"
+    )]
     fn key_package(&self, handle: MlsKeyPackageHandle) -> Result<KeyPackage, MlsAuthorityError> {
         let registry = self.registry.lock().map_err(|_| {
             MlsAuthorityError::Persistence("key-package registry lock poisoned".into())
@@ -378,6 +437,10 @@ impl MlsVaultProvider for SecretServiceMlsVault {
             .map_err(|error| MlsAuthorityError::Crypto(error.to_string()))
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "receipt-to-channel validation and sealed envelope loading observe one registry snapshot"
+    )]
     fn snapshot_digest(
         &self,
         receipt: MlsSnapshotReceipt,
@@ -505,6 +568,10 @@ pub struct MlsAuthorityCoordinator<P: MlsVaultProvider> {
 impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
     /// Open a broker-owned authority ledger. `root` comes from shell startup,
     /// never from an RPC argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the authority ledger cannot be created or read.
     pub fn open(
         root: PathBuf,
         provider: Arc<P>,
@@ -536,6 +603,15 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
     /// Apply one authority-created command, or return the prior result for an
     /// identical idempotency key. A pending write-ahead record is recovered
     /// before a new command is considered.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authority, persistence, or transaction invariants
+    /// reject the request.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the transaction is cloned into the durable idempotency ledger only after the current command is admitted"
+    )]
     pub fn apply(&mut self, tx: MlsAuthorityTransaction) -> Result<[u8; 32], MlsAuthorityError> {
         if let Some((completed_tx, digest)) = self.ledger.completed.get(&tx.idempotency_key) {
             if completed_tx != &tx {
@@ -577,6 +653,11 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         outcome
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::needless_pass_by_value,
+        reason = "a fresh MLS transaction keeps cryptographic mutation, governance projection, and write-ahead completion in one auditable atomic path"
+    )]
     fn apply_fresh(&mut self, tx: MlsAuthorityTransaction) -> Result<[u8; 32], MlsAuthorityError> {
         let channel = ChannelId(uuid::Uuid::from_bytes(tx.channel));
         let mut provisioned = self.provider.checkout(tx.vault)?;
@@ -835,6 +916,10 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         Ok(Some(digest))
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "workspace authorization and its capability mutation must share one write-lock acquisition"
+    )]
     fn apply_workspace_role(
         &self,
         tx: &MlsAuthorityTransaction,
@@ -881,6 +966,10 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
         Ok(())
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the administrator check reads one coherent workspace authority snapshot"
+    )]
     fn ensure_workspace_admin(
         &self,
         tx: &MlsAuthorityTransaction,
@@ -913,6 +1002,10 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
     }
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the error is converted at ownership transfer into the crypto boundary"
+)]
 fn authority_to_crypto(error: MlsAuthorityError) -> channel_crypto::Error {
     channel_crypto::Error::Governance(error.to_string())
 }
@@ -939,8 +1032,16 @@ fn member_capability_id(channel: [u8; 16], member: [u8; 32]) -> String {
     )
 }
 fn hex_key(key: &[u8; 32]) -> String {
-    key.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut value = String::with_capacity(key.len().saturating_mul(2));
+    for byte in key {
+        let _ = write!(value, "{byte:02x}");
+    }
+    value
 }
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "I/O errors are consumed by map_err at the persistence boundary"
+)]
 fn io_error(error: std::io::Error) -> MlsAuthorityError {
     MlsAuthorityError::Persistence(error.to_string())
 }
@@ -1059,6 +1160,11 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "the recovery test intentionally preserves its complete durable-transaction scenario"
+    )]
     #[test]
     fn authority_recovers_partial_commit_and_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();

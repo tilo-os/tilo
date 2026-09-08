@@ -196,6 +196,10 @@ impl OpenTarget {
 /// Local UI state; does not sync to peers — device settings like
 /// brightness, volume, and radio toggles are always per-device.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each device-local quick-settings flag maps to a distinct hardware truth or user control and must remain independently renderable"
+)]
 pub struct QuickSettingsState {
     /// 0.0..=1.0.
     pub brightness: f32,
@@ -203,7 +207,7 @@ pub struct QuickSettingsState {
     pub volume: f32,
     pub wifi: bool,
     pub bluetooth: bool,
-    /// `true` only when BlueZ reported a physical adapter. Keeping this
+    /// `true` only when `BlueZ` reported a physical adapter. Keeping this
     /// separate from `bluetooth` prevents an unavailable controller from
     /// looking like a permanently-off switch.
     pub bluetooth_available: bool,
@@ -283,6 +287,10 @@ impl QuickSettingsState {
 
 /// Mutable chrome state shared across the shell widget tree.
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "chrome fields represent independently focusable overlays and transient controls; combining them would obscure widget lifetime boundaries"
+)]
 pub struct ChromeState {
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`

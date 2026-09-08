@@ -1707,6 +1707,10 @@ fn forward_test_control_touch(
 /// the DRM ownership arena rather than reimplementing a test-only notion of
 /// "third finger": E2E assertions therefore cover the exact cancel/frame
 /// decision production hardware uses before the native loop forwards it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The test-control touch wire contract keeps each protocol field explicit at the dispatch boundary so fixture inputs map one-to-one onto compositor touch events."
+)]
 fn dispatch_test_control_touch(
     device: &str,
     slot: u32,
@@ -1878,6 +1882,10 @@ fn execute_invoke_action(
 ///
 /// `state` is the live compositor state when one exists (`None` in unit
 /// tests below); when present, the event first goes through [`client_input::route_input`], like the live `BackendEvent::Input` arm.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Test-control actions intentionally share the live frame builder and state transaction; splitting their dispatcher would obscure which actions are valid in one control request."
+)]
 fn execute_planned_action(
     action: &PlannedAction,
     fb: &mut FrameBuilder,
@@ -2296,6 +2304,10 @@ pub(crate) fn read_bounded_line<R: BufRead>(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
+)]
 fn pump_test_control_conn(
     conn: &mut TestControlConn,
     frame_builder: &mut FrameBuilder,
@@ -2485,7 +2497,7 @@ fn sleep_lock_frame_status(
 }
 
 /// Only unlock a failed suspend when the compositor actually entered the
-/// pre-sleep state and that state created the lock. A CanSuspend denial can
+/// pre-sleep state and that state created the lock. A `CanSuspend` denial can
 /// arrive before preparation, and must not clear a user's unrelated lock.
 fn should_unlock_after_suspend_failure(was_prepared: bool, was_locked: bool) -> bool {
     was_prepared && !was_locked
@@ -4475,7 +4487,6 @@ pub fn run() -> ! {
                         // the hidden desktop are rejected here.
                         if request.target_node == lock_screen::LOCK_PASSWORD_ID {
                             match (request.action, request.data.as_ref()) {
-                                (ui::accesskit::Action::Focus, _) => {}
                                 (
                                     ui::accesskit::Action::SetValue,
                                     Some(ui::accesskit::ActionData::Value(value)),
@@ -6251,7 +6262,10 @@ mod tests {
             "only the active tab is painted"
         );
         assert_eq!(
-            memberships.reconcile(&[output.clone()], &visible_tiled_surface_rects(&fb)),
+            memberships.reconcile(
+                std::slice::from_ref(&output),
+                &visible_tiled_surface_rects(&fb)
+            ),
             vec![SurfaceOutputChange::Enter {
                 surface_id: SECOND_SURFACE,
                 output: OutputId(0),
