@@ -2057,13 +2057,13 @@ impl Pane {
             }
             Hit::Account(ai) => {
                 let mut st = self.shared.borrow_mut();
-                st.set_active_account(doc, ai);
+                st.set_active_account(ai);
                 st.select_folder(doc, Folder::Inbox);
                 st.push_intent(Intent::CloseDrawer);
             }
             Hit::Folder(ai, f) => {
                 let mut st = self.shared.borrow_mut();
-                st.set_active_account(doc, ai);
+                st.set_active_account(ai);
                 st.select_folder(doc, f);
                 st.push_intent(Intent::CloseDrawer);
             }

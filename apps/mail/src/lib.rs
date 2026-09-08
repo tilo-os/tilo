@@ -17,9 +17,10 @@
 //!   out of the headless build so it stays small and green.
 //!
 //! ## State
-//! Per-message flags (read/starred/folder), the selected folder / view mode /
-//! search / selection, the account config, and the active draft all live in
-//! the Automerge document via `doc::MailDoc`, so they sync and undo. The
+//! Per-message flags (read/starred/folder), selected folder/view state, and
+//! the active draft live in the Automerge document via `doc::MailDoc`, so they
+//! sync and undo. Account identities, connection endpoints, and credentials
+//! are device-local in the shared qOS account store + encrypted vault. The
 //! immutable message corpus is hydrated into `model::Mailbox`.
 //!
 //! ## Offline / `--shots`
