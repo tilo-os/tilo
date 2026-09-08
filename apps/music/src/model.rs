@@ -1,13 +1,10 @@
 //! Pure data model for the Music app.
 //!
-//! Everything the user can see or change — the catalog (artists / albums /
-//! tracks), the user's playlists, the cache/download state and the live
-//! playback state — is modelled here as plain Rust structs. The CRDT bridge
-//! in [`crate::doc`] mirrors these into an Automerge document so the whole
-//! library + play-state replicates across a user's devices ("our own
-//! library layer"). The widgets in [`crate::app`] never hold authoritative
-//! state; they read a snapshot of these structs that `sync` refreshes from
-//! the document each frame.
+//! The catalog (artists / albums / tracks) and user-authored playlists are
+//! collaborative plain structs mirrored by [`crate::doc`] into Automerge.
+//! Cache/download and live playback values share these render types, but are
+//! authoritative only on the current device; widgets overlay them after a
+//! shared-library refresh rather than syncing them to peers.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -79,9 +76,10 @@ pub struct Playlist {
     pub cover: String,
 }
 
-/// Per-track offline/cache state. Models the "downloads / caching" layer:
-/// a track is either streamed on demand, actively downloading (with a
-/// progress fraction) or fully cached for offline playback.
+/// Per-track cache state. `Cached` is reserved exclusively for a durable
+/// local media file which the audio engine can play without network access.
+/// Current Music builds do not create that state until a byte-backed cache is
+/// implemented.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum CacheState {
     /// Not cached — streamed live from the source.
@@ -128,9 +126,8 @@ impl RepeatMode {
     }
 }
 
-/// Live playback state. This is genuinely shared across devices: pausing on
-/// one device and resuming on another, the queue, shuffle/repeat and volume
-/// all round-trip through the CRDT.
+/// Live playback state for this device. Audio output, queue, shuffle/repeat
+/// and volume never cross the CRDT boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playback {
     /// Currently-loaded track, if any.

@@ -20,7 +20,6 @@ use super::{
 };
 
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use vello::kurbo::Shape;
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -34,7 +33,6 @@ struct TrackDisp {
     album: String,
     album_id: String,
     dur: u32,
-    cache: CacheState,
     no: u32,
 }
 
@@ -126,7 +124,6 @@ fn accessible_track(
     use ui::a11y::{AccessNode, AccessState, Role};
 
     let liked = lib.is_liked(&track.id);
-    let downloaded = matches!(lib.cache_state(&track.id), CacheState::Cached);
     AccessNode::new(Role::ListItem)
         .with_name(&track.title)
         .with_description(format!(
@@ -144,10 +141,6 @@ fn accessible_track(
                 .with_name(format!("Like {}", track.title))
                 .with_state(AccessState::new().checked(liked))
                 .with_action_target(format!("music.toggle-like.{}", track.id)),
-            AccessNode::new(Role::ToggleButton)
-                .with_name(format!("Keep {} offline", track.title))
-                .with_state(AccessState::new().checked(downloaded))
-                .with_action_target(format!("music.toggle-download.{}", track.id)),
         ])
 }
 
@@ -422,7 +415,7 @@ impl Widget for MusicApp {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
+        _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
         if metadata.schema_version != 1 {
@@ -451,7 +444,6 @@ impl Widget for MusicApp {
         self.pb.position_ms = position;
         self.pb.playing = false;
         self.playhead_ms = position as f64;
-        crate::doc::write_playback(state, &self.pb);
         true
     }
 
@@ -459,18 +451,13 @@ impl Widget for MusicApp {
         self.ensure_seeded(state);
         if self.playback_loaded {
             self.reload_library(state);
-            // Library and playback are both shared. Reload the catalog every
-            // frame, but only adopt playback when the document itself changed
-            // so a peer's play/pause/seek immediately controls this device
-            // without jittering the local clock between edits.
-            self.reconcile_document_playback(state);
         } else {
             self.reload(state);
             self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
             self.playback_loaded = true;
         }
-        // Progress any in-flight offline downloads (and re-apply their live
-        // progress on top of the just-reloaded terminal cache states).
+        // Progress in-flight downloads and re-apply their device-local cache
+        // projection on top of the just-reloaded shared library.
         self.advance_downloads(state);
         // External media control (media keys / desktop widget) and a completed
         // file-portal cover pick both mutate the document, so they run here
@@ -511,6 +498,10 @@ impl Widget for MusicApp {
         &[crate::actions::MUSIC_OPERATION_TYPE]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive authority boundary keeps every Music operation and its validation auditable together"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -537,15 +528,44 @@ impl Widget for MusicApp {
             }
             (
                 qos_actions::OperationKind::Effect,
-                crate::actions::MusicOperation::PlayTrack { id },
+                crate::actions::MusicOperation::PlayTrack { .. },
             ) => {
-                if !self.lib.tracks.contains_key(&id) {
-                    return Err("track is no longer in the library".into());
+                return Err(
+                    "streaming playback requires the lifecycle-capable operation host".into(),
+                );
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetPlayback { playback },
+            ) => {
+                if playback.playing && self.pb.current != playback.current {
+                    return Err(
+                        "streaming playback requires the lifecycle-capable operation host".into(),
+                    );
                 }
-                self.pb.queue = vec![id.clone()];
-                self.shuffle_order.clear();
-                self.play_index(0);
-                self.start_stream(&id);
+                let _ = self.apply_resource_playback(playback)?;
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetOffline { tracks, keep },
+            ) => {
+                if tracks.iter().any(|id| !self.lib.tracks.contains_key(id)) {
+                    return Err("offline-cache target is no longer in the library".into());
+                }
+                if keep {
+                    return Err(
+                        "offline downloads are unavailable: Music does not yet store durable audio bytes"
+                            .into(),
+                    );
+                }
+                // A stale client may still ask to remove legacy metadata. Do
+                // all in-memory updates first, then make exactly one atomic
+                // device-profile write whose failure reaches the caller.
+                for id in tracks {
+                    self.downloads.remove(&id);
+                    self.update_device_cache(&id, CacheState::Streamed);
+                }
+                self.persist_device_profile()?;
             }
             (
                 qos_actions::OperationKind::View,
@@ -597,6 +617,69 @@ impl Widget for MusicApp {
         }
         self.dirty = true;
         Ok(true)
+    }
+
+    fn start_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match (kind, operation) {
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::PlayTrack { id },
+            ) => {
+                if self.resource_stream_invocation.is_some() {
+                    return Err("another Music stream-start operation is still resolving".into());
+                }
+                let request_id = self.apply_resource_play_track(&id)?;
+                self.begin_resource_stream_invocation(invocation, request_id);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            (
+                qos_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::SetPlayback { playback },
+            ) if playback.playing && self.pb.current != playback.current => {
+                if self.resource_stream_invocation.is_some() {
+                    return Err("another Music stream-start operation is still resolving".into());
+                }
+                let request_id = self
+                    .apply_resource_playback(playback)?
+                    .ok_or_else(|| "stream resolver could not start".to_string())?;
+                self.begin_resource_stream_invocation(invocation, request_id);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            _ => self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        self.expire_resource_stream_if_due(Instant::now());
+        self.resource_stream_results
+            .iter()
+            .position(|update| update.invocation() == invocation)
+            .map(|index| self.resource_stream_results.remove(index))
     }
 
     fn build_layout(
@@ -1272,11 +1355,6 @@ impl Widget for MusicApp {
                         return false;
                     }
                     Action::ToggleLike(id.to_string())
-                } else if let Some(id) = target.strip_prefix("music.toggle-download.") {
-                    if self.lib.track(id).is_none() {
-                        return false;
-                    }
-                    Action::ToggleDownload(id.to_string())
                 } else if let Some(id) = target.strip_prefix("music.open-album.") {
                     if self.lib.album(id).is_none() {
                         return false;
@@ -1374,7 +1452,6 @@ impl MusicApp {
                     "Mute"
                 }),
                 Action::ToggleVolumePopover => Some("Volume"),
-                Action::ToggleDownload(_) => Some("Keep offline"),
                 Action::ToggleLike(_) => Some("Like song"),
                 Action::ToggleQueue => Some("Show or hide queue"),
                 Action::ToggleSidebar => Some("Show or hide navigation"),
@@ -2403,7 +2480,7 @@ impl MusicApp {
                 let pls = self.gather_playlists();
                 self.draw_playlist_grid(scene, t, tr, c, body, y, &pls)
             }
-            View::Downloads => self.draw_downloads(scene, t, tr, c, body, y),
+            View::Downloads => Self::draw_downloads(scene, t, tr, c, body, y),
             View::Liked => self.draw_liked(scene, t, tr, c, body, y),
             View::Queue => self.draw_queue(scene, t, tr, c, body, y),
             View::Lyrics => self.draw_lyrics(scene, t, tr, c, body, y),
@@ -3375,7 +3452,7 @@ impl MusicApp {
             scene, t, c, y, row_h, i, row_count, hovered, playlist, tk, like_x,
         );
         self.draw_track_row_like(scene, t, c, y, row_h, tk, hovered, like_x);
-        self.draw_track_row_download(scene, t, tr, c, y, row_h, tk, dl_x, dur_x);
+        Self::draw_track_row_download(scene, t, tr, c, y, row_h, tk, dl_x, dur_x);
     }
 
     /// The leading index column: a play glyph on hover, an animated equalizer
@@ -3620,7 +3697,6 @@ impl MusicApp {
     /// Download toggle (cached / in-progress spinner / streamed) plus the
     /// duration readout.
     fn draw_track_row_download(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3631,70 +3707,17 @@ impl MusicApp {
         dl_x: f64,
         dur_x: f64,
     ) {
-        let dl_rect = Rect::new(
-            dl_x - 12.0,
-            y + row_h / 2.0 - 14.0,
-            dl_x + 16.0,
-            y + row_h / 2.0 + 14.0,
+        // A cache marker is only meaningful when local audio bytes exist.
+        // This build has no byte-backed cache, so leave the affordance visibly
+        // disabled rather than inviting a click that cannot fulfil its promise.
+        icon::draw(
+            scene,
+            t,
+            Icon::Download,
+            Point::new(dl_x, y + row_h / 2.0),
+            16.0,
+            c.dim.multiply_alpha(0.45),
         );
-        let dl_hover = self.push_hit(dl_rect, Action::ToggleDownload(tk.id.clone()));
-        match tk.cache {
-            CacheState::Cached => {
-                let badge = Circle::new(Point::new(dl_x, y + row_h / 2.0), 9.0);
-                scene.fill(Fill::NonZero, t, c.success, None, &badge);
-                icon::draw(
-                    scene,
-                    t,
-                    Icon::Downloaded,
-                    Point::new(dl_x, y + row_h / 2.0),
-                    12.0,
-                    c.bg,
-                );
-            }
-            CacheState::Downloading(f) => {
-                // A spinning "working" indicator: a faint track ring with
-                // a rotating accent arc whose sweep grows as the download
-                // nears done. The rotation (off the shared animation
-                // clock) reads as actively working — clearly distinct from
-                // the idle download arrow and the finished check badge.
-                let center = Point::new(dl_x, y + row_h / 2.0);
-                let radius = 9.0;
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    t,
-                    c.dim.multiply_alpha(0.4),
-                    None,
-                    &Circle::new(center, radius),
-                );
-                // Spin ~1 turn every 1.1s; sweep between a quarter-turn
-                // (just started) and a near-full turn (almost done).
-                let spin = if c.reduce_motion {
-                    0.0
-                } else {
-                    anim_time() * (std::f64::consts::TAU / 1.1)
-                };
-                let sweep = std::f64::consts::FRAC_PI_2
-                    + (std::f64::consts::TAU - std::f64::consts::FRAC_PI_2) * f64::from(f);
-                let arc = vello::kurbo::Arc::new(center, (radius, radius), spin, sweep, 0.0);
-                scene.stroke(
-                    &Stroke::new(2.0).with_caps(vello::kurbo::Cap::Round),
-                    t,
-                    c.accent,
-                    None,
-                    &arc.to_path(0.2),
-                );
-            }
-            CacheState::Streamed => {
-                icon::draw(
-                    scene,
-                    t,
-                    Icon::Download,
-                    Point::new(dl_x, y + row_h / 2.0),
-                    16.0,
-                    if dl_hover { c.text } else { c.dim },
-                );
-            }
-        }
 
         // Duration (hidden when unknown — some live sources omit it).
         if tk.dur > 0 {
@@ -4781,8 +4804,8 @@ impl MusicApp {
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, Some(id))
     }
 
-    /// Playlist management row: an outlined pill per action (download all,
-    /// set cover, rename, delete).
+    /// Playlist management row: set cover, rename, and delete. Offline batch
+    /// download is intentionally absent until a byte-backed cache exists.
     fn draw_playlist_management_row(
         &mut self,
         scene: &mut Scene,
@@ -4792,17 +4815,11 @@ impl MusicApp {
         body: Rect,
         py: f64,
         id: &str,
-        ids: &[String],
+        _ids: &[String],
     ) {
         let pad = 28.0;
         let mut mx = body.x0 + pad;
         for (label, w, action, danger) in [
-            (
-                "Download all",
-                128.0,
-                Action::DownloadAll(ids.to_vec()),
-                false,
-            ),
             (
                 "Set cover\u{2026}",
                 104.0,
@@ -5294,7 +5311,6 @@ impl MusicApp {
     // ---- downloads --------------------------------------------------------
 
     fn draw_downloads(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -5304,20 +5320,14 @@ impl MusicApp {
     ) -> f64 {
         let pad = 28.0;
         y += 16.0;
-        let cached = self.lib.downloaded_tracks();
-        let count = cached.len();
-        let total_s: u64 = cached.iter().map(|tk| u64::from(tk.duration_s)).sum();
-        let ids: Vec<String> = cached.iter().map(|tk| tk.id.clone()).collect();
-
-        // Stat banner: only real facts — how many tracks are marked to keep
-        // offline and their combined runtime. (The bytes are cached lazily by
-        // the streaming layer on play, so we don't fabricate a size here.)
+        // This state is deliberately explicit: there is no local media-byte
+        // cache, so a count/badge would be a false claim of offline playback.
         let banner = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
         fill_rrect(scene, t, banner, 12.0, c.card);
         icon::draw(
             scene,
             t,
-            Icon::Downloaded,
+            Icon::Download,
             Point::new(banner.x0 + 34.0, banner.center().y),
             24.0,
             c.success,
@@ -5326,7 +5336,7 @@ impl MusicApp {
             tr,
             scene,
             t,
-            &format!("{count} songs kept for offline"),
+            "Offline downloads unavailable",
             banner.x0 + 60.0,
             banner.y0 + 14.0,
             15.0,
@@ -5338,7 +5348,7 @@ impl MusicApp {
             tr,
             scene,
             t,
-            &ui::format::timecode(total_s),
+            "Music does not yet store durable audio bytes on this device.",
             banner.x0 + 60.0,
             banner.y0 + 36.0,
             12.0,
@@ -5348,23 +5358,19 @@ impl MusicApp {
         );
         y += 84.0;
 
-        if ids.is_empty() {
-            draw_text(
-                tr,
-                scene,
-                t,
-                "Nothing kept offline yet. Tap the download icon on any track.",
-                body.x0 + pad,
-                y,
-                13.0,
-                c.dim,
-                TextWeight::Regular,
-                None,
-            );
-            return y + 40.0;
-        }
-        let rows = self.gather_tracks(&ids);
-        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, false, None)
+        draw_text(
+            tr,
+            scene,
+            t,
+            "Network-free playback will be available when a local media cache is configured.",
+            body.x0 + pad,
+            y,
+            13.0,
+            c.dim,
+            TextWeight::Regular,
+            None,
+        );
+        y + 40.0
     }
 
     // ---- liked songs ------------------------------------------------------
@@ -5403,7 +5409,7 @@ impl MusicApp {
             );
             return y + 40.0;
         }
-        y = self.draw_liked_download_all(scene, t, tr, c, body, y, &ids);
+        y = Self::draw_liked_download_all(scene, t, tr, c, body, y, &ids);
         let rows = self.gather_tracks(&ids);
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None)
     }
@@ -5502,45 +5508,38 @@ impl MusicApp {
         y + 16.0 + 88.0 + 16.0
     }
 
-    /// Download-all pill (keep every liked song offline in one gesture).
+    /// Disabled offline-download explanation. Music does not advertise a
+    /// batch operation until it can retain playable media bytes.
     /// Returns the y below it.
     fn draw_liked_download_all(
-        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         c: &Palette,
         body: Rect,
         y: f64,
-        ids: &[String],
+        _ids: &[String],
     ) -> f64 {
         let pad = 28.0;
-        let dl = Rect::new(body.x0 + pad, y - 4.0, body.x0 + pad + 128.0, y + 28.0);
-        let dlh = self.push_hit(dl, Action::DownloadAll(ids.to_vec()));
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            if dlh { c.text } else { c.border },
-            None,
-            &rrect(dl, 16.0),
-        );
+        let dl = Rect::new(body.x0 + pad, y - 4.0, body.x0 + pad + 252.0, y + 28.0);
+        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(dl, 16.0));
         icon::draw(
             scene,
             t,
             Icon::Download,
             Point::new(dl.x0 + 20.0, dl.center().y),
             15.0,
-            if dlh { c.text } else { c.dim },
+            c.dim.multiply_alpha(0.6),
         );
         draw_text(
             tr,
             scene,
             t,
-            "Download all",
+            "Offline downloads unavailable",
             dl.x0 + 36.0,
             vy(dl.y0, 32.0, 13.0),
             13.0,
-            if dlh { c.text } else { c.dim },
+            c.dim,
             TextWeight::Medium,
             None,
         );
@@ -7488,7 +7487,6 @@ impl MusicApp {
                 album: self.lib.album_title(&tk.album_id).to_string(),
                 album_id: tk.album_id.clone(),
                 dur: tk.duration_s,
-                cache: self.lib.cache_state(&tk.id),
                 no: tk.track_no,
             })
             .collect()

@@ -6,7 +6,7 @@
 //! synthetic `yt_id`; the real streaming path ([`crate::source`]) would
 //! replace these with live YouTube-Music ids resolved from a search.
 
-use crate::model::{Album, Artist, CacheState, Library, Playback, Playlist, RepeatMode, Track};
+use crate::model::{Album, Artist, Library, Playback, Playlist, RepeatMode, Track};
 
 fn artist(id: &str, name: &str, genre: &str, listeners: u64) -> Artist {
     Artist {
@@ -47,14 +47,13 @@ fn track(
     }
 }
 
-/// Build the full seeded library: catalog + playlists + cache state.
+/// Build the full seeded library: catalog + playlists + user-authored state.
 pub fn sample_library() -> Library {
     let mut lib = Library::default();
     seed_artists(&mut lib);
     seed_albums(&mut lib);
     seed_tracks(&mut lib);
     seed_playlists(&mut lib);
-    seed_cache(&mut lib);
     seed_liked_and_saved(&mut lib);
     lib
 }
@@ -457,17 +456,6 @@ fn seed_playlists(lib: &mut Library) {
             cover: String::new(),
         },
     ];
-}
-
-/// A handful of tracks are marked to keep offline so the Downloads view has
-/// content. (No fabricated in-progress download — a `Downloading` state is
-/// only ever set by a real, advancing fetch.)
-fn seed_cache(lib: &mut Library) {
-    for id in [
-        "tk_g1", "tk_p1", "tk_u1", "tk_a1", "tk_h1", "tk_r1", "tk_n1",
-    ] {
-        lib.cache.insert(id.into(), CacheState::Cached);
-    }
 }
 
 /// A populated "Liked Songs" + a couple saved albums so the screenshots show
