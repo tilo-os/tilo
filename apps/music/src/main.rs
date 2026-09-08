@@ -67,6 +67,8 @@ const SHOT_SCENARIOS: &[&str] = &[
     "queue",
     "lyrics",
     "downloading",
+    "offline-cached",
+    "offline-error",
     "search-tabs",
     "search-songs",
     "search-artists",
