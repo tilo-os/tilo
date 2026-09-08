@@ -230,7 +230,10 @@ impl PairingBrokerServer {
                         Err(_) => PairingBrokerResponse::Denied,
                     };
                     if let Ok(bytes) = postcard::to_allocvec(&response) {
-                        let _ = stream.write_all(&(bytes.len() as u32).to_be_bytes());
+                        let Ok(response_len) = u32::try_from(bytes.len()) else {
+                            return;
+                        };
+                        let _ = stream.write_all(&response_len.to_be_bytes());
                         let _ = stream.write_all(&bytes);
                     }
                 });
@@ -766,12 +769,16 @@ impl std::ops::Deref for PairingBrokerChannel {
 
 pub type SharedPairingChannel = Arc<PairingBrokerChannel>;
 
+/// # Errors
+///
+/// Returns an error when the durable pairing protocol cannot be created at
+/// `root`.
 pub fn pairing_channel_at(
     root: impl Into<PathBuf>,
 ) -> Result<SharedPairingChannel, IdentityFlowError> {
     let expiry = SystemTime::now()
         .checked_add(Duration::from_secs(5 * 60))
-        .unwrap_or(SystemTime::now());
+        .unwrap_or_else(SystemTime::now);
     Ok(Arc::new(PairingBrokerChannel {
         protocol: PairingHandshake::durable(root, expiry)?,
     }))
@@ -780,6 +787,11 @@ pub fn pairing_channel_at(
 /// Create a private, bounded broker spool under the runtime identity root.
 /// The returned handle can be dropped and reopened with [`pairing_channel_at`]
 /// by another process; protocol state is not owned by the UI lifetime.
+///
+/// # Errors
+///
+/// Returns an error when the identity root is unavailable or the durable
+/// pairing protocol cannot be initialized.
 pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> {
     let root = std::env::var_os("QOS_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
@@ -798,6 +810,11 @@ pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> 
 /// Start the long-lived invite broker when the administrator has provided a
 /// reachable bind/advertise pair. With neither variable set the feature is
 /// honestly unavailable; a half-configuration is rejected.
+///
+/// # Errors
+///
+/// Returns an error for an incomplete or invalid bind/advertise
+/// configuration, or when the broker cannot start.
 pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer>> {
     let bind = std::env::var("QOS_INVITE_BROKER_BIND").ok();
     let advertise = std::env::var("QOS_INVITE_BROKER_ADVERTISE").ok();
@@ -1154,12 +1171,12 @@ mod tests {
         let authority = pairing_channel_at(tmp.0.join("pairing-authority")).unwrap();
         let invite_root = tmp.0.join("invite-redemption-authority");
         let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
-        let (owner_sk, owner_pk) = collab_types::generate_keypair();
+        let (owner_secret, owner_public) = collab_types::generate_keypair();
         let invite = ui::widget::identity_flow::mint_invite_for_broker(
             collab_types::ChannelId::new(),
             "remote",
-            owner_pk,
-            &owner_sk,
+            owner_public,
+            &owner_secret,
             "Alice",
             collab_types::Role::Editor,
             SystemTime::now() + Duration::from_secs(60),
@@ -1194,7 +1211,7 @@ mod tests {
         let invite_authority =
             ui::widget::identity_flow::InviteRedemptionAuthority::at(&invite_root).unwrap();
         invite_authority.issue([3; 32], [4; 32], 1).unwrap();
-        let server = PairingBrokerServer::start_invites(pairing.clone(), invite_root).unwrap();
+        let server = PairingBrokerServer::start_invites(pairing, invite_root).unwrap();
         let response = PairingHandshake::remote_call(
             &server.endpoint().to_string(),
             server.certificate_der(),
@@ -1257,12 +1274,12 @@ mod tests {
         .unwrap();
         let endpoint = first.endpoint();
         let certificate = first.certificate_der().to_vec();
-        let (owner_sk, owner_pk) = collab_types::generate_keypair();
+        let (owner_secret, owner_public) = collab_types::generate_keypair();
         let invite = ui::widget::identity_flow::mint_invite_for_broker(
             collab_types::ChannelId::new(),
             "restart-safe",
-            owner_pk,
-            &owner_sk,
+            owner_public,
+            &owner_secret,
             "Alice",
             collab_types::Role::Editor,
             SystemTime::now() + Duration::from_secs(60),

@@ -42,6 +42,10 @@ const MAX_ENCODED_CHECKPOINT_BYTES: usize = 3_900_000;
 pub struct DeviceId(String);
 
 impl DeviceId {
+    /// # Errors
+    ///
+    /// Returns an error when the device identifier is empty, oversized, or
+    /// contains unsupported characters.
     pub fn new(value: impl Into<String>) -> Result<Self, ContinuityError> {
         let value = value.into();
         if !valid_identifier(&value, MAX_DEVICE_ID_BYTES) {
@@ -131,6 +135,10 @@ pub enum LaunchIntent {
 }
 
 impl LaunchIntent {
+    /// # Errors
+    ///
+    /// Returns an error when `app_id` is not a valid application launch
+    /// target.
     pub fn app(app_id: impl Into<String>) -> Result<Self, ContinuityError> {
         let intent = Self::App {
             app_id: app_id.into(),
@@ -139,6 +147,10 @@ impl LaunchIntent {
         Ok(intent)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error when the record identifier or supplied hashes are
+    /// invalid for a file reference.
     pub fn file_reference(
         record_id: impl Into<String>,
         content_hash: Option<[u8; 32]>,
@@ -241,6 +253,10 @@ pub struct ResumeMetadata {
 }
 
 impl ResumeMetadata {
+    /// # Errors
+    ///
+    /// Returns an error for sensitive, oversized, or otherwise invalid resume
+    /// metadata.
     pub fn new(
         schema_version: u16,
         sensitivity: ResumeSensitivity,
@@ -400,6 +416,10 @@ pub struct DeviceContinuationSnapshot {
 }
 
 impl DeviceContinuationSnapshot {
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot violates size, identity, or focus
+    /// invariants.
     pub fn new(
         device: DeviceId,
         counter: u64,
@@ -421,6 +441,10 @@ impl DeviceContinuationSnapshot {
         Ok(value)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error when schema, device, size, workspace, or focus
+    /// invariants are violated.
     pub fn validate(&self) -> Result<(), ContinuityError> {
         if self.schema_version != CONTINUITY_SCHEMA_VERSION {
             return Err(ContinuityError::UnsupportedSchema(self.schema_version));
@@ -481,6 +505,11 @@ impl DeviceContinuationSnapshot {
     /// in its preceding snapshot but has now closed. Callers must advance the
     /// Lamport counter past every received checkpoint before constructing
     /// `self`, so the removal causally defeats the offer it observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `previous` belongs to another device or the
+    /// resulting snapshot violates continuity invariants.
     pub fn record_closures_from(&mut self, previous: &Self) -> Result<(), ContinuityError> {
         if previous.device != self.device {
             return Err(ContinuityError::SnapshotStampDeviceMismatch);
@@ -551,7 +580,7 @@ impl DeviceContinuationSnapshot {
             counter,
             device: device.clone(),
         };
-        let mut redacted_foreign_tabs = 0;
+        let mut redacted_foreign_tabs: u32 = 0;
         let mut workspaces = Vec::new();
 
         for workspace in &tree.workspaces {
@@ -598,7 +627,7 @@ impl DeviceContinuationSnapshot {
                                 // Peer windows are another person's live session,
                                 // not our resumable app instance.
                                 TileContent::PeerWindow { .. } => {
-                                    redacted_foreign_tabs += 1;
+                                    redacted_foreign_tabs = redacted_foreign_tabs.saturating_add(1);
                                     None
                                 }
                             });
@@ -638,8 +667,17 @@ impl DeviceContinuationSnapshot {
         // snapshot rather than publishing a partially unsafe state.
         let mut snapshot = Self::new(device, counter, focus, workspaces).unwrap_or_else(|error| {
             tracing::warn!(%error, "personal continuity capture rejected local state");
-            Self::new(stamp.device.clone(), counter, None, Vec::new())
-                .expect("an empty continuation snapshot is valid")
+            Self {
+                schema_version: CONTINUITY_SCHEMA_VERSION,
+                device: stamp.device.clone(),
+                stamp: ContinuityStamp {
+                    counter,
+                    device: stamp.device.clone(),
+                },
+                focus: None,
+                workspaces: Vec::new(),
+                tombstones: Vec::new(),
+            }
         });
         snapshot.tombstones = tree
             .continuation_closed_tabs
@@ -771,6 +809,11 @@ impl PersonalContinuity {
     /// Keep the newest snapshot for its owning device. A same-device,
     /// same-counter but different payload is rejected: accepting based on
     /// arrival order would make replicas diverge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid snapshots, conflicting equal counters, or
+    /// a collection that would exceed its bounded resume payload.
     pub fn upsert(
         &mut self,
         incoming: DeviceContinuationSnapshot,
@@ -942,6 +985,11 @@ impl PersonalContinuityWireV1 {
 }
 
 /// Decode the current checkpoint or migrate the exact v1 Postcard shape.
+///
+/// # Errors
+///
+/// Returns [`ContinuityError::InvalidCheckpoint`] when neither supported wire
+/// format can be decoded.
 pub fn decode_checkpoint(bytes: &[u8]) -> Result<PersonalContinuity, ContinuityError> {
     if let Ok(current) = postcard::from_bytes::<PersonalContinuity>(bytes) {
         return Ok(current);
@@ -1590,6 +1638,10 @@ mod tests {
         );
     }
 
+    #[allow(
+        clippy::items_after_statements,
+        reason = "the legacy wire fixture is defined next to the only migration scenario that uses it"
+    )]
     #[test]
     fn migrates_v1_snapshot_without_losing_its_counter_or_apps() {
         #[derive(Serialize)]

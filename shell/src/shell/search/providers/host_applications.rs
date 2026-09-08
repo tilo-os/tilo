@@ -90,6 +90,7 @@ impl HostApplicationsProvider {
                         let portal_workspace_id = tree
                             .active_workspace()
                             .map(|workspace| workspace.room.to_string());
+                        drop(tree);
                         host_apps::queue_launch(host_apps::QueuedLaunch {
                             desktop_id: app.desktop_id,
                             display_name: app.name,

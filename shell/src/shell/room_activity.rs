@@ -391,6 +391,10 @@ struct UndoApply {
 }
 
 /// The room-activity sheet.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag represents an independently focusable activity-pane mode or asynchronous visual state"
+)]
 pub struct RoomActivityPane {
     timeline: ActivityTimeline,
     source: HistorySource,
@@ -530,6 +534,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the pane constructor wires mutually dependent retained UI controllers and their one-shot intents in a single ownership transfer"
+    )]
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
@@ -1289,6 +1297,10 @@ impl RoomActivityPane {
     /// Re-derive the timeline from the room document if the graph has
     /// moved; called every frame, the heads check keeps that cheap.
     /// `&mut` because reading a change graph closes any open transaction.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "timeline refresh keeps document observation, filter projection, and retained activity rows in one ordered read-only projection pass"
+    )]
     pub fn refresh(&mut self, tree: &mut WorkspaceTree) {
         tree.commit_room_change();
 
@@ -1378,9 +1390,10 @@ impl RoomActivityPane {
                     op_class: OpClass::EditMeta,
                     artifact_kind: ArtifactKind::Cluster,
                     timestamp: SystemTime::UNIX_EPOCH
-                        + Duration::from_secs(
+                        .checked_add(Duration::from_secs(
                             u64::try_from(receipt.completed_at).unwrap_or_default(),
-                        ),
+                        ))
+                        .unwrap_or(SystemTime::UNIX_EPOCH),
                     summary: receipt
                         .context
                         .summary()
@@ -2476,6 +2489,12 @@ impl RoomActivityPane {
         y + 28.0
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::cast_precision_loss,
+        reason = "comparison paint, bounds, and text layout stay in one retained-rendering pass so labels, hit geometry, and accessible summary cannot diverge"
+    )]
     fn draw_detail_comparison(
         &self,
         scene: &mut Scene,
@@ -2493,7 +2512,7 @@ impl RoomActivityPane {
             return;
         }
         let Some(comparison) = &self.comparison else {
-            self.draw_unavailable_comparison(scene, transform, tr, theme, bounds, y);
+            Self::draw_unavailable_comparison(scene, transform, tr, theme, bounds, y);
             return;
         };
         let labels = comparison_change_labels(&comparison.patches);
@@ -2580,7 +2599,7 @@ impl RoomActivityPane {
         if labels.len() > visible {
             tr.draw_text(
                 scene,
-                &format!("+{} more", labels.len() - visible),
+                &format!("+{} more", labels.len().saturating_sub(visible)),
                 theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_dim,
                 at(
@@ -2594,7 +2613,6 @@ impl RoomActivityPane {
     }
 
     fn draw_unavailable_comparison(
-        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
@@ -2759,6 +2777,11 @@ impl RoomActivityPane {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::cast_precision_loss,
+        reason = "catch-up cards share one ordered retained-rendering pass; count conversions only affect bounded display geometry"
+    )]
     fn draw_catch_up(
         &mut self,
         scene: &mut Scene,
@@ -2904,6 +2927,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "replay controls, current-frame geometry, and focus targets must be painted together for deterministic playback"
+    )]
     fn draw_replay(
         &mut self,
         scene: &mut Scene,
@@ -2930,7 +2957,7 @@ impl RoomActivityPane {
             return;
         }
         if self.replay_playing && self.replay_last_advance.elapsed() >= Duration::from_millis(850) {
-            if self.replay_index + 1 < self.replay_frames.len() {
+            if self.replay_index.saturating_add(1) < self.replay_frames.len() {
                 self.replay_index = self.replay_index.saturating_add(1);
                 self.replay_last_advance = Instant::now();
             } else {
@@ -3076,6 +3103,11 @@ impl RoomActivityPane {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::cast_precision_loss,
+        reason = "task-center rows are one retained rendering and accessibility pass; count conversions only affect bounded display geometry"
+    )]
     fn draw_task_center(
         &mut self,
         scene: &mut Scene,
@@ -3322,6 +3354,10 @@ impl RoomActivityPane {
     }
 
     /// Paint the sheet's title, factual scope/count, and latest outcome.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the title, factual scope, outcome, and matching accessible summary are one retained header composition"
+    )]
     fn draw_title_and_subtitle(
         &self,
         scene: &mut Scene,
@@ -3804,6 +3840,10 @@ impl RoomActivityPane {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "task action admission keeps explicit early refusals and the single status mutation path together for auditable outcomes"
+    )]
     fn apply_task_action(
         &mut self,
         action: TaskAction,
@@ -3901,9 +3941,9 @@ impl RoomActivityPane {
             TaskAction::Start => WorkspaceTaskStatus::InProgress,
             TaskAction::Complete => WorkspaceTaskStatus::Done,
             TaskAction::Cancel => WorkspaceTaskStatus::Cancelled,
-            TaskAction::OpenResource => return handled_outcome(),
-            TaskAction::StartAgent => return handled_outcome(),
-            TaskAction::Launch => return handled_outcome(),
+            TaskAction::OpenResource | TaskAction::StartAgent | TaskAction::Launch => {
+                return handled_outcome();
+            }
         };
         let changed = tree.set_workspace_task_status(
             tree.active,
@@ -5318,6 +5358,11 @@ fn draw_task_button(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "task-card rendering needs the shared renderer context and explicit card data together to keep the visible and accessible states aligned"
+)]
 fn draw_task_card(
     scene: &mut Scene,
     transform: Affine,
@@ -5596,7 +5641,7 @@ fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
 }
 
 fn humanize_field(field: &str) -> String {
-    let words = field.replace('_', " ").replace('-', " ");
+    let words = field.replace(['_', '-'], " ");
     if words.trim().is_empty() {
         "content".to_string()
     } else {
@@ -5604,6 +5649,11 @@ fn humanize_field(field: &str) -> String {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    reason = "replay layout derives all bounded workspace geometry in one pass; count conversions only affect display allocation"
+)]
 fn draw_replay_layout(
     scene: &mut Scene,
     transform: Affine,
@@ -5654,7 +5704,7 @@ fn draw_replay_layout(
         let mut x = groups.x0;
         for (index, group) in workspace.groups.iter().enumerate() {
             let share = f64::from(group.width_permille.max(1)) / f64::from(total);
-            let x1 = if index + 1 == workspace.groups.len() {
+            let x1 = if index.saturating_add(1) == workspace.groups.len() {
                 groups.x1
             } else {
                 (x + groups.width() * share).min(groups.x1)
@@ -5738,7 +5788,7 @@ fn draw_replay_layout(
                     if group.tabs.len() > 4 && tab_x + 28.0 < rect.x1 {
                         tr.draw_text(
                             scene,
-                            &format!("+{}", group.tabs.len() - 4),
+                            &format!("+{}", group.tabs.len().saturating_sub(4)),
                             (theme.tokens.typography.scale.sm - 2.0).max(9.0),
                             theme.tokens.colors.text_dim,
                             at(transform, tab_x + 2.0, tab_y + 4.0),
@@ -5753,6 +5803,10 @@ fn draw_replay_layout(
     }
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the bounded replay-frame and pointer counts only determine visual trail coordinates"
+)]
 fn draw_presence_trail(
     scene: &mut Scene,
     transform: Affine,
@@ -5804,7 +5858,11 @@ fn draw_presence_trail(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_precision_loss,
+    reason = "presence-trail painting receives the shared renderer context and uses bounded frame and pointer counts only for display geometry"
+)]
 fn draw_replay_pointers(
     scene: &mut Scene,
     transform: Affine,
@@ -5850,6 +5908,12 @@ fn draw_replay_pointers(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    reason = "brief-card rendering keeps its geometry, summary, and accessible label in one retained pass"
+)]
 fn draw_brief_card(
     scene: &mut Scene,
     transform: Affine,

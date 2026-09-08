@@ -1536,6 +1536,10 @@ mod tests {
         );
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the authorization regression retains the chrome guard until each ambient-authority assertion completes"
+    )]
     #[test]
     fn setup_profile_is_recorded_but_never_becomes_ambient_authority() {
         let c = chrome_with_room();

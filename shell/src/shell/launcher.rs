@@ -258,11 +258,17 @@ pub fn attest_trusted_service_launch_for_pid(
     let (_, start_time) = proc_stat(pid)?;
     let mut launches = lock(&TRUSTED_SERVICE_LAUNCHES);
     launches.retain(|_, launch| launch.registered_at.elapsed() <= SERVICE_LAUNCH_TTL);
-    let launch = launches.get(&pid)?;
-    (launch.start_time == start_time
-        && launch.identity.app_id == app_id
-        && launch.identity.workspace_id == workspace_id)
-        .then(|| launch.identity.clone())
+    let identity = launches.get(&pid).and_then(|launch| {
+        (launch.start_time == start_time
+            && launch.identity.app_id == app_id
+            && launch.identity.workspace_id == workspace_id)
+            .then(|| launch.identity.clone())
+    });
+    // Keep the registry lock out of the return expression. This function is
+    // called while service descriptors are being inspected, and no caller
+    // needs the registry held while it handles the resulting identity.
+    drop(launches);
+    identity
 }
 
 /// Publish the server-owned compatibility entries that a newly launched
@@ -657,8 +663,11 @@ static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 /// toplevel in two trees and consuming here would desync them.
 static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
 /// Resume bytes waiting for the user-directed launch of one dormant tab.
+type ContinuationResumePayload = Option<(u16, Vec<u8>)>;
+type StagedContinuationResume = (ContinuationResumePayload, u64);
+
 static PENDING_CONTINUATION_RESUME: LazyLock<
-    Mutex<HashMap<(RoomId, u64), (Option<(u16, Vec<u8>)>, u64)>>,
+    Mutex<HashMap<(RoomId, u64), StagedContinuationResume>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Locks `mutex`, recovering the guard instead of panicking a second time
@@ -1593,8 +1602,9 @@ fn launch_with_context(
     // still receives a newly allocated record identity until it adopts a tab.
     let continuity_instance = staged_resume
         .as_ref()
-        .map(|(_, record_instance)| *record_instance)
-        .unwrap_or_else(crate::shell::state::next_id);
+        .map_or_else(crate::shell::state::next_id, |(_, record_instance)| {
+            *record_instance
+        });
     command.env.push((
         "QOS_CONTINUITY_INSTANCE".to_string(),
         continuity_instance.to_string(),
@@ -1713,6 +1723,14 @@ fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), Strin
 /// reporting through [`EVENTS`]. Shared by both launch kinds — a `.qpkg`
 /// via `qos-launcher run` and a host app via `run-host` — since they
 /// differ only in what the launcher does, not in how it's supervised.
+#[allow(
+    clippy::too_many_lines,
+    reason = "This is the complete launch-thread lifecycle, whose ordered cleanup and reporting share the moved launch identity."
+)]
+/// # Errors
+///
+/// Returns the operating system's thread-spawn error when the launcher
+/// cannot create the worker responsible for supervising `command`.
 pub fn spawn_launch(
     package_id: String,
     display_name: String,
@@ -1996,7 +2014,8 @@ pub fn placement_and_instance_for_toplevel(
                     // as well: an app that never causes a second lookup must
                     // not leave a permanent note capable of steering a much
                     // later surface with the same identity.
-                    entry.retire_after = Some(Instant::now() + PENDING_PLACEMENT_CLAIM_GRACE);
+                    entry.retire_after =
+                        Some(pending_placement_deadline(PENDING_PLACEMENT_CLAIM_GRACE));
                 }
                 return Some((placement, instance));
             }
@@ -2056,7 +2075,7 @@ pub fn stage_continuation_record(room: RoomId, tab: u64, record_instance: u64) {
 fn take_staged_resume(
     placement: crate::compositor::tab_binding::Placement,
     room: RoomId,
-) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
+) -> Option<StagedContinuationResume> {
     let crate::compositor::tab_binding::Placement::IntoTab(tab) = placement else {
         return None;
     };
@@ -2066,7 +2085,7 @@ fn take_staged_resume(
 pub(crate) fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
-) -> Option<(Option<(u16, Vec<u8>)>, u64)> {
+) -> Option<StagedContinuationResume> {
     let placement = lock(&PENDING_PLACEMENT)
         .iter()
         .rev()
@@ -2092,7 +2111,18 @@ pub fn clear_pending_placement(package_id: &str) {
 /// daemonised GUI child to announce its toplevel. Failure paths still call
 /// [`clear_pending_placement`] immediately.
 pub fn retire_pending_placement_after_grace(package_id: &str) {
-    retire_pending_placement_at(package_id, Instant::now() + PENDING_PLACEMENT_EXIT_GRACE);
+    retire_pending_placement_at(
+        package_id,
+        pending_placement_deadline(PENDING_PLACEMENT_EXIT_GRACE),
+    );
+}
+
+/// Produce a bounded placement deadline without panicking if an unusual
+/// platform clock makes the requested duration unrepresentable. Expiring the
+/// transient claim immediately is safer than retaining it indefinitely.
+fn pending_placement_deadline(grace: Duration) -> Instant {
+    let now = Instant::now();
+    now.checked_add(grace).unwrap_or(now)
 }
 
 fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
