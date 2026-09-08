@@ -1114,6 +1114,14 @@ impl NotesApp {
         if !self.main.editor_is_dirty() {
             return;
         }
+        self.save_current_editor_snapshot();
+    }
+
+    /// Serialize and queue the already-known-dirty current editor. Kept
+    /// separate from [`Self::drain_editor_edits`] so the event path can first
+    /// dispatch rich marks, then perform exactly one Markdown snapshot for the
+    /// save worker without scanning a long note again on pointer-only events.
+    fn save_current_editor_snapshot(&mut self) {
         let Some(id) = self.main.page_id() else {
             return;
         };
@@ -2555,7 +2563,14 @@ impl NotesApp {
         // Apply them before its next sync so a widget never writes the shared
         // document behind the action/history/undo path.
         self.drain_block_ops(state);
-        self.drain_inline_marks(state);
+        // `editor_is_dirty` drains the widget's edit edge. Doing that before
+        // collecting rich spans means a pointer move or caret blink does not
+        // rescan every block in a long note; mark actions run only when an
+        // actual text/format/structure edit occurred.
+        if self.main.editor_is_dirty() {
+            self.drain_inline_marks(state);
+            self.save_current_editor_snapshot();
+        }
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
@@ -2565,10 +2580,6 @@ impl NotesApp {
         // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
         // just as collaborative and undoable as every later one.
         self.drain_empty_note_request(state);
-        // After every event, observe the editor's dirty flag and
-        // request a debounced save if the user just edited.
-        self.drain_editor_edits();
-
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2855,6 +2866,45 @@ mod tests {
             .map(crate::actions::InlineMarkSpan::from_ui)
             .collect::<Vec<_>>();
         assert_eq!(restored, marks);
+    }
+
+    #[test]
+    fn mark_only_dirty_edge_dispatches_the_canonical_action() {
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        let (block, text_len) = {
+            let first = &app.main.editor().blocks()[0];
+            (first.id.clone(), first.text().len())
+        };
+        assert!(text_len >= 4);
+        app.main.editor_mut().blocks_mut()[0].line.set_marks(vec![
+            ui::widget::marks::MarkSpan::new(0..4, ui::widget::marks::Mark::Underline),
+        ]);
+        // Formatting changes no plain text, so exercise the exact dirty edge
+        // the event router observes after a Ctrl/Cmd formatting shortcut.
+        app.main.editor_mut().force_dirty_for_test();
+        assert!(app.main.editor_is_dirty());
+        app.drain_inline_marks(&mut state.doc);
+
+        let dispatched = app
+            .last_dispatched_for_test()
+            .expect("mark-only edit dispatched an action");
+        let action: crate::actions::NotesAction =
+            serde_json::from_slice(&dispatched.payload).expect("mark action payload decodes");
+        assert!(matches!(
+            action,
+            crate::actions::NotesAction::SetBlockMarks { .. }
+        ));
+        assert_eq!(
+            NotesDoc::page_block_marks(&state.doc, welcome)
+                .into_iter()
+                .find(|(id, _)| id == &block)
+                .map(|(_, marks)| marks),
+            Some(vec![crate::actions::InlineMarkSpan {
+                start: 0,
+                end: 4,
+                mark: crate::actions::InlineMark::Underline,
+            }])
+        );
     }
 
     #[test]
