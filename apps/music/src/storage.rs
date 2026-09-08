@@ -11,14 +11,17 @@
 //! relay — never fabricated); this module is the seam the headless relay
 //! ([`crate::relay`]) uses to load and atomically persist its authoritative
 //! copy. Playback and credentials remain device-local effects and are
-//! intentionally absent from this file. Music currently has no byte-backed
-//! download cache, so it persists only paused resume state.
+//! intentionally absent from this file. Durable media bytes live in the
+//! separate device-local content-addressed cache below; they never enter the
+//! profile or replicated document.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::model::{CacheState, Playback};
 
@@ -27,12 +30,322 @@ use crate::model::{CacheState, Playback};
 /// user gesture.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceProfile {
-    /// Legacy field accepted on read so older profiles migrate safely. It is
-    /// never written or used to advertise offline playback without media bytes.
+    /// Legacy field accepted on read so older profiles migrate safely. Actual
+    /// cache availability comes only from [`MediaCache`] objects, never this
+    /// profile metadata.
     #[serde(default)]
     pub cache: BTreeMap<String, CacheState>,
     #[serde(default)]
     pub playback: Playback,
+}
+
+/// Device-local index for durable media objects. It is deliberately separate
+/// from the resume profile and Automerge: track ids are app data, while paths,
+/// byte hashes, and eviction timing are private to one device.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MediaCache {
+    #[serde(default)]
+    pub entries: BTreeMap<String, MediaCacheEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MediaCacheEntry {
+    /// SHA-256 of the complete media bytes; the object filename is this value.
+    pub content_id: String,
+    pub bytes: u64,
+    /// Last local use, for deterministic least-recently-used eviction.
+    pub last_access_ms: u64,
+}
+
+const DEFAULT_MEDIA_CACHE_QUOTA: u64 = 1_073_741_824;
+
+/// Local media cache root. The explicit override makes tests and sandboxes
+/// hermetic; no cache path is ever exposed through a shared resource.
+pub fn media_cache_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("QOS_MUSIC_CACHE")
+        && !path.is_empty()
+    {
+        return PathBuf::from(path);
+    }
+    dirs_data_dir().join("qos-music").join("media-cache")
+}
+
+fn media_manifest_path(root: &Path) -> PathBuf {
+    root.join("manifest.json")
+}
+
+fn media_object_path(root: &Path, content_id: &str) -> PathBuf {
+    root.join("objects").join(format!("{content_id}.media"))
+}
+
+fn valid_content_id(content_id: &str) -> bool {
+    content_id.len() == 64 && content_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Verify a content-addressed object without ever materialising it in memory.
+fn object_matches_entry(path: &Path, entry: &MediaCacheEntry) -> bool {
+    if !valid_content_id(&entry.content_id)
+        || !std::fs::metadata(path).is_ok_and(|metadata| {
+            metadata.is_file() && metadata.len() == entry.bytes && entry.bytes > 0
+        })
+    {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
+    loop {
+        let Ok(read) = std::io::Read::read(&mut file, &mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            break;
+        }
+        let Some(chunk) = buffer.get(..read) else {
+            return false;
+        };
+        hash.update(chunk);
+    }
+    format!("{:x}", hash.finalize()) == entry.content_id
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
+}
+
+/// Load only entries whose content-addressed byte object remains present and
+/// non-empty. A damaged manifest or missing object can never manufacture a
+/// `Cached` badge.
+pub fn load_media_cache_from(root: &Path) -> MediaCache {
+    let Ok(bytes) = std::fs::read(media_manifest_path(root)) else {
+        return MediaCache::default();
+    };
+    let Ok(mut cache) = serde_json::from_slice::<MediaCache>(&bytes) else {
+        return MediaCache::default();
+    };
+    // Only validate structure/size here. Full hashing is deliberately lazy at
+    // playback (`object_path`/`touch`) so a large cache never blocks startup.
+    cache.entries.retain(|_, entry| {
+        valid_content_id(&entry.content_id)
+            && std::fs::metadata(media_object_path(root, &entry.content_id)).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.len() == entry.bytes && entry.bytes > 0
+            })
+    });
+    cache
+}
+
+pub fn load_media_cache() -> MediaCache {
+    load_media_cache_from(&media_cache_dir())
+}
+
+impl MediaCache {
+    #[must_use]
+    pub fn object_path(&self, root: &Path, track_id: &str) -> Option<PathBuf> {
+        let entry = self.entries.get(track_id)?;
+        if !valid_content_id(&entry.content_id) {
+            return None;
+        }
+        let path = media_object_path(root, &entry.content_id);
+        object_matches_entry(&path, entry).then_some(path)
+    }
+
+    #[must_use]
+    pub fn total_bytes(&self) -> u64 {
+        self.entries.values().map(|entry| entry.bytes).sum()
+    }
+
+    /// Atomically install complete media bytes, then atomically publish their
+    /// manifest entry. A partial transfer is never accepted by this API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty bytes, a failed local directory/object write,
+    /// or a failed atomic manifest replacement.
+    pub fn install_bytes(
+        &mut self,
+        root: &Path,
+        track_id: &str,
+        bytes: &[u8],
+        quota: u64,
+    ) -> std::io::Result<()> {
+        if bytes.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty media is not cacheable",
+            ));
+        }
+        std::fs::create_dir_all(root.join("objects"))?;
+        let content_id = format!("{:x}", Sha256::digest(bytes));
+        let object = media_object_path(root, &content_id);
+        if !object.exists() {
+            atomic_file::write(&object, bytes)?;
+        }
+        self.entries.insert(
+            track_id.to_string(),
+            MediaCacheEntry {
+                content_id,
+                bytes: bytes.len() as u64,
+                last_access_ms: now_ms(),
+            },
+        );
+        self.evict_to_quota(root, quota);
+        self.save(root)
+    }
+
+    /// Atomically adopt a complete temporary media file into the content store.
+    /// The temporary file must be on the same filesystem as `root`; callers
+    /// write it under `root/partials` so the final rename is atomic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty/unreadable partial data, a failed atomic
+    /// rename, quota eviction, or manifest replacement.
+    pub fn install_completed_file(
+        &mut self,
+        root: &Path,
+        track_id: &str,
+        partial: &Path,
+        quota: u64,
+    ) -> std::io::Result<()> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(partial)?;
+        let mut hash = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            if let Some(chunk) = buffer.get(..read) {
+                hash.update(chunk);
+            }
+            bytes = bytes.saturating_add(read as u64);
+        }
+        if bytes == 0 {
+            let _ = std::fs::remove_file(partial);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "empty media is not cacheable",
+            ));
+        }
+        std::fs::create_dir_all(root.join("objects"))?;
+        let content_id = format!("{:x}", hash.finalize());
+        let object = media_object_path(root, &content_id);
+        if object.exists() {
+            let _ = std::fs::remove_file(partial);
+        } else {
+            std::fs::rename(partial, &object)?;
+        }
+        self.entries.insert(
+            track_id.to_string(),
+            MediaCacheEntry {
+                content_id,
+                bytes,
+                last_access_ms: now_ms(),
+            },
+        );
+        self.evict_to_quota(root, quota);
+        self.save(root)
+    }
+
+    /// Remove a track's manifest entry and its unreferenced byte object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the replacement manifest cannot be written.
+    pub fn remove(&mut self, root: &Path, track_id: &str) -> std::io::Result<()> {
+        let removed = self.entries.remove(track_id);
+        if let Some(entry) = removed
+            && !self
+                .entries
+                .values()
+                .any(|other| other.content_id == entry.content_id)
+        {
+            let _ = std::fs::remove_file(media_object_path(root, &entry.content_id));
+        }
+        self.save(root)
+    }
+
+    /// Validate and mark one cached object as recently used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stale entry cannot be removed from the manifest
+    /// or when the updated access time cannot be persisted.
+    pub fn touch(&mut self, root: &Path, track_id: &str) -> std::io::Result<Option<PathBuf>> {
+        let Some(entry) = self.entries.get_mut(track_id) else {
+            return Ok(None);
+        };
+        let path = media_object_path(root, &entry.content_id);
+        if !object_matches_entry(&path, entry) {
+            self.entries.remove(track_id);
+            self.save(root)?;
+            return Ok(None);
+        }
+        entry.last_access_ms = now_ms();
+        self.save(root)?;
+        Ok(Some(path))
+    }
+
+    fn evict_to_quota(&mut self, root: &Path, quota: u64) {
+        while self.total_bytes() > quota {
+            let Some(track_id) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_access_ms)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            let Some(entry) = self.entries.remove(&track_id) else {
+                break;
+            };
+            if !self
+                .entries
+                .values()
+                .any(|other| other.content_id == entry.content_id)
+            {
+                let _ = std::fs::remove_file(media_object_path(root, &entry.content_id));
+            }
+        }
+    }
+
+    fn save(&self, root: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(root)?;
+        let bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+        atomic_file::write(&media_manifest_path(root), &bytes)
+    }
+}
+
+/// Finish a background partial transfer without exposing its path outside the
+/// device-local storage layer.
+///
+/// # Errors
+///
+/// Propagates validation, quota, rename, or manifest persistence errors.
+pub fn install_completed_media_file(
+    root: &Path,
+    track_id: &str,
+    partial: &Path,
+    quota: u64,
+) -> std::io::Result<()> {
+    let mut cache = load_media_cache_from(root);
+    cache.install_completed_file(root, track_id, partial, quota)
+}
+
+pub fn media_cache_quota() -> u64 {
+    std::env::var("QOS_MUSIC_CACHE_QUOTA_BYTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|quota| *quota > 0)
+        .unwrap_or(DEFAULT_MEDIA_CACHE_QUOTA)
 }
 
 impl DeviceProfile {
@@ -80,8 +393,8 @@ pub fn load_device_profile() -> DeviceProfile {
     load_device_profile_from(&device_profile_path())
 }
 
-/// Atomically store paused device-local resume state. Cache metadata is
-/// deliberately dropped until it is backed by durable media bytes.
+/// Atomically store paused device-local resume state. Cache metadata remains
+/// deliberately absent: the media manifest is the sole authority for bytes.
 ///
 /// # Errors
 ///
@@ -191,5 +504,77 @@ mod tests {
         assert_eq!(loaded.playback.volume, 37);
         assert!(!loaded.playback.playing, "restart never autoplays");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn media_cache_is_atomic_content_addressed_and_survives_reload() {
+        let root = std::env::temp_dir().join(format!("qos-music-media-{}", std::process::id()));
+        let mut cache = MediaCache::default();
+        cache
+            .install_bytes(&root, "track-a", b"real media bytes", 1024)
+            .expect("install");
+        let path = cache.object_path(&root, "track-a").expect("byte object");
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("media")
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read object"),
+            b"real media bytes"
+        );
+        let reloaded = load_media_cache_from(&root);
+        assert_eq!(reloaded.entries, cache.entries);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn media_cache_evicts_oldest_object_before_publishing_over_quota() {
+        let root =
+            std::env::temp_dir().join(format!("qos-music-media-evict-{}", std::process::id()));
+        let mut cache = MediaCache::default();
+        cache
+            .install_bytes(&root, "old", b"1234", 6)
+            .expect("first");
+        cache
+            .entries
+            .get_mut("old")
+            .expect("old entry")
+            .last_access_ms = 0;
+        cache
+            .install_bytes(&root, "new", b"5678", 6)
+            .expect("second evicts first");
+        assert!(cache.object_path(&root, "old").is_none());
+        assert!(cache.object_path(&root, "new").is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn media_cache_rejects_same_size_corruption_before_playback() {
+        let root =
+            std::env::temp_dir().join(format!("qos-music-media-same-size-{}", std::process::id()));
+        let mut cache = MediaCache::default();
+        cache
+            .install_bytes(&root, "track-a", b"real media bytes", 1024)
+            .expect("install");
+        let path = cache.object_path(&root, "track-a").expect("object");
+        std::fs::write(&path, b"forgededia bytes").expect("same-sized corruption");
+        assert!(cache.object_path(&root, "track-a").is_none());
+        assert!(cache.touch(&root, "track-a").expect("touch").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn media_cache_rejects_malicious_manifest_content_path() {
+        let root =
+            std::env::temp_dir().join(format!("qos-music-media-malicious-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let manifest = serde_json::json!({
+            "entries": {
+                "track-a": { "content_id": "../../outside", "bytes": 9, "last_access_ms": 0 }
+            }
+        });
+        std::fs::write(media_manifest_path(&root), manifest.to_string()).expect("manifest");
+        assert!(load_media_cache_from(&root).entries.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
