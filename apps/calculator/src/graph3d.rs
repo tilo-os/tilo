@@ -355,6 +355,22 @@ impl Graph3dScreen {
     pub fn toggle_center(&self) -> Option<Point> {
         (self.toggle_rect != Rect::ZERO).then(|| self.toggle_rect.center())
     }
+    /// Geometry exported for the calculator's retained accessibility tree.
+    pub fn toggle_rect(&self) -> Option<Rect> {
+        (self.toggle_rect != Rect::ZERO).then_some(self.toggle_rect)
+    }
+    pub fn add_rect(&self) -> Option<Rect> {
+        (self.add_rect != Rect::ZERO).then_some(self.add_rect)
+    }
+    pub fn row_rect(&self, i: usize) -> Option<Rect> {
+        self.row_rects.get(i).copied()
+    }
+    pub fn field_rect(&self, i: usize) -> Option<Rect> {
+        self.edit_rects.get(i).copied()
+    }
+    pub fn visibility_rect(&self, i: usize) -> Option<Rect> {
+        self.vis_rects.get(i).copied()
+    }
     /// Center of surface row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
     pub fn vis_center(&self, i: usize) -> Option<Point> {

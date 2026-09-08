@@ -102,6 +102,10 @@ impl CalcScreen {
     pub fn key_center(&self, i: usize) -> Option<Point> {
         self.key_rects.get(i).map(ui::kurbo::Rect::center)
     }
+    /// Key geometry for the app's custom-canvas accessibility tree.
+    pub fn key_rect(&self, i: usize) -> Option<Rect> {
+        self.key_rects.get(i).copied()
+    }
 
     /// Bench/test helper: index of the first keypad key whose label is `label`.
     #[doc(hidden)]
@@ -114,6 +118,10 @@ impl CalcScreen {
     pub fn mem_center(&self, i: usize) -> Option<Point> {
         self.mem_rects.get(i).map(ui::kurbo::Rect::center)
     }
+    /// Memory-button geometry for the app's custom-canvas accessibility tree.
+    pub fn mem_rect(&self, i: usize) -> Option<Rect> {
+        self.mem_rects.get(i).copied()
+    }
 
     /// Test helper: screen-space center of the history row for entry `i`, if it
     /// is currently laid out (sidebar shown and the row is in the viewport).
@@ -124,6 +132,13 @@ impl CalcScreen {
             .find(|(idx, _)| *idx == i)
             .map(|(_, r)| r.center())
     }
+    /// Geometry for a visible history row, if it is in the scroll viewport.
+    pub fn history_row_rect(&self, i: usize) -> Option<Rect> {
+        self.history_rects
+            .iter()
+            .find(|(idx, _)| *idx == i)
+            .map(|(_, rect)| *rect)
+    }
 
     /// Test helper: screen-space center of the "Clear" history button, if the
     /// sidebar is currently shown.
@@ -131,6 +146,12 @@ impl CalcScreen {
     pub fn clear_history_center(&self) -> Option<Point> {
         (self.drawer.is_open() && self.clear_hist_rect != Rect::ZERO)
             .then(|| self.clear_hist_rect.center())
+    }
+    pub fn clear_history_rect(&self) -> Rect {
+        self.clear_hist_rect
+    }
+    pub fn toggle_rect(&self) -> Rect {
+        self.toggle_rect
     }
 
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
@@ -457,6 +478,11 @@ impl CalcScreen {
                     TextWeight::Bold,
                 )
             }
+            Err(error) if !model.expr.trim().is_empty() => (
+                format!("Error: {error}"),
+                c.semantic.danger,
+                TextWeight::Medium,
+            ),
             _ => (String::new(), c.text_dim, TextWeight::Regular),
         };
         draw::text_in(
