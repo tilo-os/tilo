@@ -1,9 +1,9 @@
 //! `TubeApp` — the root widget.
 //!
 //! Tube keeps a single in-memory [`TubeModel`] as the source of truth for
-//! rendering and mirrors it into the Automerge document (key `tube_state`)
-//! so subscriptions / settings / history get undo + collaboration for
-//! free. Navigation rebuilds the whole widget tree from the model in
+//! rendering. Explicit Tube actions persist subscriptions and settings in
+//! Automerge; catalogue data, navigation, playback, notices and history are
+//! device-local presentation state. Navigation rebuilds the whole widget tree from the model in
 //! `build_layout` (the `RebuildHarness` pattern), so the screen functions
 //! in `screens.rs` can stay pure.
 //!
@@ -15,8 +15,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -35,9 +34,6 @@ use crate::model::{Route, TubeModel};
 use crate::screens;
 use crate::widgets::{Flex, SharedPlayer};
 
-const STATE_KEY: &str = "tube_state";
-const SEARCH_KEY: &str = "search_query";
-const PALETTE_KEY: &str = "palette_query";
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 /// Below this allocated width (logical px) the navigation rail stops sitting
@@ -79,11 +75,15 @@ pub struct TubeApp {
     rect: Rect,
 
     structure_dirty: bool,
-    seeded: bool,
-    search_obj: Option<ObjId>,
-    /// CRDT Text object backing the Ctrl+K palette query, read live each
-    /// `sync` so the results filter as the user types.
-    palette_obj: Option<ObjId>,
+    /// Process-local text for the top-bar search. `TextInput::from_state`
+    /// supplies the toolkit's full local editing path (IME, selection,
+    /// accessibility and keyboard shortcuts) without creating an Automerge
+    /// object that another collaborator could overwrite.
+    search_query: ui::LocalState<String>,
+    /// Process-local text for the transient Ctrl+K overlay. This intentionally
+    /// survives shell rebuilds in this app instance but is never persisted or
+    /// sent to another device.
+    palette_query: ui::LocalState<String>,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -206,9 +206,8 @@ impl TubeApp {
             child_node: None,
             rect: Rect::ZERO,
             structure_dirty: false,
-            seeded: false,
-            search_obj: None,
-            palette_obj: None,
+            search_query: ui::LocalState::new(String::new()),
+            palette_query: ui::LocalState::new(String::new()),
             sidebar_open: None,
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
@@ -459,6 +458,8 @@ impl TubeApp {
     /// from real yt-dlp data) so an offscreen render shows real content.
     #[must_use]
     pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
+        self.search_query.set(model.search_query.clone());
+        self.palette_query.set(model.palette_query.clone());
         self.model = model;
         self
     }
@@ -516,6 +517,7 @@ impl TubeApp {
     pub fn with_route_shot(mut self, route: Route) -> Self {
         if let Route::Search(q) = &route {
             q.clone_into(&mut self.model.search_query);
+            self.search_query.set(q.clone());
         }
         // The shell uses `NavStack` as the navigation authority (Back state,
         // keyboard handling and the top bar all consult it), while the model
@@ -554,6 +556,7 @@ impl TubeApp {
     pub fn with_palette_open_for_test(mut self, query: &str) -> Self {
         self.model.palette_open = true;
         self.model.palette_query = query.to_string();
+        self.palette_query.set(query.to_string());
         self
     }
 
@@ -828,11 +831,17 @@ impl TubeApp {
         let mut root = Flex::col()
             .fill_w()
             .fill_h()
-            .push(screens::top_bar(m, theme, bus, self.nav.can_go_back()))
+            .push(screens::top_bar(
+                m,
+                theme,
+                bus,
+                self.nav.can_go_back(),
+                &self.search_query,
+            ))
             .push(split);
 
         // The Ctrl+K command palette overlays the whole shell when open.
-        if let Some(palette) = screens::command_palette(m, theme, bus) {
+        if let Some(palette) = screens::command_palette(m, theme, bus, &self.palette_query) {
             root = root.push(palette.overlay());
         }
 
@@ -1247,14 +1256,14 @@ impl TubeApp {
         false
     }
 
-    /// Apply one drained action. Returns true if the model changed enough
-    /// to warrant a structural rebuild + persist.
+    /// Apply one drained action. Returns true if the model changed enough to
+    /// warrant a structural rebuild.
     #[allow(
         clippy::too_many_lines,
         reason = "one match arm per Action variant; the length is the number of actions the \
                   app dispatches, not accidental complexity in any one arm"
     )]
-    fn apply(&mut self, action: Action, state: &AutoCommit, root: &ObjId) -> bool {
+    fn apply(&mut self, action: Action, _state: &AutoCommit, _root: &ObjId) -> bool {
         match action {
             Action::ToggleSidebar => {
                 // Flip the rail relative to its current resolved openness, so
@@ -1266,6 +1275,7 @@ impl TubeApp {
             Action::Navigate(route) => {
                 if let Route::Search(q) = &route {
                     q.clone_into(&mut self.model.search_query);
+                    self.search_query.set(q.clone());
                 }
                 self.navigate_to(route);
                 self.dismiss_overlay_rail();
@@ -1346,7 +1356,7 @@ impl TubeApp {
                 }
             }
             Action::SubmitSearch => {
-                let q = self.read_search(state, root);
+                let q = self.search_query.get();
                 q.clone_into(&mut self.model.search_query);
                 self.model.search_error = None;
                 self.navigate_to(Route::Search(q.clone()));
@@ -1417,20 +1427,6 @@ impl TubeApp {
             }
         }
         true
-    }
-
-    fn read_search(&self, state: &AutoCommit, root: &ObjId) -> String {
-        if let Some(obj) = &self.search_obj
-            && let Ok(t) = state.text(obj)
-        {
-            return t;
-        }
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, SEARCH_KEY)
-            && let ScalarValue::Str(t) = s.as_ref()
-        {
-            return t.to_string();
-        }
-        String::new()
     }
 
     /// Start a bounded background request without ever stalling UI input.
@@ -1765,72 +1761,6 @@ impl TubeApp {
         changed
     }
 
-    fn persist(&self, state: &mut AutoCommit, root: &ObjId) {
-        // `STATE_KEY` is a presentation cache: it snapshots fetched catalogue
-        // data, playback position, and transient UI state so Tube can reopen
-        // quickly. It is deliberately not assigned an `ActionContext`; doing
-        // so would misrepresent worker refreshes and playback ticks as user
-        // actions. User-authored Tube operations are recorded separately by
-        // `TubeAction` at their dispatch boundary.
-        if let Ok(json) = serde_json::to_string(&self.model) {
-            let _ = state.put(root, STATE_KEY, json);
-        }
-    }
-
-    fn ensure_search_obj(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.search_obj.is_none() {
-            match state.get(root, SEARCH_KEY) {
-                Ok(Some((Value::Object(ObjType::Text), id))) => self.search_obj = Some(id),
-                _ => {
-                    if let Ok(id) = state.put_object(root, SEARCH_KEY, ObjType::Text) {
-                        self.search_obj = Some(id);
-                    }
-                }
-            }
-        }
-        if self.palette_obj.is_none() {
-            match state.get(root, PALETTE_KEY) {
-                Ok(Some((Value::Object(ObjType::Text), id))) => self.palette_obj = Some(id),
-                _ => {
-                    if let Ok(id) = state.put_object(root, PALETTE_KEY, ObjType::Text) {
-                        self.palette_obj = Some(id);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Read the live palette-query text out of its bound CRDT object.
-    fn read_palette(&self, state: &AutoCommit) -> String {
-        if let Some(obj) = &self.palette_obj
-            && let Ok(t) = state.text(obj)
-        {
-            return t;
-        }
-        String::new()
-    }
-
-    /// First-sync: adopt persisted state if present, else seed ours.
-    fn adopt_or_seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.seeded {
-            return;
-        }
-        self.seeded = true;
-        if let Ok(Some((Value::Scalar(s), _))) = state.get(root, STATE_KEY)
-            && let ScalarValue::Str(json) = s.as_ref()
-            && let Ok(m) = serde_json::from_str::<TubeModel>(json)
-        {
-            self.model = m;
-            // Seed the nav stack so Back from a persisted deep route (e.g. a
-            // restored watch page) returns to Home rather than dead-ending.
-            if self.model.route != Route::Home {
-                self.nav.push(self.model.route.clone());
-            }
-            return;
-        }
-        self.persist(state, root);
-    }
-
     /// Fold the structured collaborative action subtree back into the visible
     /// model. External/agent actions therefore update the same switches and
     /// badges as local controls instead of living in a disconnected ledger.
@@ -1972,6 +1902,12 @@ impl Widget for TubeApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_type::TubeSearchProvider::new(
+            &self.model,
+        ))]
+    }
+
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.pending_device_actions
             .pop_front()
@@ -2039,8 +1975,6 @@ impl Widget for TubeApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.ensure_search_obj(state, path);
-        self.adopt_or_seed(state, path);
         #[cfg(feature = "grayjay-sync")]
         {
             if !self.device_sync_seeded {
@@ -2050,12 +1984,10 @@ impl Widget for TubeApp {
                     .sync_now(crate::sync::lifecycle_state(&self.model));
             }
             if self.device_sync.pump(&mut self.model) {
-                self.persist(state, path);
                 self.structure_dirty = true;
             }
         }
         if self.reconcile_collaborative_actions(state) {
-            self.persist(state, path);
             self.structure_dirty = true;
         }
         // First live frame: spawn the fetch worker and pull the home/trending
@@ -2068,14 +2000,12 @@ impl Widget for TubeApp {
         // A persisted/boot route that is already a watch page starts playing on
         // the first live sync (guarded so it fires once).
         self.ensure_playback();
-        // Reflect the live palette-query text into the model so the overlay
-        // filters as the user types. Only adopt the CRDT text once the user has
-        // actually typed (non-empty), so a pre-seeded query (tests / a future
-        // "search this" deep-link) isn't clobbered by the empty text object on
-        // the first frame before the bound input has written anything.
+        // Reflect the process-local palette query into the rendering model so
+        // the overlay filters while typing. This is intentionally not a CRDT
+        // read: a collaborator's document cannot open or rewrite local UI.
         if self.model.palette_open {
-            let live = self.read_palette(state);
-            if !live.is_empty() && live != self.model.palette_query {
+            let live = self.palette_query.get();
+            if live != self.model.palette_query {
                 self.model.palette_query = live;
                 self.structure_dirty = true;
             }
@@ -2266,7 +2196,6 @@ impl Widget for TubeApp {
                 },
             ..
         } = event
-            && (!self.model.search_query.is_empty() || self.search_obj.is_some())
         {
             action::push(&self.bus, Action::SubmitSearch);
         }
@@ -2422,7 +2351,6 @@ impl Widget for TubeApp {
         changed |= self.pump();
 
         if changed {
-            self.persist(state, path);
             self.structure_dirty = true;
         }
     }
@@ -3006,17 +2934,72 @@ mod tests {
     }
 
     #[test]
-    fn settings_persist_round_trips_through_crdt() {
+    fn collaborative_settings_reconcile_without_serializing_device_ui_state() {
         let (mut app, mut doc) = fresh();
-        let r = automerge::ROOT;
-        app.apply(Action::ToggleSetting(SettingFlag::DeArrow), &doc, &r);
-        let dearrow_after = app.model.settings.dearrow_enabled;
-        app.persist(&mut doc, &r);
+        app.model.route = Route::Watch("vid_donut".into());
+        app.model.playhead = 42.0;
+        qos_actions::Action::apply(
+            &crate::actions::TubeAction::SetSetting {
+                setting: SettingFlag::DeArrow,
+                enabled: false,
+            },
+            &mut doc,
+        )
+        .expect("structured setting action applies");
+        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        assert!(!app.model.settings.dearrow_enabled);
+        assert!(
+            doc.get(&automerge::ROOT, "tube_state")
+                .expect("document read")
+                .is_none(),
+            "route, playback and fetched catalogue are never mirrored into collaboration"
+        );
+    }
 
-        // A fresh app adopts the persisted state.
-        let mut app2 = TubeApp::new();
-        app2.adopt_or_seed(&mut doc, &r);
-        assert_eq!(app2.model.settings.dearrow_enabled, dearrow_after);
+    #[test]
+    fn search_and_palette_queries_stay_local_to_each_tube_instance() {
+        use automerge::transaction::Transactable;
+
+        let (mut first, mut doc) = fresh();
+        first.search_query.set("rust async".into());
+        first.palette_query.set("compositor".into());
+        first.model.palette_open = true;
+        Widget::sync(&mut first, &mut doc, &automerge::ROOT);
+
+        assert_eq!(first.model.palette_query, "compositor");
+        assert!(
+            doc.get(&automerge::ROOT, "search_query")
+                .expect("document read")
+                .is_none()
+        );
+        assert!(
+            doc.get(&automerge::ROOT, "palette_query")
+                .expect("document read")
+                .is_none()
+        );
+
+        let mut second = TubeApp::new();
+        Widget::sync(&mut second, &mut doc, &automerge::ROOT);
+        assert!(second.search_query.get().is_empty());
+        assert!(second.palette_query.get().is_empty());
+        assert!(second.model.palette_query.is_empty());
+        assert_eq!(first.search_query.get(), "rust async");
+        assert_eq!(first.palette_query.get(), "compositor");
+
+        // Legacy documents may still contain the old keys. A new app must not
+        // adopt either value merely because a collaborator's older client
+        // emitted it.
+        let mut legacy_doc = AutoCommit::new();
+        legacy_doc
+            .put(&automerge::ROOT, "search_query", "remote query")
+            .expect("legacy search seed");
+        legacy_doc
+            .put(&automerge::ROOT, "palette_query", "remote palette")
+            .expect("legacy palette seed");
+        let mut third = TubeApp::new();
+        Widget::sync(&mut third, &mut legacy_doc, &automerge::ROOT);
+        assert!(third.search_query.get().is_empty());
+        assert!(third.palette_query.get().is_empty());
     }
 
     #[test]
@@ -3209,14 +3192,13 @@ mod tests {
 
     #[test]
     fn submitting_a_search_enters_the_loading_state() {
-        use automerge::transaction::Transactable;
         // A live search in flight shows a skeleton (search_loading) rather than a
         // premature "No results".
         let mut app = TubeApp::new();
         app.online = true; // online without spawning the image store's threads
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let r = automerge::ROOT;
-        doc.put(&r, "search_query", "rust").unwrap();
+        app.search_query.set("rust".into());
         assert!(!app.model.search_loading);
         app.apply(Action::SubmitSearch, &doc, &r);
         assert!(
