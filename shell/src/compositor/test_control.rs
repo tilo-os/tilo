@@ -439,6 +439,10 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
 /// Dispatch a single command against the live compositor state.
 ///
 /// Returns `(response, actions)`: read-only commands return no actions; mutating commands return the [`PlannedAction`]s the transport must run before replying — keeps the dispatcher pure (no I/O, no `&mut` state).
+#[allow(
+    clippy::too_many_lines,
+    reason = "the command-to-action mapping is intentionally exhaustive and stays together so the test transport remains auditable"
+)]
 pub fn dispatch_command<S: ControlState>(
     cmd: &Command,
     state: &S,

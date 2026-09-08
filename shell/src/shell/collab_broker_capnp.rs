@@ -128,11 +128,10 @@ impl BrokerActor {
 impl AdmittedJoinIdentity {
     fn broker_actor(&self) -> BrokerActor {
         BrokerActor {
-            id: self
-                .agent_id
-                .as_ref()
-                .map(|agent| format!("agent:{agent}"))
-                .unwrap_or_else(|| self.principal_id.clone()),
+            id: self.agent_id.as_ref().map_or_else(
+                || self.principal_id.clone(),
+                |agent| format!("agent:{agent}"),
+            ),
             is_agent: self.agent_id.is_some(),
         }
     }
@@ -460,7 +459,7 @@ struct RegisteredActionDirectory {
 
 /// Inert, enumerable route metadata for one connected pull directory.  It
 /// contains no capability and disappears on disconnect, so shell search can
-/// select a source without reaching into the broker LocalSet.
+/// select a source without reaching into the broker `LocalSet`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionDirectoryRoot {
     pub peer_id: u64,
@@ -519,7 +518,7 @@ impl LocalActionDirectoryRegistry {
     }
 }
 
-/// Inert result returned from the broker LocalSet to shell chrome.  It never
+/// Inert result returned from the broker `LocalSet` to shell chrome.  It never
 /// carries a Cap'n Proto capability or widget reference across threads.
 #[derive(Debug)]
 pub enum ActionDirectoryBridgeResponse {
@@ -529,7 +528,7 @@ pub enum ActionDirectoryBridgeResponse {
 }
 
 /// Explicit consent supplied with an atomic directory invocation.  It is
-/// carried to the broker LocalSet, checked against the freshly resolved
+/// carried to the broker `LocalSet`, checked against the freshly resolved
 /// contract, and never retained in a shell search-result cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectoryActionConfirmation {
@@ -601,6 +600,10 @@ pub struct ActionDirectoryRequestQueue {
 impl ActionDirectoryRequestQueue {
     const CAPACITY: usize = 64;
 
+    /// # Errors
+    ///
+    /// Returns an error when the query is invalid, the bounded broker queue is
+    /// full, or the broker is unavailable.
     pub fn try_query(
         &self,
         actor: BrokerActor,
@@ -629,6 +632,10 @@ impl ActionDirectoryRequestQueue {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// # Errors
+    ///
+    /// Returns an error when the target is invalid, the bounded broker queue
+    /// is full, or the broker is unavailable.
     pub fn try_resolve(
         &self,
         actor: BrokerActor,
@@ -669,6 +676,10 @@ impl ActionDirectoryRequestQueue {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// # Errors
+    ///
+    /// Returns an error when invocation inputs are invalid, the bounded broker
+    /// queue is full, or the broker is unavailable.
     pub fn try_start_resolved(
         &self,
         actor: BrokerActor,
@@ -1042,6 +1053,10 @@ impl CapnpBrokerState {
             let Ok(mut pending) = self.pending_invocations.lock() else {
                 return;
             };
+            #[allow(
+                clippy::needless_collect,
+                reason = "expired ids must be snapshotted before removing from the same pending-invocation map"
+            )]
             let ids = pending
                 .iter()
                 .filter_map(|(id, invocation)| {
@@ -1259,7 +1274,7 @@ impl CapnpBrokerState {
             .lock()
             .map(|roots| roots.values().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
-        roots.sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+        roots.sort_by_key(|root| root.peer_id);
         if let Ok(mut snapshot) = self.action_directory_root_snapshot.lock() {
             snapshot.roots = roots;
             snapshot.generation = snapshot.generation.wrapping_add(1);
@@ -1282,10 +1297,18 @@ impl CapnpBrokerState {
             snapshot.roots.partition_point(|root| root.peer_id <= peer)
         });
         let end = start.saturating_add(limit).min(snapshot.roots.len());
+        let roots = snapshot.roots.get(start..end).unwrap_or_default().to_vec();
+        let next_after_peer = (end < snapshot.roots.len())
+            .then(|| {
+                snapshot
+                    .roots
+                    .get(end.saturating_sub(1))
+                    .map(|root| root.peer_id)
+            })
+            .flatten();
         ActionDirectoryRootPage {
-            roots: snapshot.roots[start..end].to_vec(),
-            next_after_peer: (end < snapshot.roots.len())
-                .then(|| snapshot.roots[end.saturating_sub(1)].peer_id),
+            roots,
+            next_after_peer,
             generation: snapshot.generation,
         }
     }
@@ -1299,9 +1322,13 @@ impl CapnpBrokerState {
             .roots
     }
 
-    /// Drain a bounded batch on the broker LocalSet.  This function must only
-    /// be called by the accept-loop LocalSet: it starts the Rc-backed RPCs
+    /// Drain a bounded batch on the broker `LocalSet`.  This function must only
+    /// be called by the accept-loop `LocalSet`: it starts the Rc-backed RPCs
     /// there, while the request sender is safe for compositor threads.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded bridge deliberately keeps request validation, LocalSet dispatch, and reply delivery in one ordered drain turn"
+    )]
     fn drain_action_directory_bridge(
         self: &Arc<Self>,
         directories: &Rc<LocalActionDirectoryRegistry>,
@@ -1475,7 +1502,9 @@ impl CapnpBrokerState {
             .map_err(|error| error.to_string())?;
         let page = reply
             .get()
-            .and_then(|reply| reply.get_page())
+            .and_then(
+                runtime_collab::collab_capnp::action_directory::query_results::Reader::get_page,
+            )
             .map_err(|error| error.to_string())?;
         if page
             .total_size()
@@ -1504,6 +1533,10 @@ impl CapnpBrokerState {
     #[allow(
         clippy::future_not_send,
         reason = "the registered Cap'n Proto capability is Rc-backed and is awaited on the shell LocalSet"
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the exact directory identity tuple is kept explicit so resolve cannot use a cached or partially authenticated route"
     )]
     async fn resolve_action_directory_for_actor(
         &self,
@@ -1534,7 +1567,7 @@ impl CapnpBrokerState {
             .map_err(|error| error.to_string())?;
         let resolution = reply
             .get()
-            .and_then(|reply| reply.get_resolution())
+            .and_then(runtime_collab::collab_capnp::action_directory::resolve_results::Reader::get_resolution)
             .map_err(|error| error.to_string())?;
         let decoded = runtime_collab::decode_action_directory_resolution(resolution)
             .map_err(|error| error.to_string())?;
@@ -1555,7 +1588,7 @@ impl CapnpBrokerState {
     }
 
     /// Atomically resolve and start a directory action on the broker
-    /// LocalSet.  No cached descriptor, eager surface entry, or compositor
+    /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
     #[allow(clippy::too_many_arguments, clippy::future_not_send)]
     async fn start_action_directory_for_actor(
@@ -1648,6 +1681,10 @@ impl CapnpBrokerState {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
+    )]
     fn directory_confirmation_token(
         &self,
         peer_id: u64,
@@ -1686,6 +1723,9 @@ impl CapnpBrokerState {
                     .ok_or(ActionDirectoryBridgeError::Unavailable)?,
             },
         );
+        // Token ownership is now in the registry; do not retain its mutex
+        // while the caller begins the invocation it authorizes.
+        drop(grants);
         Ok(Some(token))
     }
 
@@ -1735,14 +1775,18 @@ impl CapnpBrokerState {
         } else {
             workspace.actor_for_person(&actor.id)
         };
-        Ok(workspace.decide(
+        let allowed = workspace.decide(
             &caller,
             &ResourceRef::Action {
                 app: app_id.to_string(),
                 action: action.to_string(),
             },
             verb,
-        ) == CapDecision::Allow)
+        ) == CapDecision::Allow;
+        // The authorization result is independent of the membership guard;
+        // release it before serializing the directory reply.
+        drop(tree);
+        Ok(allowed)
     }
 
     #[allow(
@@ -1760,6 +1804,10 @@ impl CapnpBrokerState {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "catalogue serialization and policy filtering remain adjacent so a published action cannot bypass the actor check"
+    )]
     fn action_catalogue_json_for(
         &self,
         cluster_id: &str,
@@ -2056,6 +2104,10 @@ impl CapnpBrokerState {
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the complete invocation identity and confirmation context are explicit at the admission boundary"
+    )]
     fn start_invocation_confirmed_for(
         &self,
         peer_id: u64,
@@ -2093,7 +2145,12 @@ impl CapnpBrokerState {
     /// Admit an invocation from a just-validated live action.  Directory
     /// actions reach this point without ever being copied into the eager
     /// published surface; the caller must have resolved the row on this
-    /// LocalSet turn and supplied its certified route.
+    /// `LocalSet` turn and supplied its certified route.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::needless_pass_by_value,
+        reason = "a freshly offered live action is consumed into one invocation job while all route and confirmation checks remain atomic"
+    )]
     fn start_invocation_from_offered(
         &self,
         peer_id: u64,
@@ -2340,26 +2397,35 @@ impl CapnpBrokerState {
 
     /// Mint and deliver one live-only task run. No durable/offline queue is
     /// kept: losing the subscribed agent means Launch remains unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when workspace authority, task ownership, or a live
+    /// task-capable subscriber is unavailable.
     pub fn dispatch_workspace_task(&self, cluster_id: &str, task_id: &str) -> Result<u64, String> {
         let membership = self
             .membership
             .as_ref()
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
-        let (workspace_id, task) = {
+        let task_snapshot = {
             let tree = membership.read();
-            let workspace = tree
+            let lookup = match tree
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room.to_string() == cluster_id)
-                .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-            let task = workspace
-                .tasks
-                .iter()
-                .find(|task| task.id == task_id)
-                .cloned()
-                .ok_or_else(|| "the task no longer exists".to_string())?;
-            (workspace.id, task)
+            {
+                Some(workspace) => match workspace.tasks.iter().find(|task| task.id == task_id) {
+                    Some(task) => Ok((workspace.id, task.clone())),
+                    None => Err("the task no longer exists".to_string()),
+                },
+                None => Err("the task workspace is no longer hosted".to_string()),
+            };
+            // The copied id and cloned task are the complete snapshot needed
+            // below; never retain workspace authority across subscriber work.
+            drop(tree);
+            lookup
         };
+        let (workspace_id, task) = task_snapshot?;
         let agent_id = task
             .assigned_agent
             .clone()
@@ -2429,6 +2495,9 @@ impl CapnpBrokerState {
             &actor,
             format!("Broker dispatched live run {run_id}"),
         );
+        // The durable status and audit entry are committed; do not hold the
+        // workspace write lock while returning to the Cap'n Proto caller.
+        drop(tree);
         Ok(run_id)
     }
 
@@ -2476,11 +2545,13 @@ impl CapnpBrokerState {
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
             .ok_or_else(|| "the task workspace is no longer hosted".to_string())?;
-        Ok(workspace
+        let cancelled = workspace
             .tasks
             .iter()
             .find(|task| task.id == run.task_id)
-            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled))
+            .is_some_and(|task| task.status == WorkspaceTaskStatus::Cancelled);
+        drop(tree);
+        Ok(cancelled)
     }
 
     fn record_task_run_update(
@@ -2532,6 +2603,9 @@ impl CapnpBrokerState {
                 return Err("the task run is already terminal".into());
             }
             current.terminal = true;
+            // The terminal marker is durable in the run registry before the
+            // workspace projection is updated below.
+            drop(runs);
         }
         let membership = self
             .membership
@@ -2549,9 +2623,16 @@ impl CapnpBrokerState {
             let _ = tree.set_workspace_task_status(workspace_id, &run.task_id, status, &actor);
         }
         let _ = tree.append_workspace_task_audit(workspace_id, &run.task_id, &actor, summary);
+        // Both task mutations are complete before the caller receives its
+        // update acknowledgement, so release the workspace lock now.
+        drop(tree);
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "task lease, source, target, and action identifiers are all required to prevent a run from invoking another task's action"
+    )]
     fn start_task_action(
         &self,
         peer_id: u64,
@@ -3175,6 +3256,10 @@ impl CapnpChannelHandle {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "receipt validation and persistence share one RPC boundary so acknowledgement cannot precede durable local state"
+    )]
     fn record_local_effect(
         self: Rc<Self>,
         params: channel_handle::RecordLocalEffectParams,
@@ -3197,7 +3282,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             .and_then(|value| value.to_str().map_err(|error| error.to_string()))
         {
             Ok(value) => value.to_string(),
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let action = match request
             .get_action()
@@ -3205,7 +3290,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             .and_then(|value| value.to_str().map_err(|error| error.to_string()))
         {
             Ok(value) => value.to_string(),
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let update = match request
             .get_update_json()
@@ -3285,6 +3370,9 @@ impl channel_handle::Server for CapnpChannelHandle {
             context,
             status,
         );
+        // Receipt persistence is complete; do not retain workspace authority
+        // while resolving the Cap'n Proto promise.
+        drop(tree);
         Promise::ok(())
     }
 
@@ -3304,7 +3392,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "workspace control requires a workspace-scoped channel".into(),
             ));
         };
-        let target_bytes = match params.get().and_then(|params| params.get_target_device()) {
+        let target_bytes = match params.get().and_then(
+            runtime_collab::collab_capnp::channel_handle::open_workspace_control_params::Reader::get_target_device,
+        ) {
             Ok(bytes) if bytes.len() == 32 => {
                 let mut target = [0_u8; 32];
                 target.copy_from_slice(bytes);
@@ -3747,7 +3837,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let request = match params.get().and_then(|params| params.get_query()) {
+        let request = match params.get().and_then(
+            runtime_collab::collab_capnp::channel_handle::query_action_directory_params::Reader::get_query,
+        ) {
             Ok(request) => request,
             Err(error) => return Promise::err(error),
         };
@@ -3942,7 +4034,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 runtime_collab::ActionDirectoryResolution::Found(_)
                 | runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
                 runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    out.set_stale_revision(())
+                    out.set_stale_revision(());
                 }
                 runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
             }
@@ -4961,6 +5053,10 @@ fn closed_workspace_control_event(
 /// apply current authority. `Ok(false)` means a structurally valid row is
 /// simply not visible to this actor; it must not suppress permitted
 /// siblings on the same source page.
+#[allow(
+    clippy::too_many_lines,
+    reason = "directory row authorization validates every capability-bearing field before the result reaches shell search"
+)]
 fn permits_directory_row(
     state: &CapnpBrokerState,
     cluster_id: &str,
@@ -5203,9 +5299,13 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
         _params: workspace_control_handle::ReadParams,
         mut results: workspace_control_handle::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let this = self.clone();
+        let this = self;
         Promise::from_future(async move {
-            if let Some(event) = this.initial.lock().await.take() {
+            let initial_event = {
+                let mut initial = this.initial.lock().await;
+                initial.take()
+            };
+            if let Some(event) = initial_event {
                 let bytes = postcard::to_allocvec(&event)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?;
                 results.get().set_event(&bytes);
@@ -5225,8 +5325,10 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
                 if let Err(error) =
                     revalidate_workspace_control(&this.state, &this.route, &this.verified_identity)
                 {
-                    let mut session = this.session.lock().await;
-                    let event = workspace_control_event(session.deny(error.to_string()));
+                    let event = {
+                        let mut session = this.session.lock().await;
+                        workspace_control_event(session.deny(error.to_string()))
+                    };
                     let bytes = postcard::to_allocvec(&event)
                         .map_err(|error| capnp::Error::failed(error.to_string()))?;
                     results.get().set_event(&bytes);
@@ -5285,7 +5387,9 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
         {
             return Promise::err(error);
         }
-        let bytes = match params.get().and_then(|params| params.get_event()) {
+        let bytes = match params.get().and_then(
+            runtime_collab::collab_capnp::workspace_control_handle::send_input_params::Reader::get_event,
+        ) {
             Ok(bytes) => bytes,
             Err(error) => return Promise::err(error),
         };
@@ -5293,40 +5397,47 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
             Ok(input) => input,
             Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
         };
-        let this = self.clone();
+        let this = self;
         Promise::from_future(async move {
-            let session = this.session.lock().await;
-            let input = match input {
-                runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
-                    crate::network::InputEvent::PointerMotion { x, y }
-                }
-                runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
-                    crate::network::InputEvent::PointerButton { button, pressed }
-                }
-                runtime_collab::WorkspaceControlInput::Key {
-                    keycode,
-                    pressed,
-                    modifiers,
-                } => crate::network::InputEvent::Key {
-                    keysym: keycode,
-                    pressed,
-                    modifiers,
-                },
-                runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
-                    let surface = match session.status() {
-                        crate::network::WorkspaceControlStatus::Active { surface, .. } => *surface,
-                        _ => {
-                            return Err(capnp::Error::failed(
-                                "target has not granted control".into(),
-                            ));
-                        }
-                    };
-                    crate::network::InputEvent::KeyboardFocus { surface, focused }
-                }
-            };
-            this.network
-                .publish_workspace_control_input(&session, &input)
-                .map_err(capnp::Error::failed)
+            {
+                let session = this.session.lock().await;
+                let input = match input {
+                    runtime_collab::WorkspaceControlInput::PointerMotion { x, y } => {
+                        crate::network::InputEvent::PointerMotion { x, y }
+                    }
+                    runtime_collab::WorkspaceControlInput::PointerButton { button, pressed } => {
+                        crate::network::InputEvent::PointerButton { button, pressed }
+                    }
+                    runtime_collab::WorkspaceControlInput::Key {
+                        keycode,
+                        pressed,
+                        modifiers,
+                    } => crate::network::InputEvent::Key {
+                        keysym: keycode,
+                        pressed,
+                        modifiers,
+                    },
+                    runtime_collab::WorkspaceControlInput::KeyboardFocus { focused } => {
+                        let surface = match session.status() {
+                            crate::network::WorkspaceControlStatus::Active { surface, .. } => {
+                                *surface
+                            }
+                            _ => {
+                                return Err(capnp::Error::failed(
+                                    "target has not granted control".into(),
+                                ));
+                            }
+                        };
+                        crate::network::InputEvent::KeyboardFocus { surface, focused }
+                    }
+                };
+                let published = this
+                    .network
+                    .publish_workspace_control_input(&session, &input)
+                    .map_err(capnp::Error::failed);
+                drop(session);
+                published
+            }
         })
     }
 
@@ -5375,7 +5486,7 @@ fn handle_signed_op_send(
         Ok(()) => {
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
-                mls_vault = ch.mls_vault.clone();
+                mls_vault.clone_from(&ch.mls_vault);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -5722,6 +5833,9 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 let current = sequences.entry(update.invocation).or_insert(0);
                 let next = current.saturating_add(1);
                 *current = next;
+                // Persist the monotonic sequence before validating and
+                // publishing the interaction outside this mutex.
+                drop(sequences);
                 next
             };
             update = update.normalized_by_broker(normalized_actor, sequence);
@@ -6079,6 +6193,11 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 /// (e.g. a stale socket file blocks it, permissions are wrong, or the
 /// parent directory does not exist) or if spawning the accept thread
 /// fails.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::needless_pass_by_value,
+    reason = "the broker thread takes ownership of the exact shared handles it wires into its isolated LocalSet"
+)]
 pub fn spawn(
     socket_path: PathBuf,
     fanout: &Arc<FanoutState>,
@@ -6277,7 +6396,9 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
                 libc::MSG_PEEK | libc::MSG_DONTWAIT,
             )
         };
-        if read >= marker.len() as libc::ssize_t {
+        let marker_len = libc::ssize_t::try_from(marker.len())
+            .map_err(|_| capnp::Error::failed("launcher header exceeds ssize_t".into()))?;
+        if read >= marker_len {
             return Ok(marker == launcher::services::COLLAB_LAUNCH_MAGIC);
         }
         if read == 0 {
@@ -6393,6 +6514,10 @@ async fn authenticate_launcher_handoff(
     ))
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC and its action-directory registry are Rc-backed and intentionally run only on the broker LocalSet"
+)]
 async fn drive_connection(
     stream: tokio::net::UnixStream,
     state: Arc<CapnpBrokerState>,
@@ -6450,7 +6575,7 @@ mod tests {
         NotFound,
     }
 
-    /// A real Cap'n Proto directory endpoint retained by the LocalSet test
+    /// A real `Cap'n Proto` directory endpoint retained by the `LocalSet` test
     /// below. It answers only bounded inert rows, but is deliberately a
     /// capability client rather than a mock of the shell bridge.
     struct TestActionDirectory {
@@ -6535,7 +6660,7 @@ mod tests {
             let mut out = results.get().init_resolution();
             match state.resolve_mode {
                 DirectoryResolveMode::Found => {
-                    write_directory_row(out.reborrow().init_found(), &state.row())
+                    write_directory_row(out.reborrow().init_found(), &state.row());
                 }
                 DirectoryResolveMode::Stale => out.set_stale_revision(()),
                 DirectoryResolveMode::NotFound => out.set_not_found(()),
@@ -6633,6 +6758,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::future_not_send,
+        reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
+    )]
     async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         fixture
             .state
@@ -6666,6 +6795,10 @@ mod tests {
             .expect("one directory action result")
     }
 
+    #[allow(
+        clippy::future_not_send,
+        reason = "the test helper awaits only LocalSet-bound directory work holding Rc-backed Cap'n Proto state"
+    )]
     async fn load_directory_result(
         fixture: &LocalDirectoryFixture,
         provider: &LiveAppActionsProvider,
@@ -6813,6 +6946,7 @@ mod tests {
                     },
                 );
             }
+            drop(roots);
         }
         fixture.state.refresh_action_directory_root_snapshot();
         let first = fixture.state.action_directory_root_page(None, 128);
@@ -7248,7 +7382,7 @@ mod tests {
             crate::shell::state::WorkspaceId(44),
             "Agent room",
         );
-        workspace.owner = Some(principal.clone());
+        workspace.owner = Some(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let agent_membership = workspace.grant_capability(CapOverride::membership(
             Subject::agent("scribe"),
@@ -7445,6 +7579,10 @@ mod tests {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the typed document publication test retains its full authorization and payload assertions as one scenario"
+    )]
     #[test]
     fn certified_document_send_uses_live_route_role_and_typed_snapshot() {
         let root = SigningKey::from_bytes(&[24; 32]);
@@ -7646,6 +7784,12 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::arithmetic_side_effects,
+        clippy::unchecked_time_subtraction,
+        reason = "the directed-action test keeps capability setup, delivery, and denial assertions in one scenario"
+    )]
     #[test]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
         let mut workspace = crate::shell::state::Workspace::test_default(
@@ -7934,6 +8078,11 @@ mod tests {
         );
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "the receipt assertions retain the read guard for the complete consistency snapshot"
+    )]
     #[test]
     fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
         let mut workspace = crate::shell::state::Workspace::test_default(

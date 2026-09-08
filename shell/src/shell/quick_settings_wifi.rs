@@ -68,6 +68,10 @@ impl QuickSettingsWifiPane {
         reason = "one positional argument per painted value, matching the sibling \
                   bluetooth/vpn drill-in panes this is called alongside"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The drill-in's paint, scroll, and Wi-Fi hit targets share one panel coordinate system and must remain synchronized."
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,

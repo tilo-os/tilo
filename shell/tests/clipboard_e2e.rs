@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use rand_core::OsRng;
+use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
 use ui::widget::identity_flow::IdentityRecord;
@@ -116,7 +117,7 @@ impl Compositor {
     /// Start with a deliberately persisted input configuration. This is kept
     /// inside the fixture's XDG tree so an input-layout test cannot ever read
     /// or rewrite the person running it’s desktop preferences.
-    fn start_with_input_settings(input: serde_json::Value) -> Self {
+    fn start_with_input_settings(input: &serde_json::Value) -> Self {
         Self::start_with_fixture_settings((1280, 800), serde_json::json!({ "input": input }))
     }
 
@@ -449,6 +450,10 @@ impl Compositor {
         );
     }
 
+    #[allow(
+        clippy::fn_params_excessive_bools,
+        reason = "the test-control protocol exposes the compositor's four independent modifier bits"
+    )]
     fn modifiers(&self, ctrl: bool, shift: bool, alt: bool, logo: bool) {
         let response = self.control(&serde_json::json!({
             "op": "modifiers", "ctrl": ctrl, "shift": shift, "alt": alt, "logo": logo,
@@ -1800,6 +1805,10 @@ impl KillProcessGroup {
 }
 
 impl Drop for KillProcessGroup {
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test cleanup uses negated positive process-group ids and a short bounded deadline"
+    )]
     fn drop(&mut self) {
         let pid = i32::try_from(self.child.id()).unwrap_or(i32::MAX);
         // The direct probe owns `pid`'s group.  The production launcher path
@@ -1829,9 +1838,8 @@ impl Drop for KillProcessGroup {
 /// dropping one, without reading the user's running desktop processes or
 /// printing the opaque capability value.
 fn private_process_group_has_env(child: &mut KillProcessGroup, key: &[u8]) -> bool {
-    let child_pid = match i32::try_from(child.child.id()) {
-        Ok(pid) => pid,
-        Err(_) => return false,
+    let Ok(child_pid) = i32::try_from(child.child.id()) else {
+        return false;
     };
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;
@@ -1942,11 +1950,15 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
         .collect()
 }
 
-/// Start the installed ChatGPT Electron client strictly through qOS's
+/// Start the installed `ChatGPT` Electron client strictly through qOS's
 /// rootless Xwayland bridge. The test is opt-in because it opens a real
 /// heavyweight graphical process, but it is a genuine compatibility lane:
 /// private HOME/XDG state, qOS-created Xauthority, no inherited display or
 /// D-Bus session, and a child process group that is always torn down.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "the timeout is a fixed, short test-fixture deadline"
+)]
 fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
     let bridge = compositor.runtime_dir.join("qos-session/xwayland");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1978,6 +1990,10 @@ fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathB
     Some((format!(":{number}"), authority))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the opt-in end-to-end launcher fixture keeps private XDG, display, and process-group setup together"
+)]
 fn spawn_isolated_chatgpt_x11(
     compositor: &Compositor,
     activation_token: Option<&str>,
@@ -2313,7 +2329,7 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
 /// seat contract.
 #[test]
 fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract() {
-    let compositor = Compositor::start_with_input_settings(serde_json::json!({
+    let compositor = Compositor::start_with_input_settings(&serde_json::json!({
         "keyboard_layout": "de:nodeadkeys",
         "key_repeat": 0.5,
     }));
@@ -2398,7 +2414,6 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
         "the foreign client must receive every physical transition exactly once"
     );
     let symbols = translated_keysyms(&keymap, &trace);
-    use smithay::input::keyboard::xkb::keysyms;
     assert_eq!(
         symbols,
         vec![
@@ -2552,6 +2567,10 @@ fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
 /// reorders their groups; close reaches the selected client's `xdg_toplevel`;
 /// then that client's own destroy, unrelated chrome revisions, and a fresh
 /// compositor process all keep the selected surface absent.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression test intentionally keeps its full real-client lifecycle in one scenario"
+)]
 #[test]
 fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart() {
     let mut compositor = Compositor::start();
@@ -3173,8 +3192,10 @@ impl Compositor {
         resp.get("answer")
             .and_then(|answer| answer.get("activation_token"))
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| panic!("mint_host_launch_activation failed: {resp:?}"))
+            .map_or_else(
+                || panic!("mint_host_launch_activation failed: {resp:?}"),
+                str::to_string,
+            )
     }
 
     /// Open the next window of `app_id` in its own group, so two client windows

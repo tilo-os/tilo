@@ -1013,7 +1013,7 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
-    /// Device names from BlueZ are user-controlled. Keep a deterministic
+    /// Device names from `BlueZ` are user-controlled. Keep a deterministic
     /// long-name scene so the battery and connected indicators remain a
     /// reserved trailing region instead of becoming an accidental text
     /// overlay at a compact panel width.
@@ -1037,7 +1037,7 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
-    /// VPN connection names are also supplied by NetworkManager. Exercise
+    /// VPN connection names are also supplied by `NetworkManager`. Exercise
     /// two rows with distinct active state, an intentionally long label and
     /// the trailing toggle region in the same render contract as Wi-Fi and
     /// Bluetooth.
@@ -1086,7 +1086,7 @@ impl ShellDriver {
                 recipient_key.verifying_key().to_bytes(),
             );
             let owner = hex::encode(owner_public.as_bytes());
-            st.local_user_id = owner.clone();
+            st.local_user_id.clone_from(&owner);
             if let Some(workspace) = st.tree_mut().active_workspace_mut() {
                 workspace.set_owner(owner);
                 workspace.grant_capability(shell::shell::state::CapOverride::membership(
