@@ -44,10 +44,9 @@ use ui::qos_actions::{
     Availability, ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionMode,
     OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
     CardGrid, Column, Container, Dropdown, EmptyState, Row, ScrollAxis, Scrollable, Spacer, Text,
-    TextInput, ToggleGroup, Widget,
+    TextInput, Widget,
 };
 use ui::{
     Theme,
@@ -210,6 +209,7 @@ fn short_publisher(item: &StoreItem) -> String {
 /// retained in the canonical app resource and report envelope; the detail
 /// page intentionally avoids turning a human decision surface into a wall of
 /// repeated hex characters.
+#[cfg(test)]
 fn publisher_identity_lines(item: &StoreItem) -> Vec<String> {
     let Some(key) = item.publisher_pubkey_hex.as_deref() else {
         return vec!["Publisher identity: not published by this distributor".into()];
@@ -268,6 +268,7 @@ fn detail_section(
     lines: impl IntoIterator<Item = String>,
     theme: &Theme,
     compact: bool,
+    roomy_desktop: bool,
 ) -> Box<dyn Widget> {
     let mut column = Column::new()
         .with_no_padding()
@@ -281,20 +282,24 @@ fn detail_section(
             Text::new(&line).with_size(13.0).with_color(theme.text_dim),
         ));
     }
-    bounded_detail_card(Box::new(column), compact)
+    bounded_detail_card(Box::new(column), compact, roomy_desktop)
 }
 
 /// The desktop detail view is one centred reading column: its hero and each
 /// evidence section use identical bounds. Narrow layouts retain full-width
 /// cards so text and controls never overflow the viewport.
-fn bounded_detail_card(child: Box<dyn Widget>, compact: bool) -> Box<dyn Widget> {
+fn bounded_detail_card(
+    child: Box<dyn Widget>,
+    compact: bool,
+    roomy_desktop: bool,
+) -> Box<dyn Widget> {
     let inset: Box<dyn Widget> = Box::new(Container::new().with_child(child));
-    if compact {
+    if compact || !roomy_desktop {
         Box::new(Container::new().with_background().with_child(inset))
     } else {
         let surface: Box<dyn Widget> = Box::new(
             Container::new()
-                .with_width(820.0)
+                .with_width(1_040.0)
                 .with_background()
                 .with_child(inset),
         );
@@ -1149,7 +1154,8 @@ impl StoreApp {
             // controls during a progress update.
             .with_fill_remaining_height()
             .with_vertical_padding(0.0)
-            .with_horizontal_padding(0.0, 0.0);
+            .with_horizontal_padding(0.0, 0.0)
+            .with_gap(0.0);
         if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
             // The catalogue chrome is deliberately a single aligned editorial
             // masthead, not a floating settings slab. Captions make the two
@@ -1158,7 +1164,7 @@ impl StoreApp {
             let mut catalogue_controls = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(14.0)
+                .with_gap(8.0)
                 .push(header);
             if self.compact_layout() {
                 catalogue_controls = catalogue_controls.push(Box::new(
@@ -1190,9 +1196,26 @@ impl StoreApp {
                             .with_color(theme.text_tertiary),
                     ))
                     .push(self.build_category_row(theme));
-                catalogue_controls = catalogue_controls
-                    .push(Box::new(source))
-                    .push(Box::new(categories));
+                // Keep desktop facets together as a compact browse toolbar.
+                // Stacking two full-width segmented bands created a vacant
+                // visual canyon before discovery and made the controls read
+                // as a separate settings screen.
+                catalogue_controls = catalogue_controls.push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(
+                            Container::new()
+                                .with_width(180.0)
+                                .with_no_padding()
+                                .with_child(Box::new(source)),
+                        ))
+                        .push(Box::new(
+                            Container::new()
+                                .with_width(216.0)
+                                .with_no_padding()
+                                .with_child(Box::new(categories)),
+                        )),
+                ));
             }
             column = column.push(
                 self.centered_content(Box::new(
@@ -1201,10 +1224,6 @@ impl StoreApp {
                         .with_child(Box::new(catalogue_controls)),
                 )),
             );
-        } else {
-            column = column.push(self.centered_content(Box::new(
-                Container::new().with_no_padding().with_child(header),
-            )));
         }
         column = column.push(content);
         Box::new(Container::new().filling().with_child(Box::new(column)))
@@ -1237,6 +1256,19 @@ impl StoreApp {
                     .push(Box::new(Spacer::new())),
             )
         }
+    }
+
+    /// Whether there is enough room for the deliberately bounded desktop
+    /// canvas.  Keeping this decision in one place prevents the masthead
+    /// from adapting at one breakpoint while the catalogue still forces a
+    /// wider, horizontally clipped grid at another.
+    fn roomy_desktop(&self) -> bool {
+        let width = if self.rect.width() > 0.0 {
+            self.rect.width()
+        } else {
+            self.layout_width_hint
+        };
+        width >= 1_180.0
     }
 
     #[allow(
@@ -1312,8 +1344,15 @@ impl StoreApp {
         if let Some(binding) = report_binding(item) {
             report_button = report_button.on_action(binding);
         }
-        let mut trust_lines = vec![trust_summary.to_string()];
-        trust_lines.extend(publisher_identity_lines(item));
+        // Report controls live in an intrinsic detail footer.  Reserve their
+        // normal touch target explicitly: otherwise Taffy's intrinsic pass
+        // can collapse a neutral button to its text baseline and make the
+        // footer look like two stray labels rather than usable controls.
+        report_button = report_button.fit_content(40.0);
+        let trust_lines = vec![
+            trust_summary.to_string(),
+            "Package identity is checked again when you install or update. Technical fingerprints remain available in the report evidence flow.".into(),
+        ];
         let actions: Box<dyn Widget> = if self.compact_layout() {
             let mut column = Column::new().with_no_padding().with_intrinsic_height();
             for button in action_buttons {
@@ -1336,8 +1375,8 @@ impl StoreApp {
             self.images.clone(),
             item.icon_url.as_deref(),
             &item.name,
-            56.0,
-            56.0,
+            if self.compact_layout() { 56.0 } else { 88.0 },
+            if self.compact_layout() { 56.0 } else { 88.0 },
         ));
         let summary: Box<dyn Widget> = if self.compact_layout() {
             // Keep the compact identity stack intrinsic and separate from the
@@ -1347,7 +1386,7 @@ impl StoreApp {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&item.name).with_size(24.0)))
+                    .push(Box::new(Text::new(&item.name).with_size(26.0)))
                     .push(Box::new(
                         Text::new(&source)
                             .with_size(12.0)
@@ -1359,7 +1398,11 @@ impl StoreApp {
                 Column::new()
                     .with_no_padding()
                     .with_fill_remaining_height()
-                    .push(Box::new(Text::new(&item.name).with_size(24.0)))
+                    .push(Box::new(
+                        Text::new(&item.name)
+                            .with_size(32.0)
+                            .with_weight(TextWeight::Semibold),
+                    ))
                     .push(Box::new(
                         Text::new(&source)
                             .with_size(12.0)
@@ -1373,7 +1416,16 @@ impl StoreApp {
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(24.0)
-                    .push(back)
+                    // Taffy's intrinsic stack can collapse an unwrapped
+                    // button to its label baseline.  Give the back control
+                    // its own fixed control band, which keeps artwork below
+                    // the full touch target instead of merely below text ink.
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_height(44.0)
+                            .with_child(back),
+                    ))
                     .push(artwork)
                     // Intrinsic block stacks deliberately ignore CSS-like
                     // `gap` in taffy's block mode. Keep this explicit spacer
@@ -1390,25 +1442,65 @@ impl StoreApp {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(10.0)
+                    .with_gap(16.0)
                     .push(back)
+                    // Taffy's intrinsic action height can collapse to a text
+                    // baseline; reserve a small real band so the hero artwork
+                    // never overlaps the back affordance at desktop scale.
+                    .push(Box::new(
+                        Container::new().with_no_padding().with_height(12.0),
+                    ))
                     .push(Box::new(
                         Row::new()
                             .no_wrap()
-                            .push(artwork)
-                            .push(summary)
-                            .push(actions),
-                    ))
-                    .push(Box::new(Text::new(&item.description).with_size(14.0))),
+                            .push(Box::new(
+                                Container::new()
+                                    .with_no_padding()
+                                    .with_flex_grow()
+                                    .with_child(Box::new(
+                                        Row::new().no_wrap().push(artwork).push(Box::new(
+                                            Column::new()
+                                                .with_no_padding()
+                                                .with_intrinsic_height()
+                                                .with_gap(10.0)
+                                                .push(summary)
+                                                .push(Box::new(
+                                                    Text::new(&item.description)
+                                                        .with_size(15.0)
+                                                        .with_color(theme.text_dim),
+                                                )),
+                                        )),
+                                    )),
+                            ))
+                            .push(Box::new(
+                                Container::new()
+                                    .with_width(214.0)
+                                    .with_no_padding()
+                                    .with_child(Box::new(
+                                        Column::new()
+                                            .with_no_padding()
+                                            .with_intrinsic_height()
+                                            .with_gap(8.0)
+                                            .push(actions)
+                                            .push(Box::new(
+                                                Text::new(match item.trust {
+                                                    crate::StoreTrust::PublisherSigned => {
+                                                        "Publisher verified"
+                                                    }
+                                                    crate::StoreTrust::Flathub => {
+                                                        "Flathub distribution"
+                                                    }
+                                                })
+                                                .with_size(12.0)
+                                                .with_color(theme.text_dim),
+                                            )),
+                                    )),
+                            )),
+                    )),
             )
         };
-        let hero = bounded_detail_card(hero, self.compact_layout());
-        column = column.push(hero).push(detail_section(
-            "Trust & safety",
-            trust_lines,
-            theme,
-            self.compact_layout(),
-        ));
+        let hero = bounded_detail_card(hero, self.compact_layout(), self.roomy_desktop());
+        column = column.push(hero);
 
         let version_lines = if item.versions.is_empty() {
             vec!["No version metadata published.".into()]
@@ -1416,43 +1508,14 @@ impl StoreApp {
             item.versions
                 .iter()
                 .map(|version| {
-                    let release = if version.released_at_unix == 0 {
-                        "release date not published".into()
-                    } else {
-                        format!("released at Unix time {}", version.released_at_unix)
-                    };
-                    let hash = version.root_hash_hex.as_deref().map_or_else(
-                        || "content hash supplied by external distributor".into(),
-                        |hash| {
-                            let prefix: String = hash.chars().take(12).collect();
-                            let suffix: String = hash
-                                .chars()
-                                .rev()
-                                .take(8)
-                                .collect::<String>()
-                                .chars()
-                                .rev()
-                                .collect();
-                            format!("BLAKE3 {prefix}…{suffix}")
-                        },
-                    );
                     format!(
-                        "{} · {} · {} · {}",
+                        "Version {} · {} · signed package record available",
                         version.version,
                         format_size(version.size_bytes),
-                        release,
-                        hash
                     )
                 })
                 .collect()
         };
-        column = column.push(detail_section(
-            "Versions & package",
-            version_lines,
-            theme,
-            self.compact_layout(),
-        ));
-
         let installed = match &item.installed {
             crate::InstalledState::Not => "Not installed".to_string(),
             crate::InstalledState::Installed {
@@ -1468,41 +1531,82 @@ impl StoreApp {
                 },
             ),
         };
-        column = column.push(detail_section(
-            "Permissions & behavior",
-            [
-                installed,
-                "Permission details are not published by the current catalogue protocol. qOS still enforces the package sandbox and asks before sensitive capabilities, but this missing pre-install declaration is a registry limitation.".into(),
-                "Changelog: not published as signed catalogue metadata.".into(),
-            ],
-            theme,
+        let fact_block = |title: &str, lines: Vec<String>| {
+            let mut block = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(5.0)
+                .push(Box::new(
+                    Text::new(title)
+                        .with_size(14.0)
+                        .with_weight(TextWeight::Semibold),
+                ));
+            for line in lines {
+                block = block.push(Box::new(
+                    Text::new(&line).with_size(13.0).with_color(theme.text_dim),
+                ));
+            }
+            // The encompassing decision surface supplies the visual boundary.
+            // Keeping facts unboxed avoids a third nested-card treatment and
+            // reads as one concise, scannable safety summary.
+            Box::new(block) as Box<dyn Widget>
+        };
+        let facts = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(0.0)
+            .push(Box::new(
+                Text::new("At a glance")
+                    .with_size(20.0)
+                    .with_heading_level(2),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(fact_block("Trust & safety", trust_lines))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(14.0),
+            ))
+            .push(fact_block("Package", version_lines))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(14.0),
+            ))
+            .push(fact_block(
+                "Availability",
+                vec![
+                    installed,
+                    "qOS asks before sensitive capabilities; the package sandbox remains enforced."
+                        .into(),
+                ],
+            ));
+        column = column.push(bounded_detail_card(
+            Box::new(facts),
             self.compact_layout(),
+            self.roomy_desktop(),
         ));
 
-        column = column.push(detail_section(
-            "Project links",
-            [
-                format!(
-                    "Homepage: {}",
-                    item.homepage_url.as_deref().unwrap_or("Not published")
-                ),
-                format!(
-                    "Source: {}",
-                    item.source_url.as_deref().unwrap_or("Not published")
-                ),
-            ],
-            theme,
-            self.compact_layout(),
-        ));
-
-        if item.screenshot_urls.is_empty() {
+        let links: Vec<String> = [
+            item.homepage_url
+                .as_deref()
+                .map(|url| format!("Homepage · {url}")),
+            item.source_url
+                .as_deref()
+                .map(|url| format!("Source · {url}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !links.is_empty() {
             column = column.push(detail_section(
-                "Preview gallery",
-                ["No preview images were published for this app.".into()],
+                "Project links",
+                links,
                 theme,
                 self.compact_layout(),
+                self.roomy_desktop(),
             ));
-        } else {
+        }
+
+        if !item.screenshot_urls.is_empty() && self.images.is_some() {
             let mut previews: Vec<Box<dyn Widget>> = Vec::new();
             for (index, preview) in item.screenshot_urls.iter().take(3).enumerate() {
                 previews.push(Box::new(crate::widgets::Artwork::new(
@@ -1543,31 +1647,71 @@ impl StoreApp {
             column = column.push(bounded_detail_card(
                 Box::new(gallery_section),
                 self.compact_layout(),
+                self.roomy_desktop(),
             ));
         }
 
-        let report_button: Box<dyn Widget> =
-            Box::new(report_button.tooltip("Create a local, collaborative report draft"));
+        let report_button: Box<dyn Widget> = Box::new(
+            report_button
+                .primary()
+                .tooltip("Create a local, collaborative report draft"),
+        );
         let moderation_button: Box<dyn Widget> = Box::new(
             ui::widget::Button::new(
                 "store.safety.detail",
                 "Moderation details",
                 Some(SAFETY_OPEN_KEY),
             )
-            .ghost()
+            .fit_content(40.0)
             .tooltip("Review the Store trust and moderation model"),
         );
-        let report_actions: Box<dyn Widget> = if self.compact_layout() {
+        // Keep supporting safety actions in the same bounded surface system
+        // as the decision content.  Previously this utility pair sat outside
+        // the 1040px cards, which made it appear detached at desktop widths
+        // and let its hit targets collide with the last surface on a fresh
+        // layout pass.
+        let support_actions: Box<dyn Widget> = if self.compact_layout() {
             Box::new(
                 Column::new()
                     .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(8.0)
                     .push(report_button)
                     .push(moderation_button),
             )
         } else {
-            Box::new(Row::new().push(report_button).push(moderation_button))
+            // The two compact, explicitly-sized buttons now fit comfortably
+            // in a single desktop action row.  This gives the support area a
+            // clear primary action without wasting a card-height on two
+            // orphaned text lines.
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(report_button)
+                    .push(moderation_button),
+            )
         };
-        column = column.push(report_actions);
+        let report_actions = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(8.0)
+            .push(Box::new(
+                Text::new("Help keep the catalogue safe")
+                    .with_size(16.0)
+                    .with_weight(TextWeight::Semibold)
+                    .with_heading_level(2),
+            ))
+            .push(Box::new(
+                Text::new("Report concerns collaboratively, or review how verified decisions and appeals work.")
+                    .with_size(13.0)
+                    .with_color(theme.text_dim),
+            ))
+            .push(support_actions);
+        column = column.push(bounded_detail_card(
+            Box::new(report_actions),
+            self.compact_layout(),
+            self.roomy_desktop(),
+        ));
         Some(Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
@@ -1704,6 +1848,7 @@ impl StoreApp {
                 column = column.push(bounded_detail_card(
                     Box::new(report_card),
                     self.compact_layout(),
+                    self.roomy_desktop(),
                 ));
             }
         }
@@ -1711,18 +1856,18 @@ impl StoreApp {
             .push(detail_section("How reports and appeals work", [
                 "Reports are signed by your workspace identity. Publisher replies and appeals must match the package publisher key; reviewer decisions must match the pinned registry owner.".into(),
                 "Drafts stay collaborative. A submission receipt does not replace the last verified status: status changes appear only after the Store verifies the complete event chain against an owner-signed snapshot. Offline or refused requests remain drafts and can be retried.".into(),
-            ], theme, self.compact_layout()))
+            ], theme, self.compact_layout(), self.roomy_desktop()))
             .push(detail_section("Verified identity & integrity", [
                 "qOS packages are bound to a publisher key, app id, version, exact size and content hash. A pinned registry owner controls which publishers may list apps.".into(),
-            ], theme, self.compact_layout()))
+            ], theme, self.compact_layout(), self.roomy_desktop()))
             .push(detail_section("Review is a separate claim", [
                 "A valid package signature does not mean an app is useful, private or honest. Moderation decisions are separately signed; the Store never invents a review badge.".into(),
                 "Public moderation events form a numbered signed hash chain. The Store derives case status itself, checks publisher and reviewer authorization, and requires the final head committed by the registry owner's current snapshot.".into(),
-            ], theme, self.compact_layout()))
+            ], theme, self.compact_layout(), self.roomy_desktop()))
             .push(detail_section("Publishing guidelines", [
                 "Listings must accurately describe behavior, identify paid or remote-service dependencies, request only necessary permissions, preserve user data during updates, provide an accessible UI, and avoid impersonation, manipulation and undisclosed tracking.".into(),
-            ], theme, self.compact_layout()));
-        if !self.compact_layout() {
+            ], theme, self.compact_layout(), self.roomy_desktop()));
+        if self.roomy_desktop() {
             column = column.with_horizontal_padding(190.0, 190.0);
         }
         Box::new(
@@ -1880,14 +2025,29 @@ impl StoreApp {
             .push(remote_name)
             .push(remote_url)
             .push(actions);
-        column = column.push(bounded_detail_card(Box::new(form), self.compact_layout()));
+        column = column.push(bounded_detail_card(
+            Box::new(form),
+            self.compact_layout(),
+            self.roomy_desktop(),
+        ));
         column = column.push(Box::new(
             Text::new("Configured remotes")
                 .with_size(18.0)
                 .with_heading_level(2),
         ));
         for remote_row in remote_rows {
-            column = column.push(bounded_detail_card(remote_row, self.compact_layout()));
+            column = column.push(bounded_detail_card(
+                remote_row,
+                self.compact_layout(),
+                self.roomy_desktop(),
+            ));
+        }
+        // Align the remote page's introductory copy to the same desktop
+        // reading column as its bounded form and remote records.  Leaving
+        // the heading at the viewport edge made this otherwise scoped page
+        // read like two unrelated layouts.
+        if self.roomy_desktop() {
+            column = column.with_horizontal_padding(190.0, 190.0);
         }
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
@@ -2094,89 +2254,57 @@ impl StoreApp {
     }
 
     fn build_filter_row(&self, _theme: &Theme) -> Box<dyn Widget> {
-        if self.compact_layout() {
-            let values = SourceFilter::ALL
-                .iter()
-                .map(|filter| {
-                    (
-                        filter.label().to_owned(),
-                        format!("Source · {}", filter.label()),
-                    )
-                })
-                .collect();
-            let mut dropdown = Dropdown::new(Vec::new(), "")
-                .with_id("store.source-filter")
-                .with_accessible_name("App source")
-                .on_action(crate::doc_actions::source_filter_value_binding(
-                    &self.category_labels(),
-                ));
-            dropdown.set_value_options(values);
-            dropdown.set_selected(self.active_filter.label());
-            return Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(154.0)
-                    .with_child(Box::new(dropdown)),
-            );
-        }
-        let segs: Vec<Segment> = SourceFilter::ALL
+        let values = SourceFilter::ALL
             .iter()
-            .map(|f| Segment::new(f.label()))
+            .map(|filter| {
+                let display = if self.compact_layout() {
+                    format!("Source · {}", filter.label())
+                } else {
+                    filter.label().to_owned()
+                };
+                (filter.label().to_owned(), display)
+            })
             .collect();
-        let selected = SourceFilter::ALL
-            .iter()
-            .position(|f| *f == self.active_filter)
-            .unwrap_or(0);
-        let group = ToggleGroup::new(segs, selected)
+        let mut dropdown = Dropdown::new(Vec::new(), "")
             .with_id("store.source-filter")
-            .on_action(crate::doc_actions::source_filter_binding(
+            .with_accessible_name("App source")
+            .on_action(crate::doc_actions::source_filter_value_binding(
                 &self.category_labels(),
             ));
+        dropdown.set_value_options(values);
+        dropdown.set_selected(self.active_filter.label());
         Box::new(
-            Scrollable::new(ScrollAxis::Horizontal)
-                // Facets remain scrollable by wheel, touch and keyboard.  A
-                // permanent bright thumb is visual noise in high contrast,
-                // especially when no pointer is over the rail.
-                .with_scrollbar(false)
-                .with_max_height(44.0)
-                .with_child(Box::new(group)),
+            Container::new()
+                .with_no_padding()
+                .with_width(168.0)
+                .with_child(Box::new(dropdown)),
         )
     }
 
     fn build_category_row(&self, _theme: &Theme) -> Box<dyn Widget> {
         let labels = self.category_labels();
-        if self.compact_layout() {
-            let values = labels
-                .iter()
-                .map(|label| (label.clone(), format!("Category · {label}")))
-                .collect();
-            let mut dropdown = Dropdown::new(Vec::new(), "")
-                .with_id("store.category-filter")
-                .with_accessible_name("App category")
-                .on_action(crate::doc_actions::category_filter_value_binding(&labels));
-            dropdown.set_value_options(values);
-            dropdown.set_selected(self.active_category.as_deref().unwrap_or("All"));
-            return Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(154.0)
-                    .with_child(Box::new(dropdown)),
-            );
-        }
-        let selected = self
-            .active_category
-            .as_ref()
-            .and_then(|active| labels.iter().position(|label| label == active))
-            .unwrap_or(0);
-        let segments = labels.iter().cloned().map(Segment::new).collect();
-        let group = ToggleGroup::new(segments, selected)
+        let values = labels
+            .iter()
+            .map(|label| {
+                let display = if self.compact_layout() {
+                    format!("Category · {label}")
+                } else {
+                    label.clone()
+                };
+                (label.clone(), display)
+            })
+            .collect();
+        let mut dropdown = Dropdown::new(Vec::new(), "")
             .with_id("store.category-filter")
-            .on_action(crate::doc_actions::category_filter_binding(&labels));
+            .with_accessible_name("App category")
+            .on_action(crate::doc_actions::category_filter_value_binding(&labels));
+        dropdown.set_value_options(values);
+        dropdown.set_selected(self.active_category.as_deref().unwrap_or("All"));
         Box::new(
-            Scrollable::new(ScrollAxis::Horizontal)
-                .with_scrollbar(false)
-                .with_max_height(44.0)
-                .with_child(Box::new(group)),
+            Container::new()
+                .with_no_padding()
+                .with_width(204.0)
+                .with_child(Box::new(dropdown)),
         )
     }
 
@@ -2210,7 +2338,7 @@ impl StoreApp {
         let visible_count = visible.len();
         let page = self.catalog_page.min(page_count.saturating_sub(1));
         let start = page.saturating_mul(PAGE_SIZE);
-        let mut column = Column::new().with_intrinsic_height();
+        let mut column = Column::new().with_intrinsic_height().with_gap(8.0);
         if page_count > 1 {
             column = column.push(Box::new(
                 Container::new().with_child(Box::new(
@@ -2225,12 +2353,23 @@ impl StoreApp {
                 )),
             ));
         }
-        let mut cards: Vec<Box<dyn Widget>> = Vec::new();
+        // Installed software is a materially different decision state from
+        // software that is merely available to install.  Keep the stable
+        // sort from `visible_items`, then give those two honest states their
+        // own editorial groups instead of presenting one anonymous wall of
+        // identical cards.
+        let mut ready_cards: Vec<Box<dyn Widget>> = Vec::new();
+        let mut discover_cards: Vec<Box<dyn Widget>> = Vec::new();
+        let mut search_cards: Vec<Box<dyn Widget>> = Vec::new();
+        // A live search is relevance-ranked, so preserving a single result
+        // sequence is more useful than interrupting it with availability
+        // groups. Idle browsing gets the stronger installed/discover split.
+        let group_by_availability = self.query.trim().is_empty();
         for item in visible.into_iter().skip(start).take(PAGE_SIZE) {
             let action = item.action_kind(self.flatpak_available);
             let click_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
             let select_key = format!("store.detail_select.{}", item.id);
-            cards.push(crate::widgets::store_card(
+            let card = crate::widgets::store_card(
                 item,
                 action,
                 &select_key,
@@ -2240,7 +2379,14 @@ impl StoreApp {
                 item_action_binding(item, action),
                 detail_binding(item),
                 self.compact_layout(),
-            ));
+            );
+            if !group_by_availability {
+                search_cards.push(card);
+            } else if item.installed.is_installed() {
+                ready_cards.push(card);
+            } else {
+                discover_cards.push(card);
+            }
         }
         if self.compact_layout() {
             column = column.push(Box::new(
@@ -2249,8 +2395,8 @@ impl StoreApp {
                     .with_intrinsic_height()
                     .with_gap(3.0)
                     .push(Box::new(
-                        Text::new(if self.query.trim().is_empty() {
-                            "Discover apps"
+                        Text::new(if group_by_availability {
+                            "Your apps"
                         } else {
                             "Search results"
                         })
@@ -2259,75 +2405,130 @@ impl StoreApp {
                         .with_heading_level(2),
                     ))
                     .push(Box::new(
-                        Text::new(&format!("{visible_count} trusted apps available"))
+                        Text::new(&format!("{visible_count} trusted apps"))
                             .with_size(12.0)
                             .with_color(theme.text_dim),
                     )),
             ));
-            for card in cards {
+            if group_by_availability && !ready_cards.is_empty() {
+                column = column.push(Box::new(
+                    Container::new().with_no_padding().with_height(12.0),
+                ));
+                column = column.push(Box::new(
+                    Text::new(&format!("Ready to use · {}", ready_cards.len()))
+                        .with_size(16.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ));
+            }
+            for card in ready_cards {
+                column = column.push(card);
+            }
+            if group_by_availability && !discover_cards.is_empty() {
+                column = column.push(Box::new(
+                    Container::new().with_no_padding().with_height(16.0),
+                ));
+                column = column.push(Box::new(
+                    Text::new(&format!("Discover more · {}", discover_cards.len()))
+                        .with_size(16.0)
+                        .with_weight(TextWeight::Semibold)
+                        .with_heading_level(2),
+                ));
+            }
+            let remaining_cards = if group_by_availability {
+                discover_cards
+            } else {
+                search_cards
+            };
+            for card in remaining_cards {
                 column = column.push(card);
             }
         } else {
-            let recommended = Column::new()
-                .with_intrinsic_height()
-                .with_gap(14.0)
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
+            let mut recommended = Column::new().with_intrinsic_height().with_gap(0.0);
+            let make_section = |title: &str, caption: &str, cards: Vec<Box<dyn Widget>>| {
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(0.0)
                         .push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .with_intrinsic_height()
-                                        .with_gap(3.0)
-                                        .push(Box::new(
-                                            Text::new(if self.query.trim().is_empty() {
-                                                "Discover your next essential"
-                                            } else {
-                                                "Search results"
-                                            })
-                                            .with_size(22.0)
-                                            .with_weight(TextWeight::Semibold)
-                                            .with_heading_level(2),
-                                        ))
-                                        .push(Box::new(
-                                            Text::new(if self.query.trim().is_empty() {
-                                                "Trusted tools for focused work, carefully sorted for this device."
-                                            } else {
-                                                "Matches across app names, publishers, descriptions, and categories."
-                                            })
-                                            .with_size(12.0)
-                                            .with_color(theme.text_dim),
-                                        )),
-                                )),
+                            Text::new(title)
+                                .with_size(17.0)
+                                .with_weight(TextWeight::Semibold)
+                                .with_heading_level(2),
                         ))
-                        .push(Box::new(Spacer::new()))
                         .push(Box::new(
-                            Text::new(&format!("{visible_count} available"))
+                            Container::new().with_no_padding().with_height(4.0),
+                        ))
+                        .push(Box::new(
+                            Text::new(caption)
                                 .with_size(12.0)
                                 .with_color(theme.text_dim),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_height(14.0),
+                        ))
+                        .push(Box::new(
+                            CardGrid::new(cards)
+                                .with_min_card_width(292.0)
+                                .with_card_height(198.0)
+                                .with_gap(14.0),
                         )),
-                ))
-                .push(Box::new(
-                    CardGrid::new(cards)
-                        .with_min_card_width(292.0)
-                        .with_card_height(232.0)
-                        .with_gap(18.0),
+                ) as Box<dyn Widget>
+            };
+            if group_by_availability && !ready_cards.is_empty() {
+                let count = ready_cards.len();
+                recommended = recommended.push(make_section(
+                    &format!("Ready on this device · {count}"),
+                    "Installed apps and local copies you can open or update now.",
+                    ready_cards,
                 ));
-            column = column.push(Box::new(
-                Row::new()
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Container::new()
-                            .with_width(1120.0)
-                            .with_no_padding()
-                            .with_child(Box::new(recommended)),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ));
+                if !discover_cards.is_empty() {
+                    recommended = recommended.push(Box::new(
+                        Container::new().with_no_padding().with_height(24.0),
+                    ));
+                }
+            }
+            let remaining_cards = if group_by_availability {
+                discover_cards
+            } else {
+                search_cards
+            };
+            if !remaining_cards.is_empty() {
+                let title = if group_by_availability {
+                    format!("Discover more · {}", remaining_cards.len())
+                } else {
+                    format!("Matches · {}", remaining_cards.len())
+                };
+                recommended = recommended.push(make_section(
+                    &title,
+                    if group_by_availability {
+                        "Trusted catalogue entries ready to install when you choose."
+                    } else {
+                        "Results stay in relevance order across names, publishers, descriptions, and categories."
+                    },
+                    remaining_cards,
+                ));
+            }
+            // At a medium desktop width the header deliberately becomes a
+            // vertical composition.  The result grid must make the same
+            // transition: pinning it to 1120px here previously produced a
+            // cut-off third column and a horizontal scrollbar around 920px.
+            if self.roomy_desktop() {
+                column = column.push(Box::new(
+                    Row::new()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(
+                            Container::new()
+                                .with_width(1120.0)
+                                .with_no_padding()
+                                .with_child(Box::new(recommended)),
+                        ))
+                        .push(Box::new(Spacer::new())),
+                ));
+            } else {
+                column = column.push(Box::new(recommended));
+            }
         }
         if page_count > 1 {
             let mut paging = Row::new();
