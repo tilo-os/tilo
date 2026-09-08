@@ -16,14 +16,14 @@
 //!
 //! ## What is *not* an action
 //!
-//! Presentation stays local: selection, scroll, search text and filter tabs.
+//! Presentation stays local: selection, scroll, search text, filter tabs,
+//! playback and cache/download policy.
 //! The stable top-level destinations are still exported as idempotent `View`
 //! operations, so history, search hosts and agents can address a screen without
 //! guessing a local widget path. Stream resolution, audio output, artwork
-//! fetching and the native cover picker are device effects too. Their durable
-//! results — playback, cache choices and a selected cover — are instead written
-//! through the action types below, so the state users see remains replayable and
-//! syncable.
+//! fetching and the native cover picker are device effects too. Playback and
+//! cache choices stay local effects; a selected playlist cover is portable
+//! user-authored library data and is written through the action types below.
 //!
 //! ## Determinism contract
 //!
@@ -45,8 +45,8 @@ use uuid::Uuid;
 use qos_actions::resource::INVALID_ARGUMENTS_TYPE;
 use qos_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
-    ResourceProvider, RetryPolicy,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc as mdoc;
@@ -202,6 +202,18 @@ pub enum MusicOperation {
         playlist: String,
         track: String,
     },
+    /// Apply a fully specified transport snapshot on this device only. This is
+    /// an effect (not a document action): opening a search hit must not make a
+    /// peer start playing audio or inherit this device's volume/queue.
+    SetPlayback {
+        playback: crate::model::Playback,
+    },
+    /// Evict legacy local cache metadata. Music refuses `keep` until it owns a
+    /// durable audio-byte cache; metadata alone must never claim offline play.
+    SetOffline {
+        tracks: Vec<String>,
+        keep: bool,
+    },
 }
 
 /// Decode a host-routed Music operation.
@@ -219,47 +231,34 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MusicOpe
         .map_err(|error| error.to_string())
 }
 
+fn encode_operation(operation: &MusicOperation) -> EncodedAction {
+    match serde_json::to_vec(operation) {
+        Ok(payload) => EncodedAction {
+            type_id: MUSIC_OPERATION_TYPE.to_string(),
+            payload,
+        },
+        Err(error) => invalid_arguments(&error.to_string()),
+    }
+}
+
 /// Every collaborative operation Music exports on its shared library.
 ///
 /// Each variant is a whole-operation write carrying enough payload to replay
 /// deterministically from a shared base state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MusicAction {
-    SetPlayback(crate::model::Playback),
-    /// Record whether one or more tracks should be retained by the offline
-    /// cache. Keeping this as one deterministic action makes a "Download all"
-    /// gesture one collaborative/history entry instead of a set of ad-hoc
-    /// document writes.
-    SetOffline {
-        tracks: Vec<String>,
-        keep: bool,
-    },
     /// Create a new empty playlist. `id` is minted at authoring time and carried
     /// here so replay reproduces the byte-identical row; `apply` never mints one.
-    CreatePlaylist {
-        id: String,
-        name: String,
-    },
+    CreatePlaylist { id: String, name: String },
     /// Rename a playlist.
-    RenamePlaylist {
-        id: String,
-        name: String,
-    },
+    RenamePlaylist { id: String, name: String },
     /// Delete a playlist by id.
-    DeletePlaylist {
-        id: String,
-    },
+    DeletePlaylist { id: String },
     /// Append a track to a playlist (idempotent — a track already present is a
     /// no-op, matching the on-screen affordance).
-    AddTrackToPlaylist {
-        playlist: String,
-        track: String,
-    },
+    AddTrackToPlaylist { playlist: String, track: String },
     /// Remove the first occurrence of a track from a playlist.
-    RemoveTrackFromPlaylist {
-        playlist: String,
-        track: String,
-    },
+    RemoveTrackFromPlaylist { playlist: String, track: String },
     /// Reorder a track within a playlist from `from` to `to` (clamped).
     MoveTrackInPlaylist {
         playlist: String,
@@ -273,48 +272,20 @@ pub enum MusicAction {
     /// The *pick* (the native file portal) is app-side, non-deterministic work;
     /// it is normalized into an HTTPS URL or bounded PNG data URL before this
     /// deterministic, replayable action is written to the shared document.
-    SetPlaylistCover {
-        playlist: String,
-        cover: String,
-    },
+    SetPlaylistCover { playlist: String, cover: String },
     /// Toggle a track's membership in "Liked Songs". Deterministic against the
     /// replay base: the current membership is read from the document and flipped.
-    ToggleLiked {
-        track: String,
-    },
+    ToggleLiked { track: String },
     /// Toggle an album's membership in the saved-to-library set.
-    ToggleSavedAlbum {
-        album: String,
-    },
+    ToggleSavedAlbum { album: String },
     /// Toggle whether the user follows an artist.
-    ToggleFollowedArtist {
-        artist: String,
-    },
+    ToggleFollowedArtist { artist: String },
 }
 
 /// Durable, browseable history metadata for a library mutation.
 pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
     let mut context = qos_actions::ActionContext::for_action("org.qos.Music", "Music", action);
     let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
-        MusicAction::SetPlayback(_) => ("Change playback", "player", "music.player", "Player"),
-        MusicAction::SetOffline { tracks, keep } => (
-            if *keep {
-                "Keep songs offline"
-            } else {
-                "Remove songs from offline cache"
-            },
-            tracks.first().map_or("library", String::as_str),
-            if tracks.len() == 1 {
-                "music.track"
-            } else {
-                "music.library"
-            },
-            if tracks.len() == 1 {
-                "Track"
-            } else {
-                "Library"
-            },
-        ),
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
@@ -363,25 +334,6 @@ impl Action for MusicAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            MusicAction::SetPlayback(playback) => {
-                validate_playback(doc, playback)?;
-                mdoc::write_playback(doc, playback);
-            }
-            MusicAction::SetOffline { tracks, keep } => {
-                if tracks.iter().any(|track| !mdoc::has_track(doc, track)) {
-                    return Err(ActionError::Refused(
-                        "offline-cache target is no longer in the library".into(),
-                    ));
-                }
-                let state = if *keep {
-                    crate::model::CacheState::Cached
-                } else {
-                    crate::model::CacheState::Streamed
-                };
-                for track in tracks {
-                    mdoc::set_cache(doc, track, state);
-                }
-            }
             MusicAction::CreatePlaylist { id, name } => {
                 // An empty id is never produced by our own builder; no-op rather
                 // than fabricate one (which would break replay determinism).
@@ -484,56 +436,6 @@ fn require(condition: bool, message: &str) -> Result<(), ActionError> {
     } else {
         Err(ActionError::Refused(message.into()))
     }
-}
-
-fn validate_playback(doc: &Doc, playback: &crate::model::Playback) -> Result<(), ActionError> {
-    const MAX_QUEUE_TRACKS: usize = 10_000;
-    if playback.queue.len() > MAX_QUEUE_TRACKS {
-        return Err(ActionError::Refused(
-            "playback queue exceeds 10,000 tracks".into(),
-        ));
-    }
-    if playback.volume > 100 {
-        return Err(ActionError::Refused(
-            "playback volume must be in the 0–100 range".into(),
-        ));
-    }
-    if playback.queue.iter().any(|id| !mdoc::has_track(doc, id)) {
-        return Err(ActionError::Refused(
-            "playback queue contains a track that is no longer in the library".into(),
-        ));
-    }
-    match playback.current.as_deref() {
-        None => {
-            if playback.playing || playback.position_ms != 0 || playback.queue_index != 0 {
-                return Err(ActionError::Refused(
-                    "an empty player must be stopped at position zero".into(),
-                ));
-            }
-        }
-        Some(current) => {
-            if !mdoc::has_track(doc, current)
-                || playback.queue_index >= playback.queue.len()
-                || playback
-                    .queue
-                    .get(playback.queue_index)
-                    .is_none_or(|id| id != current)
-            {
-                return Err(ActionError::Refused(
-                    "current playback track does not match the queue".into(),
-                ));
-            }
-            let max_position = mdoc::load_library(doc)
-                .track(current)
-                .map_or(0, crate::model::Track::duration_ms);
-            if playback.position_ms > max_position {
-                return Err(ActionError::Refused(
-                    "playback position exceeds the selected track duration".into(),
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn invalid_arguments(reason: &str) -> EncodedAction {
@@ -680,16 +582,6 @@ pub fn toggle_followed_artist_action(artist: &str) -> MusicAction {
     }
 }
 
-/// Persist a batch offline-cache decision through the shared action executor.
-/// An empty list is harmless and is useful to callers that derive their targets
-/// from a filtered view.
-pub fn set_offline_action(tracks: &[String], keep: bool) -> MusicAction {
-    MusicAction::SetOffline {
-        tracks: tracks.to_vec(),
-        keep,
-    }
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -787,6 +679,56 @@ fn operation_spec(
     if kind == OperationKind::View {
         spec.requiring(PermissionRequirement::Read)
             .retry_policy(RetryPolicy::Idempotent)
+    } else if kind == OperationKind::Effect {
+        spec.requiring(PermissionRequirement::Write)
+            .retry_policy(RetryPolicy::Idempotent)
+    } else {
+        spec
+    }
+}
+
+fn local_playback_spec(
+    id: &str,
+    label: &str,
+    previous: &crate::model::Playback,
+    playback: &crate::model::Playback,
+) -> ActionSpec {
+    let spec = operation_spec(
+        id,
+        label,
+        OperationKind::Effect,
+        &MusicOperation::SetPlayback {
+            playback: playback.clone(),
+        },
+    );
+    if playback.playing && playback.current != previous.current {
+        spec.execution(ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["state"],
+                    "properties": {
+                        "state": { "enum": ["resolved", "playing"] }
+                    }
+                }),
+            })
+    } else {
+        spec
+    }
+}
+
+fn local_offline_spec(id: &str, label: &str, tracks: Vec<String>, keep: bool) -> ActionSpec {
+    let spec = operation_spec(
+        id,
+        label,
+        OperationKind::Effect,
+        &MusicOperation::SetOffline { tracks, keep },
+    );
+    if keep {
+        spec.unavailable(
+            "offline_audio_cache_unavailable",
+            "Offline downloads are unavailable: Music does not yet store durable audio bytes.",
+        )
     } else {
         spec
     }
@@ -824,18 +766,20 @@ fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback
     if playback.current.is_some() {
         let mut toggled = playback.clone();
         toggled.playing = !toggled.playing;
-        root = root.with_action(immediate_spec(
+        root = root.with_action(local_playback_spec(
             "play-pause",
             if playback.playing { "Pause" } else { "Play" },
-            &MusicAction::SetPlayback(toggled),
+            playback,
+            &toggled,
         ));
         let seek = playback.clone();
         root = root.with_action(
-            ActionSpec::typed(
+            ActionSpec::typed_operation(
                 "seek",
                 "Seek playback",
                 "milliseconds",
-                ExecutionLocus::ClientLocal,
+                OperationKind::Effect,
+                MUSIC_OPERATION_TYPE,
                 vec![ActionParam::required(
                     "position_ms",
                     ParamType::Integer,
@@ -844,20 +788,20 @@ fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback
                 move |args: &ActionArgs| {
                     let mut next = seek.clone();
                     next.position_ms = args.integer("position_ms").unwrap_or(0).max(0) as u64;
-                    encode(&MusicAction::SetPlayback(next))
+                    encode_operation(&MusicOperation::SetPlayback { playback: next })
                 },
             )
-            .requiring(PermissionRequirement::Write)
-            .reversible(),
+            .requiring(PermissionRequirement::Write),
         );
     }
     let volume = playback.clone();
     root = root.with_action(
-        ActionSpec::typed(
+        ActionSpec::typed_operation(
             "set-volume",
             "Set volume",
             "0–100",
-            ExecutionLocus::ClientLocal,
+            OperationKind::Effect,
+            MUSIC_OPERATION_TYPE,
             vec![
                 ActionParam::required("volume", ParamType::Integer, "volume from 0 to 100")
                     .with_schema(serde_json::json!({"minimum": 0, "maximum": 100})),
@@ -868,36 +812,38 @@ fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback
                     .integer("volume")
                     .unwrap_or_else(|| i64::from(next.volume))
                     .clamp(0, 100) as u8;
-                encode(&MusicAction::SetPlayback(next))
+                encode_operation(&MusicOperation::SetPlayback { playback: next })
             },
         )
-        .requiring(PermissionRequirement::Write)
-        .reversible(),
+        .requiring(PermissionRequirement::Write),
     );
     let mut muted = playback.clone();
     muted.volume = if muted.volume == 0 { 80 } else { 0 };
-    root = root.with_action(immediate_spec(
+    root = root.with_action(local_playback_spec(
         "toggle-mute",
         "Toggle mute",
-        &MusicAction::SetPlayback(muted),
+        playback,
+        &muted,
     ));
     let mut shuffled = playback.clone();
     shuffled.shuffle = !shuffled.shuffle;
-    root = root.with_action(immediate_spec(
+    root = root.with_action(local_playback_spec(
         "toggle-shuffle",
         if playback.shuffle {
             "Turn shuffle off"
         } else {
             "Turn shuffle on"
         },
-        &MusicAction::SetPlayback(shuffled),
+        playback,
+        &shuffled,
     ));
     let mut repeated = playback.clone();
     repeated.repeat = repeated.repeat.next();
-    root = root.with_action(immediate_spec(
+    root = root.with_action(local_playback_spec(
         "cycle-repeat",
         "Change repeat mode",
-        &MusicAction::SetPlayback(repeated),
+        playback,
+        &repeated,
     ));
 
     root
@@ -910,11 +856,7 @@ fn with_transport_navigation(mut root: Resource, playback: &crate::model::Playba
         previous.current = previous.queue.get(previous.queue_index).cloned();
     }
     previous.position_ms = 0;
-    let previous_spec = immediate_spec(
-        "previous",
-        "Previous track",
-        &MusicAction::SetPlayback(previous),
-    );
+    let previous_spec = local_playback_spec("previous", "Previous track", playback, &previous);
     root = root.with_action(if playback.current.is_none() {
         previous_spec.unavailable(
             "nothing_playing",
@@ -942,7 +884,7 @@ fn with_transport_navigation(mut root: Resource, playback: &crate::model::Playba
     } else {
         next.playing = false;
     }
-    let next_spec = immediate_spec("next", "Next queued track", &MusicAction::SetPlayback(next));
+    let next_spec = local_playback_spec("next", "Next queued track", playback, &next);
     root = root.with_action(if playback.current.is_none() {
         next_spec.unavailable(
             "nothing_playing",
@@ -975,11 +917,12 @@ fn with_queue_actions(
     let add_queue = playback.clone();
     let queue_track_ids = known_tracks.clone();
     root = root.with_action(
-        ActionSpec::typed(
+        ActionSpec::typed_operation(
             "queue-add",
             "Add track to queue",
             "track id…",
-            ExecutionLocus::ClientLocal,
+            OperationKind::Effect,
+            MUSIC_OPERATION_TYPE,
             vec![ActionParam::required(
                 "track",
                 ParamType::Resource,
@@ -994,18 +937,19 @@ fn with_queue_actions(
                 }
                 let mut next = add_queue.clone();
                 next.queue.push(track.to_string());
-                encode(&MusicAction::SetPlayback(next))
+                encode_operation(&MusicOperation::SetPlayback { playback: next })
             },
         )
         .requiring(PermissionRequirement::Write),
     );
     let remove_queue = playback.clone();
     let remove_track_ids = known_tracks.clone();
-    let remove = ActionSpec::typed(
+    let remove = ActionSpec::typed_operation(
         "queue-remove",
         "Remove track from queue",
         "track id…",
-        ExecutionLocus::ClientLocal,
+        OperationKind::Effect,
+        MUSIC_OPERATION_TYPE,
         vec![ActionParam::required(
             "track",
             ParamType::Resource,
@@ -1037,12 +981,11 @@ fn with_queue_actions(
                     next.position_ms = 0;
                 }
             }
-            encode(&MusicAction::SetPlayback(next))
+            encode_operation(&MusicOperation::SetPlayback { playback: next })
         },
     )
     .requiring(PermissionRequirement::Write)
-    .destructive()
-    .reversible();
+    .destructive();
     root = root.with_action(if playback.queue.is_empty() {
         remove.unavailable("empty_queue", "There are no queued tracks to remove")
     } else {
@@ -1220,12 +1163,8 @@ pub(crate) fn catalog_track_resource(
         "music.track",
         track.label.clone(),
     )
-    .with_action(immediate_spec(
-        "play",
-        "Play track",
-        &MusicAction::SetPlayback(next),
-    ))
-    .with_action(immediate_spec(
+    .with_action(local_playback_spec("play", "Play track", playback, &next))
+    .with_action(local_offline_spec(
         if track.offline {
             "remove-offline"
         } else {
@@ -1236,7 +1175,8 @@ pub(crate) fn catalog_track_resource(
         } else {
             "Keep offline"
         },
-        &set_offline_action(std::slice::from_ref(&track.id), !track.offline),
+        vec![track.id.clone()],
+        !track.offline,
     ))
     .with_action(immediate_spec(
         "toggle-like",
@@ -1250,11 +1190,7 @@ pub(crate) fn catalog_track_resource(
     .with_action({
         let mut queued = playback.clone();
         queued.queue.push(track.id.clone());
-        immediate_spec(
-            "add-to-queue",
-            "Add to queue",
-            &MusicAction::SetPlayback(queued),
-        )
+        local_playback_spec("add-to-queue", "Add to queue", playback, &queued)
     })
     .with_action({
         let mut next = playback.clone();
@@ -1268,7 +1204,7 @@ pub(crate) fn catalog_track_resource(
             let at = (next.queue_index + 1).min(next.queue.len());
             next.queue.insert(at, track.id.clone());
         }
-        immediate_spec("play-next", "Play next", &MusicAction::SetPlayback(next))
+        local_playback_spec("play-next", "Play next", playback, &next)
     });
     if !track.album_id.is_empty() {
         resource = resource.with_action(operation_spec(
@@ -1927,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_and_queue_are_document_actions_with_typed_arguments() {
+    fn playback_and_queue_are_local_effects_with_typed_arguments() {
         let mut ctx = MusicResourceCtx::default();
         ctx.playback.current = Some("track-1".into());
         ctx.playback.queue.push("track-1".into());
@@ -1945,7 +1881,16 @@ mod tests {
             "queue-remove",
         ] {
             let action = root.actions.iter().find(|action| action.id == id).unwrap();
-            assert_eq!(action.kind, qos_actions::OperationKind::Document, "{id}");
+            assert_eq!(action.kind, qos_actions::OperationKind::Effect, "{id}");
+            assert_eq!(
+                action.contract.permission,
+                PermissionRequirement::Write,
+                "{id}"
+            );
+            assert!(
+                !action.contract.reversible,
+                "local device effects cannot claim an executable undo: {id}"
+            );
         }
         assert_eq!(
             root.actions
@@ -1956,6 +1901,24 @@ mod tests {
                 .ty,
             ParamType::Integer
         );
+        let track = CatalogTrackResource {
+            id: "track-2".into(),
+            label: "Track 2".into(),
+            album_id: String::new(),
+            artist_id: String::new(),
+            offline: false,
+            liked: false,
+        };
+        let play = catalog_track_resource(&track, &ctx.playback)
+            .actions
+            .into_iter()
+            .find(|action| action.id == "play")
+            .unwrap();
+        assert_eq!(
+            play.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert!(matches!(play.contract.result, ResultSpec::Json { .. }));
     }
 
     #[test]
@@ -2008,7 +1971,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_or_impossible_replayed_actions_are_refused() {
+    fn stale_replayed_library_actions_are_refused() {
         let (_app, mut doc) = seeded();
         let stale = MusicAction::AddTrackToPlaylist {
             playlist: "gone".into(),
@@ -2016,30 +1979,6 @@ mod tests {
         };
         assert!(matches!(
             stale.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-
-        let impossible = MusicAction::SetPlayback(crate::model::Playback {
-            current: Some("gone".into()),
-            queue: vec!["gone".into()],
-            queue_index: 0,
-            playing: true,
-            position_ms: 0,
-            shuffle: false,
-            repeat: crate::model::RepeatMode::Off,
-            volume: 100,
-        });
-        assert!(matches!(
-            impossible.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-
-        let invalid_volume = MusicAction::SetPlayback(crate::model::Playback {
-            volume: 101,
-            ..crate::model::Playback::default()
-        });
-        assert!(matches!(
-            invalid_volume.apply(&mut doc),
             Err(ActionError::Refused(_))
         ));
     }

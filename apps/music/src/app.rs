@@ -3,18 +3,18 @@
 //! The whole UI is drawn directly into the Vello scene (nav rail, library
 //! grids, track lists, detail pages, search and the now-playing transport
 //! bar), so the app owns its layout math and hit-testing rather than
-//! composing stock taffy widgets. Authoritative state lives in the Automerge
-//! document via [`crate::doc`]; `sync` refreshes the in-memory render
-//! snapshot each frame and every mutation writes back to the document so the
-//! library + play-state replicate across devices.
+//! composing stock taffy widgets. User-authored library state lives in the
+//! Automerge document via [`crate::doc`]; `sync` refreshes that render
+//! snapshot each frame. Playback, downloads and other device effects stay
+//! local so one device can never start audio or consume another device's disk.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use base64::Engine as _;
@@ -55,6 +55,11 @@ use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 const SIDEBAR_W: f64 = 236.0;
 const NOWPLAYING_H: f64 = 92.0;
 const HEADER_H: f64 = 72.0;
+/// A host-visible stream-start operation must eventually settle even when a
+/// resolver, staging download, or audio backend wedges. This bounds the
+/// non-cancellable lifecycle contract without turning a slow normal seek into
+/// a fabricated success.
+const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn cover_request() -> PickRequest {
     PickRequest::open("Choose a playlist cover", "Set cover")
@@ -166,10 +171,6 @@ enum Action {
     /// Open / close the volume popover (shown when the inline slider collapses
     /// to a button on a narrower bar).
     ToggleVolumePopover,
-    ToggleDownload(String),
-    /// Keep every track in the given list offline ("Download all" on a playlist
-    /// or Liked Songs). Already-cached tracks are left as-is.
-    DownloadAll(Vec<String>),
     /// Open the native file portal to pick a cover image for this playlist.
     PickPlaylistCover(String),
     /// Append a track to the end of the play queue.
@@ -277,6 +278,13 @@ pub struct MusicApp {
     /// Monotonic diagnostic used by tests to prove provider retrieval does not
     /// trigger a catalog rebuild.
     library_search_builds: u64,
+    /// Terminal download/cache choices belong to this device.  They are
+    /// overlaid onto the shared library projection after every reload, never
+    /// serialized into Automerge or offered as document actions.
+    device_cache: BTreeMap<String, CacheState>,
+    /// Tests and hermetic screenshot fixtures never read or write a person's
+    /// actual local profile. The live app enables it.
+    persist_device_profile: bool,
     pb: Playback,
     view: View,
     nav_back: Vec<View>,
@@ -328,6 +336,13 @@ pub struct MusicApp {
     /// belongs to the latest request before it can change UI or audio state.
     next_request_id: u64,
     active_resolve_request: Option<u64>,
+    /// The lifecycle invocation waiting for one exact stream-resolution id.
+    /// This never represents ordinary in-window playback actions.
+    resource_stream_invocation: Option<(qos_actions::InvocationId, u64, u64, Instant)>,
+    /// Terminal updates are retained per invocation until the host consumes
+    /// them. A new operation must never overwrite an earlier terminal result
+    /// just because the host polls on a later frame.
+    resource_stream_results: Vec<qos_actions::InvocationUpdate>,
     active_search_request: Option<u64>,
     active_search_more: HashMap<String, u64>,
     /// `(query, reason)` for the current live-search failure. Kept separate
@@ -364,16 +379,9 @@ pub struct MusicApp {
     /// and tests set this (see [`MusicApp::seed_sample_library`]); the live app
     /// starts with an empty library and fills it from real playback + search.
     seed_samples: bool,
-    /// Whether the initial playback snapshot has been adopted from the
-    /// document. After the first load, playback is authoritative in-memory
-    /// (persisted out to the doc on each event) so the smoothly-advancing
-    /// playhead isn't clobbered by re-reading the doc each frame.
+    /// Whether the initial local playback state has been initialized. Playback
+    /// is intentionally never adopted from, or written to, the shared doc.
     playback_loaded: bool,
-    /// The last playback value observed in the shared document. Unlike the
-    /// continuously advancing local playhead, this is only updated on an
-    /// explicit document write/read and lets us identify a peer's transport
-    /// edit without clobbering smooth local progress every frame.
-    document_playback: Option<Playback>,
     /// Track id the playhead is currently bound to (detects track changes
     /// across a doc reload so the live playhead isn't reset spuriously).
     bound_track: Option<String>,
@@ -548,12 +556,9 @@ pub struct MusicApp {
     live_query_sent: Option<String>,
 
     // ---- offline downloads -----------------------------------------------
-    /// In-flight offline downloads: track id → when the download started. Each
-    /// frame the progress fraction is derived from the elapsed time and shown as
-    /// an animated spinner on the row; at completion the track flips to
-    /// [`CacheState::Cached`] (persisted). Held in memory only — the document
-    /// stores just the *terminal* cache states, so an advancing download never
-    /// churns the CRDT frame-by-frame.
+    /// Reserved for a future byte-backed downloader. The current product does
+    /// not simulate downloads: a progress bar without durable playable bytes
+    /// would be a false offline-completion claim.
     downloads: HashMap<String, Instant>,
 
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
@@ -563,10 +568,6 @@ pub struct MusicApp {
     /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical action.
     actions: ui::ActionHost,
 }
-
-/// How long a simulated offline download takes to complete (seconds). Long
-/// enough that the working spinner is visibly distinct from the finished state.
-const DOWNLOAD_SECS: f64 = 2.4;
 
 /// A deferred `--shots` staging action (see [`MusicApp::app_root_for_shot`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -613,6 +614,22 @@ impl MusicApp {
         reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate field assignments, not reduce them"
     )]
     pub fn new() -> Self {
+        Self::new_with_device_profile(true)
+    }
+
+    /// Construct the hermetic screenshot/test app without even reading a
+    /// user-owned device profile.  Calling `set_offline_for_shot` after `new`
+    /// is too late: it prevents writes, but a read could already have changed
+    /// the captured state.
+    pub(crate) fn new_for_shot() -> Self {
+        Self::new_with_device_profile(false)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate the field assignments, not reduce them"
+    )]
+    fn new_with_device_profile(load_device_profile: bool) -> Self {
         // Optional initial-view override, used by `--shots` to capture
         // screens other than Home (e.g. `QOS_MUSIC_VIEW=album:al_glasslight`).
         let (view, query) = Self::parse_initial_view();
@@ -628,6 +645,13 @@ impl MusicApp {
         if !query.is_empty() {
             search_input.set_text(&query);
         }
+        let persist_device_profile = load_device_profile && !cfg!(test);
+        let mut device_profile = persist_device_profile
+            .then(crate::storage::load_device_profile)
+            .unwrap_or_default();
+        // Older builds persisted synthetic Cached markers without media files.
+        // Migrate those claims away rather than showing a stale green badge.
+        device_profile.cache.clear();
         Self {
             lib: Library::default(),
             library_heads: None,
@@ -635,7 +659,9 @@ impl MusicApp {
                 &Library::default(),
             ),
             library_search_builds: 0,
-            pb: Playback::default(),
+            device_cache: device_profile.cache,
+            persist_device_profile,
+            pb: device_profile.playback,
             view,
             nav_back: Vec::new(),
             search_input,
@@ -653,6 +679,8 @@ impl MusicApp {
             resolve_in_flight: 0,
             next_request_id: 0,
             active_resolve_request: None,
+            resource_stream_invocation: None,
+            resource_stream_results: Vec::new(),
             active_search_request: None,
             active_search_more: HashMap::new(),
             search_error: None,
@@ -666,7 +694,6 @@ impl MusicApp {
             seeded: false,
             seed_samples: false,
             playback_loaded: false,
-            document_playback: None,
             bound_track: None,
             playhead_ms: 0.0,
             last_tick: Instant::now(),
@@ -743,6 +770,7 @@ impl MusicApp {
     /// placeholders render deterministically.
     pub fn set_offline_for_shot(&mut self) {
         self.allow_network = false;
+        self.persist_device_profile = false;
     }
 
     /// Seed the bundled sample catalog on the first `sync` instead of starting
@@ -941,7 +969,10 @@ impl MusicApp {
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
-        let next_library = doc::load_library(state);
+        let mut next_library = doc::load_library(state);
+        // `Library` carries cache state only as a convenient render projection.
+        // Its authoritative copy is local to this device, not the shared doc.
+        next_library.cache = self.device_cache.clone();
         let searchable_catalog_changed = self.lib.tracks != next_library.tracks
             || self.lib.albums != next_library.albums
             || self.lib.artists != next_library.artists
@@ -966,44 +997,10 @@ impl MusicApp {
         self.library_search_builds = self.library_search_builds.wrapping_add(1);
     }
 
-    /// Advance every in-flight offline download by the wall clock. Called once
-    /// per frame from `sync` (after the library reload) so the freshly-loaded
-    /// terminal cache states get the in-flight progress overlaid back on top,
-    /// and a finished download is persisted to the document exactly once.
-    fn advance_downloads(&mut self, state: &mut AutoCommit) {
-        if self.downloads.is_empty() {
-            return;
-        }
-        let mut done: Vec<String> = Vec::new();
-        for (id, started) in &self.downloads {
-            let frac = (started.elapsed().as_secs_f64() / DOWNLOAD_SECS).min(1.0) as f32;
-            if frac >= 1.0 {
-                done.push(id.clone());
-            } else {
-                // Overlay the live progress on the reloaded library (the doc
-                // holds only Streamed/Cached, never a per-frame Downloading).
-                self.lib
-                    .cache
-                    .insert(id.clone(), CacheState::Downloading(frac));
-            }
-        }
-        for id in done {
-            self.downloads.remove(&id);
-            self.perform_action(
-                state,
-                &crate::actions::set_offline_action(std::slice::from_ref(&id), true),
-            );
-            self.reload_library(state);
-            let label = self
-                .lib
-                .track(&id)
-                .map(|t| t.title.clone())
-                .unwrap_or_default();
-            self.toast = Some((
-                format!("\u{201c}{label}\u{201d} saved for offline"),
-                Instant::now(),
-            ));
-        }
+    /// Retire the old simulated-download seam. The render loop still invokes
+    /// this, but it can never manufacture a false "cached" completion state.
+    fn advance_downloads(&mut self, _state: &mut AutoCommit) {
+        self.downloads.clear();
     }
 
     /// Mirror each playlist's persisted cover URL into the image cache so a
@@ -1017,21 +1014,18 @@ impl MusicApp {
         }
     }
 
-    /// Adopt the full snapshot (library + playback) from the document. Used
-    /// for the initial load and by tests.
+    /// Adopt the shared library snapshot. Playback intentionally starts from
+    /// this device's local state rather than a peer's transport settings.
     fn reload(&mut self, state: &mut AutoCommit) {
         self.reload_library(state);
-        self.pb = doc::load_playback(state);
-        self.document_playback = Some(self.pb.clone());
         self.bound_track = self.pb.current.clone();
         self.playhead_ms = self.pb.position_ms as f64;
     }
 
-    fn persist_playback(&mut self, state: &mut AutoCommit) {
+    fn persist_playback(&mut self, _state: &mut AutoCommit) {
         // Reducers such as a media-key play/pause can receive an already loaded
         // track before a queue has been materialised. Canonicalise that local
-        // convenience state before it crosses the durable action boundary, so
-        // peers only ever observe the validated queue/current invariant.
+        // convenience state before it reaches the local audio boundary.
         if let Some(current) = self.pb.current.clone() {
             if let Some(index) = self.pb.queue.iter().position(|id| id == &current) {
                 self.pb.queue_index = index;
@@ -1048,64 +1042,37 @@ impl MusicApp {
             self.playhead_ms = 0.0;
         }
         self.pb.position_ms = self.playhead_ms as u64;
-        self.perform_action(
-            state,
-            &crate::actions::MusicAction::SetPlayback(self.pb.clone()),
-        );
-        self.document_playback = Some(self.pb.clone());
         self.bound_track = self.pb.current.clone();
+        self.report_device_profile_error();
     }
 
-    /// Adopt a playback edit that arrived through the shared Automerge
-    /// document. This intentionally compares against the last *document*
-    /// snapshot rather than `self.pb`: the latter's position advances locally
-    /// every frame and would otherwise make an unchanged peer snapshot look
-    /// like a conflicting update. A remote play/pause, seek, queue, volume or
-    /// track selection consequently reaches this device promptly and controls
-    /// its local audio engine too.
-    fn reconcile_document_playback(&mut self, state: &AutoCommit) {
-        let remote = doc::load_playback(state);
-        if self.document_playback.as_ref() == Some(&remote) {
-            return;
+    fn persist_device_profile(&self) -> Result<(), String> {
+        if !self.persist_device_profile {
+            return Ok(());
         }
+        crate::storage::save_device_profile(&crate::storage::DeviceProfile {
+            // Do not persist a marker for media bytes we do not own. Playback
+            // resume remains durable, device-local state.
+            cache: BTreeMap::new(),
+            playback: self.pb.clone(),
+        })
+        .map_err(|error| format!("could not save local Music state: {error}"))
+    }
 
-        let old = self.pb.clone();
-        let changed_track = old.current != remote.current;
-        let changed_position = old.position_ms != remote.position_ms;
-        self.pb = remote.clone();
-        self.playhead_ms = remote.position_ms as f64;
-        self.bound_track.clone_from(&remote.current);
-        self.shuffle_order.clear();
-        self.audio.set_volume(f32::from(remote.volume) / 100.0);
-
-        if changed_track {
-            self.audio.stop();
-            if remote.playing
-                && let Some(id) = remote.current.as_deref()
-            {
-                self.start_stream(id);
-            }
-        } else if remote.playing != old.playing {
-            if remote.playing {
-                // A peer can resume a track this device previously adopted in
-                // a paused state. In that case there is no local pipeline to
-                // unpause yet, so resolve/load the source instead of reporting
-                // a resumed transport with no audio behind it.
-                if self.audio.current_uri().is_some() {
-                    self.audio.play();
-                } else if let Some(id) = remote.current.as_deref() {
-                    self.start_stream(id);
-                }
-            } else {
-                self.audio.pause();
-            }
+    fn report_device_profile_error(&mut self) {
+        if let Err(error) = self.persist_device_profile() {
+            self.playback_error = Some(error.clone());
+            self.toast = Some((error, Instant::now()));
         }
-        if changed_position && !changed_track {
-            self.audio.seek_ms(remote.position_ms);
-        }
+    }
 
-        self.document_playback = Some(remote);
-        self.dirty = true;
+    fn update_device_cache(&mut self, id: &str, state: CacheState) {
+        if matches!(state, CacheState::Streamed) {
+            self.device_cache.remove(id);
+        } else {
+            self.device_cache.insert(id.to_string(), state);
+        }
+        self.lib.cache = self.device_cache.clone();
     }
 
     // ---- action dispatch --------------------------------------------------
@@ -1543,6 +1510,7 @@ impl MusicApp {
     fn tick(&mut self) {
         let now = Instant::now();
         self.last_tick = now;
+        self.expire_resource_stream_if_due(now);
         if !self.pb.playing || self.pb.current.is_none() {
             return;
         }
@@ -1570,8 +1538,16 @@ impl MusicApp {
                 self.toast = Some((message, Instant::now()));
                 self.pb.playing = false;
                 self.audio.stop();
+                self.fail_resource_stream(
+                    "music.audio_start_failed",
+                    "The audio pipeline failed after stream resolution.",
+                    None,
+                    true,
+                );
                 return;
             }
+            #[cfg(feature = "audio")]
+            self.settle_resource_stream_after_rendered_frames(self.audio.frames_rendered());
             if self.audio.reached_eos() {
                 // The staged stream ended. For a fully-streamed track this is a
                 // normal end-of-song; for a SABR-truncated free URL it fires
@@ -1992,8 +1968,6 @@ impl MusicApp {
                 self.volume_popover_open = !self.volume_popover_open;
             }
             Action::ToggleMute => self.on_toggle_mute(state),
-            Action::ToggleDownload(id) => self.on_toggle_download(&id, state),
-            Action::DownloadAll(ids) => self.on_download_all(&ids, state),
             Action::PickPlaylistCover(playlist_id) => self.on_pick_playlist_cover(playlist_id),
             Action::AddToQueue(id) => self.on_add_to_queue(&id, state),
             Action::PlayNext(id) => self.on_play_next(&id, state),
@@ -2231,73 +2205,6 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_toggle_download(&mut self, id: &str, state: &mut AutoCommit) {
-        let label = self
-            .lib
-            .track(id)
-            .map(|t| t.title.clone())
-            .unwrap_or_default();
-        let toast = match self.lib.cache_state(id) {
-            CacheState::Cached => {
-                // Already offline → drop it.
-                self.downloads.remove(id);
-                self.perform_action(
-                    state,
-                    &crate::actions::set_offline_action(&[id.to_string()], false),
-                );
-                self.reload_library(state);
-                format!("Removed \u{201c}{label}\u{201d} from offline")
-            }
-            CacheState::Downloading(_) => {
-                // Tapping an in-flight download cancels it.
-                self.downloads.remove(id);
-                self.perform_action(
-                    state,
-                    &crate::actions::set_offline_action(&[id.to_string()], false),
-                );
-                self.reload_library(state);
-                format!("Stopped downloading \u{201c}{label}\u{201d}")
-            }
-            CacheState::Streamed => {
-                // Start a real, time-progressing download. It shows the
-                // working spinner and flips to Cached when it finishes.
-                self.downloads.insert(id.to_string(), Instant::now());
-                // Reflect the in-flight state immediately (the doc keeps
-                // only terminal states; see `advance_downloads`).
-                self.lib
-                    .cache
-                    .insert(id.to_string(), CacheState::Downloading(0.0));
-                format!("Downloading \u{201c}{label}\u{201d} for offline")
-            }
-        };
-        self.toast = Some((toast, Instant::now()));
-    }
-
-    fn on_download_all(&mut self, ids: &[String], state: &mut AutoCommit) {
-        // Keep every not-yet-cached track offline in one gesture. Tracks
-        // already cached stay as-is (idempotent).
-        let mut added = 0usize;
-        let mut to_keep = Vec::new();
-        for id in ids {
-            if self.lib.cache_state(id) != CacheState::Cached {
-                to_keep.push(id.clone());
-                added += 1;
-            }
-        }
-        if !to_keep.is_empty() {
-            self.perform_action(state, &crate::actions::set_offline_action(&to_keep, true));
-            self.reload_library(state);
-        }
-        self.toast = Some((
-            if added == 0 {
-                "Already saved for offline".to_string()
-            } else {
-                format!("Saving {added} songs for offline")
-            },
-            Instant::now(),
-        ));
-    }
-
     fn on_pick_playlist_cover(&mut self, playlist_id: String) {
         // Route through the host's XDG file-chooser portal (never an
         // in-app picker). The pick is async; the frame loop drains the
@@ -2513,10 +2420,8 @@ impl MusicApp {
     /// [`Self::drain_worker`]. If the configured backend cannot serve the
     /// selected id (for example an old bundled/demo entry), it reports a clear
     /// failure and stops transport rather than simulating playback.
-    fn start_stream(&mut self, track_id: &str) {
-        let Some(t) = self.lib.track(track_id) else {
-            return;
-        };
+    fn start_stream(&mut self, track_id: &str) -> Option<u64> {
+        let t = self.lib.track(track_id)?;
         let yt_id = t.yt_id.clone();
 
         self.ensure_worker();
@@ -2528,8 +2433,12 @@ impl MusicApp {
             self.toast = Some((message, Instant::now()));
             self.pb.playing = false;
             self.audio.stop();
-            return;
+            return None;
         };
+        // A direct UI/media-key choice wins over a still-running host effect.
+        // The old worker result has no authority after this point, but the host
+        // must receive a terminal answer rather than polling Accepted forever.
+        self.supersede_resource_stream_if_needed(request_id);
         let queued = if let Some(w) = &self.worker {
             // Stop the previous stream while the next one resolves so two
             // tracks never overlap on a fast skip.
@@ -2550,6 +2459,7 @@ impl MusicApp {
                 // still finish on the serial backend, but it cannot affect this
                 // transport or create an idle redraw loop.
                 self.resolve_in_flight = 1;
+                Some(request_id)
             }
             Err(error) => {
                 self.active_resolve_request = None;
@@ -2559,8 +2469,168 @@ impl MusicApp {
                 self.toast = Some((message, Instant::now()));
                 self.pb.playing = false;
                 self.audio.stop();
+                None
             }
         }
+    }
+
+    /// Register a host operation against one exact resolver request. Kept in
+    /// the app rather than the render bridge so timeout/supersession logic sees
+    /// every stream intent through the same state machine.
+    pub(crate) fn begin_resource_stream_invocation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        request_id: u64,
+    ) {
+        self.resource_stream_invocation = Some((
+            invocation,
+            request_id,
+            self.audio.frames_rendered(),
+            Instant::now() + STREAM_START_TIMEOUT,
+        ));
+    }
+
+    /// Give a pending host operation a terminal failure exactly once. Results
+    /// remain queued until that invocation is polled, so later operations and
+    /// late worker events cannot overwrite them.
+    fn fail_resource_stream(
+        &mut self,
+        code: &str,
+        message: &str,
+        details: Option<serde_json::Value>,
+        retryable: bool,
+    ) {
+        if let Some((invocation, _, _, _)) = self.resource_stream_invocation.take() {
+            self.resource_stream_results
+                .push(qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: code.into(),
+                        message: message.into(),
+                        details,
+                        retryable,
+                    },
+                });
+        }
+    }
+
+    /// A later local stream choice supersedes a host lifecycle invocation. We
+    /// deliberately keep the new local intent responsive instead of rejecting
+    /// media keys or an on-screen skip while an external resolver is slow.
+    fn supersede_resource_stream_if_needed(&mut self, replacement_request: u64) {
+        if self
+            .resource_stream_invocation
+            .is_some_and(|(_, expected, _, _)| expected != replacement_request)
+        {
+            self.fail_resource_stream(
+                "music.stream_start_superseded",
+                "A newer local playback choice superseded this stream start.",
+                Some(serde_json::json!({ "replacement_request": replacement_request })),
+                true,
+            );
+        }
+    }
+
+    /// Time out a hosted stream start if neither the resolver nor the audio
+    /// backend has produced the advertised terminal evidence by its deadline.
+    /// Late events are ignored because the active request is cleared first.
+    fn expire_resource_stream_if_due(&mut self, now: Instant) {
+        let Some((_, request_id, _, deadline)) = self.resource_stream_invocation else {
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+        if self.active_resolve_request == Some(request_id) {
+            self.active_resolve_request = None;
+            self.resolve_in_flight = 0;
+        }
+        // The resolver may already have delivered a URL while the staged
+        // download or audio pipeline remains wedged. The lifecycle deadline
+        // covers that whole start, so retire transport in either phase.
+        self.pb.playing = false;
+        self.audio.stop();
+        let message = "Audio startup timed out before playback could begin.";
+        self.playback_error = Some(message.into());
+        self.toast = Some((message.into(), now));
+        self.fail_resource_stream(
+            "music.stream_start_timed_out",
+            message,
+            Some(serde_json::json!({ "request_id": request_id })),
+            true,
+        );
+    }
+
+    /// Apply one canonical playback effect and return the exact resolver id
+    /// when it needs asynchronous stream startup. Queue/seek/volume snapshots
+    /// settle locally and return `None`.
+    pub(crate) fn apply_resource_playback(
+        &mut self,
+        playback: Playback,
+    ) -> Result<Option<u64>, String> {
+        if playback.queue.len() > 10_000
+            || playback.volume > 100
+            || playback
+                .queue
+                .iter()
+                .any(|id| !self.lib.tracks.contains_key(id))
+        {
+            return Err("invalid local playback request".into());
+        }
+        match playback.current.as_deref() {
+            None if playback.playing || playback.position_ms != 0 || playback.queue_index != 0 => {
+                return Err("an empty player must be stopped at position zero".into());
+            }
+            Some(current)
+                if playback.queue.get(playback.queue_index).map(String::as_str)
+                    != Some(current)
+                    || self.lib.track(current).is_none() =>
+            {
+                return Err("current playback track does not match the queue".into());
+            }
+            Some(current)
+                if playback.position_ms
+                    > self
+                        .lib
+                        .track(current)
+                        .map_or(0, crate::model::Track::duration_ms) =>
+            {
+                return Err("playback position exceeds the selected track duration".into());
+            }
+            _ => {}
+        }
+        let changed_track = self.pb.current != playback.current;
+        self.pb = playback;
+        self.playhead_ms = self.pb.position_ms as f64;
+        self.bound_track.clone_from(&self.pb.current);
+        self.shuffle_order.clear();
+        self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
+        let request = if changed_track && self.pb.playing {
+            self.pb
+                .current
+                .clone()
+                .and_then(|id| self.start_stream(&id))
+        } else {
+            if self.pb.playing {
+                self.audio.play();
+            } else {
+                self.audio.pause();
+            }
+            None
+        };
+        self.persist_device_profile()?;
+        Ok(request)
+    }
+
+    pub(crate) fn apply_resource_play_track(&mut self, id: &str) -> Result<u64, String> {
+        if !self.lib.tracks.contains_key(id) {
+            return Err("track is no longer in the library".into());
+        }
+        self.pb.queue = vec![id.to_string()];
+        self.shuffle_order.clear();
+        self.play_index(0);
+        self.start_stream(id)
+            .ok_or_else(|| "stream resolver could not start".to_string())
     }
 
     fn next_worker_request_id(&mut self) -> Option<u64> {
@@ -2783,6 +2853,46 @@ impl MusicApp {
                 self.audio.play();
             }
         }
+        #[cfg(not(feature = "audio"))]
+        if self
+            .resource_stream_invocation
+            .is_some_and(|(_, expected, _, _)| expected == request_id)
+        {
+            let Some((invocation, _, _, _)) = self.resource_stream_invocation.take() else {
+                return;
+            };
+            self.resource_stream_results
+                .push(qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput {
+                        // This build has no audio backend.  Resolution means a
+                        // stream URL was obtained; it must not claim playback
+                        // has started when it cannot render any audio.
+                        value: Some(serde_json::json!({ "state": "resolved" })),
+                        resources: Vec::new(),
+                    },
+                });
+        }
+    }
+
+    /// Complete a background resource invocation only after decoded PCM has
+    /// reached the real sink.  The resolver merely gives the pipeline a URL;
+    /// it is not evidence that audio playback started.
+    #[cfg(feature = "audio")]
+    fn settle_resource_stream_after_rendered_frames(&mut self, rendered_frames: u64) {
+        if let Some((invocation, _, frames_before, _)) = self.resource_stream_invocation
+            && rendered_frames > frames_before
+        {
+            self.resource_stream_invocation = None;
+            self.resource_stream_results
+                .push(qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput {
+                        value: Some(serde_json::json!({ "state": "playing" })),
+                        resources: Vec::new(),
+                    },
+                });
+        }
     }
 
     /// Settle the *current* resolution failure visibly. Stale failures are
@@ -2799,6 +2909,17 @@ impl MusicApp {
             self.toast = Some((message, Instant::now()));
             self.pb.playing = false;
             self.audio.stop();
+        }
+        if self
+            .resource_stream_invocation
+            .is_some_and(|(_, expected, _, _)| expected == request_id)
+        {
+            self.fail_resource_stream(
+                "music.stream_resolution_failed",
+                &format!("Could not start audio: {error}"),
+                Some(serde_json::json!({ "track_id": track_id })),
+                true,
+            );
         }
     }
 
@@ -3313,26 +3434,10 @@ impl MusicApp {
     /// progress, alongside the idle download affordance on the rest.
     pub fn snap_downloading(&mut self) {
         self.view = View::Songs;
-        let ids: Vec<String> = self
-            .lib
-            .tracks_sorted()
-            .iter()
-            .map(|t| t.id.clone())
-            .collect();
-        // Backdate each start so this single frame captures a mid-progress
-        // spinner (the per-frame `advance_downloads` recomputes the same frac).
-        for (i, frac) in [0.25_f64, 0.55, 0.85].iter().enumerate() {
-            let Some(id) = ids.get(i) else { continue };
-            let Some(start) = Instant::now()
-                .checked_sub(std::time::Duration::from_secs_f64(DOWNLOAD_SECS * frac))
-            else {
-                continue;
-            };
-            self.downloads.insert(id.clone(), start);
-            self.lib
-                .cache
-                .insert(id.clone(), CacheState::Downloading(*frac as f32));
-        }
+        self.toast = Some((
+            "Offline downloads are unavailable: no durable audio cache is configured".into(),
+            Instant::now(),
+        ));
     }
 
     /// Stage the Search screen showing a multi-type result set + the Spotify
@@ -4427,6 +4532,9 @@ mod render;
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    static PROFILE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn app_with_doc() -> (MusicApp, AutoCommit) {
         let mut app = MusicApp::new();
@@ -4439,6 +4547,45 @@ mod tests {
         app.ensure_seeded(&mut doc);
         app.reload(&mut doc);
         (app, doc)
+    }
+
+    #[test]
+    fn shot_constructor_never_reads_qos_music_profile() {
+        let _lock = PROFILE_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "qos-music-shot-profile-{}-{}.json",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        let mut profile = crate::storage::DeviceProfile::default();
+        profile.playback.current = Some("sentinel-track".into());
+        profile.playback.queue = vec!["sentinel-track".into()];
+        profile.playback.position_ms = 42;
+        profile
+            .cache
+            .insert("sentinel-track".into(), CacheState::Cached);
+        crate::storage::save_device_profile_to(&path, &profile).unwrap();
+
+        let old = std::env::var_os("QOS_MUSIC_PROFILE");
+        // SAFETY: this test serializes its own environment mutation and restores
+        // the prior value before returning.
+        unsafe { std::env::set_var("QOS_MUSIC_PROFILE", &path) };
+        let app = MusicApp::new_for_shot();
+        if let Some(value) = old {
+            // SAFETY: restore the exact process environment value we replaced.
+            unsafe { std::env::set_var("QOS_MUSIC_PROFILE", value) };
+        } else {
+            // SAFETY: remove only the temporary test override above.
+            unsafe { std::env::remove_var("QOS_MUSIC_PROFILE") };
+        }
+        let _ = std::fs::remove_file(path);
+
+        assert!(app.pb.current.is_none());
+        assert!(app.device_cache.is_empty());
+        assert!(!app.persist_device_profile);
     }
 
     #[test]
@@ -4513,31 +4660,21 @@ mod tests {
     }
 
     #[test]
-    fn remote_playback_action_is_adopted_without_resetting_the_library() {
+    fn shared_library_sync_never_adopts_remote_playback() {
         let (mut app, mut doc) = app_with_doc();
         app.sync(&mut doc, &automerge::ROOT);
-        let remote = Playback {
-            current: Some("tk_g2".into()),
-            queue: vec!["tk_g2".into(), "tk_r1".into()],
-            queue_index: 0,
-            playing: false,
-            position_ms: 12_345,
-            shuffle: true,
-            repeat: RepeatMode::All,
-            volume: 37,
-        };
-        let action = crate::actions::MusicAction::SetPlayback(remote.clone());
-        qos_actions::apply_local(&mut doc, &action, crate::actions::encode(&action))
-            .expect("peer playback action applies");
-
+        let before = app.pb.clone();
+        // A peer can still edit a collaborative playlist. It refreshes the
+        // library but must leave this device's transport untouched.
+        app.perform_action(
+            &mut doc,
+            &crate::actions::create_playlist_action("pl_peer_library", "Peer library edit"),
+        );
         app.sync(&mut doc, &automerge::ROOT);
-
-        assert_eq!(app.pb, remote, "the remote transport snapshot is adopted");
-        assert_eq!(app.playhead_ms, 12_345.0);
-        assert_eq!(app.audio.volume(), 0.37);
+        assert_eq!(app.pb, before, "transport remains device-local");
         assert!(
-            app.lib.track("tk_g2").is_some(),
-            "library remains available"
+            app.lib.playlist("pl_peer_library").is_some(),
+            "collaborative library edits still arrive"
         );
     }
 
@@ -4704,15 +4841,15 @@ mod tests {
     }
 
     #[test]
-    fn toggle_play_round_trips_through_doc() {
+    fn toggle_play_stays_local() {
         let (mut app, mut doc) = app_with_doc();
         // Play/pause needs a loaded track (see `play_with_nothing_loaded_is_noop`).
         app.pb.current = Some("tk_g1".into());
         let was = app.pb.playing;
+        let heads = doc.get_heads();
         app.dispatch(Action::TogglePlay, &mut doc);
         assert_eq!(app.pb.playing, !was);
-        // Persisted to the document.
-        assert_eq!(doc::load_playback(&doc).playing, !was);
+        assert_eq!(doc.get_heads(), heads, "transport does not sync");
     }
 
     #[test]
@@ -4727,8 +4864,6 @@ mod tests {
         app.dispatch(Action::TogglePlay, &mut doc);
         assert!(!app.pb.playing, "play with nothing loaded stays stopped");
         assert!(app.pb.current.is_none());
-        // And it stayed stopped in the persisted playback too.
-        assert!(!doc::load_playback(&doc).playing);
     }
 
     #[test]
@@ -5058,81 +5193,71 @@ mod tests {
     }
 
     #[test]
-    fn download_toggle_persists() {
-        use std::time::Duration;
+    fn offline_download_request_is_honest_and_device_local() {
         let (mut app, mut doc) = app_with_doc();
-        // tk_g2 starts streamed.
         assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Streamed);
-        // Clicking download starts a real, in-flight download — a visible
-        // working state, not an instant jump to "cached".
-        app.dispatch(Action::ToggleDownload("tk_g2".into()), &mut doc);
+        let heads = doc.get_heads();
+        let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+            tracks: vec!["tk_g2".into()],
+            keep: true,
+        })
+        .unwrap();
+        let error = app
+            .invoke_resource_operation(
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &keep,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect_err("metadata-only cache request must be refused");
+        assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Streamed);
+        assert_eq!(doc.get_heads(), heads);
         assert!(
-            matches!(app.lib.cache_state("tk_g2"), CacheState::Downloading(_)),
-            "the click enters the downloading (spinner) state",
-        );
-        assert!(app.downloads.contains_key("tk_g2"));
-        // Let it finish (backdate the start past the download duration) and run
-        // one real frame's sync — the per-frame progression completes it.
-        app.downloads.insert(
-            "tk_g2".into(),
-            Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
-        );
-        app.sync(&mut doc, &automerge::ROOT);
-        // It flipped to the done/offline state and persisted to the document.
-        assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Cached);
-        assert_eq!(
-            doc::load_library(&doc).cache_state("tk_g2"),
-            CacheState::Cached
-        );
-        assert!(
-            !app.downloads.contains_key("tk_g2"),
-            "the finished download is retired from the in-flight set",
+            error.contains("durable audio bytes"),
+            "the canonical result explains why it cannot honestly promise offline playback"
         );
     }
 
     #[test]
-    fn download_click_animates_then_completes_and_indicator_survives_reload() {
-        use std::time::Duration;
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot(); // hermetic
-        app.playback_loaded = true;
-        // tk_g1 seeds as already-cached; put it in a streamable state first so
-        // the click genuinely starts a download (not a "remove offline" toggle).
-        doc::set_cache(&mut doc, "tk_g1", CacheState::Streamed);
-        app.lib = doc::load_library(&doc);
-        assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Streamed);
-        // Start the download through the real action path.
-        app.dispatch(Action::ToggleDownload("tk_g1".into()), &mut doc);
-        assert!(matches!(
-            app.lib.cache_state("tk_g1"),
-            CacheState::Downloading(_)
-        ));
-        // A working download keeps frames flowing so the spinner spins — prove
-        // it's the download driving it (not a lingering toast).
-        app.toast = None;
+    fn offline_effect_refuses_keep_but_batch_evicts_legacy_metadata_once() {
+        let (mut app, doc) = app_with_doc();
+        app.device_cache.insert("tk_g1".into(), CacheState::Cached);
+        app.device_cache.insert("tk_g2".into(), CacheState::Cached);
+        app.lib.cache.clone_from(&app.device_cache);
+        let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+            tracks: vec!["tk_g1".into(), "tk_g2".into()],
+            keep: true,
+        })
+        .unwrap();
         assert!(
-            app.needs_animation_frame(),
-            "an in-flight download alone keeps the frame loop animating",
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &keep,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
         );
-        // The Downloads/Songs list renders the spinner branch without panic, and
-        // the in-flight progress survives the per-frame library reload (the
-        // overlay is re-applied in `sync`/`advance_downloads`).
-        app.view = View::Songs;
-        draw_once(&mut app, &mut doc);
+        let evict = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+            tracks: vec!["tk_g1".into(), "tk_g2".into()],
+            keep: false,
+        })
+        .unwrap();
         assert!(
-            matches!(app.lib.cache_state("tk_g1"), CacheState::Downloading(_)),
-            "download progress survives the per-frame reload",
+            app.invoke_resource_operation(
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &evict,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
         );
-        // Finish it and run a frame: the indicator flips to the done state.
-        app.downloads.insert(
-            "tk_g1".into(),
-            Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
-        );
-        draw_once(&mut app, &mut doc);
-        assert_eq!(app.lib.cache_state("tk_g1"), CacheState::Cached);
         assert!(
-            !app.downloads.contains_key("tk_g1"),
-            "a completed download stops animating (retired from the in-flight set)",
+            app.device_cache.is_empty(),
+            "one operation evicts the full batch"
         );
     }
 
@@ -5633,6 +5758,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test intentionally exercises the complete palette-to-resource-operation route"
+    )]
     fn ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates() {
         // Exercise the real palette broker seam: a result address resolves in
         // the exported resource tree, queues a typed operation, and never uses
@@ -5686,21 +5815,30 @@ mod tests {
         palette.set_cursor(row);
         palette.activate_selected();
         let operation = palette.take_operation().expect("play action queued");
-        assert_eq!(operation.kind, qos_actions::OperationKind::Document);
         assert!(palette.take_navigation().is_none());
+        assert_eq!(operation.kind, qos_actions::OperationKind::Effect);
         let heads = doc.get_heads();
-        let action: crate::actions::MusicAction =
-            serde_json::from_slice(&operation.encoded.payload)
-                .expect("palette emitted MusicAction");
-        qos_actions::apply_local(&mut doc, &action, operation.encoded).expect("playback writes");
-        app.sync(&mut doc, &automerge::ROOT);
+        let invocation = qos_actions::InvocationId::new();
+        assert_eq!(
+            Widget::start_resource_operation(
+                &mut app,
+                invocation,
+                operation.kind,
+                &operation.encoded.type_id,
+                &operation.encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("local playback operation starts"),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
             "the brokered effect plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
-        assert_ne!(doc.get_heads(), heads, "playback is shared with peers");
+        assert_eq!(doc.get_heads(), heads, "playback is device-local");
 
         // Navigation follows the same path but is explicitly a View operation.
         let heads = doc.get_heads();
@@ -5739,6 +5877,307 @@ mod tests {
     }
 
     #[test]
+    fn changed_track_playback_effect_starts_exactly_one_stream_request() {
+        let (mut app, doc) = app_with_doc();
+        app.set_offline_for_shot();
+        let mut playback = app.pb.clone();
+        playback.queue = vec!["tk_g1".into()];
+        playback.queue_index = 0;
+        playback.current = Some("tk_g1".into());
+        playback.position_ms = 0;
+        playback.playing = true;
+        let payload =
+            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let before = app.next_request_id;
+        let invocation = qos_actions::InvocationId::new();
+        assert_eq!(
+            app.start_resource_operation(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        assert_eq!(
+            app.next_request_id,
+            before + 1,
+            "a changed track queues one resolve request, never a duplicate stream"
+        );
+        assert_eq!(app.resolve_in_flight, 1);
+    }
+
+    #[test]
+    fn stream_operation_reports_exact_success_failure_and_ignores_stale_completion() {
+        let (mut app, doc) = app_with_doc();
+        app.set_offline_for_shot();
+        let mut playback = app.pb.clone();
+        playback.queue = vec!["tk_g1".into()];
+        playback.current = Some("tk_g1".into());
+        playback.playing = true;
+        let payload =
+            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        assert_eq!(
+            app.start_resource_operation(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        let request_id = app.active_resolve_request.unwrap();
+        let competing =
+            serde_json::to_vec(&crate::actions::MusicOperation::PlayTrack { id: "tk_g2".into() })
+                .unwrap();
+        assert!(
+            app.start_resource_operation(
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &competing,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err(),
+            "concurrent stream start is refused deterministically"
+        );
+        app.apply_resolve_failure("tk_g1", request_id + 1, "stale failure");
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none(),
+            "a stale worker result cannot settle this invocation"
+        );
+        app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(qos_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn stream_operation_times_out_once_and_late_resolution_is_ignored() {
+        let (mut app, doc) = app_with_doc();
+        app.set_offline_for_shot();
+        let mut playback = app.pb.clone();
+        playback.queue = vec!["tk_g1".into()];
+        playback.current = Some("tk_g1".into());
+        playback.playing = true;
+        let payload =
+            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::MUSIC_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        let (_, request_id, _, deadline) =
+            app.resource_stream_invocation.expect("pending host stream");
+
+        app.expire_resource_stream_if_due(deadline + Duration::from_millis(1));
+        assert_eq!(
+            app.active_resolve_request, None,
+            "timeout retires request authority"
+        );
+        let Some(qos_actions::InvocationUpdate::Failed { error, .. }) =
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+        else {
+            panic!("timeout must settle the accepted operation");
+        };
+        assert_eq!(error.code, "music.stream_start_timed_out");
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none(),
+            "a terminal operation update is consumed exactly once"
+        );
+
+        app.apply_resolved_stream(
+            "tk_g1",
+            request_id,
+            &crate::backend::ResolvedStream {
+                video_id: "yt_tk_g1".into(),
+                url: "https://example.invalid/late-audio".into(),
+                mime: "audio/mp4".into(),
+                codec: "mp4a".into(),
+                format: "m4a".into(),
+                bitrate: 128_000,
+                itag: 140,
+                size_bytes: 1,
+                duration_ms: 1,
+                fallback_url: None,
+            },
+        );
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none(),
+            "a late resolver result cannot overwrite a timeout terminal result"
+        );
+    }
+
+    #[test]
+    fn local_next_supersedes_pending_host_stream_and_late_result_stays_stale() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        let mut playback = app.pb.clone();
+        playback.queue = vec!["tk_g1".into(), "tk_g2".into()];
+        playback.queue_index = 0;
+        playback.current = Some("tk_g1".into());
+        playback.playing = true;
+        let payload =
+            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        app.start_resource_operation(
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::MUSIC_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        let (_, first_request, _, _) = app.resource_stream_invocation.expect("pending host stream");
+
+        // This is the normal in-window/media-key next-track route, not a
+        // second host operation. User input wins over a slow external caller.
+        app.on_next(&mut doc);
+        let second_request = app.active_resolve_request.expect("new local intent");
+        assert_ne!(first_request, second_request);
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+
+        app.apply_resolved_stream(
+            "tk_g1",
+            first_request,
+            &crate::backend::ResolvedStream {
+                video_id: "yt_tk_g1".into(),
+                url: "https://example.invalid/late-audio".into(),
+                mime: "audio/mp4".into(),
+                codec: "mp4a".into(),
+                format: "m4a".into(),
+                bitrate: 128_000,
+                itag: 140,
+                size_bytes: 1,
+                duration_ms: 1,
+                fallback_url: None,
+            },
+        );
+        assert_eq!(app.active_resolve_request, Some(second_request));
+        let Some(qos_actions::InvocationUpdate::Failed { error, .. }) =
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+        else {
+            panic!("local supersession must settle the old host operation");
+        };
+        assert_eq!(error.code, "music.stream_start_superseded");
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .is_none(),
+            "supersession terminal update is delivered exactly once"
+        );
+    }
+
+    #[test]
+    fn stream_operation_reports_success_only_for_its_bound_request() {
+        let (mut app, doc) = app_with_doc();
+        app.set_offline_for_shot();
+        let mut playback = app.pb.clone();
+        playback.queue = vec!["tk_g1".into()];
+        playback.current = Some("tk_g1".into());
+        playback.playing = true;
+        let payload =
+            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        let _ = app
+            .start_resource_operation(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::MUSIC_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        let request_id = app.active_resolve_request.unwrap();
+        let stream = crate::backend::ResolvedStream {
+            video_id: "yt_tk_g1".into(),
+            url: "https://example.invalid/audio".into(),
+            mime: "audio/mp4".into(),
+            codec: "mp4a".into(),
+            format: "m4a".into(),
+            bitrate: 128_000,
+            itag: 140,
+            size_bytes: 1,
+            duration_ms: 1,
+            fallback_url: None,
+        };
+        app.apply_resolved_stream("tk_g1", request_id, &stream);
+        #[cfg(not(feature = "audio"))]
+        let update = app
+            .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            .expect("a silent build settles as resolved, never as playing");
+        #[cfg(feature = "audio")]
+        {
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                    .is_none(),
+                "resolver success alone is not audio-start success"
+            );
+            // Exercise the same settlement branch `tick` uses after its real
+            // `frames_rendered()` observation. The value is deliberately
+            // greater than the invocation's captured baseline.
+            app.settle_resource_stream_after_rendered_frames(u64::MAX);
+        }
+        #[cfg(feature = "audio")]
+        let update = app
+            .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            .expect("rendered PCM settles the audio invocation as playing");
+
+        let qos_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+            panic!("the bound resolver completion must succeed");
+        };
+        #[cfg(not(feature = "audio"))]
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!({ "state": "resolved" })),
+            "a no-audio build never labels URL resolution as actual playback"
+        );
+        #[cfg(feature = "audio")]
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!({ "state": "playing" })),
+            "only post-render settlement may report actual playback"
+        );
+        let play = crate::actions::catalog_track_resource(
+            &crate::actions::CatalogTrackResource {
+                id: "tk_g1".into(),
+                label: "Track one".into(),
+                album_id: String::new(),
+                artist_id: String::new(),
+                offline: false,
+                liked: false,
+            },
+            &crate::model::Playback::default(),
+        )
+        .actions
+        .into_iter()
+        .find(|action| action.id == "play")
+        .expect("play resource action");
+        assert!(
+            play.contract.result.validate(&output).is_ok(),
+            "every terminal lifecycle value must validate against its advertised enum"
+        );
+    }
+
+    #[test]
     fn ctrl_k_provider_retrieval_reuses_the_prebuilt_catalog_until_library_changes() {
         let (mut app, mut doc) = app_with_doc();
         let builds = app.library_search_builds;
@@ -5759,11 +6198,7 @@ mod tests {
 
         let mut playback = app.pb.clone();
         playback.volume = playback.volume.saturating_sub(1);
-        app.perform_action(
-            &mut doc,
-            &crate::actions::MusicAction::SetPlayback(playback),
-        );
-        app.reload_library(&mut doc);
+        app.pb = playback;
         assert_eq!(
             app.library_search_builds, builds,
             "playback-only document changes do not reindex the library"
@@ -6538,10 +6973,6 @@ mod tests {
         );
         app.dispatch(Action::ToggleShuffle, &mut doc);
         assert!(app.pb.shuffle);
-        assert!(
-            doc::load_playback(&doc).shuffle,
-            "shuffle flag persists to the doc"
-        );
         assert_eq!(app.shuffle_order.len(), q.len());
         let mut sorted = app.shuffle_order.clone();
         sorted.sort_unstable();
@@ -6792,11 +7223,6 @@ mod tests {
             near_end > near_start + 100_000.0,
             "dragging right seeks forward ({near_start} -> {near_end})"
         );
-        assert_eq!(
-            doc::load_playback(&doc).position_ms,
-            app.playhead_ms as u64,
-            "the sought position persists"
-        );
     }
 
     #[test]
@@ -6865,11 +7291,6 @@ mod tests {
         assert!(
             app.audio.volume().abs() < 1e-6,
             "the audio engine is silenced"
-        );
-        assert_eq!(
-            doc::load_playback(&doc).volume,
-            0,
-            "mute persists to the doc"
         );
         app.dispatch(Action::ToggleMute, &mut doc);
         assert_eq!(app.pb.volume, 76, "unmute restores the pre-mute level");
@@ -7134,23 +7555,6 @@ mod tests {
         assert!(
             pl.track_ids.is_empty(),
             "a plain create (no target track) makes an empty playlist"
-        );
-    }
-
-    // ---- 17. downloads are honest (no fabricated data) ---------------------
-
-    #[test]
-    fn download_toggle_toast_is_honest_about_offline() {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::ToggleDownload("tk_g2".into()), &mut doc);
-        let (msg, _) = app.toast.clone().expect("toggling download shows a toast");
-        assert!(
-            msg.contains("offline"),
-            "the toast describes the real keep-offline action: {msg}"
-        );
-        assert!(
-            !msg.contains("Downloaded"),
-            "no fabricated completed-download claim: {msg}"
         );
     }
 
