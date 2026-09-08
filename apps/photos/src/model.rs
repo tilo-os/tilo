@@ -1,9 +1,9 @@
 //! Pure data model: the edit state a photograph carries, and nothing else.
 //!
-//! Every type here is plain data plus serde, so the whole of what the user has
-//! decided round-trips through Automerge scalars. The bytes never do — see
-//! [`crate::doc`] for why the document holds a path and a pair of edit fields
-//! rather than an image.
+//! Every type here is plain data plus serde. The document maps durable library
+//! records field-by-field (and keeps the open-editor values compact); bytes
+//! never enter Automerge — see [`crate::doc`] for the content-addressed
+//! boundary.
 
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +71,15 @@ impl LibraryPhoto {
         }
         parts.join(" · ")
     }
+
+    /// Strip a content-addressed photograph's machine-local source location
+    /// before it enters the shared library. The display name and content hash
+    /// are sufficient for every collaborator; an absolute import path is not.
+    #[must_use]
+    pub fn portable(mut self) -> Self {
+        self.image = self.image.portable();
+        self
+    }
 }
 
 /// A named collection of stable photo ids. Membership is ordered for a calm,
@@ -98,8 +107,16 @@ impl PhotoLibrary {
         self.photos.iter().find(|photo| photo.id == id)
     }
 
+    pub fn photo_mut(&mut self, id: &str) -> Option<&mut LibraryPhoto> {
+        self.photos.iter_mut().find(|photo| photo.id == id)
+    }
+
     pub fn album(&self, id: &str) -> Option<&Album> {
         self.albums.iter().find(|album| album.id == id)
+    }
+
+    pub fn album_mut(&mut self, id: &str) -> Option<&mut Album> {
+        self.albums.iter_mut().find(|album| album.id == id)
     }
 
     /// Insert exactly once, preserving the existing metadata if a collaborator
@@ -110,6 +127,23 @@ impl PhotoLibrary {
         } else {
             self.photos.push(photo);
             true
+        }
+    }
+
+    /// The document projection intentionally contains only portable metadata.
+    /// Existing path-only records remain readable for backward compatibility,
+    /// but every content-addressed record written from this version drops its
+    /// origin-machine path.
+    #[must_use]
+    pub fn portable(&self) -> Self {
+        Self {
+            photos: self
+                .photos
+                .iter()
+                .cloned()
+                .map(LibraryPhoto::portable)
+                .collect(),
+            albums: self.albums.clone(),
         }
     }
 }
@@ -251,7 +285,7 @@ impl Edits {
     }
 }
 
-/// The photograph currently open: where it came from and how big it is.
+/// The photograph currently open: its portable identity and dimensions.
 ///
 /// Deliberately carries no bytes. The document names the file; the pixels are
 /// loaded beside it and are never written into the CRDT — the same separation
@@ -260,14 +294,12 @@ impl Edits {
 /// freezes every peer's replica at the change before it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpenImage {
-    /// Absolute path the bytes were read from, on the machine that opened it.
+    /// Legacy path or portable display-name hint.
     ///
-    /// A hint, not the picture's identity. This document is shared, and the
-    /// path in it is true of exactly one participant: the same photograph
-    /// handed to a room is staged under a different absolute path in every
-    /// session that receives it, so whichever session's path ends up in the
-    /// document is a path the others cannot read. Resolve [`Self::content`]
-    /// first and treat this as the local shortcut it is.
+    /// Path-only records written before content staging keep their existing
+    /// fallback path. New content-addressed records write only [`Self::name`]
+    /// here, never an absolute origin path; bytes resolve by [`Self::content`]
+    /// through the content store on every device.
     pub path: String,
     /// File name, as shown.
     pub name: String,
@@ -308,6 +340,17 @@ impl OpenImage {
     #[must_use]
     pub fn with_content(mut self, hash: impl Into<String>) -> Self {
         self.content = Some(hash.into());
+        self
+    }
+
+    /// Drop the origin path from a content-addressed record before durable
+    /// sharing. A legacy record has no portable byte identity, so retain its
+    /// path as its explicit compatibility fallback.
+    #[must_use]
+    pub fn portable(mut self) -> Self {
+        if self.content.is_some() {
+            self.path.clone_from(&self.name);
+        }
         self
     }
 
