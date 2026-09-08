@@ -30,7 +30,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::qos_actions::{
     ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec, ControlInvocation,
-    EncodedAction, OperationKind, ParamType, Resource, RetryPolicy,
+    EncodedAction, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -92,6 +92,7 @@ const BOOKMARK_OPEN_FLAGS: [&str; 12] = [
     "browser.library.bookmark.open.11",
 ];
 const PIP_FLAG: &str = "browser.pip_clicked";
+const HISTORY_PAUSE_FLAG: &str = "browser.history_pause_clicked";
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
 /// How many address-bar suggestions to show.
@@ -107,6 +108,13 @@ const SEARCH_QUERY_TOKEN: &str = "{query}";
 /// completion or an explicit failure.  Never leave an accepted resource
 /// invocation pending forever in that case.
 const NAVIGATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+/// Media discovery is asynchronous.  Keep a resource invocation pending only
+/// until the engine gives its positive/negative answer, never indefinitely.
+const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// One shared desktop measure keeps the Library title, section switcher, and
+/// rows visually related instead of leaving the actions in a disconnected
+/// expanse of empty canvas. Compact chrome deliberately remains fluid.
+const LIBRARY_DESKTOP_CONTENT_WIDTH: f32 = 920.0;
 
 /// Browser's public navigation boundary. Keep this separate from the generic
 /// embedded-view helper: Browser's manifest advertises only these schemes.
@@ -157,12 +165,13 @@ enum BrowserOperation {
     ShowSettings,
     ShowPage,
     ClearHistory,
-    ClearWebsiteData,
+    RequestWebsiteDataClear,
     SetAdblock { enabled: bool },
     SetClearOnExit { enabled: bool },
     SetHomepage { url: String },
     SetSearchEngine { template: String },
     TogglePictureInPicture,
+    ToggleHistoryPause,
 }
 
 fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
@@ -185,8 +194,8 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         BrowserOperation::ShowSettings => serde_json::json!({ "operation": "show-settings" }),
         BrowserOperation::ShowPage => serde_json::json!({ "operation": "show-page" }),
         BrowserOperation::ClearHistory => serde_json::json!({ "operation": "clear-history" }),
-        BrowserOperation::ClearWebsiteData => {
-            serde_json::json!({ "operation": "clear-website-data" })
+        BrowserOperation::RequestWebsiteDataClear => {
+            serde_json::json!({ "operation": "request-website-data-clear" })
         }
         BrowserOperation::SetAdblock { enabled } => {
             serde_json::json!({ "operation": "set-adblock", "enabled": enabled })
@@ -202,6 +211,9 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         }
         BrowserOperation::TogglePictureInPicture => {
             serde_json::json!({ "operation": "toggle-picture-in-picture" })
+        }
+        BrowserOperation::ToggleHistoryPause => {
+            serde_json::json!({ "operation": "toggle-history-pause" })
         }
     }
 }
@@ -242,7 +254,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
         Some("show-settings") => Ok(BrowserOperation::ShowSettings),
         Some("show-page") => Ok(BrowserOperation::ShowPage),
         Some("clear-history") => Ok(BrowserOperation::ClearHistory),
-        Some("clear-website-data") => Ok(BrowserOperation::ClearWebsiteData),
+        Some("request-website-data-clear") => Ok(BrowserOperation::RequestWebsiteDataClear),
         Some("set-adblock") => Ok(BrowserOperation::SetAdblock {
             enabled: value
                 .get("enabled")
@@ -270,6 +282,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
                 .into(),
         }),
         Some("toggle-picture-in-picture") => Ok(BrowserOperation::TogglePictureInPicture),
+        Some("toggle-history-pause") => Ok(BrowserOperation::ToggleHistoryPause),
         _ => Err("unknown browser operation".to_string()),
     }
 }
@@ -278,8 +291,41 @@ fn navigation_contract() -> ActionContract {
     ActionContract {
         retry: RetryPolicy::Idempotent,
         execution: ui::qos_actions::ExecutionMode::Background { cancellable: false },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "string" }),
+        },
         tags: vec!["network".into(), "navigation".into()],
         ..ActionContract::view()
+    }
+}
+
+/// An explicit contract for sensitive work that happens only in this running
+/// browser profile.  These effects are intentionally not CRDT mutations: a
+/// peer must not clear this machine's cookies, history, media surface, or
+/// history-capture preference by replaying a collaborative document action.
+fn local_effect_contract(tags: &[&str]) -> ActionContract {
+    ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        reversible: false,
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "string" }),
+        },
+        tags: tags.iter().map(|tag| (*tag).into()).collect(),
+        ..ActionContract::default()
+    }
+}
+
+fn local_background_contract(tags: &[&str]) -> ActionContract {
+    ActionContract {
+        execution: ui::qos_actions::ExecutionMode::Background { cancellable: false },
+        ..local_effect_contract(tags)
+    }
+}
+
+fn local_output(message: impl Into<String>) -> ui::qos_actions::ActionOutput {
+    ui::qos_actions::ActionOutput {
+        value: Some(serde_json::Value::String(message.into())),
+        resources: Vec::new(),
     }
 }
 
@@ -327,6 +373,16 @@ pub struct BrowserWidget {
 
     // User-facing browser state.
     settings: Settings,
+    /// History pausing is an in-memory, device-local session boundary. It is
+    /// never serialized to the collaborative document or the profile.
+    history_paused: bool,
+    /// Local presentation error after a history-clear write failed. Kept in
+    /// the browser (rather than the shared document) because it describes
+    /// this profile's disk, not collaborative state.
+    history_clear_error: Option<String>,
+    /// Tiny persistence seam: resource completion must mean the durable
+    /// history write succeeded, and tests need to prove the failure path.
+    history_save: fn(&History) -> std::io::Result<()>,
     settings_dirty: bool,
     history: History,
     bookmarks: Bookmarks,
@@ -354,6 +410,10 @@ pub struct BrowserWidget {
     resource_navigation_invocation: Option<ui::qos_actions::InvocationId>,
     resource_navigation_result: Option<ui::qos_actions::InvocationUpdate>,
     resource_navigation_deadline: Option<std::time::Instant>,
+    resource_pip_invocation: Option<ui::qos_actions::InvocationId>,
+    resource_pip_request: Option<u64>,
+    resource_pip_result: Option<ui::qos_actions::InvocationUpdate>,
+    resource_pip_deadline: Option<std::time::Instant>,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
     published_pip_region: Option<Rect>,
@@ -452,6 +512,9 @@ impl BrowserWidget {
             forced_load_error: false,
             forced_loading: false,
             settings,
+            history_paused: false,
+            history_clear_error: None,
+            history_save: History::save,
             settings_dirty: false,
             history,
             bookmarks,
@@ -467,6 +530,10 @@ impl BrowserWidget {
             resource_navigation_invocation: None,
             resource_navigation_result: None,
             resource_navigation_deadline: None,
+            resource_pip_invocation: None,
+            resource_pip_request: None,
+            resource_pip_result: None,
+            resource_pip_deadline: None,
             pending_pip: None,
             pending_pip_region_update: None,
             published_pip_region: None,
@@ -539,6 +606,10 @@ impl BrowserWidget {
     /// Seed the responsive breakpoint before a single-frame offscreen render.
     pub fn debug_set_viewport_width(&mut self, width: u32) {
         self.compact_chrome = width < 600;
+        // The desktop Library cap also needs the viewport before its first
+        // retained layout pass. Production windows already have this rect by
+        // the time a user opens Library; headless review does not.
+        self.rect = Rect::new(0.0, 0.0, f64::from(width), 0.0);
     }
 
     /// Populate and open a browser-library section for deterministic review.
@@ -571,6 +642,22 @@ impl BrowserWidget {
     pub fn debug_show_settings(&mut self) {
         self.show_settings = true;
         self.show_library = false;
+    }
+
+    /// Headless visual-review hook for the history-pause boundary. Existing
+    /// entries deliberately remain visible: pausing recording is not a
+    /// private-storage mode and must not hide prior durable history.
+    pub fn debug_show_history_paused(&mut self) {
+        if self.history.is_empty() {
+            self.history
+                .record_at("https://example.org/reading", "Existing reading", 2);
+            self.history
+                .record_at("https://www.rust-lang.org/learn", "Learn Rust", 1);
+        }
+        self.history_paused = true;
+        self.show_library = true;
+        self.show_settings = false;
+        self.library_section = LibrarySection::History;
     }
 
     /// Real-engine integration hook used by `browser --shots-live --probe-pip`.
@@ -630,15 +717,9 @@ impl BrowserWidget {
                 self.structure_dirty = true;
             }
             BrowserOperation::ClearHistory => {
-                self.history.clear();
-                self.suggestions.clear();
-                self.last_query = None;
-                if !self.headless {
-                    let _ = self.history.save();
-                }
-                self.structure_dirty = true;
+                self.clear_history_durably()?;
             }
-            BrowserOperation::ClearWebsiteData => {
+            BrowserOperation::RequestWebsiteDataClear => {
                 self.engine.send(WebViewCommand::ClearWebsiteData);
             }
             BrowserOperation::SetAdblock { enabled } => {
@@ -677,7 +758,36 @@ impl BrowserWidget {
                 self.settings_dirty = true;
             }
             BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
+            BrowserOperation::ToggleHistoryPause => {
+                self.history_paused = !self.history_paused;
+                self.structure_dirty = true;
+            }
         }
+        Ok(())
+    }
+
+    /// Clear the in-memory corpus only when its new empty state is durable.
+    /// A failed write restores the prior entries so actions/history never
+    /// report local data as cleared when it will reappear on restart.
+    fn clear_history_durably(&mut self) -> Result<(), String> {
+        let previous = self.history.clone();
+        self.history.clear();
+        if !self.headless
+            && let Err(error) = (self.history_save)(&self.history)
+        {
+            self.history = previous;
+            let message =
+                "Couldn’t clear history because Browser could not save the change. Previous history was kept."
+                    .to_string();
+            tracing::warn!("browser history clear was not persisted: {error}");
+            self.history_clear_error = Some(message.clone());
+            self.structure_dirty = true;
+            return Err(message);
+        }
+        self.suggestions.clear();
+        self.last_query = None;
+        self.history_clear_error = None;
+        self.structure_dirty = true;
         Ok(())
     }
 
@@ -736,7 +846,7 @@ impl BrowserWidget {
             homepage: self.text_binding("browser.settings", "set-homepage", "url"),
             search_engine: self.text_binding("browser.settings", "set-search-engine", "template"),
             clear_history: self.unit_binding("browser.history", "clear"),
-            clear_site_data: self.unit_binding("browser.settings", "clear-site-data"),
+            clear_site_data: self.unit_binding("browser.settings", "request-site-data-clear"),
         }
     }
 
@@ -919,6 +1029,11 @@ impl BrowserWidget {
                 kind: PipFeedbackKind::NoVideo,
                 started: std::time::Instant::now(),
             });
+            self.finish_pip_operation_failure(
+                request_id,
+                "browser.picture_in_picture_unavailable",
+                "The page did not expose a visible video for Picture in Picture.",
+            );
             return;
         }
 
@@ -952,6 +1067,7 @@ impl BrowserWidget {
         self.active_pip = true;
         self.next_pip_refresh_at = Some(std::time::Instant::now() + PIP_ELEMENT_REFRESH);
         self.structure_dirty = true;
+        self.finish_pip_operation_success(request_id, "Picture in Picture opened.");
     }
 
     fn poll_active_pip_element(&mut self) {
@@ -1099,6 +1215,46 @@ impl BrowserWidget {
             kind: PipFeedbackKind::NoVideo,
             started: std::time::Instant::now(),
         });
+        self.finish_pip_operation_failure(
+            request_id,
+            "browser.picture_in_picture_unavailable",
+            "No visible video is available for Picture in Picture.",
+        );
+    }
+
+    fn finish_pip_operation_success(&mut self, request_id: u64, message: &str) {
+        if self.resource_pip_request != Some(request_id) {
+            return;
+        }
+        let Some(invocation) = self.resource_pip_invocation.take() else {
+            return;
+        };
+        self.resource_pip_request = None;
+        self.resource_pip_deadline = None;
+        self.resource_pip_result = Some(ui::qos_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: local_output(message),
+        });
+    }
+
+    fn finish_pip_operation_failure(&mut self, request_id: u64, code: &str, message: &str) {
+        if self.resource_pip_request != Some(request_id) {
+            return;
+        }
+        let Some(invocation) = self.resource_pip_invocation.take() else {
+            return;
+        };
+        self.resource_pip_request = None;
+        self.resource_pip_deadline = None;
+        self.resource_pip_result = Some(ui::qos_actions::InvocationUpdate::Failed {
+            invocation,
+            error: ui::qos_actions::ActionFailure {
+                code: code.into(),
+                message: message.into(),
+                details: None,
+                retryable: false,
+            },
+        });
     }
 
     #[allow(
@@ -1173,6 +1329,25 @@ impl BrowserWidget {
         } else {
             pip_btn
         };
+        let history_pause_label = if self.history_paused {
+            "Resume history in this window"
+        } else {
+            "Pause history in this window"
+        };
+        let history_pause_btn = self.bind_button(
+            Button::new("browser.history-pause", "", Some(HISTORY_PAUSE_FLAG))
+                .with_icon(Icon::Shield)
+                .with_accessible_name(history_pause_label)
+                .tooltip(history_pause_label)
+                .with_size(NAV_BTN.0, NAV_BTN.1),
+            "browser.history-pause",
+            "toggle-history-pause",
+        );
+        let history_pause_btn = if self.history_paused {
+            history_pause_btn.primary()
+        } else {
+            history_pause_btn
+        };
 
         // `no_wrap` keeps the address input on the same line as the
         // buttons (a wrapping row would push the 100%-width input onto
@@ -1220,6 +1395,7 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(bookmark_btn));
         }
+        toolbar = toolbar.push(Box::new(history_pause_btn));
         toolbar = toolbar.push(Box::new(library_btn));
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
@@ -1235,11 +1411,22 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        if self.history_paused {
+            column = column.push(Box::new(
+                Container::new().with_background().with_child(Box::new(
+                    Text::new(
+                        "History paused — pages in this window are not saved to browsing history.",
+                    )
+                    .with_size(13.0),
+                )),
+            ));
+        }
         // The content region is either the settings pane or the live page.
         let content: Box<dyn Widget> = if self.show_settings {
             Box::new(
                 SettingsPane::with_settings(self.settings.clone())
-                    .with_action_bindings(self.settings_action_bindings()),
+                    .with_action_bindings(self.settings_action_bindings())
+                    .with_history_clear_error(self.history_clear_error.clone()),
             )
         } else if self.show_library {
             self.build_library_composition()
@@ -1287,6 +1474,14 @@ impl BrowserWidget {
         reason = "Each row list is explicitly capped to its matching fixed flag array."
     )]
     fn build_library_composition(&self) -> Box<dyn Widget> {
+        // At intermediate desktop widths, retain one coherent panel but never
+        // force a fixed 920px card past the viewport. Compact chrome remains
+        // fully fluid below its own breakpoint.
+        let desktop_content_width = if self.rect.width() > 0.0 {
+            LIBRARY_DESKTOP_CONTENT_WIDTH.min((self.rect.width() as f32 - 48.0).max(0.0))
+        } else {
+            LIBRARY_DESKTOP_CONTENT_WIDTH
+        };
         let heading = Row::new()
             .push(Box::new(Text::new("Library").with_size(24.0)))
             .push(Box::new(Spacer::new()))
@@ -1340,11 +1535,32 @@ impl BrowserWidget {
         }
 
         let body: Box<dyn Widget> = match self.library_section {
-            LibrarySection::History if self.history.is_empty() => Box::new(
-                EmptyState::new("No browsing history yet")
-                    .with_icon(Icon::History)
-                    .with_message("Pages you visit appear here. History stays on this device."),
-            ),
+            LibrarySection::History if self.history.is_empty() => {
+                let (title, message) = if self.compact_chrome {
+                    if self.history_paused {
+                        ("History paused", "New pages are not saved.")
+                    } else {
+                        ("No browsing history yet", "Pages you visit appear here.")
+                    }
+                } else {
+                    if self.history_paused {
+                        (
+                            "History is paused in this window",
+                            "New pages here aren’t saved to history.",
+                        )
+                    } else {
+                        (
+                            "No browsing history yet",
+                            "Pages you visit appear here. History stays on this device.",
+                        )
+                    }
+                };
+                Box::new(
+                    EmptyState::new(title)
+                        .with_icon(Icon::Shield)
+                        .with_message(message),
+                )
+            }
             LibrarySection::History => {
                 let mut rows = Column::new().with_no_padding().with_intrinsic_height();
                 for (index, entry) in self.history.entries().iter().rev().take(12).enumerate() {
@@ -1356,39 +1572,61 @@ impl BrowserWidget {
                     };
                     rows = rows
                         .push(Box::new(
-                            Container::new().with_background().with_child(Box::new(
-                                Row::new()
-                                    .push(Box::new(
-                                        Column::new()
-                                            .with_no_padding()
-                                            .with_intrinsic_height()
-                                            .push(Box::new(Text::new(title).with_size(15.0)))
-                                            .push(Box::new(
-                                                Text::new(&entry.url).with_size(12.0).dimmed(),
-                                            )),
-                                    ))
-                                    .push(Box::new(Spacer::new()))
-                                    .push(Box::new(
-                                        self.bind_button(
-                                            Button::new(
-                                                HISTORY_OPEN_FLAGS[index],
-                                                "Open",
-                                                Some(HISTORY_OPEN_FLAGS[index]),
-                                            )
-                                            .with_accessible_name(&format!("Open {title}"))
-                                            .tooltip("Open page")
-                                            .with_size(84.0, 36.0),
-                                            &resource_id,
-                                            "open",
-                                        ),
-                                    )),
-                            )),
+                            Container::new()
+                                .with_no_padding()
+                                .with_background()
+                                .with_child(Box::new(
+                                    Row::new()
+                                        .no_wrap()
+                                        .with_padding(14.0, 9.0)
+                                        .push(Box::new(
+                                            Container::new()
+                                                .with_no_padding()
+                                                .with_flex_grow()
+                                                .with_child(Box::new(
+                                                    Column::new()
+                                                        .with_no_padding()
+                                                        .with_intrinsic_height()
+                                                        .push(Box::new(
+                                                            Text::new(title).with_size(15.0),
+                                                        ))
+                                                        .push(Box::new(
+                                                            Text::new(&entry.url)
+                                                                .with_size(12.0)
+                                                                .dimmed(),
+                                                        )),
+                                                )),
+                                        ))
+                                        .push(Box::new(
+                                            self.bind_button(
+                                                Button::new(
+                                                    HISTORY_OPEN_FLAGS[index],
+                                                    "Open",
+                                                    Some(HISTORY_OPEN_FLAGS[index]),
+                                                )
+                                                .with_accessible_name(&format!("Open {title}"))
+                                                .tooltip("Open page")
+                                                .with_size(84.0, 36.0),
+                                                &resource_id,
+                                                "open",
+                                            ),
+                                        )),
+                                )),
                         ))
                         .push(Box::new(
-                            Container::new().with_no_padding().with_height(10.0),
+                            Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                Box::new(rows)
+                if self.compact_chrome {
+                    Box::new(rows)
+                } else {
+                    Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_width(desktop_content_width)
+                            .with_child(Box::new(rows)),
+                    )
+                }
             }
             LibrarySection::Bookmarks if self.bookmarks.entries().is_empty() => Box::new(
                 EmptyState::new("No bookmarks yet")
@@ -1405,51 +1643,76 @@ impl BrowserWidget {
                     let remove_control_id = format!("{resource_id}.remove");
                     rows = rows
                         .push(Box::new(
-                            Container::new().with_background().with_child(Box::new(
-                                Row::new()
-                                    .push(Box::new(
-                                        Column::new()
-                                            .with_no_padding()
-                                            .with_intrinsic_height()
-                                            .push(Box::new(Text::new(&entry.title).with_size(15.0)))
-                                            .push(Box::new(
-                                                Text::new(&entry.url).with_size(12.0).dimmed(),
-                                            )),
-                                    ))
-                                    .push(Box::new(Spacer::new()))
-                                    .push(Box::new(
-                                        self.bind_button(
-                                            Button::new(
-                                                BOOKMARK_OPEN_FLAGS[index],
-                                                "Open",
-                                                Some(BOOKMARK_OPEN_FLAGS[index]),
-                                            )
-                                            .with_accessible_name(&format!("Open {}", entry.title))
-                                            .with_size(84.0, 36.0),
-                                            &resource_id,
-                                            "open",
-                                        ),
-                                    ))
-                                    .push(Box::new(
-                                        self.bind_button(
-                                            Button::new(&remove_control_id, "Remove", None)
+                            Container::new()
+                                .with_no_padding()
+                                .with_background()
+                                .with_child(Box::new(
+                                    Row::new()
+                                        .no_wrap()
+                                        .with_padding(14.0, 9.0)
+                                        .push(Box::new(
+                                            Container::new()
+                                                .with_no_padding()
+                                                .with_flex_grow()
+                                                .with_child(Box::new(
+                                                    Column::new()
+                                                        .with_no_padding()
+                                                        .with_intrinsic_height()
+                                                        .push(Box::new(
+                                                            Text::new(&entry.title).with_size(15.0),
+                                                        ))
+                                                        .push(Box::new(
+                                                            Text::new(&entry.url)
+                                                                .with_size(12.0)
+                                                                .dimmed(),
+                                                        )),
+                                                )),
+                                        ))
+                                        .push(Box::new(
+                                            self.bind_button(
+                                                Button::new(
+                                                    BOOKMARK_OPEN_FLAGS[index],
+                                                    "Open",
+                                                    Some(BOOKMARK_OPEN_FLAGS[index]),
+                                                )
                                                 .with_accessible_name(&format!(
-                                                    "Remove bookmark {}",
+                                                    "Open {}",
                                                     entry.title
                                                 ))
-                                                .tooltip("Remove bookmark")
-                                                .with_size(96.0, 36.0),
-                                            &resource_id,
-                                            "remove",
-                                        ),
-                                    )),
-                            )),
+                                                .with_size(84.0, 36.0),
+                                                &resource_id,
+                                                "open",
+                                            ),
+                                        ))
+                                        .push(Box::new(
+                                            self.bind_button(
+                                                Button::new(&remove_control_id, "Remove", None)
+                                                    .with_accessible_name(&format!(
+                                                        "Remove bookmark {}",
+                                                        entry.title
+                                                    ))
+                                                    .tooltip("Remove bookmark")
+                                                    .with_size(96.0, 36.0),
+                                                &resource_id,
+                                                "remove",
+                                            ),
+                                        )),
+                                )),
                         ))
                         .push(Box::new(
-                            Container::new().with_no_padding().with_height(10.0),
+                            Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                Box::new(rows)
+                if self.compact_chrome {
+                    Box::new(rows)
+                } else {
+                    Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_width(desktop_content_width)
+                            .with_child(Box::new(rows)),
+                    )
+                }
             }
             LibrarySection::Downloads => Box::new(
                 EmptyState::new("Web downloads aren’t available yet")
@@ -1476,41 +1739,85 @@ impl BrowserWidget {
                         let status = format!("Version {} · installed, inactive", extension.version);
                         rows = rows
                             .push(Box::new(
-                                Container::new().with_background().with_child(Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .with_intrinsic_height()
-                                        .push(Box::new(Text::new(&extension.name).with_size(15.0)))
-                                        .push(Box::new(
-                                            Text::new(&status).with_size(12.0).dimmed(),
-                                        )),
-                                )),
+                                Container::new()
+                                    .with_no_padding()
+                                    .with_background()
+                                    .with_child(Box::new(
+                                        Row::new().no_wrap().with_padding(14.0, 9.0).push(
+                                            Box::new(
+                                                Container::new()
+                                                    .with_no_padding()
+                                                    .with_flex_grow()
+                                                    .with_child(Box::new(
+                                                        Column::new()
+                                                            .with_no_padding()
+                                                            .with_intrinsic_height()
+                                                            .push(Box::new(
+                                                                Text::new(&extension.name)
+                                                                    .with_size(15.0),
+                                                            ))
+                                                            .push(Box::new(
+                                                                Text::new(&status)
+                                                                    .with_size(12.0)
+                                                                    .dimmed(),
+                                                            )),
+                                                    )),
+                                            ),
+                                        ),
+                                    )),
                             ))
                             .push(Box::new(
-                                Container::new().with_no_padding().with_height(10.0),
+                                Container::new().with_no_padding().with_height(8.0),
                             ));
                     }
-                    Box::new(rows)
+                    if self.compact_chrome {
+                        Box::new(rows)
+                    } else {
+                        Box::new(
+                            Container::new()
+                                .with_no_padding()
+                                .with_width(desktop_content_width)
+                                .with_child(Box::new(rows)),
+                        )
+                    }
                 }
             }
         };
 
-        let content = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(heading))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(18.0),
-            ))
-            .push(Box::new(sections))
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(18.0),
-            ))
-            .push(body);
+        let content: Box<dyn Widget> = Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(heading))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(18.0),
+                ))
+                .push(Box::new(sections))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(18.0),
+                ))
+                .push(body),
+        );
+        let content = if self.compact_chrome {
+            content
+        } else {
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_width(desktop_content_width)
+                            .with_child(content),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            )
+        };
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
-                .with_child(Box::new(Container::new().with_child(Box::new(content)))),
+                .with_child(Box::new(Container::new().with_child(content))),
         )
     }
 
@@ -1547,6 +1854,7 @@ impl BrowserWidget {
             LIBRARY_DOWNLOADS_FLAG,
             LIBRARY_EXTENSIONS_FLAG,
             PIP_FLAG,
+            HISTORY_PAUSE_FLAG,
         ] {
             if state.get(root, flag).ok().flatten().is_none() {
                 let _ = state.put(root, flag, false);
@@ -1696,7 +2004,10 @@ impl BrowserWidget {
                     }
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
-                    if !self.headless && self.current_uri.starts_with("http") {
+                    if !self.headless
+                        && !self.history_paused
+                        && self.current_uri.starts_with("http")
+                    {
                         self.history.record(&self.current_uri, &self.title);
                         let _ = self.history.save();
                     }
@@ -1705,7 +2016,12 @@ impl BrowserWidget {
                         self.resource_navigation_result =
                             Some(ui::qos_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: ui::qos_actions::ActionOutput::default(),
+                                output: ui::qos_actions::ActionOutput {
+                                    value: Some(serde_json::Value::String(
+                                        self.current_uri.clone(),
+                                    )),
+                                    resources: Vec::new(),
+                                },
                             });
                     }
                 }
@@ -1785,12 +2101,7 @@ impl BrowserWidget {
             self.engine.send(WebViewCommand::ClearWebsiteData);
         }
         if intents.clear_history {
-            self.history.clear();
-            if !self.headless {
-                let _ = self.history.save();
-            }
-            self.suggestions.clear();
-            self.last_query = None;
+            let _ = self.clear_history_durably();
         }
         let mut changed = false;
         if let Some(v) = intents.adblock_enabled
@@ -2205,7 +2516,41 @@ impl Widget for BrowserWidget {
             OperationKind::View,
             BrowserOperation::TogglePictureInPicture,
         ) {
-            page.actions.push(spec);
+            page.actions
+                .push(spec.with_contract(local_background_contract(&[
+                    "device-local",
+                    "session",
+                    "media",
+                ])));
+        }
+
+        let mut session = Resource::new(
+            "browser.session",
+            "browser.history-pause",
+            if self.history_paused {
+                "History paused"
+            } else {
+                "History recording"
+            },
+        );
+        if let Some(spec) = operation(
+            "toggle-history-pause",
+            if self.history_paused {
+                "Resume history in this window"
+            } else {
+                "Pause history in this window"
+            },
+            OperationKind::Effect,
+            BrowserOperation::ToggleHistoryPause,
+        ) {
+            session
+                .actions
+                .push(spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "session",
+                    "history-paused",
+                    "sensitive-data",
+                ])));
         }
 
         let mut history = Resource::new("browser.history", "browser.history", "History");
@@ -2226,9 +2571,19 @@ impl Widget for BrowserWidget {
             BrowserOperation::ClearHistory,
         ) {
             history.actions.push(if self.history.is_empty() {
-                spec.unavailable("already_empty", "Browsing history is already empty")
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "history",
+                    "sensitive-data",
+                ]))
+                .unavailable("already_empty", "Browsing history is already empty")
             } else {
-                spec.destructive()
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "history",
+                    "sensitive-data",
+                ]))
+                .destructive()
             });
         }
         for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
@@ -2355,12 +2710,19 @@ impl Widget for BrowserWidget {
             settings.actions.push(spec);
         }
         if let Some(spec) = operation(
-            "clear-site-data",
-            "Clear cookies and site data",
+            "request-site-data-clear",
+            "Request local site-data clear",
             OperationKind::Effect,
-            BrowserOperation::ClearWebsiteData,
+            BrowserOperation::RequestWebsiteDataClear,
         ) {
-            settings.actions.push(spec.destructive());
+            settings.actions.push(
+                spec.with_contract(local_effect_contract(&[
+                    "device-local",
+                    "site-data",
+                    "sensitive-data",
+                ]))
+                .destructive(),
+            );
         }
         for (id, label, operation) in [
             ("set-adblock", "Set ad and tracker blocking", "set-adblock"),
@@ -2453,7 +2815,9 @@ impl Widget for BrowserWidget {
         ) {
             browser.actions.push(spec);
         }
-        browser.children = vec![page, history, bookmarks, downloads, extensions, settings];
+        browser.children = vec![
+            page, session, history, bookmarks, downloads, extensions, settings,
+        ];
         vec![browser]
     }
 
@@ -2497,11 +2861,49 @@ impl Widget for BrowserWidget {
                 | BrowserOperation::Reload
                 | BrowserOperation::Navigate { .. }
         );
+        if matches!(&operation, BrowserOperation::TogglePictureInPicture) {
+            if self.resource_pip_invocation.is_some() || self.resource_pip_result.is_some() {
+                return Err("another Picture in Picture operation is already running".into());
+            }
+            if self.active_pip {
+                self.begin_pip_probe();
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    local_output("Picture in Picture closed."),
+                )));
+            }
+            self.begin_pip_probe();
+            let request_id = self
+                .active_pip_probe
+                .ok_or_else(|| "Picture in Picture probe did not start".to_string())?;
+            self.resource_pip_invocation = Some(invocation);
+            self.resource_pip_request = Some(request_id);
+            self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
         if !is_navigation {
+            let is_history_pause_toggle =
+                matches!(&operation, BrowserOperation::ToggleHistoryPause);
+            let output = match &operation {
+                BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
+                // WebKit exposes no completion event for this command. The
+                // result deliberately says only what the executor can prove:
+                // the request was accepted by the local engine.
+                BrowserOperation::RequestWebsiteDataClear => {
+                    local_output("Website-data clear request sent to the local browser engine.")
+                }
+                _ => ui::qos_actions::ActionOutput::default(),
+            };
             self.perform_browser_operation(operation)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                ui::qos_actions::ActionOutput::default(),
-            )));
+            let output = if is_history_pause_toggle {
+                local_output(if self.history_paused {
+                    "History paused in this window."
+                } else {
+                    "History resumed in this window."
+                })
+            } else {
+                output
+            };
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
         }
         if self.resource_navigation_invocation.is_some()
             || self.resource_navigation_result.is_some()
@@ -2528,6 +2930,33 @@ impl Widget for BrowserWidget {
         {
             return self.resource_navigation_result.take();
         }
+        if self
+            .resource_pip_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.resource_pip_result.take();
+        }
+        if self.resource_pip_invocation == Some(invocation)
+            && self
+                .resource_pip_deadline
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            self.resource_pip_invocation = None;
+            self.resource_pip_request = None;
+            self.resource_pip_deadline = None;
+            return Some(ui::qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: ui::qos_actions::ActionFailure {
+                    code: "browser.picture_in_picture_timed_out".into(),
+                    message: "Picture in Picture did not receive a media response in time.".into(),
+                    details: Some(serde_json::json!({
+                        "timeout_seconds": PIP_OPERATION_TIMEOUT.as_secs(),
+                    })),
+                    retryable: true,
+                },
+            });
+        }
         if self.resource_navigation_invocation == Some(invocation)
             && self
                 .resource_navigation_deadline
@@ -2550,6 +2979,10 @@ impl Widget for BrowserWidget {
         None
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Browser's frame-level input routing remains ordered in one place."
+    )]
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.bootstrap_done {
             self.bootstrap_crdt(state, path);
@@ -2649,6 +3082,9 @@ impl Widget for BrowserWidget {
         }
         if Self::take_flag(state, path, PIP_FLAG) && !self.show_settings && !self.show_library {
             self.begin_pip_probe();
+        }
+        if Self::take_flag(state, path, HISTORY_PAUSE_FLAG) {
+            let _ = self.perform_browser_operation(BrowserOperation::ToggleHistoryPause);
         }
 
         self.apply_settings_intents(state, path);
@@ -3099,6 +3535,54 @@ mod tests {
         (state, root)
     }
 
+    fn history_save_fails(_: &History) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "test history directory is not writable",
+        ))
+    }
+
+    fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        widget.sync(&mut state, &root);
+        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+        widget.sync(&mut state, &root);
+        let layout_root = tree
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(width),
+                        height: Dimension::length(height),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let measure_nodes = nodes.clone();
+        tree.compute_layout_with_measure(
+            layout_root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(height),
+            },
+            |known, available, node, _, _| {
+                measure_nodes
+                    .get(&node)
+                    .map_or(taffy::Size::ZERO, |ptr| unsafe {
+                        (**ptr).measure(known, available, &mut text)
+                    })
+            },
+        )
+        .unwrap();
+        widget.apply_layout(&tree, child, Point::ORIGIN);
+    }
+
     #[test]
     fn nav_gesture_drives_engine_history() {
         use ui::gesture::NavDirection;
@@ -3265,6 +3749,46 @@ mod tests {
         let viewport = widget.find_rect("browser.surface").unwrap();
         assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
         assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
+    }
+
+    #[test]
+    fn populated_library_rows_have_a_bounded_compact_measure_at_all_widths() {
+        let mut wide = BrowserWidget::new_headless();
+        wide.debug_show_library("history");
+        layout_at(&mut wide, 1_200.0, 720.0);
+        let first = wide.find_rect(HISTORY_OPEN_FLAGS[0]).unwrap();
+        let second = wide.find_rect(HISTORY_OPEN_FLAGS[1]).unwrap();
+        let history_tab = wide.find_rect("browser.library.history").unwrap();
+        assert!(
+            (120.0..=160.0).contains(&history_tab.x0),
+            "desktop title, tabs, and rows share a centered 920px Library measure"
+        );
+        assert!(
+            first.x1 < 1_080.0,
+            "desktop row actions stay at the trailing edge of the centered Library measure"
+        );
+        assert!(first.height() <= 40.0);
+        assert!(
+            second.y0 - first.y0 < 80.0,
+            "two-line metadata rows must not expand into oversized slabs"
+        );
+
+        let mut narrow = BrowserWidget::new_headless();
+        narrow.debug_show_library("bookmarks");
+        narrow.debug_set_viewport_width(390);
+        layout_at(&mut narrow, 390.0, 844.0);
+        let open = narrow.find_rect(BOOKMARK_OPEN_FLAGS[0]).unwrap();
+        let remove = narrow
+            .find_rect(&format!(
+                "{}.remove",
+                bookmark_resource_id("https://www.rust-lang.org/learn")
+            ))
+            .unwrap();
+        assert!(open.width() > 0.0 && remove.width() > 0.0);
+        assert!(
+            remove.x1 <= 390.0,
+            "row actions stay reachable on narrow layouts"
+        );
     }
 
     #[test]
@@ -3725,7 +4249,17 @@ mod tests {
             navigate.contract.execution,
             ui::qos_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(navigate.contract.result, ui::qos_actions::ResultSpec::None);
+        assert!(navigate.contract.validate_declaration().is_empty());
+        assert!(
+            navigate
+                .contract
+                .result
+                .validate(&ui::qos_actions::ActionOutput {
+                    value: Some(serde_json::Value::String("https://qos.example".into())),
+                    resources: Vec::new(),
+                })
+                .is_ok()
+        );
         let settings = resources[0]
             .children
             .iter()
@@ -3761,6 +4295,306 @@ mod tests {
         assert!(matches!(
             w.poll_resource_operation(invocation, false, &doc, &root),
             Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn sensitive_local_effects_publish_truthful_contracts_and_completed_results() {
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        let (doc, root) = synced(&mut w);
+        w.history.record_at("https://private.example", "Private", 1);
+        let resources = Widget::resources(&w, &doc);
+        let browser = &resources[0];
+        let history = browser
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.history")
+            .unwrap();
+        let clear_history = history
+            .actions
+            .iter()
+            .find(|action| action.id == "clear")
+            .unwrap();
+        assert_eq!(clear_history.kind, OperationKind::Effect);
+        assert_eq!(
+            clear_history.locus,
+            ui::qos_actions::ExecutionLocus::ClientLocal
+        );
+        assert!(
+            clear_history
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == "device-local")
+        );
+        assert!(
+            clear_history
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == "sensitive-data")
+        );
+        assert!(clear_history.contract.validate_declaration().is_empty());
+
+        let invocation = ui::qos_actions::InvocationId::new();
+        let started = w
+            .start_resource_operation(
+                invocation,
+                clear_history.kind,
+                clear_history.operation_type.as_deref().unwrap(),
+                &browser_operation_payload(&BrowserOperation::ClearHistory)
+                    .to_string()
+                    .into_bytes(),
+                &doc,
+                &root,
+            )
+            .unwrap();
+        let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            panic!("clearing in-memory local history is synchronous");
+        };
+        assert!(clear_history.contract.result.validate(&output).is_ok());
+        assert!(w.history.is_empty());
+
+        let settings = browser
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.settings")
+            .unwrap();
+        let clear_site_data = settings
+            .actions
+            .iter()
+            .find(|action| action.id == "request-site-data-clear")
+            .unwrap();
+        let started = w
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                clear_site_data.kind,
+                clear_site_data.operation_type.as_deref().unwrap(),
+                &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
+                    .to_string()
+                    .into_bytes(),
+                &doc,
+                &root,
+            )
+            .unwrap();
+        let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            panic!("the engine accepted the site-data request synchronously");
+        };
+        assert!(clear_site_data.contract.result.validate(&output).is_ok());
+        assert_eq!(
+            output.value,
+            Some(serde_json::Value::String(
+                "Website-data clear request sent to the local browser engine.".into()
+            )),
+            "the descriptor must not overclaim a backend completion it cannot observe"
+        );
+        assert!(
+            engine
+                .commands()
+                .contains(&WebViewCommand::ClearWebsiteData)
+        );
+    }
+
+    #[test]
+    fn history_pause_is_local_and_keeps_existing_history_searchable_and_clearable() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        let (doc, root) = synced(&mut w);
+        w.history
+            .record_at("https://sensitive.example", "Sensitive", 1);
+        let resources = Widget::resources(&w, &doc);
+        let pause = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.session")
+            .unwrap();
+        assert_eq!(pause.kind, "browser.history-pause");
+        let toggle = pause
+            .actions
+            .iter()
+            .find(|action| action.id == "toggle-history-pause")
+            .unwrap();
+        assert_eq!(toggle.kind, OperationKind::Effect);
+        assert_eq!(toggle.locus, ui::qos_actions::ExecutionLocus::ClientLocal);
+        assert!(
+            toggle
+                .contract
+                .tags
+                .iter()
+                .any(|tag| tag == "history-paused")
+        );
+        assert!(toggle.contract.tags.iter().any(|tag| tag == "session"));
+        assert!(toggle.contract.validate_declaration().is_empty());
+
+        let started = w
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                toggle.kind,
+                toggle.operation_type.as_deref().unwrap(),
+                &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
+                    .to_string()
+                    .into_bytes(),
+                &doc,
+                &root,
+            )
+            .unwrap();
+        let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
+            panic!("history pausing changes only this running browser");
+        };
+        assert!(toggle.contract.result.validate(&output).is_ok());
+        let resources = Widget::resources(&w, &doc);
+        let history = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.history")
+            .unwrap();
+        assert_eq!(
+            history.children.len(),
+            1,
+            "pausing only stops new recording"
+        );
+        assert!(
+            history
+                .actions
+                .iter()
+                .find(|action| action.id == "clear")
+                .is_some_and(|action| action.contract.availability.is_available()),
+            "existing durable history remains clearable while recording is paused"
+        );
+        w.search_index.sync(&w.history, &w.bookmarks);
+        assert!(
+            ui::search::SearchProvider::search(&w.search_index.provider(), "Sensitive")
+                .iter()
+                .any(|result| result.title == "Sensitive")
+        );
+    }
+
+    #[test]
+    fn ui_history_clear_preserves_entries_and_surfaces_a_persistence_failure() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), false);
+        w.history_save = history_save_fails;
+        let (mut doc, root) = synced(&mut w);
+        w.history = History::new();
+        w.history
+            .record_at("https://durable.example", "Durable entry", 1);
+        w.show_settings = true;
+
+        // This is the settings-pane click-flag route, not a direct model
+        // mutation: it must produce the same truthful outcome as the
+        // canonical resource action.
+        doc.put(&root, crate::settings::CLEAR_HISTORY_FLAG, true)
+            .unwrap();
+        w.sync(&mut doc, &root);
+
+        assert_eq!(w.history.len(), 1, "failed writes restore the old corpus");
+        assert!(w.history_clear_error.as_deref().is_some_and(|message| {
+            message.contains("could not save the change")
+                && message.contains("Previous history was kept")
+        }));
+
+        let resources = Widget::resources(&w, &doc);
+        let history = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.history")
+            .unwrap();
+        let clear = history
+            .actions
+            .iter()
+            .find(|action| action.id == "clear")
+            .unwrap();
+        let error = w
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                clear.kind,
+                clear.operation_type.as_deref().unwrap(),
+                &browser_operation_payload(&BrowserOperation::ClearHistory)
+                    .to_string()
+                    .into_bytes(),
+                &doc,
+                &root,
+            )
+            .expect_err("resource history clear must not complete without durable storage");
+        assert!(error.contains("Previous history was kept"));
+        assert_eq!(w.history.len(), 1);
+    }
+
+    #[test]
+    fn picture_in_picture_host_path_waits_for_engine_success_or_error() {
+        let engine = TestEngine::new();
+        engine.set_media_element(Some(MediaElementInfo {
+            element_id: "media:host".into(),
+            viewport_rect: [0.1, 0.1, 0.6, 0.5],
+            intrinsic_size: [1280, 720],
+            label: "Host video".into(),
+        }));
+        let mut w = BrowserWidget::with_engine(engine, true);
+        let (mut doc, root) = synced(&mut w);
+        w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        let resources = Widget::resources(&w, &doc);
+        let page = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "browser.page")
+            .unwrap();
+        let pip = page
+            .actions
+            .iter()
+            .find(|action| action.id == "picture-in-picture")
+            .unwrap();
+        assert!(matches!(
+            pip.contract.execution,
+            ui::qos_actions::ExecutionMode::Background { cancellable: false }
+        ));
+        let invocation = ui::qos_actions::InvocationId::new();
+        assert_eq!(
+            w.start_resource_operation(
+                invocation,
+                pip.kind,
+                pip.operation_type.as_deref().unwrap(),
+                &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
+                    .to_string()
+                    .into_bytes(),
+                &doc,
+                &root,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        assert!(
+            w.poll_resource_operation(invocation, false, &doc, &root)
+                .is_none()
+        );
+        w.sync(&mut doc, &root);
+        let Some(ui::qos_actions::InvocationUpdate::Succeeded { output, .. }) =
+            w.poll_resource_operation(invocation, false, &doc, &root)
+        else {
+            panic!("media acceptance must terminally succeed the admitted invocation");
+        };
+        assert!(pip.contract.result.validate(&output).is_ok());
+
+        let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
+        let (mut doc, root) = synced(&mut unavailable);
+        let invocation = ui::qos_actions::InvocationId::new();
+        assert!(matches!(
+            unavailable
+                .start_resource_operation(
+                    invocation,
+                    pip.kind,
+                    pip.operation_type.as_deref().unwrap(),
+                    &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
+                        .to_string()
+                        .into_bytes(),
+                    &doc,
+                    &root,
+                )
+                .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        unavailable.sync(&mut doc, &root);
+        assert!(matches!(
+            unavailable.poll_resource_operation(invocation, false, &doc, &root),
+            Some(ui::qos_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
