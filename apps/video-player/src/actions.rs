@@ -18,6 +18,18 @@ pub enum PlayerOperation {
     Open {
         path: Option<String>,
     },
+    /// Play an opaque item already retained in this device-local queue.
+    OpenQueueItem {
+        item_id: String,
+    },
+    /// Remove a queued local item without deleting its underlying media file.
+    RemoveQueueItem {
+        item_id: String,
+    },
+    /// Forget local recent-playback labels; never deletes source files.
+    ClearRecentHistory,
+    /// Reveal the device-local queue and recent-history panel.
+    RevealLibrary,
     Close,
     TogglePlayback,
     ToggleMute,
@@ -96,6 +108,9 @@ pub struct PlayerResourceCtx<'a> {
     pub subtitle_tracks: &'a [TrackState],
     /// Container chapters already materialized from a trusted source.
     pub chapters: &'a [ChapterState],
+    /// Queue and history are local session state. They are published as
+    /// canonical resources for this client, never collaborative objects.
+    pub library: LocalLibraryState,
 }
 
 /// Media availability and shared-transport authority at publication time.
@@ -117,6 +132,24 @@ pub struct PlaybackSettingsState {
     pub loop_enabled: bool,
     /// Current effective speed (`0.25..=4.0`).
     pub rate: f32,
+}
+
+/// A local queue or recent-history row. `id` is an opaque per-device token;
+/// neither it nor a resource label contains a filesystem path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalMediaItemState {
+    pub id: String,
+    pub title: String,
+    pub current: bool,
+}
+
+/// Queue rows are session-local; recent rows are a bounded device-local
+/// profile. Neither enters the collab document because a row can carry a
+/// portal-granted file handle or absolute path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LocalLibraryState {
+    pub queue: Vec<LocalMediaItemState>,
+    pub recent: Vec<LocalMediaItemState>,
 }
 
 /// Stream metadata the decoder actually reported.
@@ -163,6 +196,20 @@ pub fn chapter_resource_id(source_id: &str, chapter_id: &str) -> String {
     )
 }
 
+pub fn queue_item_resource_id(item_id: &str) -> String {
+    format!(
+        "video-player.queue.item.{}",
+        identity_token_for_action(item_id)
+    )
+}
+
+pub fn recent_item_resource_id(item_id: &str) -> String {
+    format!(
+        "video-player.history.item.{}",
+        identity_token_for_action(item_id)
+    )
+}
+
 /// A stable chapter address and its playback target.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChapterState {
@@ -185,7 +232,15 @@ fn encode(op: &PlayerOperation) -> EncodedAction {
 pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource> {
     let open_contract = ActionContract {
         retry: RetryPolicy::AtMostOnce,
-        tags: vec!["filesystem".into(), "media".into()],
+        // A portal-granted path and its decoder/cache state are meaningful
+        // only on this device. The direct-path parameter is intentionally
+        // never mirrored into a collaborative document or resource ID.
+        tags: vec![
+            "device-local".into(),
+            "filesystem".into(),
+            "media".into(),
+            "sensitive-path".into(),
+        ],
         ..ActionContract::default()
     };
     let mut app = Resource::new(
@@ -703,7 +758,128 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         .with_child(chapters)
         .with_child(settings)
         .with_child(presentation);
-    app = app.with_child(media);
+    let local_library_contract = ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        tags: vec!["device-local".into(), "media".into()],
+        ..ActionContract::default()
+    };
+    let mut queue = Resource::new(
+        "video-player.queue.local",
+        "media.queue",
+        format!(
+            "Queue · {} session item{}",
+            ctx.library.queue.len(),
+            if ctx.library.queue.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
+    );
+    for item in ctx.library.queue.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let item_id = item.id.clone();
+        let play = ActionSpec::typed_operation(
+            "play",
+            "Play queued video",
+            "Open this local queue item and wait for its first decoded frame",
+            OperationKind::Effect,
+            OPERATION_TYPE,
+            Vec::new(),
+            move |_| {
+                encode(&PlayerOperation::OpenQueueItem {
+                    item_id: item_id.clone(),
+                })
+            },
+        )
+        .with_contract(ActionContract {
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..local_library_contract.clone()
+        });
+        let remove_id = item.id.clone();
+        let remove = ActionSpec::typed_operation(
+            "remove",
+            "Remove from queue",
+            "Remove this local queue entry without deleting its video file",
+            OperationKind::View,
+            OPERATION_TYPE,
+            Vec::new(),
+            move |_| {
+                encode(&PlayerOperation::RemoveQueueItem {
+                    item_id: remove_id.clone(),
+                })
+            },
+        )
+        .with_contract(local_library_contract.clone());
+        let suffix = if item.current { " · playing" } else { "" };
+        queue = queue.with_child(
+            Resource::new(
+                queue_item_resource_id(&item.id),
+                "media.queue-item",
+                format!("{}{suffix}", item.title),
+            )
+            .with_action(play)
+            .with_action(remove),
+        );
+    }
+    let mut recent = Resource::new(
+        "video-player.history.local",
+        "media.history",
+        format!(
+            "Recent videos · {} on this device",
+            ctx.library.recent.len(),
+        ),
+    );
+    if !ctx.library.recent.is_empty()
+        && let Ok(clear) = ActionSpec::operation(
+            "clear",
+            "Clear recent history",
+            OperationKind::View,
+            OPERATION_TYPE,
+            &PlayerOperation::ClearRecentHistory,
+        )
+    {
+        recent = recent.with_action(clear.with_contract(local_library_contract.clone()));
+    }
+    for item in ctx.library.recent.iter().take(CONTEXTUAL_CHILD_LIMIT) {
+        let item_id = item.id.clone();
+        let play = ActionSpec::typed_operation(
+            "play",
+            "Play again",
+            "Open this local recent item and wait for its first decoded frame",
+            OperationKind::Effect,
+            OPERATION_TYPE,
+            Vec::new(),
+            move |_| {
+                encode(&PlayerOperation::OpenQueueItem {
+                    item_id: item_id.clone(),
+                })
+            },
+        )
+        .with_contract(ActionContract {
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Job,
+            ..local_library_contract.clone()
+        });
+        recent = recent.with_child(
+            Resource::new(
+                recent_item_resource_id(&item.id),
+                "media.history-item",
+                item.title.clone(),
+            )
+            .with_action(play),
+        );
+    }
+    if let Ok(reveal_library) = ActionSpec::operation(
+        "show-library",
+        "Show queue and recent videos",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealLibrary,
+    ) {
+        app = app.with_action(reveal_library.with_contract(local_library_contract));
+    }
+    app = app.with_child(media).with_child(queue).with_child(recent);
     vec![app]
 }
 
@@ -754,6 +930,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
             audio_tracks: if audio { &one } else { &[] },
             subtitle_tracks: if audio { &[] } else { &one },
             chapters: &[],
+            library: LocalLibraryState::default(),
         };
         find(&resources(&isolated, &doc), id)
     };
@@ -781,6 +958,7 @@ pub fn resource(ctx: &PlayerResourceCtx<'_>, id: &str) -> Option<Resource> {
                 audio_tracks: &[],
                 subtitle_tracks: &[],
                 chapters: &one,
+                library: LocalLibraryState::default(),
             };
             find(&resources(&isolated, &doc), id)
         })
@@ -821,10 +999,15 @@ mod tests {
             audio_tracks: &[],
             subtitle_tracks: &[],
             chapters: &[],
+            library: LocalLibraryState::default(),
         }
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table-driven resource tree assertion keeps its hierarchy checks together"
+    )]
     fn resource_tree_is_stateful_hierarchical_and_strictly_typed() {
         let idle_resources = resources(&ctx(false), &AutoCommit::new());
         let actions = &idle_resources[0].actions;
@@ -834,6 +1017,12 @@ mod tests {
             qos_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
+        assert_eq!(open.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert!(open.contract.tags.iter().any(|tag| tag == "device-local"));
+        assert!(
+            open.contract.tags.iter().any(|tag| tag == "sensitive-path"),
+            "direct local paths must stay explicitly device-local and sensitive"
+        );
         let idle_media = &idle_resources[0].children[0];
         assert_eq!(idle_media.label, "No media");
         assert!(
@@ -927,6 +1116,55 @@ mod tests {
         assert_eq!(
             decode(&encoded.type_id, &encoded.payload).unwrap(),
             Some(PlayerOperation::SetPlaybackRate(1.5))
+        );
+    }
+
+    #[test]
+    fn local_queue_and_device_history_have_opaque_canonical_actions() {
+        let mut context = ctx(true);
+        context.library = LocalLibraryState {
+            queue: vec![LocalMediaItemState {
+                id: "local-queue-local-media-0a2b-open-0".into(),
+                title: "Private clip.mp4".into(),
+                current: true,
+            }],
+            recent: vec![LocalMediaItemState {
+                id: "local-queue-local-media-9f3c-open-0".into(),
+                title: "Earlier clip.webm".into(),
+                current: false,
+            }],
+        };
+        let root = resources(&context, &AutoCommit::new()).remove(0);
+        let queue = root
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "video-player.queue.local")
+            .expect("local queue resource");
+        let queue_item = &queue.children[0];
+        assert_eq!(
+            queue_item.id.0,
+            queue_item_resource_id("local-queue-local-media-0a2b-open-0")
+        );
+        let play = queue_item
+            .actions
+            .iter()
+            .find(|action| action.id == "play")
+            .unwrap();
+        assert_eq!(play.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(
+            play.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert!(play.contract.tags.iter().any(|tag| tag == "device-local"));
+        let recent = root
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "video-player.history.local")
+            .expect("recent resource");
+        assert!(recent.actions.iter().any(|action| action.id == "clear"));
+        assert_eq!(
+            recent.children[0].id.0,
+            recent_item_resource_id("local-queue-local-media-9f3c-open-0")
         );
     }
 
