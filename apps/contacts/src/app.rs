@@ -131,6 +131,15 @@ enum Mode {
     Edit,
 }
 
+/// Focus order for the unsaved-edit decision dialog.  The safe Cancel action
+/// is the initial focus, so Enter never discards a draft by surprise.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UnsavedFocus {
+    Cancel,
+    Discard,
+    Save,
+}
+
 #[derive(Debug, Default)]
 struct ImportSummary {
     created: usize,
@@ -715,6 +724,7 @@ pub struct ContactsApp {
     /// When switching to another contact would lose unsaved edits, the
     /// target id parks here while the "Save changes?" modal is shown.
     pending_switch: Option<ContactId>,
+    unsaved_focus: UnsavedFocus,
 
     // geometry
     rect: Rect,
@@ -853,6 +863,7 @@ impl ContactsApp {
             import_conflict_dialog: None,
             export_dialog: ExportDialog::new(),
             pending_switch: None,
+            unsaved_focus: UnsavedFocus::Cancel,
             rect: Rect::ZERO,
             split_pos: 0.34,
             list_scroll: 0.0,
@@ -1315,6 +1326,7 @@ impl ContactsApp {
     fn request_select(&mut self, id: ContactId) {
         if self.mode == Mode::Edit && self.form_is_dirty() {
             self.pending_switch = Some(id);
+            self.unsaved_focus = UnsavedFocus::Cancel;
             self.dirty = true;
             return;
         }
@@ -3761,6 +3773,18 @@ impl ContactsApp {
             g.save.contains(m),
             false,
         );
+        let focused = match self.unsaved_focus {
+            UnsavedFocus::Cancel => g.cancel,
+            UnsavedFocus::Discard => g.discard,
+            UnsavedFocus::Save => g.save,
+        };
+        scene.stroke(
+            &Stroke::new(2.0),
+            t,
+            c.border_focus,
+            None,
+            &RoundedRect::from_rect(focused.inflate(2.0, 2.0), f64::from(theme.tokens.radii.md)),
+        );
     }
 
     /// Build the shared destructive confirmation for one contact. Callback
@@ -5012,7 +5036,10 @@ impl Widget for ContactsApp {
     }
 
     fn traps_focus(&self) -> bool {
-        self.confirm_delete.is_some() || !self.import_conflicts.is_empty()
+        self.confirm_delete.is_some()
+            || !self.import_conflicts.is_empty()
+            || self.export_dialog.is_open()
+            || self.pending_switch.is_some()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -5024,6 +5051,18 @@ impl Widget for ContactsApp {
                     .as_ref()
                     .and_then(|confirm| confirm.dialog.modal_capture())
             })
+            .or_else(|| {
+                self.export_dialog.is_open().then(|| {
+                    self.export_dialog
+                        .geometry(self.rect, &self.store, self.sort)
+                        .panel
+                })
+            })
+            .or_else(|| {
+                self.pending_switch
+                    .is_some()
+                    .then(|| self.unsaved_geometry().panel)
+            })
     }
 
     #[allow(
@@ -5031,6 +5070,53 @@ impl Widget for ContactsApp {
         reason = "the accessibility tree mirrors the toolbar, empty state, search, and contact list in one auditable hierarchy"
     )]
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if self.export_dialog.is_open() {
+            return Some(
+                self.export_dialog
+                    .accessibility(self.rect, &self.store, self.sort),
+            );
+        }
+        if self.pending_switch.is_some() {
+            let g = self.unsaved_geometry();
+            return Some(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Save changes?")
+                    .with_description(
+                        "You have unsaved changes. Save, discard, or cancel switching contacts.",
+                    )
+                    .with_bounds(g.panel)
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name("Cancel")
+                            .with_action_target("contacts.unsaved.cancel")
+                            .with_bounds(g.cancel)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.unsaved_focus == UnsavedFocus::Cancel),
+                            ),
+                        AccessNode::new(Role::Button)
+                            .with_name("Discard changes")
+                            .with_action_target("contacts.unsaved.discard")
+                            .with_bounds(g.discard)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.unsaved_focus == UnsavedFocus::Discard),
+                            ),
+                        AccessNode::new(Role::Button)
+                            .with_name("Save changes")
+                            .with_action_target("contacts.unsaved.save")
+                            .with_bounds(g.save)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.unsaved_focus == UnsavedFocus::Save),
+                            ),
+                    ]),
+            );
+        }
         if let Some(conflict) = self.import_conflicts.first() {
             let existing_name = self
                 .store
@@ -5277,6 +5363,42 @@ impl Widget for ContactsApp {
                     Some((conflict.token.to_string(), target == import_as_new));
                 self.dirty = true;
                 return true;
+            }
+        }
+
+        if self.export_dialog.is_open() {
+            let (consumed, request) = self.export_dialog.perform_accessibility_action(
+                target,
+                action,
+                self.rect,
+                &self.store,
+                self.sort,
+            );
+            if let Some(request) = request {
+                self.request_export(request.ids, request.version);
+            }
+            if consumed {
+                self.dirty = true;
+                return true;
+            }
+        }
+
+        if self.pending_switch.is_some() {
+            let focus = match target {
+                "contacts.unsaved.cancel" => Some(UnsavedFocus::Cancel),
+                "contacts.unsaved.discard" => Some(UnsavedFocus::Discard),
+                "contacts.unsaved.save" => Some(UnsavedFocus::Save),
+                _ => None,
+            };
+            if let Some(focus) = focus {
+                self.unsaved_focus = focus;
+                if matches!(action, Action::Activate) {
+                    self.resolve_unsaved_focus(state);
+                }
+                if matches!(action, Action::Focus | Action::Activate) {
+                    self.dirty = true;
+                    return true;
+                }
             }
         }
 
@@ -5698,12 +5820,10 @@ impl Widget for ContactsApp {
 }
 
 impl ContactsApp {
-    /// While a blocking modal (export / unsaved-guard / delete-confirm) is
-    /// up, keyboard is limited to Escape — which dismisses it through
-    /// `handle_key`'s escape branch — and every other key is swallowed so a
-    /// shortcut behind the scrim can't fire. Pointer interaction still routes
-    /// to the per-modal handlers here. Returns `true` if the caller should
-    /// return immediately (this method already did everything needed).
+    /// Blocking layers route every keyboard and pointer event before the app
+    /// underneath can see it. Each dialog owns its own keyboard model (rather
+    /// than letting global shortcuts leak through the scrim). Returns `true`
+    /// when this method has fully consumed the event.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors handle_event's own event-routing signature; splitting further would need a context struct for a one-call-site helper"
@@ -5716,8 +5836,8 @@ impl ContactsApp {
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
     ) -> bool {
         if !self.import_conflicts.is_empty() {
             self.route_import_conflict_dialog_event(
@@ -5730,33 +5850,12 @@ impl ContactsApp {
             );
             return true;
         }
-        if (self.export_dialog.is_open() || self.pending_switch.is_some())
-            && let WindowEvent::KeyboardInput { event: ke, .. } = event
-        {
-            if ke.state == ElementState::Pressed
-                && matches!(ke.logical_key, Key::Named(NamedKey::Escape))
-            {
-                self.handle_key(
-                    ke,
-                    state,
-                    path,
-                    handled,
-                    node_id,
-                    taffy,
-                    modifiers,
-                    scale_factor,
-                    event,
-                );
-            }
-            *handled = true;
-            return true;
-        }
         if self.export_dialog.is_open() {
-            self.handle_export(event, handled);
+            self.handle_export(event, modifiers, handled);
             return true;
         }
         if self.pending_switch.is_some() {
-            self.handle_unsaved(event, state, handled);
+            self.handle_unsaved(event, modifiers, state, handled);
             return true;
         }
         if self.confirm_delete.is_some() {
@@ -6822,17 +6921,32 @@ impl ContactsApp {
 
     /// Drive the export-selection dialog: checkbox toggles, Select all/none,
     /// scroll, the two export actions, and dismissal.
-    fn handle_export(&mut self, event: &WindowEvent, handled: &mut bool) {
+    fn handle_export(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             self.dirty = true;
         }
-        let (consumed, request) = self.export_dialog.handle_event(
-            event,
-            self.last_mouse,
-            self.rect,
-            &self.store,
-            self.sort,
-        );
+        let (consumed, request) = if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            self.export_dialog.handle_key(
+                key,
+                modifiers.state().shift_key(),
+                self.rect,
+                &self.store,
+                self.sort,
+            )
+        } else {
+            self.export_dialog.handle_event(
+                event,
+                self.last_mouse,
+                self.rect,
+                &self.store,
+                self.sort,
+            )
+        };
         *handled |= consumed;
         if consumed {
             self.dirty = true;
@@ -6844,9 +6958,42 @@ impl ContactsApp {
 
     /// Drive the "Save changes?" unsaved-changes guard modal: Save commits and
     /// switches, Discard drops edits and switches, Cancel keeps editing.
-    fn handle_unsaved(&mut self, event: &WindowEvent, state: &mut AutoCommit, handled: &mut bool) {
+    fn handle_unsaved(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             self.dirty = true;
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            if key.state != ElementState::Pressed {
+                *handled = true;
+                return;
+            }
+            match key.logical_key {
+                Key::Named(NamedKey::Escape) => self.pending_switch = None,
+                Key::Named(NamedKey::Tab) => {
+                    self.unsaved_focus = match (self.unsaved_focus, modifiers.state().shift_key()) {
+                        (UnsavedFocus::Cancel, false) | (UnsavedFocus::Discard, true) => {
+                            UnsavedFocus::Discard
+                        }
+                        (UnsavedFocus::Discard, false) | (UnsavedFocus::Save, true) => {
+                            UnsavedFocus::Save
+                        }
+                        (UnsavedFocus::Save, false) | (UnsavedFocus::Cancel, true) => {
+                            UnsavedFocus::Cancel
+                        }
+                    };
+                }
+                Key::Named(NamedKey::Enter | NamedKey::Space) => self.resolve_unsaved_focus(state),
+                _ => {}
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
         }
         let press = matches!(
             event,
@@ -6863,19 +7010,37 @@ impl ContactsApp {
         self.dirty = true;
         let p = self.last_mouse;
         let g = self.unsaved_geometry();
+        if self.pending_switch.is_none() {
+            return;
+        }
+        if g.save.contains(p) {
+            self.unsaved_focus = UnsavedFocus::Save;
+            self.resolve_unsaved_focus(state);
+        } else if g.discard.contains(p) {
+            self.unsaved_focus = UnsavedFocus::Discard;
+            self.resolve_unsaved_focus(state);
+        } else if g.cancel.contains(p) || !g.panel.contains(p) {
+            // Cancel / scrim: stay in the edit form, drop the pending switch.
+            self.unsaved_focus = UnsavedFocus::Cancel;
+            self.pending_switch = None;
+        }
+    }
+
+    fn resolve_unsaved_focus(&mut self, state: &mut AutoCommit) {
         let Some(target) = self.pending_switch else {
             return;
         };
-        if g.save.contains(p) {
-            self.save_edit(state);
-            self.pending_switch = None;
-            self.commit_select(target);
-        } else if g.discard.contains(p) {
-            self.pending_switch = None;
-            self.commit_select(target);
-        } else if g.cancel.contains(p) || !g.panel.contains(p) {
-            // Cancel / scrim: stay in the edit form, drop the pending switch.
-            self.pending_switch = None;
+        match self.unsaved_focus {
+            UnsavedFocus::Save => {
+                self.save_edit(state);
+                self.pending_switch = None;
+                self.commit_select(target);
+            }
+            UnsavedFocus::Discard => {
+                self.pending_switch = None;
+                self.commit_select(target);
+            }
+            UnsavedFocus::Cancel => self.pending_switch = None,
         }
     }
 
@@ -10407,6 +10572,113 @@ mod tests {
         node.children
             .iter()
             .find_map(|child| access_target(child, target))
+    }
+
+    #[test]
+    fn export_modal_is_focus_trapped_semantic_and_virtualized() {
+        let mut h = Harness::new(900, 640);
+        h.press_left(h.app.hit.export.center());
+        assert!(h.app.traps_focus(), "export blocks focus behind its scrim");
+        let tree = h.app.accessibility().expect("export has semantics");
+        assert_eq!(tree.role, Role::Dialog);
+        assert!(tree.state.modal);
+        assert!(access_target(&tree, "contacts.export.select-none").is_some());
+
+        assert!(h.press_named(NamedKey::Tab));
+        assert!(
+            access_target(
+                &h.app.accessibility().expect("focused export semantics"),
+                "contacts.export.select-all",
+            )
+            .is_some_and(|node| node.state.focused),
+            "Tab moves focus into the export dialog rather than behind its scrim",
+        );
+        assert!(h.press_named(NamedKey::Space));
+        assert_eq!(h.app.export_dialog.selection().len(), h.app.store.len());
+
+        assert!(h.app.perform_semantic_action(
+            "contacts.export.select-none",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &ROOT,
+        ));
+        assert!(h.app.export_dialog.selection().is_empty());
+        let id = h
+            .app
+            .export_dialog
+            .geometry(h.app.rect, &h.app.store, h.app.sort)
+            .rows[0]
+            .0;
+        let target = format!("contacts.export.row:{id}");
+        assert!(h.app.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::ToggleCheck,
+            &mut h.doc,
+            &ROOT,
+        ));
+        assert!(h.app.export_dialog.selection().contains(&id));
+
+        h.app.store.contacts = (0..1_000)
+            .map(|index| Contact {
+                id: uuid::Uuid::new_v4(),
+                first: format!("Export {index:04}"),
+                ..Contact::default()
+            })
+            .collect();
+        let tree = h
+            .app
+            .accessibility()
+            .expect("large export remains semantic");
+        let list = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("export choice list is exposed");
+        assert!(
+            list.children.len() < h.app.store.len(),
+            "export materializes only visible semantic rows"
+        );
+    }
+
+    #[test]
+    fn unsaved_modal_is_focus_trapped_semantic_and_resolves_via_action() {
+        let mut h = Harness::new(1280, 800);
+        let current = h.app.selected.expect("sample selects one contact");
+        let contact = h.app.store.get(current).cloned().unwrap();
+        h.app.begin_edit(contact, false);
+        h.app
+            .form
+            .as_mut()
+            .and_then(|form| {
+                form.inputs
+                    .iter_mut()
+                    .find(|input| input.slot == Slot::Title)
+            })
+            .expect("sample editor has title")
+            .ti
+            .set_text("Discard me");
+        let other = h
+            .app
+            .visible_ids()
+            .into_iter()
+            .find(|id| *id != current)
+            .expect("sample has another contact");
+        h.app.request_select(other);
+        assert!(h.app.traps_focus(), "unsaved choice traps focus");
+        let tree = h.app.accessibility().expect("unsaved dialog has semantics");
+        assert_eq!(tree.role, Role::Dialog);
+        assert!(tree.state.modal);
+        assert!(access_target(&tree, "contacts.unsaved.discard").is_some());
+        assert!(h.press_named(NamedKey::Tab));
+        assert_eq!(h.app.unsaved_focus, UnsavedFocus::Discard);
+        assert!(h.app.perform_semantic_action(
+            "contacts.unsaved.discard",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &ROOT,
+        ));
+        assert!(h.app.pending_switch.is_none());
+        assert_eq!(h.app.selected, Some(other));
     }
 
     fn live_message<'a>(node: &'a AccessNode, message: &str) -> Option<&'a AccessNode> {
