@@ -203,6 +203,10 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
 /// names, furniture, active pointers and every user-content-bearing side map
 /// must also match. Governance is intentionally ignored because the demo's
 /// join/adoption flow itself changes owners, capabilities and room authority.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exact legacy-bootstrap signature is intentionally kept as one auditable predicate so migration cannot match a partial user workspace"
+)]
 fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
     use crate::shell::state::{AppKind, TileContent, WindowWidth};
 
@@ -505,9 +509,9 @@ mod tests {
         home.strips[0].window_groups[0].id = base + 2;
         let group = &mut home.strips[0].window_groups[0];
         for (offset, tab) in (3_u64..=6).zip(&mut group.tabs) {
-            tab.id = base + offset;
+            tab.id = base.saturating_add(offset);
         }
-        group.active_tab = base + 3;
+        group.active_tab = base.saturating_add(3);
         group.tabs[3].title = "Browser".into();
         group.tabs[3].tile = TileContent::Stub {
             kind: AppKind::Browser,

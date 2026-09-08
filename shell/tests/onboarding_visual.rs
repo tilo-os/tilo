@@ -96,6 +96,10 @@ fn state_view(label: &str) -> OnboardingView {
     view
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "the offscreen renderer dimensions are screen-sized u32 values accepted by taffy's f32 layout API"
+)]
 fn render_view(
     view: &mut OnboardingView,
     theme: &Theme,

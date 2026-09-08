@@ -736,7 +736,7 @@ fn shifted_arrow_reorders_the_focused_group() {
 
 /// The visible close button must be the same durable operation as Super+W.
 /// This was a separate widget-only path: it faded the tab, never removed it
-/// from the tree and never sent xdg_toplevel.close, so the next unrelated
+/// from the tree and never sent `xdg_toplevel.close`, so the next unrelated
 /// revision visibly restored the window.
 #[test]
 fn clicking_close_commits_the_exact_surface_and_survives_restart() {
@@ -774,6 +774,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
             live_tabs.iter().all(|candidate| candidate.id != tab),
             "the pointer close must remove the tab from the durable tree in the same event"
         );
+        drop(tree);
     }
     assert_eq!(
         h.chrome.borrow_mut().take_surface_close_requests(),
@@ -924,13 +925,11 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
     );
     h.tick();
 
-    let after_close: Vec<_> = h.chrome.borrow().tree().workspaces[0].strips[0]
-        .window_groups
-        .iter()
-        .map(|group| group.id)
-        .collect();
     assert!(
-        !after_close.contains(&h.groups[0]),
+        !h.chrome.borrow().tree().workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .any(|group| group.id == h.groups[0]),
         "closing the last tab removes the complete group before later input"
     );
     assert_eq!(h.active_window().0, h.groups[1]);
