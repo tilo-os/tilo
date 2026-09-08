@@ -112,8 +112,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// `empty` — a genuinely empty library's Home state; `search-focus` — search
 /// pill focused, empty query; `skeleton` — Home in its loading state;
 /// `nowplaying` — a bundled track playing; `queue` — the Queue view with
-/// sample tracks trailing it; `lyrics` — synced-lyrics view; `downloading` —
-/// the honest unavailable-download state; `search-tabs`/`search-songs`/`search-artists` —
+/// sample tracks trailing it; `lyrics` — synced-lyrics view; `downloading`,
+/// `offline-cached`, and `offline-error` — active, successful, and retryable
+/// device-local download states; `search-tabs`/`search-songs`/`search-artists` —
 /// search results filtered to that tab; `artist-page`/`album-page` — the
 /// detail page for a bundled item; `error` — a failed live detail request with
 /// its honest recovery state; `membership-open` — a playlist-membership Ctrl+K
@@ -141,6 +142,8 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "queue" => app.snap_queue(),
         "lyrics" => app.snap_lyrics(),
         "downloading" => app.snap_downloading(),
+        "offline-cached" => app.snap_offline_cached(),
+        "offline-error" => app.snap_offline_error(),
         "search-tabs" => app.snap_search_results(app::SearchTab::All),
         "search-songs" => app.snap_search_results(app::SearchTab::Songs),
         "search-artists" => app.snap_search_results(app::SearchTab::Artists),
