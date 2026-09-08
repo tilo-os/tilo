@@ -59,7 +59,7 @@ impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
         _: &QueueHandle<Self>,
     ) {
         if let xdg_activation_token_v1::Event::Done { token } = event {
-            state.completed_tokens += 1;
+            state.completed_tokens = state.completed_tokens.saturating_add(1);
             state.token = Some(token);
         }
     }
@@ -129,7 +129,7 @@ impl Dispatch<xdg_popup::XdgPopup, ()> for Client {
                 state.popup_configures.push((x, y, width, height));
             }
             xdg_popup::Event::Repositioned { token } => state.repositioned.push(token),
-            xdg_popup::Event::PopupDone => state.popup_done += 1,
+            xdg_popup::Event::PopupDone => state.popup_done = state.popup_done.saturating_add(1),
             _ => {}
         }
     }
@@ -412,6 +412,10 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
     shell::shell::launcher::clear_pending_placements();
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the protocol integration test must retain one ordered client/server transcript"
+)]
 #[test]
 fn real_xdg_popup_is_grabbed_configured_repositioned_and_never_adopted_as_a_tab() {
     let mut h = Harness::new();
