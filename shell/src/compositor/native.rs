@@ -2342,10 +2342,27 @@ fn pump_test_control_conn(
                                 desktop_id,
                                 display_name,
                             } => {
+                                // Mirror the production host-palette
+                                // transaction: it records the destination
+                                // against every desktop-entry window
+                                // identity before minting the optional
+                                // activation token. Without this, a real X11
+                                // client which maps through StartupWMClass but
+                                // does not bind xdg-activation can never
+                                // exercise the production placement path.
+                                let placement = crate::compositor::tab_binding::Placement::NewGroup;
+                                let identities = crate::shell::host_apps::find(&desktop_id)
+                                    .map(|app| app.window_identities)
+                                    .unwrap_or_else(|| vec![desktop_id.clone()]);
+                                crate::shell::launcher::set_pending_placement_for_identities(
+                                    &desktop_id,
+                                    &identities,
+                                    placement,
+                                );
                                 let token = state.issue_host_launch_activation(
                                     desktop_id,
                                     display_name,
-                                    crate::compositor::tab_binding::Placement::NewGroup,
+                                    placement,
                                 );
                                 (
                                     test_control::Response::Answer(serde_json::json!({
