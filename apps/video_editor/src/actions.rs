@@ -47,12 +47,13 @@ use qos_actions::{
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
+use crate::curve::Curve;
 use crate::doc::VideoDoc;
 use crate::model::{
-    Clip, EffectKind, Filters, MAX_GAIN_DB, MIN_GAIN_DB, MaskShape, MediaItem, MediaKind, Project,
-    TextSource, Track, TrackKind, Transition,
+    ChromaKey, Clip, EffectKind, Filters, MAX_GAIN_DB, MIN_GAIN_DB, Mask, MaskShape, MediaItem,
+    MediaKind, Project, TextSource, Track, TrackKind, Transform, Transition,
 };
-use crate::param::{Interp, Param};
+use crate::param::{ClipAnimation, Interp, Param};
 
 /// Registry `type_id` for every video-editor action.
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
@@ -548,11 +549,17 @@ pub enum VideoEditorAction {
     /// Several existing clips patched as one optimistic action. Preconditions
     /// for every member are checked before any member is written.
     PatchClipsFields { patches: Vec<ClipPatchData> },
-    /// Append one freshly-authored effect only while the stack still has the
-    /// identity order the caller saw. It changes no other clip field.
+    /// Append one freshly-authored effect at an authored rank. Concurrent
+    /// appends may share a rank; their UUIDs provide the deterministic
+    /// tie-break, so replay never derives an ordinal from receiver state.
     AddEffect {
         clip: String,
+        /// Retained solely to decode actions authored by older clients. New
+        /// actions do not make an unrelated concurrent append fail closed.
+        #[serde(default)]
         expected_stack: Vec<Uuid>,
+        #[serde(default)]
+        ordinal: usize,
         effect: crate::model::ClipEffect,
     },
     /// Change one named effect only if its amount still matches the state the
@@ -639,6 +646,37 @@ pub enum VideoEditorAction {
     RemoveMedia { id: String, clips: Vec<String> },
     /// Replace the project settings (name / fps / resolution).
     SetProjectMeta(ProjectMeta),
+    /// Append one named timeline marker without replacing the project's
+    /// marker map. Markers are resources in their own right, so this action
+    /// carries the authored marker identity rather than a positional list.
+    AddProjectMarker { marker: crate::model::Marker },
+    /// Tombstone one timeline marker by stable id.
+    RemoveProjectMarker { marker: String },
+    /// Edit one text field on a project marker without replacing the marker
+    /// list or project metadata.
+    SetProjectMarkerText {
+        marker: String,
+        field: MarkerTextField,
+        expected: String,
+        value: String,
+    },
+    /// Append one marker owned by a clip. The clip is explicit so identical
+    /// marker ids cannot be confused across local timelines.
+    AddClipMarker {
+        clip: String,
+        marker: crate::model::Marker,
+    },
+    /// Tombstone one marker from a clip without touching its other metadata.
+    RemoveClipMarker { clip: String, marker: String },
+    /// Edit one text field on a clip-local marker without replacing sibling
+    /// markers or an unrelated clip property.
+    SetClipMarkerText {
+        clip: String,
+        marker: String,
+        field: MarkerTextField,
+        expected: String,
+        value: String,
+    },
     /// Replace the **whole** project: settings, media bin, tracks and clips.
     ///
     /// This is what opening a project file does. It is an action rather than a
@@ -694,14 +732,6 @@ fn same_effect_stack(
         })
 }
 
-fn same_effect_ids(current: &[crate::model::ClipEffect], expected: &[Uuid]) -> bool {
-    current.len() == expected.len()
-        && current
-            .iter()
-            .zip(expected)
-            .all(|(current, expected)| current.id == *expected)
-}
-
 /// A single durable clip property written by an externally invokable resource
 /// action.  It intentionally carries only the observed property, never a
 /// `ClipData` snapshot: a saved palette command must not put back an old trim,
@@ -722,6 +752,15 @@ pub enum ClipFieldPatch {
         field: ClipJsonField,
         expected: String,
         value: String,
+    },
+    /// A new, typed compound value. It is atomic at the action boundary (a
+    /// curve edit or transform preset is one authored gesture), then expands
+    /// into the document's keyed maps. `Json` above is retained only so old
+    /// persisted actions remain decodable; new UI/resource actions use this.
+    Compound {
+        field: ClipCompoundField,
+        expected: ClipCompound,
+        value: ClipCompound,
     },
     Bool {
         field: ClipBoolField,
@@ -776,6 +815,13 @@ pub enum ClipTextField {
     Transition,
 }
 
+/// One independently editable text cell on a stable marker record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MarkerTextField {
+    Name,
+    Note,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClipJsonField {
     Transform,
@@ -784,6 +830,29 @@ pub enum ClipJsonField {
     Mask,
     Animation,
     Markers,
+}
+
+/// Named compound clip records. Each is represented by leaf CRDT fields or
+/// keyed child records in the document; this enum keeps the action protocol
+/// typed without making a UI gesture depend on an opaque JSON blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClipCompoundField {
+    Transform,
+    Curves,
+    Key,
+    Mask,
+    Animation,
+    Markers,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClipCompound {
+    Transform(Transform),
+    Curves(Curve),
+    Key(ChromaKey),
+    Mask(Mask),
+    Animation(ClipAnimation),
+    Markers(Vec<crate::model::Marker>),
 }
 
 pub fn clip_field_patch_action(before: &Clip, after: &Clip) -> VideoEditorAction {
@@ -884,41 +953,38 @@ pub fn clip_field_patch_action(before: &Clip, after: &Clip) -> VideoEditorAction
     }
     for (field, expected, value) in [
         (
-            ClipJsonField::Transform,
-            serde_json::to_string(&before.transform),
-            serde_json::to_string(&after.transform),
+            ClipCompoundField::Transform,
+            ClipCompound::Transform(before.transform),
+            ClipCompound::Transform(after.transform),
         ),
         (
-            ClipJsonField::Curves,
-            serde_json::to_string(&before.curves),
-            serde_json::to_string(&after.curves),
+            ClipCompoundField::Curves,
+            ClipCompound::Curves(before.curves.clone()),
+            ClipCompound::Curves(after.curves.clone()),
         ),
         (
-            ClipJsonField::Key,
-            serde_json::to_string(&before.key),
-            serde_json::to_string(&after.key),
+            ClipCompoundField::Key,
+            ClipCompound::Key(before.key),
+            ClipCompound::Key(after.key),
         ),
         (
-            ClipJsonField::Mask,
-            serde_json::to_string(&before.mask),
-            serde_json::to_string(&after.mask),
+            ClipCompoundField::Mask,
+            ClipCompound::Mask(before.mask),
+            ClipCompound::Mask(after.mask),
         ),
         (
-            ClipJsonField::Animation,
-            serde_json::to_string(&before.anim),
-            serde_json::to_string(&after.anim),
+            ClipCompoundField::Animation,
+            ClipCompound::Animation(before.anim.clone()),
+            ClipCompound::Animation(after.anim.clone()),
         ),
         (
-            ClipJsonField::Markers,
-            serde_json::to_string(&before.markers),
-            serde_json::to_string(&after.markers),
+            ClipCompoundField::Markers,
+            ClipCompound::Markers(before.markers.clone()),
+            ClipCompound::Markers(after.markers.clone()),
         ),
     ] {
-        let (Ok(expected), Ok(value)) = (expected, value) else {
-            continue;
-        };
         if expected != value {
-            changes.push(ClipFieldPatch::Json {
+            changes.push(ClipFieldPatch::Compound {
                 field,
                 expected,
                 value,
@@ -972,6 +1038,19 @@ fn patch_matches(clip: &Clip, patch: &ClipFieldPatch) -> bool {
                 ClipJsonField::Markers => serde_json::to_string(&clip.markers),
             };
             current.is_ok_and(|current| current == *expected)
+        }
+        ClipFieldPatch::Compound {
+            field, expected, ..
+        } => {
+            let current = match field {
+                ClipCompoundField::Transform => ClipCompound::Transform(clip.transform),
+                ClipCompoundField::Curves => ClipCompound::Curves(clip.curves.clone()),
+                ClipCompoundField::Key => ClipCompound::Key(clip.key),
+                ClipCompoundField::Mask => ClipCompound::Mask(clip.mask),
+                ClipCompoundField::Animation => ClipCompound::Animation(clip.anim.clone()),
+                ClipCompoundField::Markers => ClipCompound::Markers(clip.markers.clone()),
+            };
+            current == *expected
         }
         ClipFieldPatch::Bool {
             field, expected, ..
@@ -1034,6 +1113,16 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
             },
             value,
         ),
+        ClipFieldPatch::Compound { value, .. } => match value {
+            ClipCompound::Transform(value) => {
+                VideoDoc::set_existing_clip_transform(doc, id, *value)
+            }
+            ClipCompound::Curves(value) => VideoDoc::set_existing_clip_curves(doc, id, value),
+            ClipCompound::Key(value) => VideoDoc::set_existing_clip_key(doc, id, *value),
+            ClipCompound::Mask(value) => VideoDoc::set_existing_clip_mask(doc, id, *value),
+            ClipCompound::Animation(value) => VideoDoc::set_existing_clip_animation(doc, id, value),
+            ClipCompound::Markers(value) => VideoDoc::set_existing_clip_markers(doc, id, value),
+        },
         ClipFieldPatch::Bool { field, value, .. } => VideoDoc::set_existing_clip_bool(
             doc,
             id,
@@ -1062,6 +1151,17 @@ fn write_patch(doc: &mut Doc, id: Uuid, patch: &ClipFieldPatch) -> bool {
 /// the document. In particular, two writes to one key would make a bulk link
 /// action depend on payload order instead of the state each collaborator saw.
 fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
+    let compound_matches_field = |field: ClipCompoundField, value: &ClipCompound| {
+        matches!(
+            (field, value),
+            (ClipCompoundField::Transform, ClipCompound::Transform(_))
+                | (ClipCompoundField::Curves, ClipCompound::Curves(_))
+                | (ClipCompoundField::Key, ClipCompound::Key(_))
+                | (ClipCompoundField::Mask, ClipCompound::Mask(_))
+                | (ClipCompoundField::Animation, ClipCompound::Animation(_))
+                | (ClipCompoundField::Markers, ClipCompound::Markers(_))
+        )
+    };
     let key = |patch: &ClipFieldPatch| match patch {
         ClipFieldPatch::Number { field, .. } => match field {
             ClipNumberField::Start => "start",
@@ -1089,6 +1189,14 @@ fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
             ClipJsonField::Animation => "anim",
             ClipJsonField::Markers => "markers",
         },
+        ClipFieldPatch::Compound { field, .. } => match field {
+            ClipCompoundField::Transform => "transform",
+            ClipCompoundField::Curves => "curves",
+            ClipCompoundField::Key => "key",
+            ClipCompoundField::Mask => "mask",
+            ClipCompoundField::Animation => "anim",
+            ClipCompoundField::Markers => "markers",
+        },
         ClipFieldPatch::Bool { field, .. } => match field {
             ClipBoolField::SpeedReverse => "speed_reverse",
             ClipBoolField::SoundSplit => "sound_split",
@@ -1111,6 +1219,9 @@ fn validate_patch_set(changes: &[ClipFieldPatch]) -> Result<(), ActionError> {
     if changes.iter().any(|patch| {
         matches!(patch, ClipFieldPatch::Number { value, .. } if !value.is_finite())
             || matches!(patch, ClipFieldPatch::Link { value: Some(value), .. } if value.parse::<Uuid>().is_err())
+            || matches!(patch, ClipFieldPatch::Compound { field, expected, value }
+                if !compound_matches_field(*field, expected)
+                    || !compound_matches_field(*field, value))
     }) {
         return Err(ActionError::Refused("invalid clip patch value".into()));
     }
@@ -1144,7 +1255,7 @@ impl Action for VideoEditorAction {
         match self {
             VideoEditorAction::UpsertClip(data) => {
                 if let Some(c) = data.to_clip() {
-                    VideoDoc::upsert_clip(doc, &c);
+                    VideoDoc::upsert_clip_preserving_nested(doc, &c);
                 }
             }
             VideoEditorAction::PatchClipFields { clip, changes } => {
@@ -1222,28 +1333,32 @@ impl Action for VideoEditorAction {
             VideoEditorAction::AddEffect {
                 clip,
                 expected_stack,
+                ordinal,
                 effect,
             } => {
                 let clip_id = clip
                     .parse::<Uuid>()
                     .map_err(|_| ActionError::Refused("invalid effect clip id".into()))?;
-                let mut project = VideoDoc::load_project(doc);
-                let effects = {
-                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                let project = VideoDoc::load_project(doc);
+                {
+                    project.clip(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
-                    if !same_effect_ids(&clip.effects, expected_stack)
-                        || effect.id.is_nil()
-                        || clip.effect_index(effect.id).is_some()
-                    {
-                        return Err(ActionError::Refused(
-                            "effect stack changed before this add could apply".into(),
-                        ));
+                    if effect.id.is_nil() {
+                        return Err(ActionError::Refused("invalid authored effect id".into()));
                     }
-                    clip.effects.push(*effect);
-                    clip.effects.clone()
+                }
+                // Pre-rank clients included the complete stack they saw. Its
+                // length is an authored fact in that legacy payload, unlike
+                // the receiver's current stack length, so it is safe as a
+                // deterministic compatibility rank. New actions always send
+                // `ordinal` explicitly (including zero for the first entry).
+                let authored_ordinal = if *ordinal == 0 && !expected_stack.is_empty() {
+                    expected_stack.len()
+                } else {
+                    *ordinal
                 };
-                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                if !VideoDoc::add_clip_effect(doc, clip_id, *effect, authored_ordinal) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -1266,14 +1381,14 @@ impl Action for VideoEditorAction {
                         "effect amount is outside 0 to 1".into(),
                     ));
                 }
-                let mut project = VideoDoc::load_project(doc);
-                let effects = {
-                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                let project = VideoDoc::load_project(doc);
+                {
+                    let clip = project.clip(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
                     let instance = clip
                         .effects
-                        .iter_mut()
+                        .iter()
                         .find(|instance| instance.id == effect_id)
                         .ok_or_else(|| {
                             ActionError::Refused("effect is no longer available".into())
@@ -1283,10 +1398,8 @@ impl Action for VideoEditorAction {
                             "effect amount changed before this edit could apply".into(),
                         ));
                     }
-                    instance.amount = *amount;
-                    clip.effects.clone()
-                };
-                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                }
+                if !VideoDoc::set_clip_effect_amount(doc, clip_id, effect_id, *amount) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -1304,9 +1417,9 @@ impl Action for VideoEditorAction {
                 let effect_id = effect
                     .parse::<Uuid>()
                     .map_err(|_| ActionError::Refused("invalid effect id".into()))?;
-                let mut project = VideoDoc::load_project(doc);
-                let effects = {
-                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                let project = VideoDoc::load_project(doc);
+                {
+                    let clip = project.clip(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
                     let index = clip.effect_index(effect_id).ok_or_else(|| {
@@ -1320,10 +1433,8 @@ impl Action for VideoEditorAction {
                             "effect changed before it could be removed".into(),
                         ));
                     }
-                    clip.effects.remove(index);
-                    clip.effects.clone()
-                };
-                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                }
+                if !VideoDoc::remove_clip_effect(doc, clip_id, effect_id) {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -1345,9 +1456,9 @@ impl Action for VideoEditorAction {
                 let neighbour_id = neighbour
                     .parse::<Uuid>()
                     .map_err(|_| ActionError::Refused("invalid effect neighbour id".into()))?;
-                let mut project = VideoDoc::load_project(doc);
-                let effects = {
-                    let clip = project.clip_mut(clip_id).ok_or_else(|| {
+                let project = VideoDoc::load_project(doc);
+                let (effect_ordinal, neighbour_ordinal) = {
+                    let clip = project.clip(clip_id).ok_or_else(|| {
                         ActionError::Refused("effect clip is no longer available".into())
                     })?;
                     let index = clip.effect_index(effect_id).ok_or_else(|| {
@@ -1367,10 +1478,16 @@ impl Action for VideoEditorAction {
                             "effect order changed before this move could apply".into(),
                         ));
                     }
-                    clip.effects.swap(index, target);
-                    clip.effects.clone()
+                    (target, index)
                 };
-                if !VideoDoc::set_clip_effects(doc, clip_id, &effects) {
+                if !VideoDoc::set_clip_effect_ordinal(doc, clip_id, effect_id, effect_ordinal)
+                    || !VideoDoc::set_clip_effect_ordinal(
+                        doc,
+                        clip_id,
+                        neighbour_id,
+                        neighbour_ordinal,
+                    )
+                {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
                     ));
@@ -1391,9 +1508,138 @@ impl Action for VideoEditorAction {
                         ));
                     }
                 }
-                if !VideoDoc::set_clip_effects(doc, clip_id, &[]) {
+                if expected
+                    .iter()
+                    .any(|effect| !VideoDoc::remove_clip_effect(doc, clip_id, effect.id))
+                {
                     return Err(ActionError::Refused(
                         "effect clip is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::AddProjectMarker { marker } => {
+                if marker.id.is_nil() || !marker.t.is_finite() {
+                    return Err(ActionError::Refused("invalid project marker".into()));
+                }
+                if !VideoDoc::add_project_marker(doc, marker) {
+                    return Err(ActionError::Refused(
+                        "project marker is already present or project vanished".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::RemoveProjectMarker { marker } => {
+                let marker = marker
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid project marker id".into()))?;
+                if !VideoDoc::remove_project_marker(doc, marker) {
+                    return Err(ActionError::Refused(
+                        "project marker is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::SetProjectMarkerText {
+                marker,
+                field,
+                expected,
+                value,
+            } => {
+                let marker = marker
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid project marker id".into()))?;
+                if *field == MarkerTextField::Name && value.trim().is_empty() {
+                    return Err(ActionError::Refused("marker name cannot be empty".into()));
+                }
+                let project = VideoDoc::load_project(doc);
+                let current = project.marker(marker).ok_or_else(|| {
+                    ActionError::Refused("project marker is no longer available".into())
+                })?;
+                let observed = match field {
+                    MarkerTextField::Name => &current.name,
+                    MarkerTextField::Note => &current.note,
+                };
+                if observed != expected
+                    || !VideoDoc::set_project_marker_text(
+                        doc,
+                        marker,
+                        match field {
+                            MarkerTextField::Name => "name",
+                            MarkerTextField::Note => "note",
+                        },
+                        value,
+                    )
+                {
+                    return Err(ActionError::Refused(
+                        "project marker changed before this edit could apply".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::AddClipMarker { clip, marker } => {
+                let clip = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid clip marker clip id".into()))?;
+                if marker.id.is_nil() || !marker.t.is_finite() {
+                    return Err(ActionError::Refused("invalid clip marker".into()));
+                }
+                if !VideoDoc::add_clip_marker(doc, clip, marker) {
+                    return Err(ActionError::Refused(
+                        "clip marker is already present or clip vanished".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::RemoveClipMarker { clip, marker } => {
+                let clip = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid clip marker clip id".into()))?;
+                let marker = marker
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid clip marker id".into()))?;
+                if !VideoDoc::remove_clip_marker(doc, clip, marker) {
+                    return Err(ActionError::Refused(
+                        "clip marker is no longer available".into(),
+                    ));
+                }
+            }
+            VideoEditorAction::SetClipMarkerText {
+                clip,
+                marker,
+                field,
+                expected,
+                value,
+            } => {
+                let clip = clip
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid clip marker clip id".into()))?;
+                let marker = marker
+                    .parse::<Uuid>()
+                    .map_err(|_| ActionError::Refused("invalid clip marker id".into()))?;
+                if *field == MarkerTextField::Name && value.trim().is_empty() {
+                    return Err(ActionError::Refused("marker name cannot be empty".into()));
+                }
+                let project = VideoDoc::load_project(doc);
+                let current = project
+                    .clip(clip)
+                    .and_then(|clip| clip.markers.iter().find(|entry| entry.id == marker))
+                    .ok_or_else(|| {
+                        ActionError::Refused("clip marker is no longer available".into())
+                    })?;
+                let observed = match field {
+                    MarkerTextField::Name => &current.name,
+                    MarkerTextField::Note => &current.note,
+                };
+                if observed != expected
+                    || !VideoDoc::set_clip_marker_text(
+                        doc,
+                        clip,
+                        marker,
+                        match field {
+                            MarkerTextField::Name => "name",
+                            MarkerTextField::Note => "note",
+                        },
+                        value,
+                    )
+                {
+                    return Err(ActionError::Refused(
+                        "clip marker changed before this edit could apply".into(),
                     ));
                 }
             }
@@ -1405,7 +1651,7 @@ impl Action for VideoEditorAction {
                 }
                 for data in clips {
                     if let Some(c) = data.to_clip() {
-                        VideoDoc::upsert_clip(doc, &c);
+                        VideoDoc::upsert_clip_preserving_nested(doc, &c);
                     }
                 }
             }
@@ -1417,7 +1663,7 @@ impl Action for VideoEditorAction {
                 }
                 for m in moved {
                     if let Some(c) = m.to_clip() {
-                        VideoDoc::upsert_clip(doc, &c);
+                        VideoDoc::upsert_clip_preserving_nested(doc, &c);
                     }
                 }
             }
@@ -1432,16 +1678,16 @@ impl Action for VideoEditorAction {
                 }
                 for m in moved {
                     if let Some(c) = m.to_clip() {
-                        VideoDoc::upsert_clip(doc, &c);
+                        VideoDoc::upsert_clip_preserving_nested(doc, &c);
                     }
                 }
             }
             VideoEditorAction::SplitClip { left, right } => {
                 if let Some(c) = left.to_clip() {
-                    VideoDoc::upsert_clip(doc, &c);
+                    VideoDoc::upsert_clip_preserving_nested(doc, &c);
                 }
                 if let Some(c) = right.to_clip() {
-                    VideoDoc::upsert_clip(doc, &c);
+                    VideoDoc::upsert_clip_preserving_nested(doc, &c);
                 }
             }
             VideoEditorAction::UpsertTrack(data) => {
@@ -2056,7 +2302,6 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
     // Project-level: a timeline marker at the playhead, named.
     {
-        let snap = p.clone();
         let at = ctx.playhead;
         root = root.with_action(ActionSpec::typed(
             "add-marker",
@@ -2069,20 +2314,19 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "what the marker is called; an empty name reads as “Marker”",
             )],
             move |args: &ActionArgs| {
-                let mut next = snap.clone();
                 let name = args.text("name").unwrap_or("").trim();
                 let name = if name.is_empty() { "Marker" } else { name };
-                next.add_marker(at, name, 1);
-                encode(&set_project_meta_action(&next))
+                let marker = crate::model::Marker::new(at, name, 1);
+                encode(&VideoEditorAction::AddProjectMarker { marker })
             },
         ));
         if let Some(m) = p.markers.iter().find(|m| (m.t - ctx.playhead).abs() < 0.25) {
-            let mut cleared = p.clone();
-            cleared.remove_marker(m.id);
             root = root.with_action(immediate(
                 "remove-marker",
                 &format!("Remove marker \u{201c}{}\u{201d}", m.name),
-                &set_project_meta_action(&cleared),
+                &VideoEditorAction::RemoveProjectMarker {
+                    marker: m.id.to_string(),
+                },
             ));
         }
     }
@@ -2141,6 +2385,58 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 VideoEditorOperation::RevealMarker {
                     marker: marker.id.to_string(),
                     clip: None,
+                },
+            ))
+            .with_action(ActionSpec::typed(
+                "rename",
+                "Rename marker",
+                marker.name.clone(),
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "name",
+                    ParamType::Text,
+                    "marker name",
+                )],
+                {
+                    let marker = marker.clone();
+                    move |args: &ActionArgs| {
+                        let value = args.text("name").unwrap_or("").trim().to_string();
+                        encode(&VideoEditorAction::SetProjectMarkerText {
+                            marker: marker.id.to_string(),
+                            field: MarkerTextField::Name,
+                            expected: marker.name.clone(),
+                            value,
+                        })
+                    }
+                },
+            ))
+            .with_action(ActionSpec::typed(
+                "set-note",
+                "Set marker note",
+                marker.note.clone(),
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "note",
+                    ParamType::Text,
+                    "marker note",
+                )],
+                {
+                    let marker = marker.clone();
+                    move |args: &ActionArgs| {
+                        encode(&VideoEditorAction::SetProjectMarkerText {
+                            marker: marker.id.to_string(),
+                            field: MarkerTextField::Note,
+                            expected: marker.note.clone(),
+                            value: args.text("note").unwrap_or("").to_string(),
+                        })
+                    }
+                },
+            ))
+            .with_action(immediate(
+                "remove",
+                &format!("Remove marker \u{201c}{}\u{201d}", marker.name),
+                &VideoEditorAction::RemoveProjectMarker {
+                    marker: marker.id.to_string(),
                 },
             )),
         );
@@ -2640,8 +2936,7 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
             // Effects stack — add one by name, or clear them all.
             let add_clip = cid;
-            let add_expected_stack: Vec<Uuid> =
-                clip.effects.iter().map(|effect| effect.id).collect();
+            let add_ordinal = clip.effects.len();
             // The vocabulary is declared, not narrated. `EffectKind::from_str`
             // answers `None` for a name it does not know, which the old
             // prompt turned into "the action ran and added nothing" — a
@@ -2674,7 +2969,8 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     );
                     encode(&VideoEditorAction::AddEffect {
                         clip: add_clip.to_string(),
-                        expected_stack: add_expected_stack.clone(),
+                        expected_stack: Vec::new(),
+                        ordinal: add_ordinal,
                         effect,
                     })
                 },
@@ -3098,7 +3394,8 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     ));
                 }
                 // A marker on the clip, named.
-                let marker_base = clip.clone();
+                let marker_clip = cid;
+                let marker_palette = clip.palette;
                 cr = cr.with_action(ActionSpec::typed(
                     "add-clip-marker",
                     "Add marker on this clip",
@@ -3110,11 +3407,13 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         "what the marker is called; an empty name reads as “Marker”",
                     )],
                     move |args: &ActionArgs| {
-                        let mut next = marker_base.clone();
                         let name = args.text("name").unwrap_or("").trim();
                         let name = if name.is_empty() { "Marker" } else { name };
-                        next.add_marker(at, name, next.palette);
-                        encode(&clip_field_patch_action(&marker_base, &next))
+                        let marker = crate::model::Marker::new(at, name, marker_palette);
+                        encode(&VideoEditorAction::AddClipMarker {
+                            clip: marker_clip.to_string(),
+                            marker,
+                        })
                     },
                 ));
             }
@@ -3162,6 +3461,61 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         VideoEditorOperation::RevealMarker {
                             marker: marker.id.to_string(),
                             clip: Some(cid.to_string()),
+                        },
+                    ))
+                    .with_action(ActionSpec::typed(
+                        "rename",
+                        "Rename marker",
+                        marker.name.clone(),
+                        ExecutionLocus::ClientLocal,
+                        vec![ActionParam::required(
+                            "name",
+                            ParamType::Text,
+                            "marker name",
+                        )],
+                        {
+                            let marker = marker.clone();
+                            move |args: &ActionArgs| {
+                                let value = args.text("name").unwrap_or("").trim().to_string();
+                                encode(&VideoEditorAction::SetClipMarkerText {
+                                    clip: cid.to_string(),
+                                    marker: marker.id.to_string(),
+                                    field: MarkerTextField::Name,
+                                    expected: marker.name.clone(),
+                                    value,
+                                })
+                            }
+                        },
+                    ))
+                    .with_action(ActionSpec::typed(
+                        "set-note",
+                        "Set marker note",
+                        marker.note.clone(),
+                        ExecutionLocus::ClientLocal,
+                        vec![ActionParam::required(
+                            "note",
+                            ParamType::Text,
+                            "marker note",
+                        )],
+                        {
+                            let marker = marker.clone();
+                            move |args: &ActionArgs| {
+                                encode(&VideoEditorAction::SetClipMarkerText {
+                                    clip: cid.to_string(),
+                                    marker: marker.id.to_string(),
+                                    field: MarkerTextField::Note,
+                                    expected: marker.note.clone(),
+                                    value: args.text("note").unwrap_or("").to_string(),
+                                })
+                            }
+                        },
+                    ))
+                    .with_action(immediate(
+                        "remove",
+                        &format!("Remove marker \u{201c}{}\u{201d}", marker.name),
+                        &VideoEditorAction::RemoveClipMarker {
+                            clip: cid.to_string(),
+                            marker: marker.id.to_string(),
                         },
                     )),
                 );
@@ -5439,8 +5793,8 @@ mod tests {
         )));
         assert!(changes.iter().any(|patch| matches!(
             patch,
-            ClipFieldPatch::Json {
-                field: ClipJsonField::Curves,
+            ClipFieldPatch::Compound {
+                field: ClipCompoundField::Curves,
                 ..
             }
         )));
@@ -5786,5 +6140,120 @@ mod tests {
             .find(|a| a.id == "cancel-export")
             .unwrap();
         assert!(!cancel.contract.availability.is_available());
+    }
+
+    #[test]
+    fn concurrent_effect_actions_replay_in_either_order_with_one_stable_stack() {
+        let (ctx, clip) = ctx_fixture();
+        let mut seed = AutoCommit::new();
+        VideoDoc::write_project(&mut seed, &ctx.project);
+        let initial = ctx.project.clip(clip).expect("fixture clip").effects.len();
+        let first = VideoEditorAction::AddEffect {
+            clip: clip.to_string(),
+            expected_stack: Vec::new(),
+            ordinal: initial,
+            effect: crate::model::ClipEffect::new(EffectKind::Sepia),
+        };
+        let second = VideoEditorAction::AddEffect {
+            clip: clip.to_string(),
+            expected_stack: Vec::new(),
+            ordinal: initial,
+            effect: crate::model::ClipEffect::new(EffectKind::Vignette),
+        };
+        let mut forward = AutoCommit::load(&seed.save()).expect("fork");
+        first.apply(&mut forward).expect("first applies");
+        second.apply(&mut forward).expect("second applies");
+        let mut reverse = AutoCommit::load(&seed.save()).expect("fork");
+        second.apply(&mut reverse).expect("second applies");
+        first.apply(&mut reverse).expect("first applies");
+        let ids = |doc: &AutoCommit| {
+            VideoDoc::load_project(doc)
+                .clip(clip)
+                .expect("clip")
+                .effects
+                .iter()
+                .map(|effect| effect.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(&forward),
+            ids(&reverse),
+            "rank + UUID tie-break is independent of delivery order"
+        );
+    }
+
+    #[test]
+    fn delete_wins_over_a_delayed_effect_update() {
+        let (ctx, clip) = ctx_fixture();
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &ctx.project);
+        let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
+        let add = VideoEditorAction::AddEffect {
+            clip: clip.to_string(),
+            expected_stack: Vec::new(),
+            ordinal: 0,
+            effect,
+        };
+        add.apply(&mut doc).expect("initial add applies");
+        let remove = VideoEditorAction::RemoveEffect {
+            clip: clip.to_string(),
+            effect: effect.id.to_string(),
+            expected_kind: effect.kind,
+            expected_amount_bits: effect.amount.to_bits(),
+        };
+        let delayed = VideoEditorAction::SetEffectAmount {
+            clip: clip.to_string(),
+            effect: effect.id.to_string(),
+            expected_amount_bits: effect.amount.to_bits(),
+            amount: 0.2,
+        };
+        remove.apply(&mut doc).expect("delete applies");
+        assert!(
+            delayed.apply(&mut doc).is_err(),
+            "a delayed update cannot recreate a deleted effect"
+        );
+        assert!(
+            add.apply(&mut doc).is_err(),
+            "a delayed original action is stopped by the durable tombstone"
+        );
+        assert!(
+            VideoDoc::load_project(&doc)
+                .clip(clip)
+                .expect("clip")
+                .effects
+                .iter()
+                .all(|entry| entry.id != effect.id)
+        );
+    }
+
+    #[test]
+    fn delayed_structural_clip_upsert_keeps_new_nested_effects_and_markers() {
+        let (ctx, clip) = ctx_fixture();
+        let stale = VideoEditorAction::UpsertClip(ClipData::from_clip(
+            ctx.project.clip(clip).expect("fixture clip"),
+        ));
+        let effect = crate::model::ClipEffect::new(EffectKind::Sepia);
+        let marker = crate::model::Marker::new(2.0, "beat", 3);
+        let add_effect = VideoEditorAction::AddEffect {
+            clip: clip.to_string(),
+            expected_stack: Vec::new(),
+            ordinal: 0,
+            effect,
+        };
+        let add_marker = VideoEditorAction::AddClipMarker {
+            clip: clip.to_string(),
+            marker: marker.clone(),
+        };
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &ctx.project);
+        add_effect.apply(&mut doc).expect("new effect applies");
+        add_marker.apply(&mut doc).expect("new marker applies");
+        stale
+            .apply(&mut doc)
+            .expect("delayed structural upsert remains valid");
+        let written = VideoDoc::load_project(&doc);
+        let written = written.clip(clip).expect("clip remains");
+        assert!(written.effects.iter().any(|entry| entry.id == effect.id));
+        assert!(written.markers.iter().any(|entry| entry.id == marker.id));
     }
 }
