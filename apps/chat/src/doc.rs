@@ -14,7 +14,8 @@
 //! ├── "messages"     (Map<chId,  List<Message>>)
 //! │      Message = { id, author, ts, text(Text), edited(bool),
 //! │                  parent(Str ""), reactions(List<{emoji,user}>),
-//! │                  history(List<{ts,text}>), attachment(Map? blob hash) }
+//! │                  history(List<{ts,text}>), attachment(Map? blob hash),
+//! │                  work(Map{state, since, reasoning, trace}) }
 //! ├── "voice"        (Map<chId,  Map<userId,{talking,muted,deafened,audio_only}>>)
 //! ├── "read"         (Map<userId, Map<chId, i64>>) # each peer's read watermark
 //! └── "drafts"       (Map<chId, Text>)           # per-channel composer body
@@ -47,6 +48,7 @@ use std::collections::HashMap;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::model::{
@@ -103,6 +105,16 @@ pub struct NewMessage {
 }
 
 pub struct ChatDoc;
+
+/// One agent lifecycle transition is an indivisible authored claim: pairing a
+/// state from one transition with the timestamp of another would invent an
+/// event nobody observed. This scalar deliberately remains atomic while trace
+/// rows retain their independently mergeable CRDT structure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredAgentTransition {
+    state: crate::model::AgentWorkState,
+    since: i64,
+}
 
 /// One row of the demo channel roster: (id, workspace, category, name, topic,
 /// kind, sort order within its category).
@@ -163,6 +175,17 @@ fn list_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
         Ok(Some((Value::Object(ObjType::List), o))) => Some(o),
         _ => None,
     }
+}
+
+/// Positional trace keys emitted by the short-lived pre-stable-id schema.
+/// Current step ids always begin with `step_`; this deliberately recognises
+/// only exactly eight ASCII digits so a user-authored id is never migrated.
+fn is_legacy_trace_key(key: &str) -> bool {
+    key.len() == 8 && key.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn legacy_step_id(key: &str) -> String {
+    format!("legacy_step_{key}")
 }
 
 /// # Panics
@@ -923,33 +946,108 @@ impl ChatDoc {
 
     /// Reference — the address of what this message is about.
     ///
-    /// One JSON scalar rather than a map of its parts, because a reference is
-    /// authored once and never co-edited: nothing merges two peers' idea of
-    /// which block was selected, so splitting it into fields would buy
-    /// convergence nobody needs and risk a half-written address that still
-    /// parses. Absent for an ordinary message, which is what keeps
-    /// `Message::reference` honest as "written about something".
-    ///
-    /// Work — an agent's record of what it did with the message this one
-    /// replies to. One JSON scalar for the same reason `reference` is one:
-    /// the agent that took the summons is the only thing that ever sets it,
-    /// so a later state simply supersedes an earlier one and there is
-    /// nothing for a merge to reconcile.
-    fn write_reference_and_work(
+    /// This remains one JSON scalar by design: it is an immutable, opaque
+    /// address minted once at authoring time. Its constituent fields are not
+    /// independently editable facts, so representing them as mergeable fields
+    /// would permit a hybrid address that no sender ever selected.
+    fn write_reference(
         doc: &mut AutoCommit,
         block: &ObjId,
         reference: Option<&qos_reference::ResourceRef>,
-        work: Option<&crate::model::AgentWork>,
     ) {
         if let Some(r) = reference
             && let Ok(json) = serde_json::to_string(r)
         {
             let _ = doc.put(block, "reference", json.as_str());
         }
-        if let Some(w) = work
-            && let Ok(json) = serde_json::to_string(w)
+    }
+
+    /// Write an agent record as a structured CRDT map. Authored compound values
+    /// (the state transition and reasoning) are atomic scalars, while each trace
+    /// row has a stable key so concurrent appends merge without one whole
+    /// record erasing the other.
+    /// Reasoning is deliberately one atomic scalar: `route` and `why` are one
+    /// assertion, and merging them independently could manufacture a pairing
+    /// no agent authored. Trace rows are keyed by an authored step id, never a
+    /// positional index. Current trace updates are additive; only legacy
+    /// positional rows are tombstoned during migration.
+    fn write_work(doc: &mut AutoCommit, block: &ObjId, work: &crate::model::AgentWork) {
+        // A state update is often accompanied by an unchanged trace or
+        // reasoning record. Do not rewrite those independent fields: doing so
+        // would turn an unrelated concurrent change into a competing LWW write.
+        let prior =
+            map_at(doc, block, "work").and_then(|record| Self::read_native_work(doc, &record));
+        let record = get_or_map(doc, block, "work");
+        if prior
+            .as_ref()
+            .is_none_or(|old| old.since != work.since || old.state != work.state)
+            && let Ok(transition) = serde_json::to_string(&StoredAgentTransition {
+                state: work.state.clone(),
+                since: work.since,
+            })
         {
-            let _ = doc.put(block, "work", json.as_str());
+            let _ = doc.put(&record, "transition", transition.as_str());
+        }
+
+        if prior
+            .as_ref()
+            .is_none_or(|old| old.reasoning != work.reasoning)
+            && let Ok(reasoning) = serde_json::to_string(&work.reasoning)
+        {
+            let _ = doc.put(&record, "reasoning", reasoning.as_str());
+        }
+
+        let trace = get_or_map(doc, &record, "trace");
+        let prior_steps: HashMap<_, _> = prior
+            .as_ref()
+            .map(|old| {
+                old.trace
+                    .iter()
+                    .map(|step| (step.id.as_str(), step))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for step in work.trace.iter().filter(|step| !step.id.is_empty()) {
+            let prior_step = prior_steps.get(step.id.as_str()).copied();
+            if prior_step == Some(step) {
+                continue;
+            }
+            let row_exists = map_at(doc, &trace, &step.id).is_some();
+            let row = get_or_map(doc, &trace, &step.id);
+            let _ = doc.put(&row, "present", true);
+            // Identity and authoring order are immutable once a row exists.
+            // Later updates to the same step may change only its lifecycle
+            // outcome, avoiding a hybrid dispatch description.
+            if !row_exists {
+                let _ = doc.put(&row, "sequence", step.sequence as i64);
+                let _ = doc.put(&row, "resource", step.resource.as_str());
+                let _ = doc.put(&row, "label", step.label.as_str());
+            }
+            if prior_step.is_none_or(|old| old.outcome != step.outcome)
+                && let Ok(outcome) = serde_json::to_string(&step.outcome)
+            {
+                let _ = doc.put(&row, "outcome", outcome.as_str());
+            }
+        }
+        // Traces are dispatch evidence: an update whose payload predates a
+        // collaborator's append cannot know that row is obsolete. Therefore
+        // `SetAgentWork` is additive; only an explicit future tombstone action
+        // may clear a stable step id.
+        // A release prior to stable step ids used zero-padded list positions as
+        // keys. During the first update, retain its projection under a derived
+        // legacy id but tombstone the positional row so it cannot reappear.
+        #[allow(
+            clippy::needless_collect,
+            reason = "the keys must be owned before tombstoning their rows mutably"
+        )]
+        let legacy_trace_keys: Vec<_> = doc
+            .keys(&trace)
+            .filter(|key| is_legacy_trace_key(key))
+            .collect();
+        for key in legacy_trace_keys {
+            if let Some(row) = map_at(doc, &trace, &key) {
+                let _ = doc.put(&row, "present", false);
+            }
         }
     }
 
@@ -1060,7 +1158,10 @@ impl ChatDoc {
         Self::write_message_text(doc, &block, &text);
         Self::write_reactions(doc, &block, &reactions);
         Self::write_mentions(doc, &block, &mentions);
-        Self::write_reference_and_work(doc, &block, reference.as_ref(), work.as_ref());
+        Self::write_reference(doc, &block, reference.as_ref());
+        if let Some(work) = work.as_ref() {
+            Self::write_work(doc, &block, work);
+        }
         Self::write_history(doc, &block, &history);
         Self::write_attachment(doc, &block, attachment.as_ref());
 
@@ -2000,17 +2101,134 @@ impl ChatDoc {
         serde_json::from_str(&raw).ok()
     }
 
-    /// The agent record stored on a message, or `None` for an ordinary one —
-    /// and also for a record that will not parse, which is deliberately not
-    /// read as some nearby state that does. A state that cannot be read is
-    /// no claim about the agent at all, and inventing one would be exactly
-    /// the fabrication this field exists to avoid.
+    /// The agent record stored on a message, or `None` for an ordinary one.
+    /// New rows use the native CRDT map written by [`Self::write_work`]. The
+    /// JSON fallback is read-only compatibility for documents saved by older
+    /// releases; the next real agent update replaces it with the native form.
     fn read_work(doc: &AutoCommit, msg: &ObjId) -> Option<crate::model::AgentWork> {
+        if let Some(record) = map_at(doc, msg, "work") {
+            return Self::read_native_work(doc, &record);
+        }
         let raw = get_str(doc, msg, "work");
         if raw.is_empty() {
             return None;
         }
         serde_json::from_str(&raw).ok()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one compatibility reader keeps the native and two legacy AgentWork schemas adjacent"
+    )]
+    fn read_native_work(doc: &AutoCommit, record: &ObjId) -> Option<crate::model::AgentWork> {
+        let transition =
+            serde_json::from_str::<StoredAgentTransition>(&get_str(doc, record, "transition")).ok();
+        let (state, since) = if let Some(transition) = transition {
+            (transition.state, transition.since)
+        } else {
+            // Compatibility with the initial native-map rollout. Its next
+            // update writes `transition` and thereafter ignores these fields.
+            let state = map_at(doc, record, "state")?;
+            let state = match get_str(doc, &state, "kind").as_str() {
+                "taken" => crate::model::AgentWorkState::Taken,
+                "waiting" => crate::model::AgentWorkState::Waiting {
+                    app: get_str(doc, &state, "app"),
+                },
+                "doing" => crate::model::AgentWorkState::Doing {
+                    did: get_str(doc, &state, "did"),
+                    about: get_str(doc, &state, "about"),
+                },
+                "done" => crate::model::AgentWorkState::Done {
+                    did: get_str(doc, &state, "did"),
+                },
+                "refused" => crate::model::AgentWorkState::Refused,
+                _ => return None,
+            };
+            (state, get_i64(doc, record, "since"))
+        };
+        // Reasoning is one atomic scalar because route and explanation are one
+        // authored claim. Support the previous native map only while reading
+        // old documents; the next write replaces it with this scalar.
+        let reasoning = if map_at(doc, record, "reasoning").is_some() {
+            map_at(doc, record, "reasoning").and_then(|reasoning| {
+                if !get_bool(doc, &reasoning, "present") {
+                    return None;
+                }
+                let route = match get_str(doc, &reasoning, "route").as_str() {
+                    "model" => crate::model::AgentRoute::Model,
+                    "floor" => crate::model::AgentRoute::Floor,
+                    _ => return None,
+                };
+                Some(crate::model::AgentReasoning {
+                    route,
+                    why: get_str(doc, &reasoning, "why"),
+                })
+            })
+        } else {
+            serde_json::from_str::<Option<crate::model::AgentReasoning>>(&get_str(
+                doc,
+                record,
+                "reasoning",
+            ))
+            .ok()
+            .flatten()
+        };
+        let mut trace_with_order = Vec::new();
+        if let Some(rows) = map_at(doc, record, "trace") {
+            for key in doc.keys(&rows) {
+                let Some(row) = map_at(doc, &rows, &key) else {
+                    continue;
+                };
+                if !get_bool(doc, &row, "present") {
+                    continue;
+                }
+                let outcome = if let Ok(outcome) = serde_json::from_str::<
+                    crate::model::AgentStepOutcome,
+                >(&get_str(doc, &row, "outcome"))
+                {
+                    outcome
+                } else {
+                    match get_str(doc, &row, "outcome").as_str() {
+                        "asked" => crate::model::AgentStepOutcome::Asked,
+                        "applied" => crate::model::AgentStepOutcome::Applied,
+                        "no_change" => crate::model::AgentStepOutcome::NoChange,
+                        "refused" => crate::model::AgentStepOutcome::Refused {
+                            why: get_str(doc, &row, "why"),
+                        },
+                        _ => continue,
+                    }
+                };
+                let id = if is_legacy_trace_key(&key) {
+                    legacy_step_id(&key)
+                } else {
+                    key.clone()
+                };
+                let sequence = get_i64(doc, &row, "sequence").max(0) as u64;
+                trace_with_order.push((
+                    sequence,
+                    id.clone(),
+                    crate::model::AgentStep {
+                        id,
+                        sequence,
+                        resource: get_str(doc, &row, "resource"),
+                        label: get_str(doc, &row, "label"),
+                        outcome,
+                    },
+                ));
+            }
+        }
+        trace_with_order
+            .sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        let trace = trace_with_order
+            .into_iter()
+            .map(|(_, _, step)| step)
+            .collect();
+        Some(crate::model::AgentWork {
+            state,
+            since,
+            reasoning,
+            trace,
+        })
     }
 
     /// Record what an agent is doing with the message `msg` replies to, and
@@ -2035,10 +2253,8 @@ impl ChatDoc {
             return false;
         };
         let mut changed = false;
-        if let Ok(json) = serde_json::to_string(work)
-            && get_str(doc, &block, "work") != json
-        {
-            let _ = doc.put(&block, "work", json.as_str());
+        if Self::read_work(doc, &block).as_ref() != Some(work) {
+            Self::write_work(doc, &block, work);
             changed = true;
         }
         if let Some(text) = say.filter(|t| !t.is_empty())
@@ -2747,5 +2963,279 @@ mod tests {
         let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
         let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").unwrap();
         assert_eq!(thumbs.count(), 2, "both reactors converge on one emoji");
+    }
+
+    #[test]
+    fn agent_work_is_native_granular_crdt_state_and_merges_independent_updates() {
+        use crate::model::{
+            AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+        };
+
+        let mut a = seeded();
+        let message = ChatDoc::push_message_with_id(
+            &mut a,
+            "c_crit",
+            "m_native_work",
+            NewMessage {
+                author: "agent_claude".into(),
+                ts: NOW,
+                ..Default::default()
+            },
+        );
+        let taken = AgentWork::new(AgentWorkState::Taken, NOW);
+        assert!(ChatDoc::set_message_work(
+            &mut a, "c_crit", &message, &taken, None
+        ));
+        let message_obj = ChatDoc::find_message_obj(&a, "c_crit", &message).unwrap();
+        assert!(
+            map_at(&a, &message_obj, "work").is_some(),
+            "new agent records are CRDT maps, never JSON scalars"
+        );
+
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let explained = taken.clone().because(AgentReasoning {
+            route: AgentRoute::Floor,
+            why: "The operation name matched the request.".into(),
+        });
+        assert!(ChatDoc::set_message_work(
+            &mut a, "c_crit", &message, &explained, None
+        ));
+        let record = map_at(
+            &a,
+            &ChatDoc::find_message_obj(&a, "c_crit", &message).unwrap(),
+            "work",
+        )
+        .unwrap();
+        assert!(
+            map_at(&a, &record, "reasoning").is_none(),
+            "route and explanation must not be independently mergeable fields"
+        );
+        assert_eq!(
+            serde_json::from_str::<Option<AgentReasoning>>(&get_str(&a, &record, "reasoning"))
+                .unwrap(),
+            explained.reasoning,
+            "reasoning is one explicitly atomic authored record"
+        );
+        let traced = taken.clone().with_trace(vec![AgentStep::authored(
+            "chat.message:m_me1",
+            "Pin message",
+            AgentStepOutcome::Applied,
+            0,
+        )]);
+        assert!(ChatDoc::set_message_work(
+            &mut b, "c_crit", &message, &traced, None
+        ));
+
+        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+        a.merge(&mut b_changes).unwrap();
+        let merged = ChatDoc::list_messages(&a, "c_crit")
+            .into_iter()
+            .find(|row| row.id == message)
+            .and_then(|row| row.work)
+            .unwrap();
+        assert_eq!(merged.state, AgentWorkState::Taken);
+        assert_eq!(merged.reasoning, explained.reasoning);
+        assert_eq!(merged.trace, traced.trace);
+    }
+
+    #[test]
+    fn concurrent_agent_trace_appends_keep_both_authored_steps() {
+        use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
+
+        let mut a = seeded();
+        let message = ChatDoc::push_message_with_id(
+            &mut a,
+            "c_crit",
+            "m_concurrent_trace",
+            NewMessage {
+                author: "agent_claude".into(),
+                ts: NOW,
+                ..Default::default()
+            },
+        );
+        let taken = AgentWork::new(AgentWorkState::Taken, NOW);
+        ChatDoc::set_message_work(&mut a, "c_crit", &message, &taken, None);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let left = AgentStep::authored(
+            "chat.message:m_me1",
+            "Pin message",
+            AgentStepOutcome::Asked,
+            1,
+        );
+        let right = AgentStep::authored(
+            "chat.channel:c_crit",
+            "Mark as read",
+            AgentStepOutcome::Applied,
+            1,
+        );
+        let a_work = taken.clone().with_trace(vec![left.clone()]);
+        let b_work = taken.with_trace(vec![right.clone()]);
+        ChatDoc::set_message_work(&mut a, "c_crit", &message, &a_work, None);
+        ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_work, None);
+
+        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+        a.merge(&mut b_changes).unwrap();
+        let trace = ChatDoc::list_messages(&a, "c_crit")
+            .into_iter()
+            .find(|row| row.id == message)
+            .and_then(|row| row.work)
+            .unwrap()
+            .trace;
+        assert_eq!(trace.len(), 2, "concurrent appends must not collide");
+        assert!(trace.iter().any(|step| step.id == left.id));
+        assert!(trace.iter().any(|step| step.id == right.id));
+        assert!(
+            trace
+                .windows(2)
+                .all(|pair| { (pair[0].sequence, &pair[0].id) <= (pair[1].sequence, &pair[1].id) }),
+            "equal sequence keys use step id as a deterministic tie-break"
+        );
+    }
+
+    #[test]
+    fn stale_agent_trace_update_cannot_tombstone_a_step_learned_later() {
+        use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
+
+        let mut a = seeded();
+        let message = ChatDoc::push_message_with_id(
+            &mut a,
+            "c_crit",
+            "m_delayed_trace",
+            NewMessage {
+                author: "agent_claude".into(),
+                ts: NOW,
+                ..Default::default()
+            },
+        );
+        let base = AgentWork::new(AgentWorkState::Taken, NOW);
+        ChatDoc::set_message_work(&mut a, "c_crit", &message, &base, None);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let from_a = AgentStep::authored(
+            "chat.message:m_me1",
+            "Pin message",
+            AgentStepOutcome::Applied,
+            1,
+        );
+        let from_b = AgentStep::authored(
+            "chat.channel:c_crit",
+            "Mark as read",
+            AgentStepOutcome::Applied,
+            2,
+        );
+        // A authors its payload before it has seen B's append, but delivery is
+        // deliberately delayed until after B's change has merged.
+        let stale_a_payload = base.clone().with_trace(vec![from_a.clone()]);
+        let b_payload = base.with_trace(vec![from_b.clone()]);
+        ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_payload, None);
+        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+        a.merge(&mut b_changes).unwrap();
+        ChatDoc::set_message_work(&mut a, "c_crit", &message, &stale_a_payload, None);
+
+        let trace = ChatDoc::list_messages(&a, "c_crit")
+            .into_iter()
+            .find(|row| row.id == message)
+            .and_then(|row| row.work)
+            .unwrap()
+            .trace;
+        assert!(trace.iter().any(|step| step.id == from_a.id));
+        assert!(
+            trace.iter().any(|step| step.id == from_b.id),
+            "a stale payload must not infer a collaborator's append is deleted"
+        );
+    }
+
+    #[test]
+    fn concurrent_agent_transitions_are_never_hybridized() {
+        use crate::model::{AgentWork, AgentWorkState};
+
+        let mut a = seeded();
+        let message = ChatDoc::push_message_with_id(
+            &mut a,
+            "c_crit",
+            "m_transition_merge",
+            NewMessage {
+                author: "agent_claude".into(),
+                ts: NOW,
+                ..Default::default()
+            },
+        );
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let left = AgentWork::new(
+            AgentWorkState::Doing {
+                did: "Pin message".into(),
+                about: "m_me1".into(),
+            },
+            NOW + 10,
+        );
+        let right = AgentWork::new(
+            AgentWorkState::Done {
+                did: "Mark as read".into(),
+            },
+            NOW + 20,
+        );
+        ChatDoc::set_message_work(&mut a, "c_crit", &message, &left, None);
+        ChatDoc::set_message_work(&mut b, "c_crit", &message, &right, None);
+        let mut b_changes = AutoCommit::load(&b.save()).unwrap();
+        a.merge(&mut b_changes).unwrap();
+
+        let merged = ChatDoc::list_messages(&a, "c_crit")
+            .into_iter()
+            .find(|row| row.id == message)
+            .and_then(|row| row.work)
+            .unwrap();
+        assert!(
+            (merged.state == left.state && merged.since == left.since)
+                || (merged.state == right.state && merged.since == right.since),
+            "merge must choose one complete authored transition, not a hybrid: {merged:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_positional_trace_row_migrates_to_a_tombstoned_id_key() {
+        use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
+
+        let mut doc = seeded();
+        let message = ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_crit",
+            "m_legacy_trace",
+            NewMessage {
+                author: "agent_claude".into(),
+                ts: NOW,
+                ..Default::default()
+            },
+        );
+        let message_obj = ChatDoc::find_message_obj(&doc, "c_crit", &message).unwrap();
+        let work = get_or_map(&mut doc, &message_obj, "work");
+        let _ = doc.put(&work, "since", NOW);
+        let state = get_or_map(&mut doc, &work, "state");
+        let _ = doc.put(&state, "kind", "taken");
+        let trace = get_or_map(&mut doc, &work, "trace");
+        let old = get_or_map(&mut doc, &trace, "00000000");
+        let _ = doc.put(&old, "present", true);
+        let _ = doc.put(&old, "resource", "chat.message:m_me1");
+        let _ = doc.put(&old, "label", "Pin message");
+        let _ = doc.put(&old, "outcome", "asked");
+
+        let mut updated = AgentWork::new(AgentWorkState::Taken, NOW + 1);
+        updated.trace = ChatDoc::list_messages(&doc, "c_crit")
+            .into_iter()
+            .find(|row| row.id == message)
+            .and_then(|row| row.work)
+            .unwrap()
+            .trace;
+        assert_eq!(updated.trace[0].id, "legacy_step_00000000");
+        updated.trace[0].outcome = AgentStepOutcome::Applied;
+        ChatDoc::set_message_work(&mut doc, "c_crit", &message, &updated, None);
+
+        let trace = map_at(&doc, &work, "trace").unwrap();
+        assert!(
+            !get_bool(&doc, &map_at(&doc, &trace, "00000000").unwrap(), "present"),
+            "the old positional row is a tombstone"
+        );
+        assert!(
+            map_at(&doc, &trace, "legacy_step_00000000").is_some(),
+            "the same row is now keyed by a stable id"
+        );
     }
 }
