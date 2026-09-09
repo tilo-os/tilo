@@ -29,16 +29,12 @@ use ui::qos_actions::{
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
+    Button, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer, Spinner, Text,
+    TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
-
-/// CRDT map key holding the inline-rename field's `Text` object. Seeded with
-/// the current name when a rename begins; the in-place editor's `TextInput`
-/// edits it and `commit_rename` reads the chosen name back out.
-const RENAME_QUERY_PATH: &str = "files.rename_query";
 
 /// Width (logical px) at/above which the places list docks beside the file
 /// view; below it the places list becomes an overlay drawer *over* the file
@@ -46,6 +42,10 @@ const RENAME_QUERY_PATH: &str = "files.rename_query";
 /// way — the places list is navigation, so it never takes the window from it
 /// (`ui/HIG.md` §1a).
 const BODY_BREAKPOINT_PX: f64 = 640.0;
+/// Long absolute paths clip at narrow widths and obscure the recovery action.
+/// Preserve the recognisable tail here; the full location stays in the path bar
+/// and the root accessibility description.
+const STATE_SURFACE_LOCATION_CHARS: usize = 36;
 const LIVE_METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
 /// The resource catalogue is shared with search, activity, automation, and
 /// assistive clients. Keep its eagerly enumerated current-folder projection
@@ -96,25 +96,6 @@ fn format_duration(duration_ms: u64) -> String {
     } else {
         format!("{minutes}:{seconds:02}")
     }
-}
-
-/// Ensure a `Text` object exists at `key` on `root`, returning its id. The
-/// toolkit's `TextInput` binds to (and writes into) an existing `Text`
-/// object but never creates one, so the app must seed it — otherwise
-/// keystrokes mutate only the input's local string and never reach the CRDT.
-/// `None` if `root` is not a live object in `state` (seeding then simply
-/// does not happen for this sync pass).
-fn ensure_text_obj(
-    state: &mut automerge::AutoCommit,
-    root: &automerge::ObjId,
-    key: &str,
-) -> Option<automerge::ObjId> {
-    use automerge::transaction::Transactable;
-    use automerge::{ObjType, ReadDoc, Value};
-    if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
-        return Some(id);
-    }
-    state.put_object(root, key, ObjType::Text).ok()
 }
 
 /// Build the file manager's thumbnail service. The content-addressed cache
@@ -416,21 +397,20 @@ pub struct FileExplorerWidget {
     /// history badges update without burning an animation frame loop.
     next_metadata_refresh: Instant,
     /// When `Some(i)`, an inline rename of displayed entry `i` is in
-    /// progress: the in-place editor is drawn over row/cell `i` and its
-    /// `TextInput` edits [`RENAME_QUERY_PATH`]. `None` = not renaming.
+    /// progress: the in-place editor is drawn over row/cell `i`. `None` = not
+    /// renaming.
     renaming: Option<usize>,
-    /// Editable name mirrored from the rename field's `Text` object each
-    /// `sync` while renaming; `commit_rename` renames the file to this.
+    /// Editable name held only for the lifetime of the rename interaction;
+    /// `commit_rename` renames the file to this value. Rename text is device
+    /// local UI state, not collaborative document data or file metadata.
     rename_buffer: String,
-    /// Set when a rename just began so the next `sync` seeds the CRDT
-    /// `Text` object with `rename_buffer` (the current name) before the
-    /// input reads it back.
+    /// Set when a rename just began so the next `sync` seeds the local field
+    /// with `rename_buffer` before it receives user input.
     rename_seed_pending: bool,
-    /// The in-place rename editor: a persistent, CRDT-bound `TextInput` the
-    /// app owns (so its caret/focus survive the per-frame rebuild) and draws
-    /// **over the selected row/cell** — not in a bottom bar. It binds to
-    /// [`RENAME_QUERY_PATH`], so keystrokes splice into the same `Text` object
-    /// `rename_buffer` mirrors.
+    /// The in-place rename editor: a persistent, process-local `TextInput`
+    /// (so its caret/focus survive the per-frame rebuild) drawn **over the
+    /// selected row/cell** — not in a bottom bar. Filesystem observations and
+    /// a transient proposed name must never be written to the shared UI doc.
     rename_input: TextInput,
     /// Where the file view wants the rename editor drawn: the on-screen rect of
     /// the renaming row's name (list) or label (grid), published by `FileView`
@@ -462,6 +442,12 @@ pub struct FileExplorerWidget {
     last_status_label: String,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
+    /// Shared indeterminate progress indicator for the loading state. Its
+    /// reduced-motion behaviour and frame scheduling come from `Spinner`.
+    state_spinner: Spinner,
+    /// Retained shared control positioned beneath the painted failure state.
+    /// It publishes the same local Refresh operation as other retry routes.
+    state_retry: Button,
     /// Set once `build_layout` has composed the panes into `nav`. Used to
     /// detect "hosted in a `TabBar` that never ran `build_layout` for us yet" so
     /// paint can flag a structure rebuild (replaces the old `chrome_below`
@@ -740,10 +726,9 @@ impl FileExplorerWidget {
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
-            rename_input: TextInput::new(vec![])
+            rename_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
                 .with_id("files.rename_input")
-                .with_on_change_path(RENAME_QUERY_PATH)
                 .with_placeholder(&t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
             rename_select_pending: false,
@@ -769,6 +754,11 @@ impl FileExplorerWidget {
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
             shots_status: false,
+            state_spinner: Spinner::with_size(28.0),
+            state_retry: Button::new("files.retry", &t("files-try-again"), None).on_effect({
+                let sink = cmds.clone();
+                move || crate::command::push(&sink, FileCommand::Refresh)
+            }),
             composed_once: false,
             cmds,
             structure_dirty: false,
@@ -970,32 +960,12 @@ impl FileExplorerWidget {
     /// grid (plus any error affordance), scrolling under a symmetric gutter.
     fn build_content_pane(&self, theme: &ui::Theme) -> Box<dyn Widget> {
         let sp = &theme.tokens.spacing;
-        // Loading and failure are whole-pane states, not a malformed empty
-        // table. Keep the real retry button in the widget tree, but centre the
-        // message and action so the state reads immediately at desktop and
-        // compact widths alike.
+        // Loading and failure are painted by the shared centered state surface
+        // in `draw_state_surface`. Keep this structural slot empty: it avoids
+        // a stale list beneath a failure while the surface owns the visual,
+        // semantic, and recovery treatment consistently at every width.
         if self.is_loading || self.error.is_some() {
-            let message = self.error.clone().unwrap_or_else(|| t("files-loading"));
-            let message_row = Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(Text::new(&message)))
-                .push(Box::new(Spacer::new()));
-            let mut content = Column::new()
-                .with_vertical_padding(sp.s1)
-                .with_horizontal_padding(sp.s3, sp.s3)
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(message_row));
-            if self.error.is_some() {
-                let sink = self.cmds.clone();
-                let retry = ui::widget::Button::new("files.retry", &t("files-try-again"), None)
-                    .on_effect(move || crate::command::push(&sink, FileCommand::Refresh));
-                let retry_row = Row::new()
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(retry))
-                    .push(Box::new(Spacer::new()));
-                content = content.push(Box::new(retry_row));
-            }
-            return Box::new(content.push(Box::new(Spacer::new())));
+            return Box::new(Spacer::new());
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
@@ -1082,6 +1052,129 @@ impl FileExplorerWidget {
             t("files-empty-trash")
         } else {
             t("files-empty-folder")
+        }
+    }
+
+    fn bounded_state_text(value: &str, max_chars: usize) -> String {
+        let count = value.chars().count();
+        if count <= max_chars {
+            return value.to_string();
+        }
+        let keep = max_chars.saturating_sub(1);
+        format!(
+            "…{}",
+            value
+                .chars()
+                .skip(count.saturating_sub(keep))
+                .collect::<String>()
+        )
+    }
+
+    fn bounded_state_prefix(value: &str, max_chars: usize) -> String {
+        let count = value.chars().count();
+        if count <= max_chars {
+            return value.to_string();
+        }
+        let keep = max_chars.saturating_sub(1);
+        format!("{}…", value.chars().take(keep).collect::<String>())
+    }
+
+    /// Concise, readable copy for the center state. The visual treatment has a
+    /// deliberately finite line length, while the full path remains discoverable
+    /// in the location bar and the root accessibility description.
+    fn state_surface_copy(&self) -> Option<(String, String, bool)> {
+        let location = Self::bounded_state_text(
+            &self.current_path.display().to_string(),
+            STATE_SURFACE_LOCATION_CHARS,
+        );
+        if self.is_loading {
+            return Some((
+                t("files-loading-title"),
+                t_args("files-loading-detail", &[arg("path", location)]),
+                false,
+            ));
+        }
+        self.error.as_ref().map(|error| {
+            // `read_current_dir` already wraps the OS failure in the localized
+            // “Could not open this folder:” sentence. The state title carries
+            // that context, so retain only the cause in the narrow visual line.
+            let cause = error
+                .rsplit_once(": ")
+                .map_or(error.as_str(), |(_, cause)| cause);
+            let location = Self::bounded_state_text(&location, 22);
+            let error = Self::bounded_state_prefix(cause, 26);
+            (
+                t("files-load-error-title"),
+                t_args(
+                    "files-load-error-detail",
+                    &[arg("path", location), arg("error", error)],
+                ),
+                true,
+            )
+        })
+    }
+
+    /// Draw the shared center-state primitive above the otherwise empty pane.
+    /// Loading adds the toolkit spinner (which stops requesting frames in
+    /// reduced-motion mode); failure uses the shared `EmptyState` visual plus a
+    /// retained shared Button for the same typed Refresh command every input
+    /// route uses.
+    fn draw_state_surface(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        let Some((title, detail, can_retry)) = self.state_surface_copy() else {
+            return;
+        };
+        let rect = self.nav.overview_content_rect();
+        if rect.width() <= 1.0 || rect.height() <= 1.0 {
+            return;
+        }
+        if can_retry {
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                Some(ui::icons::Icon::FolderOpen),
+                &title,
+                Some(&detail),
+                None,
+                Point::new(-1.0, -1.0),
+            );
+            let button_rect = vello::kurbo::Rect::from_center_size(
+                Point::new(rect.center().x, rect.center().y + 86.0),
+                (128.0, 36.0),
+            );
+            self.state_retry.apply_layout_external(button_rect);
+            self.state_retry
+                .draw(scene, transform, text_renderer, theme, presence);
+        } else {
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                None,
+                &title,
+                Some(&detail),
+                None,
+                self.last_cursor,
+            );
+            let center = rect.center();
+            let spinner_rect = vello::kurbo::Rect::from_center_size(
+                Point::new(center.x, center.y - 62.0),
+                (28.0, 28.0),
+            );
+            self.state_spinner.set_rect(spinner_rect);
+            self.state_spinner
+                .draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3418,9 +3511,8 @@ impl FileExplorerWidget {
         &self.rename_buffer
     }
 
-    /// Replace the editable rename text. The next `sync` seeds this into the
-    /// rename field's CRDT `Text` object; used by tests to drive the flow
-    /// without a keystroke round-trip through the widget tree.
+    /// Replace the editable rename text. The next `sync` seeds the local
+    /// editor; this test seam deliberately has no document side effect.
     pub fn set_rename_buffer(&mut self, s: String) {
         self.rename_buffer = s;
         self.rename_seed_pending = true;
@@ -6119,18 +6211,10 @@ impl FileExplorerWidget {
                 if ke.state == ElementState::Pressed {
                     match &ke.logical_key {
                         Key::Named(NamedKey::Enter) => {
-                            // Pull the freshest field text from the CRDT, then
-                            // commit — the last keystroke may not have synced.
-                            let rename_obj =
-                                ensure_text_obj(ctx.state, ctx.path, RENAME_QUERY_PATH);
-                            if let Some(obj) = rename_obj.as_ref()
-                                && let Ok(text) = {
-                                    use automerge::ReadDoc;
-                                    ctx.state.text(obj)
-                                }
-                            {
-                                self.rename_buffer = text;
-                            }
+                            // A local field owns this transient proposal. Read
+                            // it directly so Enter commits the final keystroke
+                            // without serialising a UI-only value into CRDT.
+                            self.rename_buffer = self.rename_input.value().to_string();
                             self.commit_rename();
                             *ctx.handled = true;
                             self.structure_dirty = true;
@@ -6157,6 +6241,9 @@ impl FileExplorerWidget {
                     ctx.node_id,
                     ctx.taffy,
                 );
+                if let Some(value) = self.rename_input.take_dirty() {
+                    self.rename_buffer = value;
+                }
                 *ctx.handled = true;
                 self.structure_dirty = true;
                 true
@@ -6183,6 +6270,9 @@ impl FileExplorerWidget {
                         ctx.node_id,
                         ctx.taffy,
                     );
+                    if let Some(value) = self.rename_input.take_dirty() {
+                        self.rename_buffer = value;
+                    }
                 } else {
                     // A click away commits the rename (then this click is
                     // consumed; a second click acts on its target).
@@ -6713,6 +6803,10 @@ impl Widget for FileExplorerWidget {
             "files.share-link",
             "files.remote-account",
             "files.remote-dav",
+            // The hand-positioned recovery Button still publishes through the
+            // normal action door; this handler delegates its stable control
+            // resource back to the retained widget.
+            "qos.ui.control.invoke",
         ]
     }
 
@@ -6724,8 +6818,14 @@ impl Widget for FileExplorerWidget {
         clippy::too_many_lines,
         reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
     )]
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut folder = self.action_directory_folder_root();
+        // The recovery affordance is a real action resource, not a painted
+        // click region. Publish it only while its error surface is visible,
+        // where its deterministic Refresh effect is meaningful.
+        if self.error.is_some() {
+            folder.children.extend(self.state_retry.resources(doc));
+        }
         if !self.is_trash_view()
             && let Some(template_dir) = templates::templates_dir()
         {
@@ -7193,7 +7293,7 @@ impl Widget for FileExplorerWidget {
     /// about to resolve it. This keeps the open resource tree bounded to the
     /// actual folder while preserving canonical action equivalence for Places,
     /// remote accounts, and late collaborative records.
-    fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
         (id == crate::search_provider::folder_resource_id(&self.current_path))
             .then(|| self.action_directory_folder_root())
             .or_else(|| {
@@ -7208,6 +7308,14 @@ impl Widget for FileExplorerWidget {
                     .or_else(|| self.collaborative_search.resource(id))
                     .or_else(|| self.remote_accounts_search.resource(id))
             })
+            .or_else(|| {
+                self.error.is_some().then(|| {
+                    self.state_retry
+                        .resources(doc)
+                        .into_iter()
+                        .find(|resource| resource.id.as_str() == id)
+                })?
+            })
     }
 
     #[allow(
@@ -7219,11 +7327,24 @@ impl Widget for FileExplorerWidget {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
+            (OperationKind::Effect, "qos.ui.control.invoke") => {
+                if self
+                    .state_retry
+                    .invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+                    .is_none()
+                {
+                    return Ok(false);
+                }
+                // The effect handler queues the same local Refresh command as
+                // the toolbar and shortcut. Apply it at this action boundary,
+                // never through a document write or widget-local click flag.
+                self.drain_commands();
+            }
             (OperationKind::Effect, "files.new-folder") => {
                 let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
                 fileops::new_folder(&self.current_path, &name)?;
@@ -7631,7 +7752,6 @@ impl Widget for FileExplorerWidget {
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        use automerge::ReadDoc;
         self.refresh_metadata_if_due(Instant::now());
         // One bounded catalogue page per idle/sync turn. The palette only
         // reads its retained SearchCatalog; it never performs mount I/O.
@@ -7641,24 +7761,18 @@ impl Widget for FileExplorerWidget {
                 self.status = Some("Collaborative search needs a refresh to continue.".to_string());
             }
         }
-        // Seed the inline-rename field's backing Text object *before* the
-        // children sync so the rename input resolves a real object to write
-        // into (the toolkit's TextInput binds to an existing Text but never
-        // lazily creates one).
-        let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
-
-        // A just-started rename seeds the field with the entry's current name.
-        if let Some(obj) = rename_obj.as_ref()
-            && self.rename_seed_pending
-        {
-            ui::doc::splice_text_diffed(state, obj, &self.rename_buffer);
+        // A rename proposal is process-local. Seeding it must not mutate the
+        // shared document: neither a filesystem observation nor an unfinished
+        // filename belongs in collaborative UI history.
+        if self.rename_seed_pending {
+            self.rename_input.set_text(&self.rename_buffer);
             self.rename_seed_pending = false;
         }
 
-        // Keep the persistent in-place rename editor reading from the seeded
-        // object; select the whole name on the first sync after a rename begins
-        // so the first keystroke replaces it (Finder-style).
+        // Keep the persistent in-place rename editor alive through rebuilds;
+        // select the whole seed on its first frame (Finder-style).
         self.rename_input.sync(state, path);
+        self.state_retry.sync(state, path);
         if self.rename_select_pending {
             self.rename_input.select_all();
             self.rename_select_pending = false;
@@ -7667,13 +7781,12 @@ impl Widget for FileExplorerWidget {
         self.toolbar.sync(state, path);
         self.nav.sync(state, path);
 
-        // While renaming, mirror the field's live text into our buffer so a
-        // commit renames to what the user actually typed.
+        // `TextInput` also accepts accessibility SetValue; absorb any local
+        // edit after sync so every input route feeds the same command.
         if self.renaming.is_some()
-            && let Some(obj) = rename_obj.as_ref()
-            && let Ok(text) = state.text(obj)
+            && let Some(value) = self.rename_input.take_dirty()
         {
-            self.rename_buffer = text;
+            self.rename_buffer = value;
         }
     }
 
@@ -7795,9 +7908,13 @@ impl Widget for FileExplorerWidget {
         self.poll_share_result();
         self.poll_history_result();
         self.paint_background(scene, transform, theme);
-        self.toolbar
-            .draw(scene, transform, text_renderer, theme, presence);
         self.nav
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
+        // The toolbar is fixed app chrome. Paint it above the body so an
+        // error/empty surface can never obscure its Back, Up, or location
+        // routes at a compact width.
+        self.toolbar
             .draw(scene, transform, text_renderer, theme, presence);
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
@@ -7819,7 +7936,7 @@ impl Widget for FileExplorerWidget {
         // rows outside it. The default trait impl would call our own `draw`,
         // which breaks that chain — a long directory would then emit every
         // row's glyphs every frame regardless of what's visible.
-        self.toolbar.draw_with_presence(
+        self.nav.draw_with_presence(
             scene,
             transform,
             text_renderer,
@@ -7827,7 +7944,8 @@ impl Widget for FileExplorerWidget {
             presence,
             permissions,
         );
-        self.nav.draw_with_presence(
+        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
+        self.toolbar.draw_with_presence(
             scene,
             transform,
             text_renderer,
@@ -7907,6 +8025,42 @@ impl Widget for FileExplorerWidget {
                 self.armed_drag = None;
                 self.apply_command(FileCommand::BeginDrag { path, is_dir });
                 self.structure_dirty = true;
+            }
+        }
+        // The shared EmptyState visual and the retained Button share one
+        // recovery route. The button's `on_effect` publishes a typed local
+        // control action; draining it below enters the ordinary Refresh path.
+        if self.error.is_some() {
+            self.state_retry.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if *handled {
+                self.structure_dirty |= self.drain_commands();
+                return;
+            }
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(
+                            event.logical_key,
+                            winit::keyboard::Key::Named(
+                                winit::keyboard::NamedKey::Enter
+                                    | winit::keyboard::NamedKey::Space
+                            )
+                        )
+            ) {
+                self.structure_dirty |= self.apply_command(FileCommand::Refresh);
+                *handled = true;
+                return;
             }
         }
         if self.collab_panel.is_some() {
@@ -8145,6 +8299,7 @@ impl Widget for FileExplorerWidget {
         // lingers / fades.
         self.nav.needs_animation_frame()
             || self.toolbar.needs_animation_frame()
+            || (self.is_loading && self.state_spinner.needs_animation_frame())
             || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
@@ -8181,6 +8336,14 @@ impl Widget for FileExplorerWidget {
             &mut self.submenu,
         ];
         v
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.state_retry.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(Widget::take_control_invocation)
+        })
     }
 
     fn name(&self) -> &'static str {
@@ -8313,15 +8476,27 @@ impl Widget for FileExplorerWidget {
             );
         }
 
-        Some(
-            AccessNode::new(Role::Group)
-                .with_name(t("files-a11y-activity"))
-                .with_description(t_args(
-                    "files-a11y-current-folder",
-                    &[arg("path", self.current_path.display().to_string())],
-                ))
-                .with_value(self.accessibility_status())
-                .with_live(if self.error.is_some() {
+        let mut root = AccessNode::new(Role::Group)
+            .with_name(t("files-a11y-activity"))
+            .with_description(t_args(
+                "files-a11y-current-folder",
+                &[arg("path", self.current_path.display().to_string())],
+            ))
+            .with_value(self.accessibility_status())
+            .with_live(if self.error.is_some() {
+                Politeness::Assertive
+            } else {
+                Politeness::Polite
+            })
+            .with_state(AccessState {
+                busy: self.is_loading,
+                ..Default::default()
+            });
+        if let Some((title, detail, can_retry)) = self.state_surface_copy() {
+            let mut state = AccessNode::new(Role::Group)
+                .with_name(title)
+                .with_description(detail)
+                .with_live(if can_retry {
                     Politeness::Assertive
                 } else {
                     Politeness::Polite
@@ -8329,8 +8504,17 @@ impl Widget for FileExplorerWidget {
                 .with_state(AccessState {
                     busy: self.is_loading,
                     ..Default::default()
-                }),
-        )
+                });
+            if can_retry {
+                state = state.with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(t("files-try-again"))
+                        .with_action_target("files-retry-folder"),
+                ]);
+            }
+            root = root.with_children(vec![state]);
+        }
+        Some(root)
     }
 
     fn perform_semantic_action(
@@ -8341,6 +8525,11 @@ impl Widget for FileExplorerWidget {
         _path: &automerge::ObjId,
     ) -> bool {
         use ui::a11y::Action;
+        if target == "files-retry-folder" && matches!(action, Action::Activate) {
+            let changed = self.apply_command(FileCommand::Refresh);
+            self.structure_dirty |= changed;
+            return changed;
+        }
         if let Some(version) = target.strip_prefix("files-history-version:") {
             let Ok(version) = uuid::Uuid::parse_str(version) else {
                 return false;
@@ -8951,33 +9140,24 @@ mod command_path_tests {
     }
 
     #[test]
-    fn error_state_composition_adds_exactly_the_retry_button() {
-        use std::collections::HashMap;
-        use taffy::{NodeId, TaffyTree};
-        use ui::theme::Theme;
+    fn state_surface_copy_is_bounded_and_keeps_the_folder_context() {
+        let mut w = FileExplorerWidget::new();
+        w.current_path = PathBuf::from(format!(
+            "/workspace/{}",
+            "a-very-long-folder-name/".repeat(8)
+        ));
+        w.error = Some("permission denied while opening this folder".repeat(8));
 
-        // Build the real content pane (the file-view detail, where the retry
-        // affordance lives) and count its buttons. The error flag is the only
-        // structural difference, so the delta is precisely the "Try Again"
-        // button `build_content_pane` adds.
-        fn button_count(err: bool) -> usize {
-            let mut w = FileExplorerWidget::new();
-            if err {
-                w.error = Some("could not read directory".into());
-            }
-            let theme = Theme::dark();
-            let mut pane = w.build_content_pane(&theme);
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            pane.build_layout(&mut taffy, &theme, &mut nm);
-            nm.values()
-                .filter(|&&p| unsafe { (*p).name() } == "Button")
-                .count()
-        }
-        assert_eq!(
-            button_count(true),
-            button_count(false) + 1,
-            "error view must add the retry button"
+        let (title, detail, can_retry) = w.state_surface_copy().expect("error state copy");
+        assert_eq!(title, t("files-load-error-title"));
+        assert!(can_retry);
+        assert!(
+            detail.contains("…"),
+            "long location/error is bounded: {detail}"
+        );
+        assert!(
+            detail.chars().count() < 190,
+            "recovery copy stays readable on narrow screens: {detail}"
         );
     }
 
@@ -9027,12 +9207,10 @@ mod command_path_tests {
     }
 
     #[test]
-    fn reseeding_the_rename_field_splices_only_the_changed_span() {
-        use automerge::ReadDoc;
-        // Every rename re-seeds the *same* backing Text object with the new
-        // entry's name. Clearing and refilling it tombstones the whole name
-        // each time, so a session that renames a few dozen files pays for all
-        // of them forever.
+    fn reseeding_the_rename_field_never_mutates_the_shared_document() {
+        // An in-progress filename is device-local interaction state. Repeated
+        // renames must not create an ever-growing CRDT history, leak a path to
+        // collaborators, or cause a remote client to see a half-typed name.
         let d = tempfile::tempdir().unwrap();
         for i in 0..40 {
             std::fs::write(d.path().join(format!("report-{i:03}.txt")), b"x").unwrap();
@@ -9042,27 +9220,23 @@ mod command_path_tests {
 
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        // First seed creates the object; measure growth from there.
+        let baseline = doc.save();
         w.set_rename_buffer("report-000.txt".into());
         w.sync(&mut doc, &root);
-        let baseline = doc.save().len();
 
         for i in 1..40 {
             w.set_rename_buffer(format!("report-{i:03}.txt"));
             w.sync(&mut doc, &root);
         }
-        let grown = doc.save().len() - baseline;
-
-        let obj = ensure_text_obj(&mut doc, &root, RENAME_QUERY_PATH).unwrap();
         assert_eq!(
-            doc.text(&obj).unwrap(),
+            w.rename_buffer(),
             "report-039.txt",
-            "the field must hold the last seeded name"
+            "the local editor holds the last seeded name"
         );
-        assert!(
-            grown < 39 * "report-000.txt".len(),
-            "39 rename re-seeds grew the document by {grown} bytes — the seed is \
-             rewriting the whole field instead of splicing the diff"
+        assert_eq!(
+            doc.save(),
+            baseline,
+            "rename UI state must not be written into the shared document"
         );
     }
 
@@ -11359,6 +11533,42 @@ mod responsive_body_tests {
         );
     }
 
+    #[test]
+    fn narrow_error_retry_uses_the_shared_button_and_recovers() {
+        let mut h = H::new(None, 390.0, 780.0);
+        h.w.debug_show_error_state();
+        h.lay_out(390.0, 780.0);
+        h.draw();
+
+        let retry = h.w.state_retry.get_rect();
+        assert!(
+            retry.width() >= 120.0 && retry.y0 > 0.0,
+            "retry is a usable target: {retry:?}"
+        );
+        h.cursor(retry.center().x, retry.center().y);
+        h.left_press();
+        h.left_release();
+        let intent = Widget::take_control_invocation(&mut h.w)
+            .expect("the shared button emits a resource action");
+        assert_eq!(intent.address.resource, "qos.control:files.retry");
+        assert_eq!(intent.address.action, "invoke");
+        assert!(
+            h.w.invoke_resource_operation(
+                qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                br#""files.retry""#,
+                &h.state.doc,
+                &h.state.root,
+            )
+            .unwrap(),
+            "the resource action is accepted by the Files action boundary"
+        );
+        assert!(
+            h.w.error().is_none(),
+            "the shared button dispatches the normal refresh command"
+        );
+    }
+
     /// The regression: at ~600 px the window showed the breadcrumb and the
     /// FAVOURITES / SYSTEM list and **no files at all**, while the footer
     /// underneath read "27 items". The places list had been declared a content
@@ -11792,6 +12002,9 @@ mod accessibility_tests {
         let loading = Widget::accessibility(&widget).unwrap();
         assert!(loading.state.busy);
         assert!(loading.value.as_deref().unwrap().starts_with("Loading "));
+        assert_eq!(loading.children.len(), 1);
+        assert_eq!(loading.children[0].name.as_deref(), Some("Opening folder"));
+        assert_eq!(loading.children[0].live, Some(Politeness::Polite));
 
         widget.is_loading = false;
         widget.error = Some("permission denied".into());
@@ -11805,6 +12018,12 @@ mod accessibility_tests {
                 .contains("permission denied")
         );
         assert!(error.value.as_deref().unwrap().contains("Try Again"));
+        let state = error.children.first().expect("error state semantic group");
+        assert_eq!(state.name.as_deref(), Some("Couldn’t open this folder"));
+        assert_eq!(state.live, Some(Politeness::Assertive));
+        let retry = state.children.first().expect("retry semantic action");
+        assert_eq!(retry.role, Role::Button);
+        assert_eq!(retry.action_target.as_deref(), Some("files-retry-folder"));
     }
 
     #[test]
