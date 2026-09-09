@@ -12,8 +12,8 @@
 //!   the display units are derived (Settings owns the toggle, not this app).
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
 //! - [`net`] — the live background fetch worker (reqwest + tokio).
-//! - [`doc`] — the Automerge CRDT projection (saved places + the last-fetched
-//!   snapshot per place).
+//! - [`doc`] — the Automerge CRDT projection (saved places only; provider
+//!   cache data is device-local).
 //! - [`sample`] — bundled, fully-populated offline data.
 //! - [`icon`] / [`chart`] — custom Vello vector drawing (weather glyphs,
 //!   the temperature curve).
