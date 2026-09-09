@@ -77,6 +77,10 @@ impl HttpMethod {
 /// while being excluded from the sent request (the checkbox in the UI).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyValue {
+    /// Durable row identity. The visible key may be renamed or duplicated
+    /// (notably for HTTP headers), so it must not be used as CRDT identity.
+    #[serde(default)]
+    pub id: String,
     pub key: String,
     pub value: String,
     pub enabled: bool,
@@ -85,6 +89,7 @@ pub struct KeyValue {
 impl KeyValue {
     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
+            id: Uuid::new_v4().to_string(),
             key: key.into(),
             value: value.into(),
             enabled: true,
@@ -94,6 +99,7 @@ impl KeyValue {
     /// A blank, enabled row — the trailing "add a new pair" affordance.
     pub fn blank() -> Self {
         Self {
+            id: Uuid::new_v4().to_string(),
             key: String::new(),
             value: String::new(),
             enabled: true,
