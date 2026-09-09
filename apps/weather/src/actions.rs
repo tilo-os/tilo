@@ -39,10 +39,21 @@ pub fn open_location_address(id: LocationId) -> ActionAddress {
 /// external cache effects and intentionally do not appear here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WeatherAction {
-    AddLocation { location: SavedLocation },
-    RemoveLocation { id: String },
-    SelectLocation { id: String },
-    SetLocationOrder { ids: Vec<String> },
+    /// Create the empty keyed schema. Used on a first launch with no saved
+    /// places, so widget synchronisation never needs to mutate the document.
+    Initialize,
+    AddLocation {
+        location: SavedLocation,
+    },
+    RemoveLocation {
+        id: String,
+    },
+    SelectLocation {
+        id: String,
+    },
+    SetLocationOrder {
+        ids: Vec<String>,
+    },
 }
 
 impl Action for WeatherAction {
@@ -52,6 +63,7 @@ impl Action for WeatherAction {
         // cannot hide a user's existing saved places.
         WeatherDoc::migrate_legacy_locations(doc);
         match self {
+            Self::Initialize => WeatherDoc::ensure_schema(doc),
             Self::AddLocation { location } => {
                 WeatherDoc::upsert_location(doc, location);
             }
