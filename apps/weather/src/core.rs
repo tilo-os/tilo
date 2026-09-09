@@ -191,12 +191,9 @@ pub struct Core {
     // --- shell intent (consumed by the root widget) ---
     nav_request: Option<NavIntent>,
 
-    /// User-owned CRDT changes awaiting root-level `ActionHost` dispatch. Network
-    /// snapshots use `pending_doc_write` instead because they are external
-    /// cache effects, not replayable user decisions.
+    /// User-owned CRDT changes awaiting root-level `ActionHost` dispatch.
+    /// Network data stays local to this process and never writes the document.
     durable_actions: Vec<WeatherAction>,
-
-    pub pending_doc_write: bool,
 }
 
 impl Core {
@@ -242,7 +239,6 @@ impl Core {
             collapse_toggle: false,
             nav_request: None,
             durable_actions: Vec::new(),
-            pending_doc_write: false,
         }
     }
 
@@ -424,13 +420,11 @@ impl Core {
             Response::Forecast(snap) => {
                 self.inflight = self.inflight.saturating_sub(1);
                 self.model.snapshots.insert(snap.location_id, snap);
-                self.pending_doc_write = true;
                 self.status = "Updated just now".to_string();
             }
             Response::AirQuality(aq) => {
                 self.inflight = self.inflight.saturating_sub(1);
                 self.model.air_quality.insert(aq.location_id, aq);
-                self.pending_doc_write = true;
             }
             Response::Geocode { seq, results } => {
                 if seq == self.search_seq {

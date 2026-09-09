@@ -49,6 +49,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Affordance, NavShell, ShellMode, Widget};
 
+use crate::actions::WeatherAction;
 use crate::core::{Core, NavIntent};
 use crate::doc::WeatherDoc;
 use crate::net::WeatherService;
@@ -94,30 +95,68 @@ pub struct WeatherApp {
 }
 
 impl WeatherApp {
+    fn dispatch_durable_action(&mut self, doc: &mut AutoCommit, action: &WeatherAction) {
+        let dispatched = action.clone();
+        self.actions.dispatch_with_context(
+            doc,
+            crate::actions::WEATHER_ACTION_TYPE,
+            &dispatched,
+            qos_actions::ActionContext::for_action("org.qos.Weather", "Weather", action),
+        );
+    }
+
     /// Replay every user-owned mutation reported by the core through the
     /// framework action host. The core has already updated its render model;
-    /// this is the authoritative history/collaboration write, while external
-    /// forecast cache responses keep using the separate cache path.
+    /// this is the authoritative history/collaboration write.
     fn flush_durable_actions(&mut self, doc: &mut AutoCommit) {
         let actions = self.core.borrow_mut().take_durable_actions();
         if actions.is_empty() {
             return;
         }
         for action in actions {
-            self.actions.dispatch_with_context(
+            self.dispatch_durable_action(doc, &action);
+        }
+        self.doc_heads = doc.get_heads();
+    }
+
+    /// Create first-run state through the canonical action route, including
+    /// the empty schema marker for a fresh live profile. Synchronisation never
+    /// writes durable document fields itself.
+    fn bootstrap_document(&mut self, doc: &mut AutoCommit) {
+        let model = self.core.borrow().model.clone();
+        self.dispatch_durable_action(doc, &WeatherAction::Initialize);
+        for location in &model.locations {
+            self.dispatch_durable_action(
                 doc,
-                crate::actions::WEATHER_ACTION_TYPE,
-                &action,
-                qos_actions::ActionContext::for_action("org.qos.Weather", "Weather", &action),
+                &WeatherAction::AddLocation {
+                    location: location.clone(),
+                },
+            );
+        }
+        self.dispatch_durable_action(
+            doc,
+            &WeatherAction::SetLocationOrder {
+                ids: model
+                    .locations
+                    .iter()
+                    .map(|location| location.id.to_string())
+                    .collect(),
+            },
+        );
+        if let Some(location) = model.selected_location() {
+            self.dispatch_durable_action(
+                doc,
+                &WeatherAction::SelectLocation {
+                    id: location.id.to_string(),
+                },
             );
         }
         self.doc_heads = doc.get_heads();
     }
 
-    /// Adopt an action/document change even when a local network cache write
-    /// is queued. The user-owned location projection comes from the document;
-    /// locally arrived provider data is merged by fetch timestamp and is then
-    /// persisted through the separate cache-only path.
+    /// Adopt an action/document change while retaining device-local provider
+    /// cache data. Forecasts and air-quality readings are never collaborative
+    /// records, but survive a durable location update in this process.
     fn adopt_document_changes(&mut self, state: &mut AutoCommit) {
         let current_heads = state.get_heads();
         if current_heads == self.doc_heads {
@@ -150,18 +189,6 @@ impl WeatherApp {
         self.doc_heads = current_heads;
     }
 
-    /// Persist only external cache data after all remote durable state has
-    /// been folded into the render projection. This ordering prevents a cache
-    /// write from advancing `doc_heads` past an unseen remote location action.
-    fn flush_pending_cache(&mut self, state: &mut AutoCommit) {
-        self.adopt_document_changes(state);
-        let mut core = self.core.borrow_mut();
-        if core.pending_doc_write {
-            WeatherDoc::write_cache(state, &core.model);
-            core.pending_doc_write = false;
-            self.doc_heads = state.get_heads();
-        }
-    }
     /// Build the responsive shell at the overview width implied by `collapsed`
     /// (full list vs. rail). Both pane widgets share the one [`Core`].
     fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool) -> NavShell {
@@ -678,26 +705,26 @@ impl Widget for WeatherApp {
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded_doc {
+            if !WeatherDoc::is_initialised(state) {
+                self.bootstrap_document(state);
+            } else if !WeatherDoc::has_keyed_schema(state) {
+                // An old list-backed document is promoted by an action, not
+                // a synchronisation-time write.
+                self.dispatch_durable_action(state, &WeatherAction::Initialize);
+                self.doc_heads = state.get_heads();
+            }
             {
                 let mut core = self.core.borrow_mut();
-                if WeatherDoc::is_initialised(state) {
-                    let persisted = WeatherDoc::read_model(state);
-                    if !persisted.locations.is_empty() {
-                        let mut merged = persisted;
-                        for (id, snap) in core.model.snapshots.drain() {
-                            merged.snapshots.entry(id).or_insert(snap);
-                        }
-                        for (id, aq) in core.model.air_quality.drain() {
-                            merged.air_quality.entry(id).or_insert(aq);
-                        }
-                        // Units are a system preference (Settings), not doc
-                        // state — keep the region-derived value.
-                        merged.units = core.units;
-                        core.model = merged;
-                    }
-                } else {
-                    WeatherDoc::write_model(state, &core.model);
+                let mut persisted = WeatherDoc::read_model(state);
+                for (id, snap) in core.model.snapshots.drain() {
+                    persisted.snapshots.entry(id).or_insert(snap);
                 }
+                for (id, aq) in core.model.air_quality.drain() {
+                    persisted.air_quality.entry(id).or_insert(aq);
+                }
+                // Units are a system preference (Settings), not doc state.
+                persisted.units = core.units;
+                core.model = persisted;
             }
             self.seeded_doc = true;
             self.doc_heads = state.get_heads();
@@ -712,7 +739,6 @@ impl Widget for WeatherApp {
         self.adopt_document_changes(state);
 
         self.tick_network();
-        self.flush_pending_cache(state);
         self.nav.sync(state, path);
     }
 
@@ -815,7 +841,6 @@ impl Widget for WeatherApp {
         }
 
         self.tick_network();
-        self.flush_pending_cache(state);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1822,7 +1847,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn remote_location_change_is_adopted_before_pending_cache_flush() {
+    fn remote_location_change_preserves_device_local_provider_cache() {
         let mut h = Harness::new(1280.0, 720.0);
         let mut remote = AutoCommit::load(&h.state.doc.save()).unwrap();
         let oslo = crate::model::SavedLocation::new(
@@ -1849,7 +1874,6 @@ mod interaction_tests {
                 .unwrap()
                 .current
                 .temperature = local_temperature;
-            core.pending_doc_write = true;
         }
 
         h.app.sync(&mut h.state.doc, &h.state.root);
@@ -1860,7 +1884,7 @@ mod interaction_tests {
                 .locations
                 .iter()
                 .any(|location| location.id == oslo.id),
-            "remote saved location was adopted despite the local cache write"
+            "remote saved location was adopted alongside local provider cache"
         );
         assert_eq!(
             core.model.snapshots[&local_id].current.temperature, local_temperature,
@@ -1874,10 +1898,8 @@ mod interaction_tests {
                 .iter()
                 .any(|location| location.id == oslo.id)
         );
-        assert_eq!(
-            persisted.snapshots[&local_id].current.temperature,
-            local_temperature
-        );
+        assert!(persisted.snapshots.is_empty());
+        assert!(persisted.air_quality.is_empty());
     }
 
     #[test]
@@ -1919,7 +1941,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn durable_action_does_not_drop_a_same_frame_provider_cache_write() {
+    fn durable_action_does_not_drop_same_frame_device_local_provider_cache() {
         let mut h = Harness::new(1280.0, 720.0);
         let id = h.app.core.borrow().model.locations[0].id;
         {
@@ -1930,19 +1952,17 @@ mod interaction_tests {
                 .unwrap()
                 .current
                 .temperature = 31.25;
-            core.pending_doc_write = true;
         }
 
         h.key(Key::Named(NamedKey::ArrowDown), None);
 
         assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 1);
         assert_eq!(
-            WeatherDoc::read_model(&h.state.doc).snapshots[&id]
-                .current
-                .temperature,
+            h.app.core.borrow().model.snapshots[&id].current.temperature,
             31.25,
-            "the cache flag survives ActionHost dispatch and reaches the cache writer"
+            "an action dispatch must not discard an already-renderable local forecast"
         );
+        assert!(WeatherDoc::read_model(&h.state.doc).snapshots.is_empty());
     }
 
     #[test]
