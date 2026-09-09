@@ -3458,7 +3458,7 @@ fn build_album_page_button(
         .with_size(92.0, 34.0)
         .tooltip(label)
         .with_accessible_name(label)
-        .on_click(move || slot.set(Some(hit)))
+        .on_effect(move || slot.set(Some(hit)))
 }
 
 fn build_album_page_buttons(
