@@ -55,9 +55,9 @@ use std::collections::HashMap;
 use std::hash::BuildHasher;
 
 use accesskit::{
-    Action as AkAction, Node as AkNode, NodeId as AkNodeId, Rect as AkRect, Role as AkRole,
-    TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled, TreeInfo,
-    TreeUpdate,
+    Action as AkAction, Live as AkLive, Node as AkNode, NodeId as AkNodeId, Rect as AkRect,
+    Role as AkRole, TextPosition as AkTextPosition, TextSelection as AkTextSelection, Toggled,
+    TreeInfo, TreeUpdate,
 };
 use taffy::NodeId as TaffyNodeId;
 use unicode_segmentation::UnicodeSegmentation;
@@ -929,6 +929,19 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
     if let Some(desc) = &access.description {
         ak.set_description(desc.clone());
     }
+    // This must be part of the platform tree, not only the built-in reader's
+    // narration pass.  `accesskit_unix` turns these into AT-SPI live-region
+    // attributes/events, which is what Orca and braille clients observe when
+    // a status message changes without moving keyboard focus.  Atomic is
+    // intentional: an AccessNode is already the complete, user-authored
+    // announcement rather than a partial DOM fragment.
+    if let Some(politeness) = access.live {
+        ak.set_live(match politeness {
+            crate::a11y::Politeness::Polite => AkLive::Polite,
+            crate::a11y::Politeness::Assertive => AkLive::Assertive,
+        });
+        ak.set_live_atomic();
+    }
     // Never expose a protected (password) value, even if the widget mistakenly populated one.
     if !access.state.protected
         && let Some(value) = &access.value
@@ -1551,6 +1564,40 @@ mod tests {
             None,
             "protected value must not leak to the AT"
         );
+    }
+
+    #[test]
+    fn live_regions_reach_accesskit_with_priority_and_atomic_updates() {
+        let polite = TestWidget::new(Some(
+            AccessNode::new(Role::StaticText)
+                .with_name("Saved")
+                .with_live(crate::a11y::Politeness::Polite),
+        ));
+        let assertive = TestWidget::new(Some(
+            AccessNode::new(Role::StaticText)
+                .with_name("Connection lost")
+                .with_live(crate::a11y::Politeness::Assertive),
+        ));
+        let mut root = TestWidget::new(None)
+            .with_child(Box::new(polite))
+            .with_child(Box::new(assertive));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+
+        let node_named = |name: &str| {
+            update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(name))
+                .map(|(_, node)| node)
+                .expect("live region is exported")
+        };
+        let polite = node_named("Saved");
+        assert_eq!(polite.live(), Some(AkLive::Polite));
+        assert!(polite.is_live_atomic());
+        let assertive = node_named("Connection lost");
+        assert_eq!(assertive.live(), Some(AkLive::Assertive));
+        assert!(assertive.is_live_atomic());
     }
 
     #[test]
