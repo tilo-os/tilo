@@ -52,7 +52,10 @@ pub fn store_card(
     // from the live theme so it stays legible in light and dark.
     // A flex-grow Container owns the width beside the fixed artwork. This is
     // important because a bare Column deliberately claims the full row width.
-    let category = item.categories.first().map_or("General", String::as_str);
+    let category = item
+        .categories
+        .first()
+        .map_or_else(|| "General".to_owned(), |value| category_label(value));
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -68,7 +71,7 @@ pub fn store_card(
                 .with_color(theme.text_dim),
         ))
         .push(Box::new(
-            Text::new(category)
+            Text::new(&category)
                 .with_size(12.0)
                 .with_color(theme.text_dim),
         ));
@@ -208,5 +211,28 @@ fn badge_line(item: &StoreItem) -> String {
                 format!("Flathub · v{v}")
             }
         }
+    }
+}
+
+/// Turn registry category identifiers into human-facing labels without
+/// changing the stable value used by filtering and search.
+fn category_label(value: &str) -> String {
+    match value {
+        "AudioVideo" => "Audio & video".into(),
+        "Development" => "Developer tools".into(),
+        "Graphics" => "Graphics & design".into(),
+        other => other.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::category_label;
+
+    #[test]
+    fn registry_categories_are_presented_as_words() {
+        assert_eq!(category_label("AudioVideo"), "Audio & video");
+        assert_eq!(category_label("Development"), "Developer tools");
+        assert_eq!(category_label("Games"), "Games");
     }
 }
