@@ -225,12 +225,21 @@ impl CalculatorApp {
     /// no-op action, and an empty change wedges the next dispatch. This app
     /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &CalculatorAction) {
+        // Unit/headless callers can invoke controls before the first widget
+        // sync. Bootstrap their current shared artifacts once, then continue
+        // through the same canonical action path as a live window.
+        if !crate::doc::is_seeded(doc) {
+            crate::doc::store(doc, &self.model);
+        }
         self.actions.dispatch_with_context(
             doc,
             actions::CALCULATOR_ACTION_TYPE,
             action,
             qos_actions::ActionContext::for_action("org.qos.Calculator", "Calculator", action),
         );
+        // Re-adopt only durable resources. This makes a keyed action visible
+        // immediately without ever copying another window's presentation.
+        let _ = crate::doc::load_into(doc, &mut self.model);
     }
 
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
@@ -285,6 +294,9 @@ impl CalculatorApp {
     /// Ctrl+K, rather than smuggling it into the CRDT in a later wholesale
     /// store. This matters for undo, activity history, and collaborators.
     fn set_mode_in_document(&mut self, m: Mode, doc: &mut AutoCommit) {
+        if !crate::doc::is_seeded(doc) {
+            crate::doc::store(doc, &self.model);
+        }
         let funcs_before = self.model.funcs.len();
         let surfaces_before = self.model.surfaces.len();
         self.set_mode(m);
@@ -449,19 +461,20 @@ impl CalculatorApp {
             return;
         }
         if self.g3.add_at(p) {
-            self.model.surfaces.push(PlotFn {
-                expr: String::new(),
-                visible: true,
-            });
-            self.model.active_surface = self.model.surfaces.len() - 1;
             self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
+            self.model.active_surface = self.model.surfaces.len().saturating_sub(1);
             self.model_dirty = true;
         } else if let Some(i) = self.g3.vis_at(p) {
             if let Some(f) = self.model.surfaces.get_mut(i) {
                 f.visible = !f.visible;
                 self.perform_action(
                     doc,
-                    &actions::toggle_graph_visible_action(GraphKind::Surface3d, i),
+                    &crate::doc::row_id_at(doc, crate::doc::SURFACES, i).map_or_else(
+                        || actions::toggle_graph_visible_action(GraphKind::Surface3d, i),
+                        |id| {
+                            actions::toggle_graph_visible_action(GraphKind::Surface3d, id.as_str())
+                        },
+                    ),
                 );
                 self.model_dirty = true;
             }
@@ -518,7 +531,13 @@ impl CalculatorApp {
             // list would be a no-op action (which wedges the executor).
             if !self.model.history.is_empty() {
                 self.model.history.clear();
-                self.perform_action(doc, &actions::clear_history_action());
+                self.perform_action(
+                    doc,
+                    &actions::clear_history_ids_action(crate::doc::visible_ids(
+                        doc,
+                        crate::doc::HISTORY,
+                    )),
+                );
                 self.model_dirty = true;
             }
         } else if let Some(hi) = self.calc.history_at(p)
@@ -541,19 +560,18 @@ impl CalculatorApp {
             return;
         }
         if self.g2.add_at(p) {
-            self.model.funcs.push(PlotFn {
-                expr: String::new(),
-                visible: true,
-            });
-            self.model.active_fn = self.model.funcs.len() - 1;
             self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
+            self.model.active_fn = self.model.funcs.len().saturating_sub(1);
             self.model_dirty = true;
         } else if let Some(i) = self.g2.vis_at(p) {
             if let Some(f) = self.model.funcs.get_mut(i) {
                 f.visible = !f.visible;
                 self.perform_action(
                     doc,
-                    &actions::toggle_graph_visible_action(GraphKind::Curve2d, i),
+                    &crate::doc::row_id_at(doc, crate::doc::FUNCS, i).map_or_else(
+                        || actions::toggle_graph_visible_action(GraphKind::Curve2d, i),
+                        |id| actions::toggle_graph_visible_action(GraphKind::Curve2d, id.as_str()),
+                    ),
                 );
                 self.model_dirty = true;
             }
@@ -709,12 +727,12 @@ impl CalculatorApp {
         // The graph editors own a real math field; route their input there.
         match self.model.mode {
             Mode::Graph2d => {
-                if self.on_key_g2(key, modifiers) {
+                if self.on_key_g2(key, modifiers, doc) {
                     return;
                 }
             }
             Mode::Graph3d => {
-                if self.on_key_g3(key, modifiers) {
+                if self.on_key_g3(key, modifiers, doc) {
                     return;
                 }
             }
@@ -734,21 +752,13 @@ impl CalculatorApp {
                 // its edit into the model on each keystroke, so the row is
                 // committed; here we just append (an action) and focus it.
                 Mode::Graph2d => {
-                    self.model.funcs.push(PlotFn {
-                        expr: String::new(),
-                        visible: true,
-                    });
-                    self.model.active_fn = self.model.funcs.len() - 1;
                     self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
+                    self.model.active_fn = self.model.funcs.len().saturating_sub(1);
                     self.model_dirty = true;
                 }
                 Mode::Graph3d => {
-                    self.model.surfaces.push(PlotFn {
-                        expr: String::new(),
-                        visible: true,
-                    });
-                    self.model.active_surface = self.model.surfaces.len() - 1;
                     self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
+                    self.model.active_surface = self.model.surfaces.len().saturating_sub(1);
                     self.model_dirty = true;
                 }
             },
@@ -787,7 +797,12 @@ impl CalculatorApp {
 
     /// Route a key to the active Graph 2D function field. Returns whether the
     /// key was consumed by the field.
-    fn on_key_g2(&mut self, key: &WKey, modifiers: winit::event::Modifiers) -> bool {
+    fn on_key_g2(
+        &mut self,
+        key: &WKey,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+    ) -> bool {
         self.g2.sync_fields(&self.model);
         let a = self.model.active_fn;
         let Some(field) = self.g2.active_field_mut(a) else {
@@ -804,6 +819,14 @@ impl CalculatorApp {
             if let Some(f) = self.model.funcs.get_mut(a) {
                 f.expr = linear;
             }
+            if let Some(id) = crate::doc::row_id_at(doc, crate::doc::FUNCS, a) {
+                let action = actions::set_graph_expr_action(
+                    GraphKind::Curve2d,
+                    id.as_str(),
+                    self.model.funcs.get(a).map_or("", |f| f.expr.as_str()),
+                );
+                self.perform_action(doc, &action);
+            }
             self.model_dirty = true;
         }
         true
@@ -811,7 +834,12 @@ impl CalculatorApp {
 
     /// Route a key to the active Graph 3D surface field. Returns whether the
     /// key was consumed by the field.
-    fn on_key_g3(&mut self, key: &WKey, modifiers: winit::event::Modifiers) -> bool {
+    fn on_key_g3(
+        &mut self,
+        key: &WKey,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+    ) -> bool {
         self.g3.sync_fields(&self.model);
         let a = self.model.active_surface;
         let Some(field) = self.g3.active_field_mut(a) else {
@@ -825,6 +853,14 @@ impl CalculatorApp {
             let linear = field.current_linear();
             if let Some(f) = self.model.surfaces.get_mut(a) {
                 f.expr = linear;
+            }
+            if let Some(id) = crate::doc::row_id_at(doc, crate::doc::SURFACES, a) {
+                let action = actions::set_graph_expr_action(
+                    GraphKind::Surface3d,
+                    id.as_str(),
+                    self.model.surfaces.get(a).map_or("", |f| f.expr.as_str()),
+                );
+                self.perform_action(doc, &action);
             }
             self.model_dirty = true;
         }
@@ -991,9 +1027,7 @@ impl Widget for CalculatorApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if crate::doc::is_seeded(state) {
-                if let Some(m) = crate::doc::load(state) {
-                    self.model = m;
-                }
+                let _ = crate::doc::load_into(state, &mut self.model);
             } else {
                 crate::doc::store(state, &self.model);
             }
@@ -1011,12 +1045,7 @@ impl Widget for CalculatorApp {
         // store→load, so this reloads *only* on a genuine external change.
         // `after_equals` is ephemeral (never persisted), so carry it across the
         // comparison to avoid a spurious reload after an `=`.
-        if let Some(mut loaded) = crate::doc::load(state) {
-            loaded.after_equals = self.model.after_equals;
-            if loaded != self.model {
-                self.model = loaded;
-            }
-        }
+        let _ = crate::doc::load_into(state, &mut self.model);
     }
 
     fn build_layout(
@@ -1189,7 +1218,9 @@ impl Widget for CalculatorApp {
         }
 
         if self.model_dirty {
-            crate::doc::store(state, &self.model);
+            // `model_dirty` is presentation-only. Durable changes have already
+            // travelled through `perform_action`; never mirror this window's
+            // mode, selection or viewport back into the shared document.
             self.model_dirty = false;
             // Mark an uncommitted edit so `needs_commit` can seal it into an
             // undo checkpoint once editing pauses (character-key edits are not
@@ -1412,7 +1443,13 @@ impl Widget for CalculatorApp {
                 if matches!(action, Action::Activate) && !self.model.history.is_empty() =>
             {
                 self.model.history.clear();
-                self.perform_action(state, &actions::clear_history_action());
+                self.perform_action(
+                    state,
+                    &actions::clear_history_ids_action(crate::doc::visible_ids(
+                        state,
+                        crate::doc::HISTORY,
+                    )),
+                );
                 self.model_dirty = true;
             }
             "calculator.evaluate"
@@ -1682,7 +1719,15 @@ impl CalculatorApp {
                 if changed.is_none() {
                     return false;
                 }
-                self.perform_action(doc, &actions::toggle_graph_visible_action(kind, index));
+                let key = match kind {
+                    GraphKind::Curve2d => crate::doc::FUNCS,
+                    GraphKind::Surface3d => crate::doc::SURFACES,
+                };
+                let action = crate::doc::row_id_at(doc, key, index).map_or_else(
+                    || actions::toggle_graph_visible_action(kind, index),
+                    |id| actions::toggle_graph_visible_action(kind, id.as_str()),
+                );
+                self.perform_action(doc, &action);
                 self.model_dirty = true;
             }
             (Some("field"), Some(index), Action::SetValue(expr)) => {
@@ -1713,7 +1758,15 @@ impl CalculatorApp {
                         }
                     }
                 }
-                self.perform_action(doc, &actions::set_graph_expr_action(kind, index, expr));
+                let key = match kind {
+                    GraphKind::Curve2d => crate::doc::FUNCS,
+                    GraphKind::Surface3d => crate::doc::SURFACES,
+                };
+                let action = crate::doc::row_id_at(doc, key, index).map_or_else(
+                    || actions::set_graph_expr_action(kind, index, expr),
+                    |id| actions::set_graph_expr_action(kind, id.as_str(), expr),
+                );
+                self.perform_action(doc, &action);
                 self.model_dirty = true;
             }
             (Some("field"), Some(index), Action::Activate | Action::Focus) => match kind {
@@ -2127,8 +2180,10 @@ mod tests {
             app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "2*x");
-        doc::store(&mut state.doc, &app.model);
-        state.commit_action(None, None);
+        let before = app
+            .take_committed_action()
+            .expect("formula actions expose one undo bracket");
+        assert!(state.record_committed_action(before, None, None));
 
         // Ctrl+Z: ui::State restores the prior snapshot; sync adopts it.
         assert!(
