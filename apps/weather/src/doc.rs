@@ -6,20 +6,20 @@
 //!     instead of replacing one shared JSON/list value.
 //!   * `location_order` (List of ids) — presentation order for those places.
 //!   * `selected_location` (Str) — the selected stable location id.
-//!   * `snapshots` (Map id→Str)   — the last-fetched forecast per place,
-//!     stored as an opaque JSON blob (derived/cache data, not something
-//!     peers co-edit field-by-field).
+//!   * `location_tombstones` (Map id→Map) — permanent remove-wins tombstones
+//!     for saved-place ids. This makes a concurrent remove deterministic and
+//!     prevents an old peer's stale record from silently resurrecting a place.
 //!
-//! Region-derived measurement units are intentionally **not** in this
-//! document. They come from the local Settings/region preference, and never
-//! become a surprising cross-device collaborative choice. Forecast responses
-//! are external cache effects; only saved-location decisions are replayable
-//! actions.
+//! Region-derived measurement units, provider responses, search state and
+//! presentation state are intentionally **not** in this document. They are
+//! device-local/transient; only user-owned saved-location decisions are
+//! replayable actions. In particular, the document contains no serialized
+//! JSON records.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{AirQuality, SavedLocation, WeatherModel, WeatherSnapshot};
+use crate::model::{SavedLocation, WeatherModel};
 
 pub struct WeatherDoc;
 
@@ -37,6 +37,15 @@ impl WeatherDoc {
         )
     }
 
+    /// Whether the current keyed schema is already present (as distinct from
+    /// an older list-backed document that still needs action-driven migration).
+    pub fn has_keyed_schema(doc: &AutoCommit) -> bool {
+        matches!(
+            doc.get(&ROOT, "saved_locations"),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        )
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "creating a root-level Automerge map/list cannot fail under normal operation"
@@ -46,6 +55,23 @@ impl WeatherDoc {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
             _ => doc.put_object(&ROOT, key, ObjType::Map).expect("root map"),
         }
+    }
+
+    /// Create the stable keyed containers through a replayable action. This
+    /// is deliberately separate from widget synchronisation: durable document
+    /// state is only ever introduced or mutated by `WeatherAction::apply`.
+    pub fn ensure_schema(doc: &mut AutoCommit) {
+        Self::map_field(doc, "saved_locations");
+        Self::map_field(doc, "location_tombstones");
+        Self::list_field(doc, "location_order");
+    }
+
+    fn is_tombstoned(doc: &AutoCommit, id: &str) -> bool {
+        matches!(
+            doc.get(&ROOT, "location_tombstones"),
+            Ok(Some((Value::Object(ObjType::Map), tombstones)))
+                if matches!(doc.get(&tombstones, id), Ok(Some((Value::Object(ObjType::Map), _))))
+        )
     }
 
     #[allow(
@@ -124,8 +150,16 @@ impl WeatherDoc {
         reason = "a child map under the root map can only fail for a corrupted document"
     )]
     pub fn upsert_location(doc: &mut AutoCommit, location: &SavedLocation) {
-        let locations = Self::map_field(doc, "saved_locations");
+        Self::ensure_schema(doc);
         let id = location.id.to_string();
+        // UUIDs are generated for every user add, so a same-id re-add is not
+        // a supported edit operation. Remove wins for that id forever, which
+        // gives concurrent remove/add a deterministic, non-resurrecting
+        // result on every peer.
+        if Self::is_tombstoned(doc, &id) {
+            return;
+        }
+        let locations = Self::map_field(doc, "saved_locations");
         let entry = match doc.get(&locations, id.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), entry))) => entry,
             _ => doc
@@ -144,8 +178,28 @@ impl WeatherDoc {
     }
 
     /// Delete just one keyed location and its order references.
+    ///
+    /// # Panics
+    ///
+    /// Only if Automerge cannot create the tombstone child map under a valid
+    /// root map, which indicates a corrupted document.
+    #[allow(
+        clippy::expect_used,
+        reason = "the tombstone map is created below a just-resolved root map; failure indicates a corrupted document"
+    )]
     pub fn remove_location(doc: &mut AutoCommit, id: crate::model::LocationId) {
         let key = id.to_string();
+        Self::ensure_schema(doc);
+        let tombstones = Self::map_field(doc, "location_tombstones");
+        if !matches!(
+            doc.get(&tombstones, key.as_str()),
+            Ok(Some((Value::Object(ObjType::Map), _)))
+        ) {
+            let tombstone = doc
+                .put_object(&tombstones, key.as_str(), ObjType::Map)
+                .expect("location tombstone map");
+            ui::doc::put_if_changed(doc, &tombstone, "id", key.as_str());
+        }
         if let Ok(Some((Value::Object(ObjType::Map), locations))) =
             doc.get(&ROOT, "saved_locations")
         {
@@ -187,6 +241,7 @@ impl WeatherDoc {
     /// Replace only the ordering list. Individual location records remain
     /// independent, so a concurrent add cannot be lost to a reorder.
     pub fn set_location_order(doc: &mut AutoCommit, ids: &[crate::model::LocationId]) {
+        Self::ensure_schema(doc);
         let order = Self::list_field(doc, "location_order");
         for index in (0..doc.length(&order)).rev() {
             let _ = doc.delete(&order, index);
@@ -196,9 +251,8 @@ impl WeatherDoc {
         }
     }
 
-    /// Seed a model into the current keyed schema. Subsequent user edits use
-    /// the narrow writers above; cache-only writes never need to replace saved
-    /// locations or local display units.
+    /// Seed a model into the current keyed schema. This convenience is used by
+    /// document-level tests; running widgets seed through replayable actions.
     ///
     /// # Panics
     /// Never in practice: every `put_object`/`insert_object` call here
@@ -208,6 +262,7 @@ impl WeatherDoc {
         clippy::expect_used,
         reason = "parent is ROOT or a just-resolved Map/List, so put_object/insert_object cannot fail short of a corrupted document — falling back to another ObjId would silently write into the wrong object"
     )]
+    #[cfg(test)]
     pub fn write_model(doc: &mut AutoCommit, model: &WeatherModel) {
         Self::migrate_legacy_locations(doc);
         for location in &model.locations {
@@ -223,70 +278,6 @@ impl WeatherDoc {
         );
         if let Some(location) = model.selected_location() {
             Self::select_location(doc, location.id);
-        }
-
-        Self::write_cache(doc, model);
-    }
-
-    /// Persist network-derived forecast cache data. This deliberately avoids
-    /// touching user-owned saved locations, ordering, selection, or local
-    /// regional unit preferences.
-    ///
-    /// # Panics
-    ///
-    /// Only if Automerge cannot create the root cache maps, indicating a
-    /// corrupted document rather than an unavailable weather provider.
-    #[allow(
-        clippy::expect_used,
-        reason = "parent is ROOT or a just-resolved Map/List, so put_object/insert_object cannot fail short of a corrupted document — falling back to another ObjId would silently write into the wrong object"
-    )]
-    pub fn write_cache(doc: &mut AutoCommit, model: &WeatherModel) {
-        // snapshots — JSON blobs keyed by location id.
-        let snaps = match doc.get(&ROOT, "snapshots") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "snapshots", ObjType::Map)
-                .expect("put snapshots map"),
-        };
-        for (id, snap) in &model.snapshots {
-            if let Ok(json) = serde_json::to_string(snap) {
-                let _ = doc.put(&snaps, id.to_string().as_str(), json);
-            }
-        }
-
-        // air_quality — JSON blobs keyed by location id (same cache treatment).
-        let aq = match doc.get(&ROOT, "air_quality") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "air_quality", ObjType::Map)
-                .expect("put air_quality map"),
-        };
-        for (id, reading) in &model.air_quality {
-            if let Ok(json) = serde_json::to_string(reading) {
-                let _ = doc.put(&aq, id.to_string().as_str(), json);
-            }
-        }
-    }
-
-    /// Write a single freshly-fetched snapshot without touching the rest.
-    ///
-    /// # Panics
-    /// Never in practice: the parent is `ROOT` or a Map this function just
-    /// resolved, so `put_object` only fails for an already-corrupted
-    /// document.
-    #[allow(
-        clippy::expect_used,
-        reason = "parent is ROOT or a just-resolved Map, so put_object cannot fail short of a corrupted document — falling back to another ObjId would silently write the snapshot into the wrong object"
-    )]
-    pub fn put_snapshot(doc: &mut AutoCommit, snap: &WeatherSnapshot) {
-        let snaps = match doc.get(&ROOT, "snapshots") {
-            Ok(Some((Value::Object(ObjType::Map), id))) => id,
-            _ => doc
-                .put_object(&ROOT, "snapshots", ObjType::Map)
-                .expect("put snapshots map"),
-        };
-        if let Ok(json) = serde_json::to_string(snap) {
-            let _ = doc.put(&snaps, snap.location_id.to_string().as_str(), json);
         }
     }
 
@@ -338,6 +329,9 @@ impl WeatherDoc {
                     let Some(id) = Self::str_at(doc, &order, index) else {
                         continue;
                     };
+                    if Self::is_tombstoned(doc, &id) {
+                        continue;
+                    }
                     let Ok(Some((Value::Object(ObjType::Map), location))) =
                         doc.get(&locations, id.as_str())
                     else {
@@ -351,6 +345,9 @@ impl WeatherDoc {
             }
             remaining.sort_unstable();
             for id in remaining {
+                if Self::is_tombstoned(doc, &id) {
+                    continue;
+                }
                 if let Ok(Some((Value::Object(ObjType::Map), location))) =
                     doc.get(&locations, id.as_str())
                     && let Some(location) = Self::location_from_map(doc, &location, &id)
@@ -384,24 +381,6 @@ impl WeatherDoc {
             model.selected = 0;
         }
 
-        if let Ok(Some((Value::Object(ObjType::Map), snaps))) = doc.get(&ROOT, "snapshots") {
-            for key in doc.keys(&snaps) {
-                let json = Self::str_field(doc, &snaps, &key);
-                if let Ok(snap) = serde_json::from_str::<WeatherSnapshot>(&json) {
-                    model.snapshots.insert(snap.location_id, snap);
-                }
-            }
-        }
-
-        if let Ok(Some((Value::Object(ObjType::Map), aq))) = doc.get(&ROOT, "air_quality") {
-            for key in doc.keys(&aq) {
-                let json = Self::str_field(doc, &aq, &key);
-                if let Ok(reading) = serde_json::from_str::<AirQuality>(&json) {
-                    model.air_quality.insert(reading.location_id, reading);
-                }
-            }
-        }
-
         model
     }
 }
@@ -430,22 +409,20 @@ mod tests {
             Units::default(),
             "units are local Settings state"
         );
-        // Snapshots survive as JSON blobs.
-        let loc0 = &back.locations[0];
-        assert!(back.snapshot_for(loc0.id).is_some());
+        assert!(back.snapshots.is_empty(), "provider cache is device-local");
+        assert!(
+            back.air_quality.is_empty(),
+            "provider cache is device-local"
+        );
     }
 
     #[test]
-    fn put_snapshot_is_incremental() {
+    fn provider_records_never_enter_the_collaborative_document() {
         let model = crate::sample::sample_model();
         let mut doc = AutoCommit::new();
         WeatherDoc::write_model(&mut doc, &model);
-        let loc = &model.locations[1];
-        let mut snap = model.snapshot_for(loc.id).unwrap().clone();
-        snap.current.temperature = 99.0;
-        WeatherDoc::put_snapshot(&mut doc, &snap);
-        let back = WeatherDoc::read_model(&doc);
-        assert_eq!(back.snapshot_for(loc.id).unwrap().current.temperature, 99.0);
+        assert!(doc.get(&ROOT, "snapshots").unwrap().is_none());
+        assert!(doc.get(&ROOT, "air_quality").unwrap().is_none());
     }
 
     #[test]
@@ -484,5 +461,34 @@ mod tests {
             WeatherDoc::read_model(&legacy).locations.len(),
             model.locations.len()
         );
+    }
+
+    #[test]
+    fn remove_wins_over_a_concurrent_same_id_add_without_resurrection() {
+        let mut base = AutoCommit::new();
+        WeatherDoc::ensure_schema(&mut base);
+        let location = SavedLocation::new(
+            "Oslo",
+            "Oslo",
+            "Norway",
+            "NO",
+            59.9139,
+            10.7522,
+            "Europe/Oslo",
+        );
+        WeatherDoc::upsert_location(&mut base, &location);
+        base.commit();
+        let bytes = base.save();
+        let mut remover = AutoCommit::load(&bytes).unwrap();
+        let mut stale_adder = AutoCommit::load(&bytes).unwrap();
+
+        WeatherDoc::remove_location(&mut remover, location.id);
+        remover.commit();
+        WeatherDoc::upsert_location(&mut stale_adder, &location);
+        stale_adder.commit();
+        let changes = stale_adder.get_changes(&base.get_heads());
+        remover.apply_changes(changes).unwrap();
+
+        assert!(WeatherDoc::read_model(&remover).locations.is_empty());
     }
 }
