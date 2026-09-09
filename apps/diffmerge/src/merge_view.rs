@@ -600,16 +600,18 @@ impl MergeView {
                 ("Both", HunkChoice::Both, c.text_dim),
             ]
         };
-        // Status label on the left. On a phone the source switcher already
-        // says which revision is visible, so use short action labels and keep
-        // the whole resolution row inside the one readable pane.
+        // Status label on the left. On a phone, keep this semantically distinct
+        // from the source switcher and the mutation chips: it says whether the
+        // hunk still needs a resolution, while every chip says what it will do.
         let status = resolution_label(h.resolution);
         let status_label = if compact {
             match h.resolution {
                 Resolution::Conflict => "Conflict",
-                Resolution::Ours | Resolution::TookOurs => "Ours",
-                Resolution::Theirs | Resolution::TookTheirs => "Theirs",
-                Resolution::TookBoth => "Both",
+                Resolution::Ours
+                | Resolution::Theirs
+                | Resolution::TookOurs
+                | Resolution::TookTheirs
+                | Resolution::TookBoth => "Resolved",
                 Resolution::Unchanged => "",
             }
         } else {
@@ -637,9 +639,9 @@ impl MergeView {
         for (label, choice, col) in chips {
             let label = if compact {
                 match choice {
-                    HunkChoice::Ours => "Ours",
-                    HunkChoice::Theirs => "Theirs",
-                    HunkChoice::Both => "Both",
+                    HunkChoice::Ours => "Use ours",
+                    HunkChoice::Theirs => "Use theirs",
+                    HunkChoice::Both => "Use both",
                 }
             } else {
                 *label
@@ -730,13 +732,13 @@ impl MergeView {
             // aligned three-column comparison.
             match compact_source {
                 Some(SourcePane::Base) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base)
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
                 }
                 Some(SourcePane::Ours) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.ours)
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.ours);
                 }
                 Some(SourcePane::Theirs) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.theirs)
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.theirs);
                 }
                 None => {
                     draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
@@ -1075,28 +1077,52 @@ impl Widget for MergeView {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         let mut node = AccessNode::new(Role::Group).with_name("Three-way merge");
+        let mut children = Vec::new();
         if self.is_compact() {
-            let children = SourcePane::ALL
-                .into_iter()
-                .map(|source| {
-                    AccessNode::new(Role::ToggleButton)
-                        .with_name(format!("Show {} source", source.label()))
-                        .with_description("Switch the visible merge source")
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .checked(source == self.selected_source),
-                        )
-                        .with_hashed_key(source.a11y_id())
-                })
-                .collect();
-            node = node
-                .with_description(
-                    "One source is visible at a time. Use Left and Right Arrow to switch source.",
-                )
-                .with_children(children);
+            children.extend(SourcePane::ALL.into_iter().map(|source| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("Show {} source", source.label()))
+                    .with_description("Switch the visible merge source")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(source == self.selected_source),
+                    )
+                    .with_hashed_key(source.a11y_id())
+            }));
+            node = node.with_description(
+                "One source is visible at a time. Use Left and Right Arrow to switch source.",
+            );
         } else {
             node = node.with_description("Base, ours, and theirs are shown side by side.");
+        }
+        children.extend(self.action_hits.iter().map(|hit| {
+            let choice = match hit.choice {
+                HunkChoice::Ours => "ours",
+                HunkChoice::Theirs => "theirs",
+                HunkChoice::Both => "both",
+            };
+            let label = match hit.choice {
+                HunkChoice::Ours => "Take ours",
+                HunkChoice::Theirs => "Take theirs",
+                HunkChoice::Both => "Take both",
+            };
+            AccessNode::new(Role::Button)
+                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
+                .with_description("Resolve this shared merge hunk")
+                .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
+                .with_bounds(hit.rect)
+                .with_state(
+                    AccessState::new().focusable(true).selected(
+                        self.model
+                            .hunks
+                            .get(hit.hunk)
+                            .is_some_and(|hunk| chip_is_selected(hunk.resolution, hit.choice)),
+                    ),
+                )
+        }));
+        if !children.is_empty() {
+            node = node.with_children(children);
         }
         Some(node)
     }
