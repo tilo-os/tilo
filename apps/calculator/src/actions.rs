@@ -43,6 +43,8 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
@@ -128,51 +130,71 @@ impl GraphKind {
 pub enum CalculatorAction {
     /// Commit an evaluated computation to the front of the history list, then
     /// cap the list to [`HISTORY_CAP`] by dropping the oldest overflow.
-    CommitHistory { expr: String, result: String },
+    CommitHistory {
+        id: String,
+        rank: i64,
+        expr: String,
+        result: String,
+    },
     /// Remove one history entry by position (newest = 0). Out of range is a
     /// no-op.
-    DeleteHistoryEntry { index: usize },
+    DeleteHistoryEntry { id: String },
     /// Empty the whole history list.
-    ClearHistory,
+    ClearHistory { ids: Vec<String> },
     /// Append a graph row carrying `expr` (empty for a blank starter row, or a
     /// seeded formula) to the 2D or 3D list.
-    AddGraph { kind: GraphKind, expr: String },
+    AddGraph {
+        kind: GraphKind,
+        id: String,
+        rank: i64,
+        expr: String,
+    },
     /// Replace a graph row's formula, diff-spliced into its CRDT `Text` so the
     /// edit is a bounded, mergeable op rather than a wholesale rewrite.
     SetGraphExpr {
         kind: GraphKind,
-        index: usize,
+        id: String,
         expr: String,
     },
     /// Flip a graph row's visibility. Recomputed from the document's base state
     /// (an absent flag reads as visible) so replicas converge.
-    ToggleGraphVisible { kind: GraphKind, index: usize },
+    ToggleGraphVisible { kind: GraphKind, id: String },
     /// Delete a graph row by position. Out of range is a no-op.
-    DeleteGraph { kind: GraphKind, index: usize },
+    DeleteGraph { kind: GraphKind, id: String },
 }
 
-/// The list object at `root[key]`, if it is present as a `List`.
-fn list_at(doc: &Doc, key: &str) -> Option<ObjId> {
+fn rows_at(doc: &Doc, key: &str) -> Option<ObjId> {
     match doc.get(&ROOT, key) {
-        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
-        _ => None,
-    }
-}
-
-/// The list object at `root[key]`, creating an empty one if absent.
-fn ensure_list(doc: &mut Doc, key: &str) -> Result<ObjId, ActionError> {
-    match list_at(doc, key) {
-        Some(id) => Ok(id),
-        None => Ok(doc.put_object(&ROOT, key, ObjType::List)?),
-    }
-}
-
-/// The map at `list[index]`, if that element is a `Map`.
-fn row_at(doc: &Doc, list: &ObjId, index: usize) -> Option<ObjId> {
-    match doc.get(list, index) {
         Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
         _ => None,
     }
+}
+
+fn ensure_rows(doc: &mut Doc, key: &str) -> Result<ObjId, ActionError> {
+    if doc.get(&ROOT, "calculator_resources_v2")?.is_none() {
+        doc.put(&ROOT, "calculator_resources_v2", true)?;
+    }
+    rows_at(doc, key).map_or_else(|| Ok(doc.put_object(&ROOT, key, ObjType::Map)?), Ok)
+}
+
+fn keyed_row(doc: &Doc, rows: &ObjId, id: &str) -> Option<ObjId> {
+    match doc.get(rows, id) {
+        Ok(Some((Value::Object(ObjType::Map), row))) => Some(row),
+        _ => None,
+    }
+}
+fn resolved_row(doc: &Doc, key: &str, id: &str) -> Option<ObjId> {
+    let rows = rows_at(doc, key)?;
+    let id = id
+        .strip_prefix('@')
+        .and_then(|n| n.parse::<usize>().ok())
+        .and_then(|index| crate::doc::row_id_at(doc, key, index))
+        .unwrap_or_else(|| id.to_string());
+    keyed_row(doc, &rows, &id)
+}
+
+fn ensure_keyed_row(doc: &mut Doc, rows: &ObjId, id: &str) -> Result<ObjId, ActionError> {
+    keyed_row(doc, rows, id).map_or_else(|| Ok(doc.put_object(rows, id, ObjType::Map)?), Ok)
 }
 
 /// Read a row's boolean `visible` flag, defaulting to `true` (the model's
@@ -190,60 +212,86 @@ fn row_visible(doc: &Doc, row: &ObjId) -> bool {
 impl Action for CalculatorAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            CalculatorAction::CommitHistory { expr, result } => {
-                let list = ensure_list(doc, "history")?;
-                let row = doc.insert_object(&list, 0, ObjType::Map)?;
-                doc.put(&row, "expr", expr.as_str())?;
-                doc.put(&row, "result", result.as_str())?;
-                // Cap from the tail so the newest [`HISTORY_CAP`] survive.
-                while doc.length(&list) > HISTORY_CAP {
-                    let tail_idx = doc.length(&list) - 1;
-                    doc.delete(&list, tail_idx)?;
-                }
-            }
-            CalculatorAction::DeleteHistoryEntry { index } => {
-                if let Some(list) = list_at(doc, "history")
-                    && *index < doc.length(&list)
-                {
-                    doc.delete(&list, *index)?;
-                }
-            }
-            CalculatorAction::ClearHistory => {
-                if let Some(list) = list_at(doc, "history") {
-                    for i in (0..doc.length(&list)).rev() {
-                        doc.delete(&list, i)?;
+            CalculatorAction::CommitHistory {
+                id,
+                rank,
+                expr,
+                result,
+            } => {
+                let rows = ensure_rows(doc, "history")?;
+                let row = ensure_keyed_row(doc, &rows, id)?;
+                // A tombstone is permanent. Concurrent old writes can update
+                // text, but can never resurrect a row a collaborator deleted.
+                if !row_deleted(doc, &row) {
+                    put_text_diffed(doc, &row, "expr", expr);
+                    put_text_diffed(doc, &row, "result", result);
+                    put_if_changed(doc, &row, "rank", *rank);
+                    put_if_changed(doc, &row, "deleted", false);
+                    // Preserve bounded history without physically removing a
+                    // resource: old entries remain tombstoned, so a delayed
+                    // peer edit can never rebind or resurrect them.
+                    for old_id in crate::doc::visible_ids(doc, "history")
+                        .into_iter()
+                        .skip(HISTORY_CAP)
+                    {
+                        if let Some(old) = resolved_row(doc, "history", &old_id) {
+                            doc.put(&old, "deleted", true)?;
+                        }
                     }
                 }
             }
-            CalculatorAction::AddGraph { kind, expr } => {
-                let list = ensure_list(doc, kind.doc_key())?;
-                let index = doc.length(&list);
-                let row = doc.insert_object(&list, index, ObjType::Map)?;
+            CalculatorAction::DeleteHistoryEntry { id } => {
+                if let Some(row) = resolved_row(doc, "history", id) {
+                    doc.put(&row, "deleted", true)?;
+                }
+            }
+            CalculatorAction::ClearHistory { ids } => {
+                let targets = if ids.is_empty() {
+                    crate::doc::visible_ids(doc, "history")
+                } else {
+                    ids.clone()
+                };
+                for id in &targets {
+                    if let Some(row) = resolved_row(doc, "history", id) {
+                        doc.put(&row, "deleted", true)?;
+                    }
+                }
+            }
+            CalculatorAction::AddGraph {
+                kind,
+                id,
+                rank,
+                expr,
+            } => {
+                let rows = ensure_rows(doc, kind.doc_key())?;
+                let row = ensure_keyed_row(doc, &rows, id)?;
                 // Match the model's row shape: a diff-spliced `Text` formula and
                 // a visible flag, so `store`'s reconcile is a no-op afterward.
-                put_text_diffed(doc, &row, "expr", expr);
-                put_if_changed(doc, &row, "visible", true);
+                if !row_deleted(doc, &row) {
+                    put_text_diffed(doc, &row, "expr", expr);
+                    put_if_changed(doc, &row, "visible", true);
+                    put_if_changed(doc, &row, "rank", *rank);
+                    put_if_changed(doc, &row, "deleted", false);
+                }
             }
-            CalculatorAction::SetGraphExpr { kind, index, expr } => {
-                if let Some(list) = list_at(doc, kind.doc_key())
-                    && let Some(row) = row_at(doc, &list, *index)
+            CalculatorAction::SetGraphExpr { kind, id, expr } => {
+                if let Some(row) = resolved_row(doc, kind.doc_key(), id)
+                    && !row_deleted(doc, &row)
                 {
                     put_text_diffed(doc, &row, "expr", expr);
                 }
             }
-            CalculatorAction::ToggleGraphVisible { kind, index } => {
-                if let Some(list) = list_at(doc, kind.doc_key())
-                    && let Some(row) = row_at(doc, &list, *index)
+            CalculatorAction::ToggleGraphVisible { kind, id } => {
+                if let Some(row) = resolved_row(doc, kind.doc_key(), id)
+                    && !row_deleted(doc, &row)
                 {
                     let now = !row_visible(doc, &row);
                     doc.put(&row, "visible", now)?;
                 }
             }
-            CalculatorAction::DeleteGraph { kind, index } => {
-                if let Some(list) = list_at(doc, kind.doc_key())
-                    && *index < doc.length(&list)
-                {
-                    doc.delete(&list, *index)?;
+            CalculatorAction::DeleteGraph { kind, id } => {
+                if let Some(row) = resolved_row(doc, kind.doc_key(), id) {
+                    doc.put(&row, "deleted", true)?;
                 }
             }
         }
@@ -292,46 +340,96 @@ pub fn encode(action: &CalculatorAction) -> EncodedAction {
 /// Commit `expr = result` to the shared history.
 pub fn commit_history_action(expr: &str, result: &str) -> CalculatorAction {
     CalculatorAction::CommitHistory {
+        id: new_id("history"),
+        rank: next_rank(),
         expr: expr.to_string(),
         result: result.to_string(),
     }
 }
 
 /// Delete the history entry at `index` (newest = 0).
-pub fn delete_history_entry_action(index: usize) -> CalculatorAction {
-    CalculatorAction::DeleteHistoryEntry { index }
+pub trait RowTarget {
+    fn target(self) -> String;
+}
+impl RowTarget for &str {
+    fn target(self) -> String {
+        self.to_string()
+    }
+}
+impl RowTarget for &String {
+    fn target(self) -> String {
+        self.clone()
+    }
+}
+impl RowTarget for usize {
+    fn target(self) -> String {
+        format!("@{self}")
+    }
+}
+pub fn delete_history_entry_action(id: impl RowTarget) -> CalculatorAction {
+    CalculatorAction::DeleteHistoryEntry { id: id.target() }
 }
 
 /// Empty the history list.
+pub fn clear_history_ids_action(ids: Vec<String>) -> CalculatorAction {
+    CalculatorAction::ClearHistory { ids }
+}
+/// Compatibility helper for callers that have no snapshot. UI and resources
+/// always use `clear_history_ids_action`, which carries the exact stable set.
 pub fn clear_history_action() -> CalculatorAction {
-    CalculatorAction::ClearHistory
+    CalculatorAction::ClearHistory { ids: Vec::new() }
 }
 
 /// Append a graph row carrying `expr` (use `""` for a blank starter row).
 pub fn add_graph_action(kind: GraphKind, expr: &str) -> CalculatorAction {
     CalculatorAction::AddGraph {
         kind,
+        id: new_id(kind.slug()),
+        rank: next_rank(),
         expr: expr.to_string(),
     }
 }
 
 /// Replace the formula of the `index`-th graph row.
-pub fn set_graph_expr_action(kind: GraphKind, index: usize, expr: &str) -> CalculatorAction {
+pub fn set_graph_expr_action(kind: GraphKind, id: impl RowTarget, expr: &str) -> CalculatorAction {
     CalculatorAction::SetGraphExpr {
         kind,
-        index,
+        id: id.target(),
         expr: expr.to_string(),
     }
 }
 
 /// Flip the visibility of the `index`-th graph row.
-pub fn toggle_graph_visible_action(kind: GraphKind, index: usize) -> CalculatorAction {
-    CalculatorAction::ToggleGraphVisible { kind, index }
+pub fn toggle_graph_visible_action(kind: GraphKind, id: impl RowTarget) -> CalculatorAction {
+    CalculatorAction::ToggleGraphVisible {
+        kind,
+        id: id.target(),
+    }
 }
 
 /// Delete the `index`-th graph row.
-pub fn delete_graph_action(kind: GraphKind, index: usize) -> CalculatorAction {
-    CalculatorAction::DeleteGraph { kind, index }
+pub fn delete_graph_action(kind: GraphKind, id: impl RowTarget) -> CalculatorAction {
+    CalculatorAction::DeleteGraph {
+        kind,
+        id: id.target(),
+    }
+}
+
+fn row_deleted(doc: &Doc, row: &ObjId) -> bool {
+    matches!(doc.get(row, "deleted"), Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), ScalarValue::Boolean(true)))
+}
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+fn next_rank() -> i64 {
+    i64::try_from(NEXT_ID.fetch_add(1, Ordering::Relaxed)).unwrap_or(i64::MAX)
+}
+fn new_id(kind: &str) -> String {
+    // Identity is chosen before action encoding, never during replay.  The
+    // timestamp makes independently running collaborator windows disjoint;
+    // the process counter also distinguishes two additions in the same tick.
+    let tick = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{kind}-{tick}-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
 // ===========================================================================
@@ -394,12 +492,7 @@ fn immediate_spec(id: &str, label: &str, action: &CalculatorAction) -> ActionSpe
 
 /// Build one graph list's resources (one `calculator.graph` per row).
 fn row_ids(doc: &AutoCommit, key: &str) -> Vec<String> {
-    let Some(list) = list_at(doc, key) else {
-        return Vec::new();
-    };
-    (0..doc.length(&list))
-        .filter_map(|index| row_at(doc, &list, index).map(|row| row.to_string()))
-        .collect()
+    crate::doc::visible_ids(doc, key)
 }
 
 fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> Vec<Resource> {
@@ -409,7 +502,7 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> V
             // A positional address can silently rebind after a concurrent
             // insertion/deletion. If the CRDT row identity is unavailable,
             // fail closed and do not publish an externally invokable target.
-            let stable = stable_ids.get(i)?;
+            let stable = stable_ids.get(i)?.clone();
             let mut res = Resource::new(
                 format!("calculator.graph:{}:{stable}", kind.slug()),
                 "calculator.graph",
@@ -417,24 +510,27 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> V
             );
             // Replace the formula — a prompted edit, diff-spliced into the row's
             // CRDT Text (the discrete, replayable twin of live typing).
+            let edit_id = stable.clone();
             res = res.with_action(ActionSpec::prompted(
                 "edit",
                 "Edit formula",
                 "Formula",
                 "e.g. sin(x)…",
                 ExecutionLocus::ClientLocal,
-                move |text: &str| encode(&set_graph_expr_action(kind, i, text.trim())),
+                move |text: &str| {
+                    encode(&set_graph_expr_action(kind, edit_id.as_str(), text.trim()))
+                },
             ));
             let vis_label = if f.visible { "Hide" } else { "Show" };
             res = res.with_action(immediate_spec(
                 "toggle-visibility",
                 vis_label,
-                &toggle_graph_visible_action(kind, i),
+                &toggle_graph_visible_action(kind, &stable),
             ));
             res = res.with_action(immediate_spec(
                 "delete",
                 "Delete formula",
-                &delete_graph_action(kind, i),
+                &delete_graph_action(kind, &stable),
             ));
             Some(res)
         })
@@ -503,17 +599,19 @@ pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         ));
     }
 
+    // Snapshot IDs before making a clear action: this keeps clear scoped to the
+    // exact resources the user saw, so a concurrent later addition survives.
+    let history_ids = row_ids(doc, "history");
     // Workspace-level: clear the whole history (only when there is any).
     if !ctx.history.is_empty() {
         root = root.with_action(immediate_spec(
             "clear-history",
             "Clear history",
-            &clear_history_action(),
+            &clear_history_ids_action(history_ids.clone()),
         ));
     }
 
     // History entries → one resource each, deletable.
-    let history_ids = row_ids(doc, "history");
     for (i, e) in ctx.history.iter().enumerate() {
         let Some(stable) = history_ids.get(i) else {
             continue;
@@ -527,7 +625,7 @@ pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resourc
             .with_action(immediate_spec(
                 "delete",
                 "Delete entry",
-                &delete_history_entry_action(i),
+                &delete_history_entry_action(stable),
             )),
         );
     }
@@ -608,52 +706,22 @@ mod tests {
 
     // -- test-local readers over the raw document -------------------------------
 
-    /// Read a plain `Str` scalar's raw value (not `ScalarValue`'s quoted Display).
-    fn scalar_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                other => other.to_string(),
-            },
-            _ => String::new(),
-        }
-    }
-
     fn read_history(doc: &AutoCommit) -> Vec<(String, String)> {
-        let mut out = Vec::new();
-        if let Some(list) = list_at(doc, "history") {
-            for i in 0..doc.length(&list) {
-                if let Some(row) = row_at(doc, &list, i) {
-                    out.push((
-                        scalar_str(doc, &row, "expr"),
-                        scalar_str(doc, &row, "result"),
-                    ));
-                }
-            }
-        }
-        out
+        crate::doc::load(doc).map_or_else(Vec::new, |m| {
+            m.history.into_iter().map(|e| (e.expr, e.result)).collect()
+        })
     }
 
     fn read_graph(doc: &AutoCommit, kind: GraphKind) -> Vec<(String, bool)> {
-        let mut out = Vec::new();
-        if let Some(list) = list_at(doc, kind.doc_key()) {
-            for i in 0..doc.length(&list) {
-                if let Some(row) = row_at(doc, &list, i) {
-                    let expr = doc.text(row_text(doc, &row)).unwrap_or_default();
-                    out.push((expr, row_visible(doc, &row)));
-                }
+        crate::doc::load(doc).map_or_else(Vec::new, |m| {
+            match kind {
+                GraphKind::Curve2d => m.funcs,
+                GraphKind::Surface3d => m.surfaces,
             }
-        }
-        out
-    }
-
-    /// The `expr` Text object of a graph row (panics if it isn't a Text — which
-    /// is exactly what we want to assert about the stored shape).
-    fn row_text(doc: &AutoCommit, row: &ObjId) -> ObjId {
-        match doc.get(row, "expr") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            other => panic!("graph row expr must be a CRDT Text, got {other:?}"),
-        }
+            .into_iter()
+            .map(|f| (f.expr, f.visible))
+            .collect()
+        })
     }
 
     #[test]
@@ -749,6 +817,25 @@ mod tests {
         assert_eq!(
             read_graph(&doc, GraphKind::Curve2d),
             vec![("cos(x)".into(), true)]
+        );
+    }
+
+    #[test]
+    fn tombstoned_graph_row_cannot_be_resurrected_by_a_late_edit() {
+        let mut doc = AutoCommit::new();
+        dispatch(&mut doc, &add_graph_action(GraphKind::Curve2d, "x"));
+        let id = crate::doc::row_id_at(&doc, "funcs", 0).expect("stable graph id");
+        dispatch(
+            &mut doc,
+            &delete_graph_action(GraphKind::Curve2d, id.as_str()),
+        );
+        dispatch(
+            &mut doc,
+            &set_graph_expr_action(GraphKind::Curve2d, id.as_str(), "x^2"),
+        );
+        assert!(
+            read_graph(&doc, GraphKind::Curve2d).is_empty(),
+            "delete wins over a delayed edit"
         );
     }
 
@@ -976,7 +1063,10 @@ mod tests {
         let clear = ws.actions.iter().find(|a| a.id == "clear-history").unwrap();
         assert_eq!(
             immediate_encode(clear).payload,
-            encode(&clear_history_action()).payload,
+            encode(&clear_history_ids_action(crate::doc::visible_ids(
+                &doc, "history"
+            )))
+            .payload,
             "clear-history is one source of truth"
         );
 
@@ -992,15 +1082,21 @@ mod tests {
             .iter()
             .find(|a| a.id == "toggle-visibility")
             .unwrap();
+        let curve_id = curve0
+            .id
+            .as_str()
+            .rsplit(':')
+            .next()
+            .expect("stable curve id");
         assert_eq!(
             immediate_encode(toggle).payload,
-            encode(&toggle_graph_visible_action(GraphKind::Curve2d, 0)).payload,
+            encode(&toggle_graph_visible_action(GraphKind::Curve2d, curve_id)).payload,
             "toggle-visibility is one source of truth"
         );
         let delete = curve0.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(
             immediate_encode(delete).payload,
-            encode(&delete_graph_action(GraphKind::Curve2d, 0)).payload,
+            encode(&delete_graph_action(GraphKind::Curve2d, curve_id)).payload,
             "delete-formula is one source of truth"
         );
 
@@ -1008,17 +1104,24 @@ mod tests {
         let edit = curve0.actions.iter().find(|a| a.id == "edit").unwrap();
         assert_eq!(
             prompted_encode(edit, "cos(x)").payload,
-            encode(&set_graph_expr_action(GraphKind::Curve2d, 0, "cos(x)")).payload,
+            encode(&set_graph_expr_action(
+                GraphKind::Curve2d,
+                curve_id,
+                "cos(x)"
+            ))
+            .payload,
             "edit-formula is one source of truth"
         );
 
         // The workspace add-function prompt builds the same AddGraph the keypad
         // "+" affordance would when given the same formula.
         let add = ws.actions.iter().find(|a| a.id == "add-function").unwrap();
-        assert_eq!(
-            prompted_encode(add, "x^2").payload,
-            encode(&add_graph_action(GraphKind::Curve2d, "x^2")).payload,
-            "add-function is one source of truth"
+        let encoded = prompted_encode(add, "x^2");
+        let decoded: CalculatorAction =
+            serde_json::from_slice(&encoded.payload).expect("decode canonical action");
+        assert!(
+            matches!(decoded, CalculatorAction::AddGraph { kind: GraphKind::Curve2d, expr, .. } if expr == "x^2"),
+            "add-function uses the canonical AddGraph action with a fresh stable id"
         );
     }
 
@@ -1052,7 +1155,8 @@ mod tests {
     /// the resource + action model, not per-key widgets.)
     #[test]
     fn a11y_tree_surfaces_history_delete_as_the_affordance_action() {
-        let resources = provide_resources(&ctx(), &doc_for_ctx());
+        let mut resource_doc = doc_for_ctx();
+        let resources = provide_resources(&ctx(), &resource_doc);
 
         // An inert root; the operable nodes come from the published resources.
         // `HashMap::new()`'s type is inferred from `refresh`'s signature.
@@ -1096,26 +1200,32 @@ mod tests {
         };
         assert_eq!(
             exposed,
-            encode(&delete_history_entry_action(0)),
+            encode(&delete_history_entry_action(
+                resources[0]
+                    .children
+                    .iter()
+                    .find(|r| r.kind == "calculator.history_entry")
+                    .and_then(|r| r.id.as_str().rsplit(':').next())
+                    .expect("stable history id")
+            )),
             "the a11y affordance and the on-screen builder are one action"
         );
 
         // Invoking the exposed action drives the doc exactly as the on-screen
         // affordance's own builder does: seed two identical docs, delete through
         // each path, and compare the results.
-        let seed = |doc: &mut AutoCommit| {
-            dispatch(doc, &commit_history_action("e0", "0"));
-            dispatch(doc, &commit_history_action("e1", "1"));
-        };
-        let mut via_a11y = AutoCommit::new();
-        seed(&mut via_a11y);
-        let mut via_affordance = AutoCommit::new();
-        seed(&mut via_affordance);
+        let bytes = resource_doc.save();
+        let mut via_a11y = AutoCommit::load(&bytes).expect("clone resource document");
+        let mut via_affordance = AutoCommit::load(&bytes).expect("clone resource document");
 
         let decoded = registry().decode(&exposed).unwrap();
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
-        dispatch(&mut via_affordance, &delete_history_entry_action(0));
+        let id = crate::doc::row_id_at(&via_affordance, "history", 0).expect("stable id");
+        dispatch(
+            &mut via_affordance,
+            &delete_history_entry_action(id.as_str()),
+        );
 
         assert_eq!(
             read_history(&via_a11y),
