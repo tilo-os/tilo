@@ -91,6 +91,9 @@ const CANVAS_INSET: f32 = 10.0;
 const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
+/// One bounded materialized library page. This is intentionally independent
+/// of the number of cards that happen to fit in a particular window.
+const LIBRARY_PAGE_SIZE: usize = 24;
 
 /// A four-column shelf is only useful while each photograph remains a
 /// recognisable, comfortably targetable card. At tablet widths a two-column
@@ -164,6 +167,8 @@ const COMPACT_MORE_ENTRIES: [Hit; 5] = [
 enum AlbumEditorHit {
     New,
     Edit,
+    PreviousPage,
+    NextPage,
     Save,
     Cancel,
     Delete,
@@ -452,6 +457,10 @@ pub struct PhotosApp {
     album_editor_focus: usize,
     album_editor_rect: Rect,
     album_editor_hits: Vec<(AlbumEditorHit, Rect)>,
+    /// Shared, retained controls for moving through the local library shelf
+    /// while selecting album membership. They never write the document.
+    album_page_buttons: Vec<(AlbumEditorHit, Button)>,
+    album_page_pending: Rc<Cell<Option<AlbumEditorHit>>>,
     metadata_editor: bool,
     metadata_editor_id: Option<String>,
     metadata_folder_input: TextInput,
@@ -522,6 +531,7 @@ impl PhotosApp {
             .ok()
             .map(|_| thumbnail_job_tx);
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
+        let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
@@ -573,6 +583,8 @@ impl PhotosApp {
             album_editor_focus: 0,
             album_editor_rect: Rect::ZERO,
             album_editor_hits: Vec::new(),
+            album_page_buttons: build_album_page_buttons(&album_page_pending),
+            album_page_pending,
             metadata_editor: false,
             metadata_editor_id: None,
             metadata_folder_input: TextInput::local().with_id("photos-metadata-folder"),
@@ -1148,9 +1160,41 @@ impl PhotosApp {
         self.notice = Some("Album deleted; photographs remain in the library".to_owned());
     }
 
+    /// Move through the bounded library shelf without changing any shared
+    /// state.  Album editing keeps its unsaved membership locally, so paging
+    /// must stay available while the sheet is open: otherwise a phone-sized
+    /// sheet can leave most of a large library impossible to include.
+    fn page_library(&mut self, forward: bool) {
+        if forward {
+            self.library_offset =
+                (self.library_offset + LIBRARY_PAGE_SIZE).min(self.library_total.saturating_sub(1));
+        } else {
+            self.library_offset = self.library_offset.saturating_sub(LIBRARY_PAGE_SIZE);
+        }
+    }
+
+    fn can_page_library(&self, forward: bool) -> bool {
+        if forward {
+            self.library_offset.saturating_add(LIBRARY_PAGE_SIZE) < self.library_total
+        } else {
+            self.library_offset > 0
+        }
+    }
+
+    fn library_page_label(&self) -> String {
+        if self.library_total == 0 {
+            "Showing 0 of 0".to_owned()
+        } else {
+            let first = self.library_offset + 1;
+            let last = (self.library_offset + LIBRARY_PAGE_SIZE).min(self.library_total);
+            format!("Showing {first}–{last} of {}", self.library_total)
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
-        reason = "embedded TextInput uses the Widget event contract"
+        clippy::too_many_lines,
+        reason = "embedded TextInput uses the Widget event contract; keyboard and pointer handling stay beside the album-sheet controls"
     )]
     fn handle_album_editor_event(
         &mut self,
@@ -1165,6 +1209,29 @@ impl PhotosApp {
     ) -> bool {
         if !self.album_editor {
             return false;
+        }
+        for (_, button) in &mut self.album_page_buttons {
+            let mut sink = None;
+            button.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                doc,
+                path,
+                handled,
+                &mut sink,
+                node_id,
+                taffy,
+            );
+        }
+        if let Some(hit) = self.album_page_pending.take() {
+            match hit {
+                AlbumEditorHit::PreviousPage => self.page_library(false),
+                AlbumEditorHit::NextPage => self.page_library(true),
+                _ => {}
+            }
+            *handled = true;
+            return true;
         }
         let mut sink = None;
         self.album_name_input.handle_event(
@@ -1182,6 +1249,16 @@ impl PhotosApp {
             && key.state == winit::event::ElementState::Pressed
         {
             match &key.logical_key {
+                Key::Named(NamedKey::PageDown) => {
+                    self.page_library(true);
+                    *handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::PageUp) => {
+                    self.page_library(false);
+                    *handled = true;
+                    return true;
+                }
                 Key::Named(NamedKey::Tab) => {
                     let steps = if self.album_editor_creating { 3 } else { 4 };
                     self.album_editor_focus = if modifiers.state().shift_key() {
@@ -1906,6 +1983,31 @@ impl PhotosApp {
                         })
                         .with_hashed_key("photos:album-editor:name"),
                 );
+                for (hit, button) in &self.album_page_buttons {
+                    let (name, target) = match hit {
+                        AlbumEditorHit::PreviousPage => (
+                            "Show previous photographs",
+                            "photos:album-editor:previous-page",
+                        ),
+                        AlbumEditorHit::NextPage => {
+                            ("Show next photographs", "photos:album-editor:next-page")
+                        }
+                        _ => continue,
+                    };
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_description(self.library_page_label())
+                            .with_bounds(button.get_rect())
+                            .with_state(AccessState {
+                                focusable: button.is_enabled(),
+                                focused: button.is_focused(),
+                                disabled: !button.is_enabled(),
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    );
+                }
                 for (hit, bounds) in &self.album_editor_hits {
                     let (name, target) = match hit {
                         AlbumEditorHit::Save => ("Save album", "photos:album-editor:save"),
@@ -1917,7 +2019,10 @@ impl PhotosApp {
                             "Confirm deleting album",
                             "photos:album-editor:confirm-delete",
                         ),
-                        AlbumEditorHit::New | AlbumEditorHit::Edit => continue,
+                        AlbumEditorHit::New
+                        | AlbumEditorHit::Edit
+                        | AlbumEditorHit::PreviousPage
+                        | AlbumEditorHit::NextPage => continue,
                     };
                     cards.push(
                         AccessNode::new(Role::Button)
@@ -2035,6 +2140,8 @@ impl PhotosApp {
             match command {
                 "new" => self.begin_new_album(doc),
                 "edit" => self.begin_edit_album(doc),
+                "previous-page" if self.can_page_library(false) => self.page_library(false),
+                "next-page" if self.can_page_library(true) => self.page_library(true),
                 "save" => self.save_album_editor(doc),
                 "cancel" => self.cancel_album_editor(),
                 "delete" => self.album_delete_confirm = true,
@@ -2865,7 +2972,7 @@ impl PhotosApp {
         let panel_h = if !self.album_editor && narrow {
             36.0
         } else if narrow {
-            230.0
+            258.0
         } else {
             332.0
         };
@@ -3003,13 +3110,44 @@ impl PhotosApp {
         );
         text_renderer.draw_text_weighted(
             scene,
-            &format!("{} selected", self.album_editor_members.len()),
+            &self.library_page_label(),
             14.0,
             theme.text_primary,
             transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 146.0)),
-            Some(150.0),
+            Some((panel.width() - 150.0) as f32),
             TextWeight::Medium,
         );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("{} selected", self.album_editor_members.len()),
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((panel.x1 - 116.0, panel.y0 + 147.0)),
+            Some(100.0),
+            TextWeight::Regular,
+        );
+        let page_y = panel.y0 + 166.0;
+        let previous = Rect::new(panel.x0 + 16.0, page_y, panel.x0 + 108.0, page_y + 34.0);
+        let next = Rect::new(panel.x1 - 108.0, page_y, panel.x1 - 16.0, page_y + 34.0);
+        for (hit, rect) in [
+            (AlbumEditorHit::PreviousPage, previous),
+            (AlbumEditorHit::NextPage, next),
+        ] {
+            let enabled = match hit {
+                AlbumEditorHit::PreviousPage => self.can_page_library(false),
+                AlbumEditorHit::NextPage => self.can_page_library(true),
+                _ => false,
+            };
+            if let Some((_, button)) = self
+                .album_page_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_enabled(enabled);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
+        }
         let y = panel.y1 - 48.0;
         let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 34.0);
         let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 34.0);
@@ -3304,6 +3442,39 @@ fn build_button(
         .tooltip(label.clone())
         .with_accessible_name(&label)
         .on_effect(move || slot.set(Some(hit)))
+}
+
+/// A local navigation button in the album sheet. Membership paging is device
+/// presentation state, so its callback only posts local intent; it never
+/// mutates the document from inside the widget.
+fn build_album_page_button(
+    hit: AlbumEditorHit,
+    id: &str,
+    label: &str,
+    pending: &Rc<Cell<Option<AlbumEditorHit>>>,
+) -> Button {
+    let slot = pending.clone();
+    Button::new(id, label, None)
+        .with_size(92.0, 34.0)
+        .tooltip(label)
+        .with_accessible_name(label)
+        .on_click(move || slot.set(Some(hit)))
+}
+
+fn build_album_page_buttons(
+    pending: &Rc<Cell<Option<AlbumEditorHit>>>,
+) -> Vec<(AlbumEditorHit, Button)> {
+    [
+        (
+            AlbumEditorHit::PreviousPage,
+            "photos-album-previous-page",
+            "Previous",
+        ),
+        (AlbumEditorHit::NextPage, "photos-album-next-page", "Next"),
+    ]
+    .into_iter()
+    .map(|(hit, id, label)| (hit, build_album_page_button(hit, id, label, pending)))
+    .collect()
 }
 
 /// Wrap an RGBA buffer as the image type the scene draws.
@@ -3898,6 +4069,23 @@ impl Widget for PhotosApp {
         }
 
         if self.library_mode
+            && self.album_editor
+            && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
+        {
+            let direction = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum(),
+                winit::event::MouseScrollDelta::PixelDelta(position) => position.y.signum() as f32,
+            };
+            if direction < 0.0 {
+                self.page_library(true);
+            } else if direction > 0.0 {
+                self.page_library(false);
+            }
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
             && self.handle_metadata_editor_event(
                 event,
                 scale_factor,
@@ -4022,12 +4210,10 @@ impl Widget for PhotosApp {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => y.signum(),
                 winit::event::MouseScrollDelta::PixelDelta(position) => position.y.signum() as f32,
             };
-            let page = 24_usize;
             if direction < 0.0 {
-                self.library_offset =
-                    (self.library_offset + page).min(self.library_total.saturating_sub(1));
+                self.page_library(true);
             } else if direction > 0.0 {
-                self.library_offset = self.library_offset.saturating_sub(page);
+                self.page_library(false);
             }
             *handled = true;
             return;
@@ -4702,6 +4888,90 @@ mod tests {
             app.thumbnail_generation
                 .is_some_and(|generation| generation > 0)
         );
+    }
+
+    #[test]
+    fn album_editor_pages_large_libraries_without_changing_shared_membership() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..49 {
+            library
+                .photos
+                .push(LibraryPhoto::from_image(OpenImage::from_path(
+                    &format!("/photos/library-{index}.png"),
+                    20,
+                    10,
+                )));
+        }
+        PhotosDoc::set_library(&mut doc, &library);
+        app.library_total = library.photos.len();
+        app.library_mode = true;
+        app.album_editor = true;
+        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
+        let before = PhotosDoc::library(&doc);
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        app.draw_album_editor(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        let (_, previous) = app
+            .album_page_buttons
+            .iter()
+            .find(|(hit, _)| *hit == AlbumEditorHit::PreviousPage)
+            .expect("the editor has a previous-page control");
+        let (_, next) = app
+            .album_page_buttons
+            .iter()
+            .find(|(hit, _)| *hit == AlbumEditorHit::NextPage)
+            .expect("the editor has a next-page control");
+        assert!(!previous.is_enabled());
+        assert!(next.is_enabled());
+        let semantics = app.accessibility_tree();
+        let pager = &semantics.children[1].children;
+        assert!(pager.iter().any(|node| {
+            node.action_target.as_deref() == Some("photos:album-editor:previous-page")
+                && node.state.disabled
+                && node.name.as_deref() == Some("Show previous photographs")
+        }));
+        assert!(pager.iter().any(|node| {
+            node.action_target.as_deref() == Some("photos:album-editor:next-page")
+                && !node.state.disabled
+                && node.name.as_deref() == Some("Show next photographs")
+        }));
+
+        assert!(app.perform_library_semantic_action(
+            "photos:album-editor:next-page",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        assert_eq!(app.library_offset, 24);
+        assert!(app.perform_library_semantic_action(
+            "photos:album-editor:previous-page",
+            &AccessAction::Activate,
+            &mut doc,
+        ));
+        // The preceding activation is valid from the second page and leaves
+        // the editor's membership draft local.
+        assert_eq!(app.library_offset, 0);
+
+        app.page_library(true);
+        assert_eq!(app.library_offset, 24);
+        app.page_library(true);
+        assert_eq!(app.library_offset, 48);
+        app.page_library(true);
+        assert_eq!(app.library_offset, 48);
+        app.page_library(false);
+        assert_eq!(app.library_offset, 24);
+        app.page_library(false);
+        assert_eq!(app.library_offset, 0);
+        assert_eq!(PhotosDoc::library(&doc), before);
     }
 
     #[test]
