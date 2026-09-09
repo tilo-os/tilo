@@ -548,6 +548,12 @@ pub struct TubeModel {
     #[serde(default)]
     pub playlists: Vec<Playlist>,
     pub subscriptions: Vec<ChannelId>,
+    /// Shared watch-queue membership projected from the document. Queue order is
+    /// deliberately not a collaborative presentation concern: keyed membership
+    /// makes concurrent add/remove operations converge without one client
+    /// silently reordering another client's queue.
+    #[serde(default)]
+    pub queue: Vec<VideoId>,
     pub history: Vec<VideoId>,
     pub settings: Settings,
     pub route: Route,
@@ -563,6 +569,11 @@ pub struct TubeModel {
     /// incremented count.
     #[serde(default)]
     pub liked: Vec<VideoId>,
+    /// Durable comment-like membership, keyed by the stable source-content
+    /// identity used by the action layer. Unlike fetched comments themselves,
+    /// these are user mutations mirrored from the collaborative document.
+    #[serde(default)]
+    pub comment_likes: BTreeMap<String, bool>,
     /// Transient user-facing notices — auto-skip confirmations, worker status,
     /// "link copied" acknowledgements — rendered as a toast stack on the watch
     /// page. Newest first, capped.
@@ -642,6 +653,7 @@ impl Default for TubeModel {
             channels: Vec::new(),
             playlists: Vec::new(),
             subscriptions: Vec::new(),
+            queue: Vec::new(),
             history: Vec::new(),
             settings: Settings::default(),
             route: Route::Home,
@@ -649,6 +661,7 @@ impl Default for TubeModel {
             playhead: 0.0,
             playing: false,
             liked: Vec::new(),
+            comment_likes: BTreeMap::new(),
             notices: Vec::new(),
             palette_open: false,
             palette_query: String::new(),
@@ -734,6 +747,11 @@ impl TubeModel {
 
     pub fn is_liked(&self, id: &str) -> bool {
         self.liked.iter().any(|l| l == id)
+    }
+
+    /// Whether a video is a member of the shared watch queue.
+    pub fn is_queued(&self, id: &str) -> bool {
+        self.queue.iter().any(|queued| queued == id)
     }
 
     pub fn toggle_like(&mut self, id: &str) {
