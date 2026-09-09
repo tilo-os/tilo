@@ -9,18 +9,16 @@
 //!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
 //!    itself.
 //!
-//!  * [`SettingsPane`] — a `ui` [`Widget`] that renders the preferences
-//!    surface. Like [`crate::browser_widget::BrowserWidget`] it holds no
-//!    logical state of its own: the toggles and text fields read/write
-//!    directly through the Automerge CRDT under stable string paths (see
-//!    the `*_PATH` / `*_FLAG` constants), and the two "clear now" buttons
-//!    raise boolean click-flags.
+//!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local
+//!    presentation mirrors of those preferences. Every control invokes a
+//!    canonical Browser action; it never writes click flags or preference
+//!    values into the collaborative document.
 //!
-//! The chrome (the orchestrator) owns the wiring: it polls
-//! [`SettingsPane::take_pending`] once per frame to pull the toggle
-//! states and the one-shot clear-history / clear-cookies intents, then
-//! performs the actual cookie/data clearing in the engine and persists
-//! the [`Settings`] back to disk. The pane never touches the engine.
+//! The chrome owns the action bindings and engine side effects. Applied
+//! preference actions update [`Settings`], refresh the pane's local mirrors,
+//! and persist the device configuration. Clear-history and clear-site-data
+//! are explicit one-shot actions, while closing the pane is an explicit view
+//! operation. There is no per-frame intent polling channel.
 
 use std::path::{Path, PathBuf};
 
