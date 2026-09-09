@@ -426,6 +426,16 @@ pub enum AgentRoute {
 /// [`AgentStepOutcome::Asked`] while it has not returned anything.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentStep {
+    /// A UUID minted when the dispatch is authored. Trace rows are keyed by
+    /// this id in the CRDT, never by their display position, so concurrent
+    /// appends cannot overwrite each other. Empty only when deserialising a
+    /// pre-id legacy payload; action builders upgrade those before dispatch.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
+    /// The author's monotonic position in its trace. Concurrent appends may
+    /// share a sequence; readers then tie-break by the stable [`Self::id`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sequence: u64,
     /// The resource the operation was addressed to, as the room addresses it.
     pub resource: String,
     /// The operation, in the owning app's own words. Falls back to the action
@@ -433,6 +443,34 @@ pub struct AgentStep {
     /// than a label, but better than showing nothing.
     pub label: String,
     pub outcome: AgentStepOutcome,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if hook requires a reference to the field"
+)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+impl AgentStep {
+    /// Mint one dispatch row at the authoring boundary. Replays only carry the
+    /// resulting id and never call this constructor.
+    #[must_use]
+    pub fn authored(
+        resource: impl Into<String>,
+        label: impl Into<String>,
+        outcome: AgentStepOutcome,
+        sequence: u64,
+    ) -> Self {
+        Self {
+            id: format!("step_{}", uuid::Uuid::new_v4().simple()),
+            sequence,
+            resource: resource.into(),
+            label: label.into(),
+            outcome,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,7 +525,22 @@ impl AgentWork {
     #[must_use]
     pub fn with_trace(mut self, trace: Vec<AgentStep>) -> Self {
         self.trace = trace;
+        self.ensure_trace_ids();
         self
+    }
+
+    /// Upgrade a legacy/in-process trace at the *authoring* boundary. This is
+    /// intentionally never invoked by CRDT replay: replay receives the ids
+    /// minted here as part of the action payload.
+    pub fn ensure_trace_ids(&mut self) {
+        for (index, step) in self.trace.iter_mut().enumerate() {
+            if step.id.is_empty() {
+                step.id = format!("step_{}", uuid::Uuid::new_v4().simple());
+            }
+            if index > 0 && step.sequence == 0 {
+                step.sequence = index as u64;
+            }
+        }
     }
 
     /// Whether the agent has stopped. A finished record is the end of the
@@ -785,11 +838,7 @@ mod agent_record_tests {
     };
 
     fn step(resource: &str, label: &str, outcome: AgentStepOutcome) -> AgentStep {
-        AgentStep {
-            resource: resource.into(),
-            label: label.into(),
-            outcome,
-        }
+        AgentStep::authored(resource, label, outcome, 0)
     }
 
     /// A record written by an older agent — one with neither field — still
@@ -856,6 +905,17 @@ mod agent_record_tests {
             json.contains("\"route\":\"model\""),
             "route missing: {json}"
         );
+    }
+
+    #[test]
+    fn legacy_trace_step_without_an_id_remains_readable() {
+        let step: AgentStep = serde_json::from_str(
+            r#"{"resource":"photo:1","label":"Crop","outcome":{"outcome":"asked"}}"#,
+        )
+        .expect("pre-id step still parses");
+        assert!(step.id.is_empty());
+        assert_eq!(step.sequence, 0);
+        assert_eq!(step.outcome, AgentStepOutcome::Asked);
     }
 
     /// A refusal is never counted as work carried out — the difference
