@@ -1,9 +1,10 @@
 //! Pure data model for the weather app.
 //!
 //! Everything here is plain serde data with no IO and no rendering. The
-//! authoritative copy of this lives in the Automerge CRDT (see `doc.rs`);
-//! these structs are the in-memory projection the widgets render from and
-//! the shape the network layer (`api.rs`) deserialises into.
+//! saved locations project from the Automerge CRDT (see `doc.rs`); provider
+//! responses and presentation state stay local. These structs are the
+//! in-memory projection the widgets render from and the shape the network
+//! layer (`api.rs`) deserialises into.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -181,8 +182,8 @@ impl WeatherSnapshot {
 }
 
 /// The top-level application model: the saved locations, which one is
-/// selected, the unit preferences, and the cached snapshots keyed by
-/// location id. Mirrored into the CRDT by `doc.rs`.
+/// selected, the unit preferences, and the device-local snapshots keyed by
+/// location id. Only saved-location decisions are mirrored by `doc.rs`.
 #[derive(Clone, Debug, Default)]
 pub struct WeatherModel {
     pub locations: Vec<SavedLocation>,
