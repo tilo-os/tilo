@@ -79,6 +79,7 @@ pub fn main() {
                 "--offline",
                 "--menu",
                 "--attribution",
+                "--error",
                 "--floating-navigation",
                 "--floating-navigation-attached",
                 "--floating-navigation-hover",
@@ -145,6 +146,9 @@ fn shot_app(args: &LaunchArgs) -> maps::MapsApp {
     }
     if args.has("--attribution") {
         app.set_demo_attribution();
+    }
+    if args.has("--error") {
+        app.set_demo_error();
     }
     app
 }
