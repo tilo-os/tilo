@@ -1790,15 +1790,34 @@ impl MailApp {
                 )
             })
             .collect();
+        // `messages_in` is the single folder projection shared with the list;
+        // importantly it includes the virtual Starred folder.  Give each row
+        // the anchor from that same projection so resource/history identities
+        // stay independent of user-editable subjects.
+        let thread_ids: HashMap<_, _> = st
+            .mailbox
+            .threads_in(current_folder)
+            .into_iter()
+            .flat_map(|thread| {
+                let anchor = thread.id;
+                thread
+                    .message_ids
+                    .into_iter()
+                    .map(move |id| (id, anchor.clone()))
+            })
+            .collect();
         let messages = st
             .mailbox
-            .order
-            .iter()
-            .filter_map(|id| st.mailbox.messages.get(id))
-            .filter(|message| message.folder == current_folder)
-            .rev()
+            .messages_in(current_folder)
+            .into_iter()
             .take(crate::actions::OPEN_MESSAGE_LIMIT)
-            .map(crate::actions::message_row)
+            .map(|message| {
+                let mut row = crate::actions::message_row(message);
+                if let Some(thread_id) = thread_ids.get(&message.id) {
+                    row.thread_id.clone_from(thread_id);
+                }
+                row
+            })
             .collect();
         let custom_folders = MailDoc::list_folders(doc);
         let draft = MailDoc::load_draft(doc);
@@ -1835,22 +1854,24 @@ impl MailApp {
         &self,
         stable: &str,
     ) -> Option<(String, Vec<crate::actions::MessageRow>)> {
+        let (folder_raw, anchor_raw) = stable.split_once(':')?;
+        let folder = Folder::from_key(folder_raw)?;
+        if anchor_raw.is_empty() {
+            return None;
+        }
         let state = self.shared.borrow();
-        let mut messages = state
+        let thread = state
             .mailbox
-            .messages
-            .values()
-            .filter(|message| message.folder != Folder::Trash)
-            .filter(|message| {
-                crate::actions::thread_resource_key(&message.thread_subject()) == stable
-            })
-            .collect::<Vec<_>>();
-        messages.sort_by_key(|message| message.timestamp_min);
-        let subject = messages.first()?.thread_subject();
+            .threads_in(folder)
+            .into_iter()
+            .find(|thread| thread.id == anchor_raw)?;
+        let subject = thread.subject;
         Some((
             subject,
-            messages
+            thread
+                .message_ids
                 .into_iter()
+                .filter_map(|id| state.mailbox.get(id))
                 .take(crate::actions::OPEN_MESSAGE_LIMIT)
                 .map(crate::actions::message_row)
                 .collect(),
