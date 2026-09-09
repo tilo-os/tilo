@@ -2103,7 +2103,6 @@ impl Pane {
                     if let Some(i) = self.search_input.as_mut() {
                         i.set_text("");
                     }
-                    crate::doc::MailDoc::set_search(doc, "");
                     self.set_search_focus(false);
                     *handled = true;
                 }
@@ -2330,7 +2329,6 @@ impl Pane {
                 .unwrap_or_default();
             let mut st = self.shared.borrow_mut();
             st.search = value;
-            crate::doc::MailDoc::set_search(state, &st.search);
             st.selected = st.list_rows().first().map(|(id, _)| *id);
             st.dirty = true;
             *handled = true;

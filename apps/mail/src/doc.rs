@@ -5,17 +5,17 @@
 //!
 //! ```text
 //! root
-//! ├── "ui"      (Map)  selected folder / view mode / search query / selection
 //! ├── "flags"   (Map)  per-message mutable state, keyed by message-id string
 //! │     └── <id> (Map) { read: bool, starred: bool, folder: Str }
-//! ├── "messages" (Map)  externally-ingested message ids `{ present: Bool }`
+//! ├── "messages" (Map)  externally-ingested ids `{ present, purged }`
 //! └── "draft"   (Map)  the message currently being composed
 //! ```
 //!
 //! The immutable message corpus (headers/bodies/attachments) is *not* stored
 //! here — it's hydrated from the server (or the sample corpus) into the
-//! in-memory [`Mailbox`]. Only the flags ride in the CRDT, which is what lets
-//! "mark read on peer A" show up on peer B and undo cleanly.
+//! in-memory [`Mailbox`]. Navigation, search, selection, scroll position and
+//! editor formatting are deliberately device-local presentation state. Only
+//! domain mutations (flags/folders/labels/drafts) ride in the CRDT.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -64,117 +64,30 @@ impl MailDoc {
         }
     }
 
-    // ---- UI state ----
-
-    fn ui(doc: &mut AutoCommit) -> ObjId {
-        Self::map(doc, &ROOT, "ui")
-    }
-
-    pub fn set_folder(doc: &mut AutoCommit, folder: Folder) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "folder", folder_key(folder));
-    }
-
-    pub fn get_folder(doc: &AutoCommit) -> Folder {
-        let Ok(Some((Value::Object(ObjType::Map), ui))) = doc.get(&ROOT, "ui") else {
-            return Folder::Inbox;
-        };
-        Self::read_str(doc, &ui, "folder")
-            .and_then(|s| folder_from_key(&s))
-            .unwrap_or(Folder::Inbox)
-    }
-
-    pub fn set_mode(doc: &mut AutoCommit, mode: &str) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "mode", mode);
-    }
-
-    pub fn get_mode(doc: &AutoCommit) -> String {
-        match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => {
-                Self::read_str(doc, &ui, "mode").unwrap_or_else(|| "mailbox".into())
-            }
-            _ => "mailbox".into(),
-        }
-    }
-
-    pub fn set_search(doc: &mut AutoCommit, query: &str) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "search", query);
-    }
-
-    pub fn get_search(doc: &AutoCommit) -> String {
-        match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => {
-                Self::read_str(doc, &ui, "search").unwrap_or_default()
-            }
-            _ => String::new(),
-        }
-    }
-
-    pub fn set_selected(doc: &mut AutoCommit, message_id: Option<&str>) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "selected", message_id.unwrap_or(""));
-    }
-
-    /// Persist the compose body format choice ("html" | "text") so the user's
-    /// preference is remembered across compose windows and sessions.
-    pub fn set_compose_format(doc: &mut AutoCommit, key: &str) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "compose_format", key);
-    }
-
-    pub fn get_compose_format(doc: &AutoCommit) -> Option<String> {
-        match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => {
-                Self::read_str(doc, &ui, "compose_format")
-            }
-            _ => None,
-        }
-    }
-
-    pub fn get_selected(doc: &AutoCommit) -> Option<String> {
-        match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => {
-                Self::read_str(doc, &ui, "selected").filter(|s| !s.is_empty())
-            }
-            _ => None,
-        }
-    }
-
-    /// Mark the document as already seeded so a later open restores the
-    /// persisted session state instead of overwriting it from defaults.
-    pub fn set_seeded(doc: &mut AutoCommit) {
-        let ui = Self::ui(doc);
-        let _ = doc.put(&ui, "seeded", true);
-    }
-
-    /// Whether this document has been seeded before (i.e. carries a real
-    /// persisted session: folder / selection / active account / format).
-    pub fn is_seeded(doc: &AutoCommit) -> bool {
-        match doc.get(&ROOT, "ui") {
-            Ok(Some((Value::Object(ObjType::Map), ui))) => {
-                Self::read_bool(doc, &ui, "seeded").unwrap_or(false)
-            }
-            _ => false,
-        }
-    }
-
     // ---- per-message flags ----
 
     fn flags_map(doc: &mut AutoCommit) -> ObjId {
         Self::map(doc, &ROOT, "flags")
     }
 
-    /// Mirror a message's mutable flags into the CRDT.
-    pub fn store_flags(doc: &mut AutoCommit, msg: &Message) {
+    /// Seed previously-unseen flag fields from an externally-ingested message.
+    ///
+    /// This is intentionally *not* a user mutation path. Existing CRDT values
+    /// win field-by-field, so a delayed IMAP fetch cannot overwrite a local or
+    /// remote `MailAction`; server flags merely establish the first baseline
+    /// for a newly hydrated message.
+    pub fn ingest_message_flags(doc: &mut AutoCommit, msg: &Message) {
         Self::register_message(doc, &msg.id.to_string());
-        let flags = Self::flags_map(doc);
         let key = msg.id.to_string();
-        let entry = Self::map(doc, &flags, &key);
-        ui::doc::put_if_changed(doc, &entry, "read", msg.read);
-        ui::doc::put_if_changed(doc, &entry, "starred", msg.starred);
-        ui::doc::put_if_changed(doc, &entry, "folder", folder_key(msg.folder));
+        if Self::get_read(doc, &key).is_none() {
+            Self::set_read(doc, &key, msg.read);
+        }
+        if Self::get_starred(doc, &key).is_none() {
+            Self::set_starred(doc, &key, msg.starred);
+        }
+        if Self::get_folder_for(doc, &key).is_none() {
+            Self::set_folder_for(doc, &key, msg.folder);
+        }
     }
 
     /// Overlay any persisted flags from the CRDT onto an in-memory mailbox.
@@ -292,7 +205,20 @@ impl MailDoc {
         }
         let messages = Self::messages_map(doc);
         let entry = Self::map(doc, &messages, id);
+        // `purged` is a write-once tombstone.  A stale IMAP hydration can race
+        // a permanent delete on another replica; it may still write `present`,
+        // but it can never clear this marker and so can never revive the
+        // message as an action target or projection.
+        if Self::read_bool(doc, &entry, "purged") == Some(true) {
+            return;
+        }
         ui::doc::put_if_changed(doc, &entry, "present", true);
+        // Materialise the stable flag map while ingesting the external id.
+        // Otherwise two peers can concurrently create separate map objects for
+        // a just-hydrated message (one while marking read, one while starring)
+        // and Automerge must choose a container instead of merging the scalar
+        // fields inside it.
+        let _ = Self::flag_entry(doc, id);
     }
 
     /// Whether an id is currently a valid, materialised message target.
@@ -303,6 +229,9 @@ impl MailDoc {
         if let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages")
             && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id)
         {
+            if Self::read_bool(doc, &entry, "purged") == Some(true) {
+                return false;
+            }
             return Self::read_bool(doc, &entry, "present").unwrap_or(false);
         }
         Self::flag_entry_ref(doc, id).is_some()
@@ -313,6 +242,7 @@ impl MailDoc {
     pub fn mark_message_purged(doc: &mut AutoCommit, id: &str) {
         let messages = Self::messages_map(doc);
         let entry = Self::map(doc, &messages, id);
+        ui::doc::put_if_changed(doc, &entry, "purged", true);
         ui::doc::put_if_changed(doc, &entry, "present", false);
     }
 
@@ -324,7 +254,10 @@ impl MailDoc {
         let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id) else {
             return false;
         };
-        Self::read_bool(doc, &entry, "present") == Some(false)
+        Self::read_bool(doc, &entry, "purged") == Some(true)
+            // Documents written before the explicit `purged` field retain
+            // their original `present: false` tombstones on upgrade.
+            || Self::read_bool(doc, &entry, "present") == Some(false)
     }
 
     // ---- granular per-message flag writers (the action apply path) ----
@@ -527,23 +460,6 @@ mod tests {
     use crate::sample::sample_mailbox;
 
     #[test]
-    fn folder_round_trips() {
-        let mut doc = AutoCommit::new();
-        MailDoc::set_folder(&mut doc, Folder::Archive);
-        assert_eq!(MailDoc::get_folder(&doc), Folder::Archive);
-    }
-
-    #[test]
-    fn mode_and_search_round_trip() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(MailDoc::get_mode(&doc), "mailbox");
-        MailDoc::set_mode(&mut doc, "compose");
-        assert_eq!(MailDoc::get_mode(&doc), "compose");
-        MailDoc::set_search(&mut doc, "launch");
-        assert_eq!(MailDoc::get_search(&doc), "launch");
-    }
-
-    #[test]
     fn flags_persist_and_overlay() {
         let mut doc = AutoCommit::new();
         let mut mb = sample_mailbox();
@@ -551,7 +467,7 @@ mod tests {
         mb.mark_read(id, true);
         mb.toggle_star(id);
         let starred = mb.get(id).unwrap().starred;
-        MailDoc::store_flags(&mut doc, mb.get(id).unwrap());
+        MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
 
         // Fresh corpus with default flags; overlay should restore them.
         let mut mb2 = sample_mailbox();
@@ -564,10 +480,28 @@ mod tests {
             m.read = false;
             m.starred = false;
         }
-        MailDoc::store_flags(&mut doc, mb.get(id).unwrap());
+        MailDoc::ingest_message_flags(&mut doc, mb.get(id).unwrap());
         MailDoc::apply_flags(&doc, &mut mb3);
         assert_eq!(mb3.get(id).unwrap().starred, starred);
         assert!(mb3.get(id).unwrap().read);
+    }
+
+    #[test]
+    fn delayed_ingestion_never_overwrites_a_canonical_flag_action() {
+        let mut doc = AutoCommit::new();
+        let mut mailbox = sample_mailbox();
+        let id = *mailbox.messages.keys().next().expect("sample message");
+        let fetched = mailbox.get(id).expect("sample message").clone();
+        MailDoc::ingest_message_flags(&mut doc, &fetched);
+        MailDoc::set_read(&mut doc, &id.to_string(), true);
+
+        let mut stale_fetch = fetched;
+        stale_fetch.read = false;
+        MailDoc::ingest_message_flags(&mut doc, &stale_fetch);
+        assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(true));
+
+        MailDoc::apply_flags(&doc, &mut mailbox);
+        assert!(mailbox.get(id).is_some_and(|message| message.read));
     }
 
     #[test]
@@ -575,7 +509,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mut mailbox = sample_mailbox();
         let id = *mailbox.messages.keys().next().expect("sample message");
-        MailDoc::store_flags(&mut doc, mailbox.get(id).expect("message"));
+        MailDoc::ingest_message_flags(&mut doc, mailbox.get(id).expect("message"));
         MailDoc::mark_message_purged(&mut doc, &id.to_string());
 
         MailDoc::apply_flags(&doc, &mut mailbox);
@@ -586,18 +520,15 @@ mod tests {
     }
 
     #[test]
-    fn seeded_marker_round_trips() {
+    fn stale_ingestion_cannot_resurrect_a_purged_message() {
         let mut doc = AutoCommit::new();
-        assert!(!MailDoc::is_seeded(&doc), "fresh doc is not seeded");
-        MailDoc::set_seeded(&mut doc);
-        assert!(MailDoc::is_seeded(&doc), "set_seeded persists");
-    }
-
-    #[test]
-    fn compose_format_round_trips() {
-        let mut doc = AutoCommit::new();
-        MailDoc::set_compose_format(&mut doc, "text");
-        assert_eq!(MailDoc::get_compose_format(&doc).as_deref(), Some("text"));
+        MailDoc::register_message(&mut doc, "m1");
+        MailDoc::mark_message_purged(&mut doc, "m1");
+        // A delayed external hydration is explicitly allowed to try to
+        // register its stable id, but the write-once purge marker wins.
+        MailDoc::register_message(&mut doc, "m1");
+        assert!(!MailDoc::is_present_message(&doc, "m1"));
+        assert!(MailDoc::is_message_purged(&doc, "m1"));
     }
 
     #[test]

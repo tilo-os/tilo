@@ -505,26 +505,27 @@ mod tests {
         )
         .expect("search address resolves lazily");
         let encoded = qos_actions::door::encode(&[resource], &address, None).unwrap();
-        let heads_before_navigation = doc.get_heads();
-        assert!(
-            app.invoke_resource_operation(
+        assert!(matches!(
+            app.start_resource_operation_with_document(
+                qos_actions::InvocationId::default(),
                 qos_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
-                &doc,
+                &mut doc,
                 &ROOT,
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(
             app.selected_message(),
             Some(id),
             "activation opened the chosen message"
         );
         assert_eq!(
-            doc.get_heads(),
-            heads_before_navigation,
-            "a View operation does not mutate collaborative mail state"
+            crate::doc::MailDoc::get_read(&doc, &id.to_string()),
+            Some(true),
+            "search activation follows the same explicit Open → SetRead action"
         );
 
         let folder_hit = app.search_providers()[0]
@@ -538,6 +539,7 @@ mod tests {
         let resources = app.resources(&doc);
         let encoded = qos_actions::door::encode(&resources, &folder_address, None)
             .expect("folder address resolves against Mail's exported tree");
+        let heads_before_folder_navigation = doc.get_heads();
         assert!(
             app.invoke_resource_operation(
                 qos_actions::OperationKind::View,
@@ -549,6 +551,6 @@ mod tests {
             .unwrap()
         );
         assert_eq!(app.mail_resource_ctx(&doc).current_folder, Folder::Archive);
-        assert_eq!(doc.get_heads(), heads_before_navigation);
+        assert_eq!(doc.get_heads(), heads_before_folder_navigation);
     }
 }
