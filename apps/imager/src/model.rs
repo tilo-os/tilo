@@ -37,7 +37,7 @@ impl SourceKind {
 
 /// A selected image source with the metadata we can show without reading
 /// the whole file (name, on-disk size, volume label / image type).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub kind: SourceKind,
     /// Absolute path to the image file (empty for a not-yet-downloaded
