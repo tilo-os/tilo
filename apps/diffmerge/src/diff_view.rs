@@ -13,13 +13,14 @@ use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
@@ -30,6 +31,7 @@ const MINIMAP_W: f64 = 14.0;
 const HEADER_H: f64 = 34.0;
 const FONT_SIZE: f32 = 13.0;
 const PAD_X: f64 = 8.0;
+const COMPACT_BREAKPOINT: f64 = 640.0;
 
 /// Build a single-leaf taffy node. `new_leaf` only fails when the tree itself
 /// is corrupted, which cannot happen for a tree we just built in this same
@@ -53,6 +55,9 @@ pub struct DiffView {
     active_block: Option<usize>,
     dirty: bool,
     hovered_minimap: bool,
+    compact_show_right: bool,
+    compact_source_hits: [Rect; 2],
+    cursor: Point,
 }
 
 impl Default for DiffView {
@@ -72,6 +77,9 @@ impl DiffView {
             active_block: None,
             dirty: true,
             hovered_minimap: false,
+            compact_show_right: false,
+            compact_source_hits: [Rect::ZERO; 2],
+            cursor: Point::ZERO,
         }
     }
 
@@ -90,6 +98,42 @@ impl DiffView {
 
     pub fn active_block(&self) -> Option<usize> {
         self.active_block
+    }
+
+    pub(crate) fn resource_ctx(&self) -> Option<crate::actions::DiffResourceCtx> {
+        (!self.model.blocks.is_empty()).then(|| crate::actions::DiffResourceCtx {
+            left_label: self.left_label.clone(),
+            right_label: self.right_label.clone(),
+            model: self.model.clone(),
+        })
+    }
+
+    /// Navigate to one canonical change-block address. Invalid or stale
+    /// addresses are ignored instead of jumping to a different block.
+    pub fn block_fingerprint(&self, block: usize) -> Option<String> {
+        crate::actions::diff_block_fingerprint(&self.model, block)
+    }
+
+    pub fn show_block(&mut self, block: usize, fingerprint: &str) -> bool {
+        if self.block_fingerprint(block).as_deref() != Some(fingerprint) {
+            return false;
+        }
+        self.active_block = Some(block);
+        self.scroll_block_into_view(block);
+        self.dirty = true;
+        true
+    }
+
+    pub fn select_compact_side(&mut self, show_right: bool) {
+        if self.compact_show_right != show_right {
+            self.compact_show_right = show_right;
+            self.dirty = true;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compact_showing_right(&self) -> bool {
+        self.compact_show_right
     }
 
     /// Jump the active change to the next/previous block and scroll it into
@@ -144,6 +188,10 @@ impl DiffView {
             self.scroll_y = new;
             self.dirty = true;
         }
+    }
+
+    fn is_compact(&self) -> bool {
+        self.rect.width() < COMPACT_BREAKPOINT
     }
 
     /// Background tint for a row kind on a given side. `is_left` selects the
@@ -229,6 +277,11 @@ impl Widget for DiffView {
         let r = self.rect;
         // Panel background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
+        if self.is_compact() {
+            self.draw_compact(scene, transform, tr, theme);
+            self.dirty = false;
+            return;
+        }
 
         let mid_x = (r.x0 + r.x1 - MINIMAP_W) / 2.0;
         let left_col = Rect::new(r.x0, r.y0, mid_x, r.y1);
@@ -281,6 +334,16 @@ impl Widget for DiffView {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && self.is_compact() =>
+            {
+                match event.logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => self.select_compact_side(false),
+                    Key::Named(NamedKey::ArrowRight) => self.select_compact_side(true),
+                    _ => return,
+                }
+                *handled = true;
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
@@ -292,10 +355,20 @@ impl Widget for DiffView {
                 *handled = true;
             }
             WindowEvent::MouseInput {
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
                 ..
             } => {
+                if self.is_compact()
+                    && let Some(index) = self
+                        .compact_source_hits
+                        .iter()
+                        .position(|rect| rect.contains(self.cursor))
+                {
+                    self.select_compact_side(index == 1);
+                    *handled = true;
+                    return;
+                }
                 // Click on the minimap jumps to that proportion of content.
                 if self.hovered_minimap {
                     // hovered_minimap is set on cursor move; recompute target.
@@ -304,6 +377,7 @@ impl Widget for DiffView {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor = p;
                 let minimap_x0 = self.rect.x1 - MINIMAP_W;
                 self.hovered_minimap = p.x >= minimap_x0 && p.x <= self.rect.x1;
             }
@@ -327,6 +401,51 @@ impl Widget for DiffView {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let changes = self.model.blocks.len();
+        let mut children = Vec::new();
+        if self.is_compact() {
+            children.extend([(false, "Left"), (true, "Right")].into_iter().map(
+                |(show_right, label)| {
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(format!("Show {label} file"))
+                        .with_description("Switch the visible local diff source")
+                        .with_action_target(format!(
+                            "diffmerge.diff-source:{}",
+                            if show_right { "right" } else { "left" }
+                        ))
+                        .with_bounds(
+                            self.compact_source_hits
+                                .get(usize::from(show_right))
+                                .copied()
+                                .unwrap_or(Rect::ZERO),
+                        )
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(self.compact_show_right == show_right),
+                        )
+                },
+            ));
+        }
+        children.extend(self.model.blocks.iter().enumerate().map(|(index, block)| {
+            AccessNode::new(Role::Button)
+                .with_name(format!(
+                    "Change {}: lines {} through {}",
+                    index.saturating_add(1),
+                    block.first_row.saturating_add(1),
+                    block.last_row.saturating_add(1)
+                ))
+                .with_description("Show this local change block")
+                .with_action_target(format!(
+                    "diffmerge.diff-block:{index}:{}",
+                    self.block_fingerprint(index).unwrap_or_default()
+                ))
+                .with_bounds(self.block_rect(block))
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(self.active_block == Some(index)),
+                )
+        }));
         Some(
             AccessNode::new(Role::Canvas)
                 .with_name(format!(
@@ -338,7 +457,8 @@ impl Widget for DiffView {
                     if changes == 1 { "" } else { "s" }
                 ))
                 .with_state(AccessState::new().focusable(true))
-                .with_bounds(self.rect),
+                .with_bounds(self.rect)
+                .with_children(children),
         )
     }
 
@@ -360,6 +480,113 @@ impl DiffView {
             Rect::new(r.x0, r.y0, mid_x, r.y1),
             Rect::new(mid_x, r.y0, r.x1 - MINIMAP_W, r.y1),
         )
+    }
+
+    fn block_rect(&self, block: &crate::model::ChangeBlock) -> Rect {
+        let top = self.rect.y0 + HEADER_H + block.first_row as f64 * ROW_H - self.scroll_y;
+        let bottom = self.rect.y0 + HEADER_H + block.last_row.saturating_add(1) as f64 * ROW_H
+            - self.scroll_y;
+        Rect::new(
+            self.rect.x0,
+            top.max(self.rect.y0 + HEADER_H),
+            self.rect.x1,
+            bottom.min(self.rect.y1).max(top),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "compact painting owns the same source-selector geometry used by pointer and assistive input"
+    )]
+    fn draw_compact(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        let r = self.rect;
+        let content_right = r.x1 - MINIMAP_W;
+        let mid = r.x0.midpoint(content_right);
+        self.compact_source_hits = [
+            Rect::new(r.x0 + 6.0, r.y0 + 4.0, mid - 3.0, r.y0 + HEADER_H - 4.0),
+            Rect::new(
+                mid + 3.0,
+                r.y0 + 4.0,
+                content_right - 6.0,
+                r.y0 + HEADER_H - 4.0,
+            ),
+        ];
+        let labels = ["Left", "Right"];
+        ToggleGroup::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &SegmentedFace::new(
+                &self.compact_source_hits,
+                &labels,
+                usize::from(self.compact_show_right),
+            )
+            .pill()
+            .hovered(
+                self.compact_source_hits
+                    .iter()
+                    .position(|rect| rect.contains(self.cursor)),
+            ),
+        );
+        let body_top = r.y0 + HEADER_H;
+        let clip = Rect::new(r.x0, body_top, content_right, r.y1);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &clip,
+        );
+        let first = (self.scroll_y / ROW_H).floor() as usize;
+        let last =
+            (first + (self.body_height() / ROW_H).ceil() as usize + 2).min(self.model.rows.len());
+        for index in first..last {
+            let Some(row) = self.model.rows.get(index) else {
+                continue;
+            };
+            let y = body_top + index as f64 * ROW_H - self.scroll_y;
+            let (present, number, text, left) = if self.compact_show_right {
+                (row.right.is_some(), row.right_no, row.right.as_ref(), false)
+            } else {
+                (row.left.is_some(), row.left_no, row.left.as_ref(), true)
+            };
+            let rect = Rect::new(r.x0, y, content_right, y + ROW_H);
+            if let Some(tint) = Self::row_tint(row.kind, present, left, theme) {
+                scene.fill(Fill::NonZero, transform, tint, None, &rect);
+            }
+            if row.block == self.active_block && row.block.is_some() {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.accent[5],
+                    None,
+                    &Rect::new(r.x0, y, r.x0 + 3.0, y + ROW_H),
+                );
+            }
+            draw_gutter_number(scene, transform, tr, theme, r.x0, y, number);
+            if let Some(text) = text {
+                draw_code_line(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    r.x0 + GUTTER_W + PAD_X,
+                    y,
+                    text,
+                );
+            }
+        }
+        scene.pop_layer();
+        self.draw_minimap(scene, transform, theme);
+        self.draw_empty_state(scene, transform, tr, theme, r, body_top);
     }
 
     /// Draw the scrolled window of visible rows into the already-clipped body
@@ -467,12 +694,35 @@ impl DiffView {
     ) {
         let c = &theme.tokens.colors;
         if self.model.rows.is_empty() {
+            // The only primary way to begin is the shared, keyboard-focusable
+            // Open files toolbar action above. Centre its guidance in the
+            // otherwise deliberately empty canvas so it reads as a starting
+            // state rather than a missing left column.
+            let title = "Start a comparison";
+            let detail = tr.elide_to_width(
+                "Open two local text files, or load the included sample to explore a real diff.",
+                13.0,
+                (r.width() - 48.0).max(0.0) as f32,
+            );
+            let (title_w, _) = tr.measure(title, 18.0, None);
+            let (detail_w, _) = tr.measure(&detail, 13.0, None);
+            let title_x = r.x0 + (r.width() - f64::from(title_w)).max(24.0) / 2.0;
+            let detail_x = r.x0 + (r.width() - f64::from(detail_w)).max(24.0) / 2.0;
+            let y = body_top + (r.y1 - body_top) * 0.34;
             tr.draw_text(
                 scene,
-                "No file loaded",
-                15.0,
+                title,
+                18.0,
+                c.text_primary,
+                transform * Affine::translate((title_x, y)),
+                None,
+            );
+            tr.draw_text(
+                scene,
+                &detail,
+                13.0,
                 c.text_dim,
-                transform * Affine::translate((r.x0 + 24.0, body_top + 24.0)),
+                transform * Affine::translate((detail_x, y + 30.0)),
                 None,
             );
         } else if self.model.is_identical() {
