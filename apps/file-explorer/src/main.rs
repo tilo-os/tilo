@@ -151,8 +151,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Just the floating status bubble (item count) over the cold-start
             // view, with nothing selected.
             Some("status") => widget.arm_status_bubble_for_shots(),
-            // Begin an inline rename before the seeding sync so the in-place
-            // editor is drawn over the row (with the name selected).
+            // Begin an inline rename before the first sync so the in-place
+            // editor is drawn over the row with its local name selected.
             Some("rename") => {
                 widget.debug_select(&[3]);
                 widget.begin_rename();
@@ -235,12 +235,11 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 /// naming. The shared runner still owns autosave, headless driving, and exit.
 fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
     let (mut state, autosave) = ui::persist::open(app_id);
-    // Two windows of the file manager are two authors of the same document
-    // — an inline rename is native collaborative `Text` (see
-    // `actions.rs`), so concurrent edits have to be attributable to tell
-    // them apart. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a
-    // sandboxed launch has neither, so the fallback has to be sound on its
-    // own — see [`distinct_actor`].
+    // Keep each window's actor stable and distinct for the host-owned
+    // collaborative document, even though Files itself stores no UI state in
+    // it. `QUICK_APP_ID`/`QOS_USER_ID` name a known replica; a sandboxed
+    // launch has neither, so the fallback has to be sound on its own — see
+    // [`distinct_actor`].
     let app_id =
         named_actor("files").unwrap_or_else(|| distinct_actor("files", state.doc.get_actor()));
     ui::diag!("file-explorer: automerge actor {app_id}");
