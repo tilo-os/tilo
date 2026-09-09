@@ -23,11 +23,13 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
 
+use crate::curve::{Channel, Curve, CurvePoint, Spline};
 use crate::media::{self, Hydration};
 use crate::model::{
-    Clip, ClipEffect, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind,
-    Transition,
+    ChromaKey, Clip, ClipEffect, EffectKind, Filters, Marker, Mask, MaskShape, MediaItem,
+    MediaKind, Project, Track, TrackKind, Transform, Transition,
 };
+use crate::param::{ClipAnimation, Interp, Keyframe, Param, ParamTrack};
 
 pub struct VideoDoc;
 
@@ -144,11 +146,8 @@ impl VideoDoc {
                 }
             }
         }
-        let _ = doc.put(
-            &proj,
-            "markers",
-            serde_json::to_string(&p.markers).unwrap_or_else(|_| "[]".to_string()),
-        );
+        // Markers have their own actions and map. Metadata updates deliberately
+        // do not rewrite that map from a stale project snapshot.
     }
 
     pub fn upsert_media(doc: &mut AutoCommit, m: &MediaItem) {
@@ -196,6 +195,39 @@ impl VideoDoc {
     }
 
     pub fn upsert_clip(doc: &mut AutoCommit, c: &Clip) {
+        let obj = Self::write_clip_scalars(doc, c);
+        // This is the explicit full-write path for seeding, import and
+        // project replacement. Incremental action replay uses
+        // `upsert_clip_preserving_nested` below instead.
+        Self::write_effects(doc, &obj, &c.effects);
+        Self::write_transform(doc, &obj, c.transform);
+        Self::write_curves(doc, &obj, &c.curves);
+        Self::write_key(doc, &obj, c.key);
+        Self::write_mask(doc, &obj, c.mask);
+        Self::write_animation(doc, &obj, &c.anim);
+        Self::write_markers(doc, &obj, &c.markers);
+    }
+
+    /// Write a clip from a structural action without letting a delayed
+    /// move/split/ripple payload replace nested effects, markers, or inspector
+    /// records it did not author. New clips still receive their complete
+    /// initial nested state; existing clips receive scalar/structural fields
+    /// only and nested changes stay with their dedicated actions.
+    pub fn upsert_clip_preserving_nested(doc: &mut AutoCommit, c: &Clip) {
+        let is_new = Self::existing_clip(doc, c.id).is_none();
+        let obj = Self::write_clip_scalars(doc, c);
+        if is_new {
+            Self::write_effects(doc, &obj, &c.effects);
+            Self::write_transform(doc, &obj, c.transform);
+            Self::write_curves(doc, &obj, &c.curves);
+            Self::write_key(doc, &obj, c.key);
+            Self::write_mask(doc, &obj, c.mask);
+            Self::write_animation(doc, &obj, &c.anim);
+            Self::write_markers(doc, &obj, &c.markers);
+        }
+    }
+
+    fn write_clip_scalars(doc: &mut AutoCommit, c: &Clip) -> ObjId {
         let clips = Self::map(doc, "clips");
         let obj = Self::ensure_child(doc, &clips, &c.id.to_string());
         let _ = doc.put(&obj, "track", c.track.to_string());
@@ -213,49 +245,8 @@ impl VideoDoc {
         let _ = doc.put(&obj, "fade_in", c.fade_in);
         let _ = doc.put(&obj, "fade_out", c.fade_out);
         let _ = doc.put(&obj, "transition_duration", c.transition_duration);
-        // The effects stack is an ordered list; store it as a compact JSON
-        // string. Existing clips update this one key through an optimistic
-        // field patch, while initial/full clip writes use the same encoding.
-        let _ = doc.put(
-            &obj,
-            "effects",
-            serde_json::to_string(&c.effects).unwrap_or_else(|_| "[]".to_string()),
-        );
-        // Geometry, time-remap, curves and markers. Each is written as its
-        // own key rather than one blob, so a peer reading a document that
-        // predates any one of them still gets the others.
-        let _ = doc.put(
-            &obj,
-            "transform",
-            serde_json::to_string(&c.transform).unwrap_or_default(),
-        );
         let _ = doc.put(&obj, "speed_rate", c.speed.rate);
         let _ = doc.put(&obj, "speed_reverse", c.speed.reverse);
-        let _ = doc.put(
-            &obj,
-            "curves",
-            serde_json::to_string(&c.curves).unwrap_or_default(),
-        );
-        let _ = doc.put(
-            &obj,
-            "key",
-            serde_json::to_string(&c.key).unwrap_or_default(),
-        );
-        let _ = doc.put(
-            &obj,
-            "mask",
-            serde_json::to_string(&c.mask).unwrap_or_default(),
-        );
-        let _ = doc.put(
-            &obj,
-            "anim",
-            serde_json::to_string(&c.anim).unwrap_or_default(),
-        );
-        let _ = doc.put(
-            &obj,
-            "markers",
-            serde_json::to_string(&c.markers).unwrap_or_else(|_| "[]".to_string()),
-        );
         // The link group. Written as the plain id when there is one and
         // *deleted* when there is not, so unlinking replicates as a change
         // rather than as silence -- a peer that already held the link would
@@ -270,13 +261,13 @@ impl VideoDoc {
         }
         let _ = doc.put(&obj, "sound_split", c.sound_split);
         let _ = doc.put(&obj, "link_follows", c.link_follows);
+        obj
     }
 
-    /// Replace only one clip's ordered effect value. Effect-instance actions
-    /// use this rather than a whole-clip upsert so a concurrent trim, title,
-    /// grade, or marker write cannot be overwritten by an old stack control.
-    /// Returns `false` when the target clip has gone away; importantly, this
-    /// never materialises a new map for a stale id.
+    /// Explicitly replace an effect stack while retaining individually keyed
+    /// CRDT entries. Omitted ids are tombstoned, so a delayed earlier add
+    /// cannot recreate an entry the authored replacement removed. Normal
+    /// effect actions below mutate only their target entry.
     pub fn set_clip_effects(doc: &mut AutoCommit, id: Uuid, effects: &[ClipEffect]) -> bool {
         let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
             return false;
@@ -284,12 +275,630 @@ impl VideoDoc {
         let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
             return false;
         };
-        doc.put(
-            &clip,
-            "effects",
-            serde_json::to_string(effects).unwrap_or_else(|_| "[]".to_string()),
-        )
-        .is_ok()
+        Self::write_effects(doc, &clip, effects);
+        true
+    }
+
+    /// Add exactly one effect entry. The ordinal is a presentation order,
+    /// while the UUID is the durable identity used by actions and search.
+    pub fn add_clip_effect(
+        doc: &mut AutoCommit,
+        clip_id: Uuid,
+        effect: ClipEffect,
+        ordinal: usize,
+    ) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        if effect.id.is_nil() {
+            return false;
+        }
+        if Self::is_tombstoned(doc, &clip, "effect_tombstones", effect.id) {
+            return false;
+        }
+        let effects = Self::ensure_child(doc, &clip, "effects");
+        if doc
+            .get(&effects, effect.id.to_string())
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return false;
+        }
+        let entry = Self::ensure_child(doc, &effects, &effect.id.to_string());
+        let _ = doc.put(&entry, "kind", effect.kind.as_str());
+        let _ = doc.put(&entry, "amount", effect.amount);
+        let _ = doc.put(&entry, "ordinal", ordinal as i64);
+        true
+    }
+
+    pub fn set_clip_effect_amount(
+        doc: &mut AutoCommit,
+        clip_id: Uuid,
+        effect_id: Uuid,
+        amount: f64,
+    ) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), effects))) = doc.get(&clip, "effects") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), effect))) =
+            doc.get(&effects, effect_id.to_string())
+        else {
+            return false;
+        };
+        doc.put(&effect, "amount", amount).is_ok()
+    }
+
+    pub fn remove_clip_effect(doc: &mut AutoCommit, clip_id: Uuid, effect_id: Uuid) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), effects))) = doc.get(&clip, "effects") else {
+            return false;
+        };
+        if doc.delete(&effects, effect_id.to_string()).is_err() {
+            return false;
+        }
+        Self::tombstone(doc, &clip, "effect_tombstones", effect_id);
+        true
+    }
+
+    pub fn set_clip_effect_ordinal(
+        doc: &mut AutoCommit,
+        clip_id: Uuid,
+        effect_id: Uuid,
+        ordinal: usize,
+    ) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), effects))) = doc.get(&clip, "effects") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), effect))) =
+            doc.get(&effects, effect_id.to_string())
+        else {
+            return false;
+        };
+        doc.put(&effect, "ordinal", ordinal as i64).is_ok()
+    }
+
+    fn existing_clip(doc: &AutoCommit, id: Uuid) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
+            return None;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
+            return None;
+        };
+        Some(clip)
+    }
+
+    #[allow(
+        clippy::needless_collect,
+        reason = "the keys iterator borrows the document while this full replacement deletes omitted ids"
+    )]
+    fn write_effects(doc: &mut AutoCommit, parent: &ObjId, effects: &[ClipEffect]) {
+        let effects_map = Self::ensure_child(doc, parent, "effects");
+        let keep: Vec<String> = effects.iter().map(|effect| effect.id.to_string()).collect();
+        for id in doc.keys(&effects_map).collect::<Vec<_>>() {
+            if !keep.contains(&id) {
+                let _ = doc.delete(&effects_map, &id);
+                if let Ok(id) = id.parse::<Uuid>() {
+                    Self::tombstone(doc, parent, "effect_tombstones", id);
+                }
+            }
+        }
+        for (ordinal, effect) in effects.iter().enumerate() {
+            if effect.id.is_nil() {
+                continue;
+            }
+            let entry = Self::ensure_child(doc, &effects_map, &effect.id.to_string());
+            let _ = doc.put(&entry, "kind", effect.kind.as_str());
+            let _ = doc.put(&entry, "amount", effect.amount);
+            let _ = doc.put(&entry, "ordinal", ordinal as i64);
+        }
+    }
+
+    #[allow(
+        clippy::needless_collect,
+        reason = "the keys iterator borrows the document while this full replacement deletes omitted ids"
+    )]
+    fn write_markers(doc: &mut AutoCommit, parent: &ObjId, markers: &[Marker]) {
+        let marker_map = Self::ensure_child(doc, parent, "markers");
+        let keep: Vec<String> = markers.iter().map(|marker| marker.id.to_string()).collect();
+        for id in doc.keys(&marker_map).collect::<Vec<_>>() {
+            if !keep.contains(&id) {
+                let _ = doc.delete(&marker_map, &id);
+                if let Ok(id) = id.parse::<Uuid>() {
+                    Self::tombstone(doc, parent, "marker_tombstones", id);
+                }
+            }
+        }
+        for marker in markers {
+            let entry = Self::ensure_child(doc, &marker_map, &marker.id.to_string());
+            let _ = doc.put(&entry, "t", marker.t);
+            let _ = doc.put(&entry, "name", marker.name.as_str());
+            let _ = doc.put(&entry, "palette", i64::from(marker.palette));
+            let _ = doc.put(&entry, "note", marker.note.as_str());
+        }
+    }
+
+    pub fn add_project_marker(doc: &mut AutoCommit, marker: &Marker) -> bool {
+        let project = Self::map(doc, "project");
+        Self::add_marker(doc, &project, marker)
+    }
+
+    pub fn remove_project_marker(doc: &mut AutoCommit, marker_id: Uuid) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), project))) = doc.get(&ROOT, "project") else {
+            return false;
+        };
+        Self::remove_marker(doc, &project, marker_id)
+    }
+
+    /// Update one text leaf of a project marker. Marker identity and sibling
+    /// fields stay untouched, so a note cannot overwrite a concurrent rename.
+    pub fn set_project_marker_text(
+        doc: &mut AutoCommit,
+        marker_id: Uuid,
+        key: &str,
+        value: &str,
+    ) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), project))) = doc.get(&ROOT, "project") else {
+            return false;
+        };
+        Self::set_marker_text(doc, &project, marker_id, key, value)
+    }
+
+    pub fn add_clip_marker(doc: &mut AutoCommit, clip_id: Uuid, marker: &Marker) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        Self::add_marker(doc, &clip, marker)
+    }
+
+    pub fn remove_clip_marker(doc: &mut AutoCommit, clip_id: Uuid, marker_id: Uuid) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        Self::remove_marker(doc, &clip, marker_id)
+    }
+
+    /// Update one text leaf of a clip-local marker without replacing its
+    /// marker map or any other clip data.
+    pub fn set_clip_marker_text(
+        doc: &mut AutoCommit,
+        clip_id: Uuid,
+        marker_id: Uuid,
+        key: &str,
+        value: &str,
+    ) -> bool {
+        let Some(clip) = Self::existing_clip(doc, clip_id) else {
+            return false;
+        };
+        Self::set_marker_text(doc, &clip, marker_id, key, value)
+    }
+
+    fn add_marker(doc: &mut AutoCommit, parent: &ObjId, marker: &Marker) -> bool {
+        if Self::is_tombstoned(doc, parent, "marker_tombstones", marker.id) {
+            return false;
+        }
+        let markers = Self::ensure_child(doc, parent, "markers");
+        if doc
+            .get(&markers, marker.id.to_string())
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return false;
+        }
+        let entry = Self::ensure_child(doc, &markers, &marker.id.to_string());
+        let _ = doc.put(&entry, "t", marker.t);
+        let _ = doc.put(&entry, "name", marker.name.as_str());
+        let _ = doc.put(&entry, "palette", i64::from(marker.palette));
+        let _ = doc.put(&entry, "note", marker.note.as_str());
+        true
+    }
+
+    fn remove_marker(doc: &mut AutoCommit, parent: &ObjId, marker_id: Uuid) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), markers))) = doc.get(parent, "markers") else {
+            return false;
+        };
+        if doc.delete(&markers, marker_id.to_string()).is_err() {
+            return false;
+        }
+        Self::tombstone(doc, parent, "marker_tombstones", marker_id);
+        true
+    }
+
+    fn set_marker_text(
+        doc: &mut AutoCommit,
+        parent: &ObjId,
+        marker_id: Uuid,
+        key: &str,
+        value: &str,
+    ) -> bool {
+        if !matches!(key, "name" | "note") {
+            return false;
+        }
+        let Ok(Some((Value::Object(ObjType::Map), markers))) = doc.get(parent, "markers") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), marker))) =
+            doc.get(&markers, marker_id.to_string())
+        else {
+            return false;
+        };
+        doc.put(&marker, key, value).is_ok()
+    }
+
+    fn tombstone(doc: &mut AutoCommit, parent: &ObjId, key: &str, id: Uuid) {
+        let tombstones = Self::ensure_child(doc, parent, key);
+        let _ = doc.put(&tombstones, id.to_string(), true);
+    }
+
+    fn is_tombstoned(doc: &AutoCommit, parent: &ObjId, key: &str, id: Uuid) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(parent, key) else {
+            return false;
+        };
+        Self::get_bool(doc, &tombstones, &id.to_string())
+    }
+
+    fn read_markers(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Vec<Marker> {
+        let Ok(Some((Value::Object(ObjType::Map), marker_map))) = doc.get(parent, "markers") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        let mut markers: Vec<Marker> = doc
+            .keys(&marker_map)
+            .filter_map(|key| {
+                let id = key.parse().ok()?;
+                let Ok(Some((Value::Object(ObjType::Map), marker))) = doc.get(&marker_map, &key)
+                else {
+                    return None;
+                };
+                Some(Marker {
+                    id,
+                    t: Self::get_f64(doc, &marker, "t").unwrap_or(0.0),
+                    name: Self::get_str(doc, &marker, "name").unwrap_or_else(|| "Marker".into()),
+                    palette: Self::get_i64(doc, &marker, "palette").unwrap_or(0) as u8,
+                    note: Self::get_str(doc, &marker, "note").unwrap_or_default(),
+                })
+            })
+            .collect();
+        markers.sort_by(|left, right| {
+            left.t
+                .total_cmp(&right.t)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        markers
+    }
+
+    fn read_effects(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Vec<ClipEffect> {
+        let Ok(Some((Value::Object(ObjType::Map), effect_map))) = doc.get(parent, "effects") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        let mut effects: Vec<(i64, ClipEffect)> = doc
+            .keys(&effect_map)
+            .filter_map(|key| {
+                let id = key.parse().ok()?;
+                let Ok(Some((Value::Object(ObjType::Map), effect))) = doc.get(&effect_map, &key)
+                else {
+                    return None;
+                };
+                Some((
+                    Self::get_i64(doc, &effect, "ordinal").unwrap_or(i64::MAX),
+                    ClipEffect {
+                        id,
+                        kind: EffectKind::from_str(&Self::get_str(doc, &effect, "kind")?)?,
+                        amount: Self::get_f64(doc, &effect, "amount").unwrap_or(0.0),
+                    },
+                ))
+            })
+            .collect();
+        effects.sort_by(|(left_order, left), (right_order, right)| {
+            left_order
+                .cmp(right_order)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        effects.into_iter().map(|(_, effect)| effect).collect()
+    }
+
+    fn write_transform(doc: &mut AutoCommit, parent: &ObjId, value: Transform) {
+        let map = Self::ensure_child(doc, parent, "transform");
+        for (key, value) in [
+            ("scale_x", value.scale_x),
+            ("scale_y", value.scale_y),
+            ("pos_x", value.pos_x),
+            ("pos_y", value.pos_y),
+            ("rotation", value.rotation),
+            ("anchor_x", value.anchor_x),
+            ("anchor_y", value.anchor_y),
+            ("crop_left", value.crop_left),
+            ("crop_right", value.crop_right),
+            ("crop_top", value.crop_top),
+            ("crop_bottom", value.crop_bottom),
+        ] {
+            let _ = doc.put(&map, key, value);
+        }
+    }
+
+    fn read_transform(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Transform {
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "transform") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        let default = Transform::default();
+        Transform {
+            scale_x: Self::get_f64(doc, &map, "scale_x").unwrap_or(default.scale_x),
+            scale_y: Self::get_f64(doc, &map, "scale_y").unwrap_or(default.scale_y),
+            pos_x: Self::get_f64(doc, &map, "pos_x").unwrap_or(default.pos_x),
+            pos_y: Self::get_f64(doc, &map, "pos_y").unwrap_or(default.pos_y),
+            rotation: Self::get_f64(doc, &map, "rotation").unwrap_or(default.rotation),
+            anchor_x: Self::get_f64(doc, &map, "anchor_x").unwrap_or(default.anchor_x),
+            anchor_y: Self::get_f64(doc, &map, "anchor_y").unwrap_or(default.anchor_y),
+            crop_left: Self::get_f64(doc, &map, "crop_left").unwrap_or(default.crop_left),
+            crop_right: Self::get_f64(doc, &map, "crop_right").unwrap_or(default.crop_right),
+            crop_top: Self::get_f64(doc, &map, "crop_top").unwrap_or(default.crop_top),
+            crop_bottom: Self::get_f64(doc, &map, "crop_bottom").unwrap_or(default.crop_bottom),
+        }
+    }
+
+    fn write_key(doc: &mut AutoCommit, parent: &ObjId, value: ChromaKey) {
+        let map = Self::ensure_child(doc, parent, "key");
+        let _ = doc.put(&map, "enabled", value.enabled);
+        let _ = doc.put(&map, "red", value.color[0]);
+        let _ = doc.put(&map, "green", value.color[1]);
+        let _ = doc.put(&map, "blue", value.color[2]);
+        let _ = doc.put(&map, "tolerance", value.tolerance);
+        let _ = doc.put(&map, "softness", value.softness);
+        let _ = doc.put(&map, "spill", value.spill);
+    }
+
+    fn read_key(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> ChromaKey {
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "key") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        let default = ChromaKey::default();
+        ChromaKey {
+            enabled: Self::get_bool_or(doc, &map, "enabled", default.enabled),
+            color: [
+                Self::get_f64(doc, &map, "red").unwrap_or(default.color[0]),
+                Self::get_f64(doc, &map, "green").unwrap_or(default.color[1]),
+                Self::get_f64(doc, &map, "blue").unwrap_or(default.color[2]),
+            ],
+            tolerance: Self::get_f64(doc, &map, "tolerance").unwrap_or(default.tolerance),
+            softness: Self::get_f64(doc, &map, "softness").unwrap_or(default.softness),
+            spill: Self::get_f64(doc, &map, "spill").unwrap_or(default.spill),
+        }
+    }
+
+    fn write_mask(doc: &mut AutoCommit, parent: &ObjId, value: Mask) {
+        let map = Self::ensure_child(doc, parent, "mask");
+        let _ = doc.put(&map, "shape", value.shape.as_str());
+        for (key, value) in [
+            ("x", value.x),
+            ("y", value.y),
+            ("w", value.w),
+            ("h", value.h),
+            ("rotation", value.rotation),
+            ("feather", value.feather),
+        ] {
+            let _ = doc.put(&map, key, value);
+        }
+        let _ = doc.put(&map, "invert", value.invert);
+    }
+
+    fn read_mask(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Mask {
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "mask") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        let default = Mask::default();
+        Mask {
+            shape: Self::get_str(doc, &map, "shape")
+                .map_or(default.shape, |value| MaskShape::from_str(&value)),
+            x: Self::get_f64(doc, &map, "x").unwrap_or(default.x),
+            y: Self::get_f64(doc, &map, "y").unwrap_or(default.y),
+            w: Self::get_f64(doc, &map, "w").unwrap_or(default.w),
+            h: Self::get_f64(doc, &map, "h").unwrap_or(default.h),
+            rotation: Self::get_f64(doc, &map, "rotation").unwrap_or(default.rotation),
+            feather: Self::get_f64(doc, &map, "feather").unwrap_or(default.feather),
+            invert: Self::get_bool_or(doc, &map, "invert", default.invert),
+        }
+    }
+
+    // Curves and keyframes define identity by their authored x/time position:
+    // setting a value at the same position replaces that value, while moving
+    // it is a remove-plus-insert at the new position. The IEEE bit pattern is
+    // therefore a stable key for that record's lifetime; it is never inferred
+    // from a receiver's list order.
+    fn point_key(x: f64) -> String {
+        format!("{:016x}", x.to_bits())
+    }
+    #[allow(
+        clippy::needless_collect,
+        reason = "the keys iterator borrows the document while a curve replacement removes old points"
+    )]
+    fn write_spline(doc: &mut AutoCommit, parent: &ObjId, spline: &Spline) {
+        let points = Self::ensure_child(doc, parent, "points");
+        let keep: Vec<String> = spline
+            .points
+            .iter()
+            .map(|point| Self::point_key(point.x))
+            .collect();
+        for key in doc.keys(&points).collect::<Vec<_>>() {
+            if !keep.contains(&key) {
+                let _ = doc.delete(&points, &key);
+            }
+        }
+        for point in &spline.points {
+            let entry = Self::ensure_child(doc, &points, &Self::point_key(point.x));
+            let _ = doc.put(&entry, "x", point.x);
+            let _ = doc.put(&entry, "y", point.y);
+        }
+    }
+    fn read_spline(doc: &AutoCommit, parent: &ObjId) -> Spline {
+        let Ok(Some((Value::Object(ObjType::Map), points))) = doc.get(parent, "points") else {
+            return Spline::default();
+        };
+        let mut values: Vec<CurvePoint> = doc
+            .keys(&points)
+            .filter_map(|key| {
+                let Ok(Some((Value::Object(ObjType::Map), point))) = doc.get(&points, &key) else {
+                    return None;
+                };
+                Some(CurvePoint::new(
+                    Self::get_f64(doc, &point, "x")?,
+                    Self::get_f64(doc, &point, "y")?,
+                ))
+            })
+            .collect();
+        values.sort_by(|left, right| left.x.total_cmp(&right.x));
+        Spline { points: values }.normalised()
+    }
+    fn write_curves(doc: &mut AutoCommit, parent: &ObjId, value: &Curve) {
+        let map = Self::ensure_child(doc, parent, "curves");
+        let _ = doc.put(&map, "mix", value.mix);
+        for channel in Channel::ALL {
+            let child = Self::ensure_child(doc, &map, channel.as_str());
+            Self::write_spline(doc, &child, value.spline(channel));
+        }
+    }
+    fn read_curves(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> Curve {
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(parent, "curves") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        Curve {
+            master: doc
+                .get(&map, "master")
+                .ok()
+                .flatten()
+                .map(|(_, id)| Self::read_spline(doc, &id))
+                .unwrap_or_default(),
+            red: doc
+                .get(&map, "red")
+                .ok()
+                .flatten()
+                .map(|(_, id)| Self::read_spline(doc, &id))
+                .unwrap_or_default(),
+            green: doc
+                .get(&map, "green")
+                .ok()
+                .flatten()
+                .map(|(_, id)| Self::read_spline(doc, &id))
+                .unwrap_or_default(),
+            blue: doc
+                .get(&map, "blue")
+                .ok()
+                .flatten()
+                .map(|(_, id)| Self::read_spline(doc, &id))
+                .unwrap_or_default(),
+            mix: Self::get_f64(doc, &map, "mix").unwrap_or(1.0),
+        }
+        .normalised()
+    }
+
+    #[allow(
+        clippy::needless_collect,
+        reason = "the keys iterator borrows the document while replacement removes old tracks and keyframes"
+    )]
+    fn write_animation(doc: &mut AutoCommit, parent: &ObjId, value: &ClipAnimation) {
+        let tracks = Self::ensure_child(doc, parent, "anim");
+        let keep: Vec<String> = value
+            .tracks
+            .iter()
+            .map(|track| track.param.as_str())
+            .collect();
+        for key in doc.keys(&tracks).collect::<Vec<_>>() {
+            if !keep.contains(&key) {
+                let _ = doc.delete(&tracks, &key);
+            }
+        }
+        for (ordinal, track) in value.tracks.iter().enumerate() {
+            let entry = Self::ensure_child(doc, &tracks, &track.param.as_str());
+            let _ = doc.put(&entry, "ordinal", ordinal as i64);
+            let keys = Self::ensure_child(doc, &entry, "keys");
+            let wanted: Vec<String> = track
+                .keys
+                .iter()
+                .map(|key| Self::point_key(key.t))
+                .collect();
+            for key in doc.keys(&keys).collect::<Vec<_>>() {
+                if !wanted.contains(&key) {
+                    let _ = doc.delete(&keys, &key);
+                }
+            }
+            for key in &track.keys {
+                let child = Self::ensure_child(doc, &keys, &Self::point_key(key.t));
+                let _ = doc.put(&child, "t", key.t);
+                let _ = doc.put(&child, "v", key.v);
+                let _ = doc.put(&child, "interp", key.interp.as_str());
+            }
+        }
+    }
+    fn read_animation(doc: &AutoCommit, parent: &ObjId, legacy: Option<&str>) -> ClipAnimation {
+        let Ok(Some((Value::Object(ObjType::Map), tracks))) = doc.get(parent, "anim") else {
+            return legacy
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default();
+        };
+        let mut out = Vec::new();
+        for name in doc.keys(&tracks) {
+            let Some(param) = Param::from_str(&name) else {
+                continue;
+            };
+            let Ok(Some((Value::Object(ObjType::Map), track))) = doc.get(&tracks, &name) else {
+                continue;
+            };
+            let Ok(Some((Value::Object(ObjType::Map), keys))) = doc.get(&track, "keys") else {
+                continue;
+            };
+            let mut values: Vec<Keyframe> = doc
+                .keys(&keys)
+                .filter_map(|key| {
+                    let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&keys, &key)
+                    else {
+                        return None;
+                    };
+                    Some(Keyframe {
+                        t: Self::get_f64(doc, &entry, "t")?,
+                        v: Self::get_f64(doc, &entry, "v")?,
+                        interp: Self::get_str(doc, &entry, "interp")
+                            .map_or(Interp::Linear, |value| Interp::from_str(&value)),
+                    })
+                })
+                .collect();
+            values.sort_by(|left, right| left.t.total_cmp(&right.t));
+            if !values.is_empty() {
+                out.push((
+                    Self::get_i64(doc, &track, "ordinal").unwrap_or(i64::MAX),
+                    ParamTrack {
+                        param,
+                        keys: values,
+                    },
+                ));
+            }
+        }
+        out.sort_by(|(left_order, left), (right_order, right)| {
+            left_order
+                .cmp(right_order)
+                .then_with(|| left.param.as_str().cmp(&right.param.as_str()))
+        });
+        ClipAnimation {
+            tracks: out.into_iter().map(|(_, track)| track).collect(),
+        }
     }
 
     /// Replace one existing clip scalar without materialising a stale clip map.
@@ -305,9 +914,9 @@ impl VideoDoc {
         doc.put(&clip, key, value).is_ok()
     }
 
-    /// String-backed structured fields (transform, key, mask, animation and
-    /// markers) have independent CRDT keys, so a field action never rewrites
-    /// its clip's timeline geometry or effect stack.
+    /// Compatibility boundary for actions authored by an older app. The wire
+    /// payload is still JSON, but applying it immediately expands it into the
+    /// current keyed schema; no new document ever stores one opaque blob.
     pub fn set_existing_clip_text(doc: &mut AutoCommit, id: Uuid, key: &str, value: &str) -> bool {
         let Ok(Some((Value::Object(ObjType::Map), clips))) = doc.get(&ROOT, "clips") else {
             return false;
@@ -315,7 +924,84 @@ impl VideoDoc {
         let Ok(Some((Value::Object(ObjType::Map), clip))) = doc.get(&clips, id.to_string()) else {
             return false;
         };
-        doc.put(&clip, key, value).is_ok()
+        match key {
+            "transform" => serde_json::from_str(value)
+                .map(|value| Self::write_transform(doc, &clip, value))
+                .is_ok(),
+            "curves" => serde_json::from_str(value)
+                .map(|value| Self::write_curves(doc, &clip, &value))
+                .is_ok(),
+            "key" => serde_json::from_str(value)
+                .map(|value| Self::write_key(doc, &clip, value))
+                .is_ok(),
+            "mask" => serde_json::from_str(value)
+                .map(|value| Self::write_mask(doc, &clip, value))
+                .is_ok(),
+            "anim" => serde_json::from_str(value)
+                .map(|value| Self::write_animation(doc, &clip, &value))
+                .is_ok(),
+            // `markers` is only retained for decoding legacy payloads. New
+            // marker actions use individual UUID entries.
+            "markers" => serde_json::from_str::<Vec<Marker>>(value)
+                .map(|value| Self::write_markers(doc, &clip, &value))
+                .is_ok(),
+            _ => doc.put(&clip, key, value).is_ok(),
+        }
+    }
+
+    /// Typed compound writes used by current actions. The legacy text method
+    /// above only decodes historic JSON action payloads; neither path stores
+    /// JSON in the document.
+    pub fn set_existing_clip_transform(doc: &mut AutoCommit, id: Uuid, value: Transform) -> bool {
+        let Some(clip) = Self::existing_clip(doc, id) else {
+            return false;
+        };
+        Self::write_transform(doc, &clip, value);
+        true
+    }
+
+    pub fn set_existing_clip_curves(doc: &mut AutoCommit, id: Uuid, value: &Curve) -> bool {
+        let Some(clip) = Self::existing_clip(doc, id) else {
+            return false;
+        };
+        Self::write_curves(doc, &clip, value);
+        true
+    }
+
+    pub fn set_existing_clip_key(doc: &mut AutoCommit, id: Uuid, value: ChromaKey) -> bool {
+        let Some(clip) = Self::existing_clip(doc, id) else {
+            return false;
+        };
+        Self::write_key(doc, &clip, value);
+        true
+    }
+
+    pub fn set_existing_clip_mask(doc: &mut AutoCommit, id: Uuid, value: Mask) -> bool {
+        let Some(clip) = Self::existing_clip(doc, id) else {
+            return false;
+        };
+        Self::write_mask(doc, &clip, value);
+        true
+    }
+
+    pub fn set_existing_clip_animation(
+        doc: &mut AutoCommit,
+        id: Uuid,
+        value: &ClipAnimation,
+    ) -> bool {
+        let Some(clip) = Self::existing_clip(doc, id) else {
+            return false;
+        };
+        Self::write_animation(doc, &clip, value);
+        true
+    }
+
+    pub fn set_existing_clip_markers(doc: &mut AutoCommit, id: Uuid, value: &[Marker]) -> bool {
+        let Some(clip) = Self::existing_clip(doc, id) else {
+            return false;
+        };
+        Self::write_markers(doc, &clip, value);
+        true
     }
 
     pub fn set_existing_clip_bool(doc: &mut AutoCommit, id: Uuid, key: &str, value: bool) -> bool {
@@ -376,6 +1062,8 @@ impl VideoDoc {
     /// new clips (e.g. a split) replicate.
     pub fn write_project(doc: &mut AutoCommit, p: &Project) {
         Self::write_project_meta(doc, p);
+        let project = Self::map(doc, "project");
+        Self::write_markers(doc, &project, &p.markers);
         for m in &p.media {
             Self::upsert_media(doc, m);
         }
@@ -445,9 +1133,8 @@ impl VideoDoc {
             p.format_explicit = Self::get_bool(doc, &proj, "format_explicit");
             p.mark_in = Self::get_f64(doc, &proj, "mark_in");
             p.mark_out = Self::get_f64(doc, &proj, "mark_out");
-            p.markers = Self::get_str(doc, &proj, "markers")
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            p.markers =
+                Self::read_markers(doc, &proj, Self::get_str(doc, &proj, "markers").as_deref());
         }
 
         if let Ok(Some((Value::Object(ObjType::Map), media))) = doc.get(&ROOT, "media") {
@@ -558,35 +1245,41 @@ impl VideoDoc {
                     // (see Clip::transition_len), not "instant cut".
                     transition_duration: Self::get_f64(doc, &obj, "transition_duration")
                         .unwrap_or(0.0),
-                    effects: Self::get_str(doc, &obj, "effects")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
+                    effects: Self::read_effects(
+                        doc,
+                        &obj,
+                        Self::get_str(doc, &obj, "effects").as_deref(),
+                    ),
                     // Each of these is absent in a document written before it
                     // existed, and each default restores the old behaviour:
                     // identity geometry, normal speed, no key, no mask, no
                     // curves, no markers.
-                    transform: Self::get_str(doc, &obj, "transform")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
+                    transform: Self::read_transform(
+                        doc,
+                        &obj,
+                        Self::get_str(doc, &obj, "transform").as_deref(),
+                    ),
                     speed: crate::model::Speed {
                         rate: Self::get_f64(doc, &obj, "speed_rate").unwrap_or(1.0),
                         reverse: Self::get_bool(doc, &obj, "speed_reverse"),
                     },
-                    curves: Self::get_str(doc, &obj, "curves")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
-                    key: Self::get_str(doc, &obj, "key")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
-                    mask: Self::get_str(doc, &obj, "mask")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
-                    anim: Self::get_str(doc, &obj, "anim")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
-                    markers: Self::get_str(doc, &obj, "markers")
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_default(),
+                    curves: Self::read_curves(
+                        doc,
+                        &obj,
+                        Self::get_str(doc, &obj, "curves").as_deref(),
+                    ),
+                    key: Self::read_key(doc, &obj, Self::get_str(doc, &obj, "key").as_deref()),
+                    mask: Self::read_mask(doc, &obj, Self::get_str(doc, &obj, "mask").as_deref()),
+                    anim: Self::read_animation(
+                        doc,
+                        &obj,
+                        Self::get_str(doc, &obj, "anim").as_deref(),
+                    ),
+                    markers: Self::read_markers(
+                        doc,
+                        &obj,
+                        Self::get_str(doc, &obj, "markers").as_deref(),
+                    ),
                     // Absent in every document written before links existed,
                     // which reads as "not linked" -- the independent clip that
                     // peer is already editing.
@@ -1361,8 +2054,20 @@ mod tests {
         );
 
         VideoDoc::upsert_clip(&mut doc, first.clip(clip_id).expect("migrated clip"));
-        let saved = VideoDoc::get_str(&doc, &clip, "effects").expect("stored effects");
-        assert!(saved.contains("\"id\""), "a normal edit writes durable ids");
+        let Some((Value::Object(ObjType::Map), saved)) =
+            doc.get(&clip, "effects").expect("stored effects")
+        else {
+            panic!("a normal edit migrates effects to a keyed map");
+        };
+        assert_eq!(doc.length(&saved), 2, "both durable effect ids are keyed");
+        for id in ids {
+            assert!(
+                doc.get(&saved, id.to_string())
+                    .expect("read effect")
+                    .is_some(),
+                "the migrated map is keyed by the durable instance id"
+            );
+        }
     }
 
     #[test]
@@ -1485,6 +2190,87 @@ mod tests {
         a.merge(&mut b_loaded).unwrap();
         let pa = VideoDoc::load_project(&a);
         assert!((pa.clip(cid).unwrap().start - 42.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn concurrent_effect_and_marker_adds_keep_both_authored_resources() {
+        let mut a = AutoCommit::new();
+        VideoDoc::seed_sample(&mut a);
+        let mut b = AutoCommit::load(&a.save()).expect("forks the shared base");
+        let clip = VideoDoc::load_project(&a).clips[0].id;
+        let a_effect = ClipEffect {
+            id: Uuid::new_v4(),
+            kind: EffectKind::Sepia,
+            amount: 0.4,
+        };
+        let b_effect = ClipEffect {
+            id: Uuid::new_v4(),
+            kind: EffectKind::Vignette,
+            amount: 0.7,
+        };
+        let a_marker = Marker::new(2.0, "Ada cut", 2);
+        let b_marker = Marker::new(5.0, "Bo beat", 5);
+
+        assert!(VideoDoc::add_clip_effect(&mut a, clip, a_effect, 80));
+        assert!(VideoDoc::add_project_marker(&mut a, &a_marker));
+        assert!(VideoDoc::add_clip_effect(&mut b, clip, b_effect, 81));
+        assert!(VideoDoc::add_project_marker(&mut b, &b_marker));
+
+        let mut b_for_a = AutoCommit::load(&b.save()).expect("loads B change");
+        a.merge(&mut b_for_a).expect("merges independent entries");
+        let project = VideoDoc::load_project(&a);
+        assert!(
+            project
+                .clip(clip)
+                .expect("clip survives")
+                .effects
+                .iter()
+                .any(|effect| effect.id == a_effect.id)
+        );
+        assert!(
+            project
+                .clip(clip)
+                .expect("clip survives")
+                .effects
+                .iter()
+                .any(|effect| effect.id == b_effect.id)
+        );
+        assert!(
+            project
+                .markers
+                .iter()
+                .any(|marker| marker.id == a_marker.id)
+        );
+        assert!(
+            project
+                .markers
+                .iter()
+                .any(|marker| marker.id == b_marker.id)
+        );
+    }
+
+    #[test]
+    fn explicit_collection_replacement_tombstones_omitted_effects_and_markers() {
+        let (mut project, clip) = one_clip();
+        let effect = ClipEffect::new(EffectKind::Sepia);
+        let marker = Marker::new(3.0, "cut", 2);
+        project.markers.push(marker.clone());
+        let mut doc = AutoCommit::new();
+        VideoDoc::write_project(&mut doc, &project);
+        assert!(VideoDoc::add_clip_effect(&mut doc, clip, effect, 0));
+
+        assert!(VideoDoc::set_clip_effects(&mut doc, clip, &[]));
+        assert!(
+            !VideoDoc::add_clip_effect(&mut doc, clip, effect, 0),
+            "a delayed add cannot revive an effect omitted by an explicit replacement"
+        );
+
+        project.markers.clear();
+        VideoDoc::write_project(&mut doc, &project);
+        assert!(
+            !VideoDoc::add_project_marker(&mut doc, &marker),
+            "a delayed add cannot revive a project marker omitted by replacement"
+        );
     }
 
     #[test]
