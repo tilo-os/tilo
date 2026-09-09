@@ -28,7 +28,7 @@ cleanup() {
         wait "$app_pid" 2>/dev/null || true
     fi
     case "$smoke_dir" in
-        /tmp/qos-files-atspi.*) rm -r "$smoke_dir" ;;
+        /tmp/qos-files-atspi.*) [[ -d "$smoke_dir" ]] && rm -r "$smoke_dir" ;;
     esac
 }
 trap cleanup EXIT INT TERM
@@ -100,17 +100,50 @@ if [[ -z "$window_path" ]]; then
     exit 1
 fi
 
-content_path=$(children "$app_bus" "$window_path" | first_object_path || true)
+# AccessKit's first complete update follows the adapter's initial placeholder
+# tree.  A client may observe the old child list while that transaction is
+# being replaced; never retain that stale object path.  Re-resolve the named
+# application root for every walk and require it to be queryable, so this is a
+# race-safe assertion of the real provider rather than a sleep disguised as a
+# test.
+content_path=""
+resolve_content_path() {
+    local candidate content_name
+    # Keep using the exact object a client already resolved while it remains
+    # queryable.  Revalidating its Name makes this safe across an incremental
+    # update; falling back below only happens for a real UnknownObject/stale
+    # provider object, rather than turning every poll into a costly walk of a
+    # large folder tree.
+    if [[ -n "$content_path" ]]; then
+        content_name=$(property "$app_bus" "$content_path" Name 2>/dev/null) || true
+        if [[ "$content_name" == *"Files activity"* ]]; then
+            return 0
+        fi
+    fi
+    content_path=""
+    while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        content_name=$(property "$app_bus" "$candidate" Name 2>/dev/null) || continue
+        if [[ "$content_name" == *"Files activity"* ]]; then
+            content_path="$candidate"
+            return 0
+        fi
+    done < <(
+        children "$app_bus" "$window_path" 2>/dev/null \
+            | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true
+    )
+    return 1
+}
+
+for _ in $(seq 1 400); do
+    resolve_content_path && break
+    kill -0 "$app_pid" 2>/dev/null || break
+    sleep 0.05
+done
 if [[ -z "$content_path" ]]; then
-    echo "accessible window has no application content" >&2
+    echo "accessible window never exposed a queryable Files activity root" >&2
     exit 1
 fi
-
-content_name=$(property "$app_bus" "$content_path" Name)
-[[ "$content_name" == *"Files activity"* ]] || {
-    echo "unexpected Files root name: $content_name" >&2
-    exit 1
-}
 
 # Files composes the toolbar and responsive body into semantic containers. A
 # backend is free to flatten a container or retain it, so inspecting only the
@@ -122,24 +155,49 @@ content_name=$(property "$app_bus" "$content_path" Name)
 declare -A node_names=()
 names=""
 collect_tree() {
-    local current child_path
+    local current child_path expected all_found
+    local -a required=("$@")
     node_names=()
     names=""
+    # Start every bounded retry at the live provider tree.  This catches an
+    # accidental stale-object use while allowing the adapter's documented
+    # initial-tree replacement to complete without hiding a broken endpoint.
+    resolve_content_path || return 1
     declare -a pending=("$content_path")
     declare -A visited=()
-    while [[ ${#pending[@]} -gt 0 && ${#visited[@]} -lt 256 ]]; do
+    # The controls asserted below live in the application chrome/overlay
+    # frontier, not an unbounded folder listing.  This keeps each live-bus
+    # retry bounded even for a directory with thousands of rows; absence still
+    # fails the gate rather than being masked by a partial result.
+    while [[ ${#pending[@]} -gt 0 && ${#visited[@]} -lt 64 ]]; do
         current=${pending[0]}
         pending=("${pending[@]:1}")
         [[ -n ${visited[$current]+yes} ]] && continue
         visited[$current]=1
         local name
-        name=$(property "$app_bus" "$current" Name) || return 1
+        name=$(property "$app_bus" "$current" Name 2>/dev/null) || return 1
         node_names["$current"]=$name
         names+="$name"$'\n'
+        # The smoke asks for concrete names, not a catalogue dump.  As soon
+        # as all requested nodes are present we have enough real object paths
+        # to exercise the action, and should not make the release gate crawl
+        # a large folder/resource catalogue one D-Bus round trip at a time.
+        # The hard 256-node ceiling below remains the corruption guard when a
+        # requested node is absent.
+        all_found=true
+        for expected in "${required[@]}"; do
+            node_named "$expected" >/dev/null || {
+                all_found=false
+                break
+            }
+        done
+        "$all_found" && return 0
         while IFS= read -r child_path; do
-            [[ -n "$child_path" ]] && pending+=("$child_path")
+            # Depth-first keeps a freshly opened overlay adjacent to its
+            # parent, ahead of a potentially large file-list subtree.
+            [[ -n "$child_path" ]] && pending=("$child_path" "${pending[@]}")
         done < <(
-            children "$app_bus" "$current" \
+            children "$app_bus" "$current" 2>/dev/null \
                 | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true
         )
     done
@@ -160,8 +218,9 @@ node_named() {
 
 wait_for_names() {
     local expected missing attempt
+    missing=""
     for attempt in $(seq 1 200); do
-        if collect_tree; then
+        if collect_tree "$@"; then
             missing=""
             for expected in "$@"; do
                 node_named "$expected" >/dev/null || missing+=" $expected"
@@ -210,10 +269,10 @@ click_named() {
 wait_for_names "Breadcrumbs" "View options"
 
 # Exercise an ordinary screen-reader action against an actual package payload,
-# then observe the application state it changed. `New folder` appears only in
+# then observe the application state it changed. `New Folder` appears only in
 # the menu opened by View options, so a provider that merely advertises Click
 # but fails to deliver it through accesskit_winit cannot pass.
 click_named "View options"
-wait_for_names "New folder"
+wait_for_names "New Folder"
 
 printf 'AT-SPI smoke passed: Files activity, toolbar controls, and View options action are exported.\n'

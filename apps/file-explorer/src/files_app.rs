@@ -114,6 +114,35 @@ fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
     })
 }
 
+/// Route a toolkit-owned control resource to the exact retained leaf that
+/// published it.  The default `Widget::invoke_resource_operation_v2` adapts
+/// legacy operations and therefore cannot discover a nested modern Button's
+/// v2-only native handler through an arbitrary container.  Keeping this small
+/// recursive router at the app action boundary makes a screen-reader/agent
+/// action reach precisely the same callback as pointer and keyboard input.
+fn invoke_native_control_in_subtree(
+    widget: &mut dyn Widget,
+    kind: OperationKind,
+    type_id: &str,
+    payload: &[u8],
+    doc: &automerge::AutoCommit,
+    path: &automerge::ObjId,
+) -> Result<bool, String> {
+    if widget.resource_operation_handlers().contains(type_id)
+        && widget
+            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+            .is_some()
+    {
+        return Ok(true);
+    }
+    for child in widget.children_mut() {
+        if invoke_native_control_in_subtree(child, kind, type_id, payload, doc, path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CollabPanel {
     title: String,
@@ -7332,16 +7361,38 @@ impl Widget for FileExplorerWidget {
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (OperationKind::Effect, "qos.ui.control.invoke") => {
-                if self
-                    .state_retry
-                    .invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-                    .is_none()
-                {
+            (_, "qos.ui.control.invoke") => {
+                // A shared Button publishes its own canonical resource.  This
+                // root also publishes the contained toolbar/menu controls, so
+                // intercepting the type here and trying only the error-state
+                // retry button made an external AT-SPI/resource invocation of
+                // every ordinary toolbar button falsely succeed at discovery
+                // and then be refused at execution. Route the exact payload
+                // through the retained tree (including the separately-painted
+                // retry control) just as a pointer/keyboard activation does.
+                let mut handled = invoke_native_control_in_subtree(
+                    &mut self.state_retry,
+                    kind,
+                    type_id,
+                    payload,
+                    doc,
+                    path,
+                )?;
+                if !handled {
+                    for child in self.children_mut() {
+                        if invoke_native_control_in_subtree(
+                            child, kind, type_id, payload, doc, path,
+                        )? {
+                            handled = true;
+                            break;
+                        }
+                    }
+                }
+                if !handled {
                     return Ok(false);
                 }
-                // The effect handler queues the same local Refresh command as
-                // the toolbar and shortcut. Apply it at this action boundary,
+                // Control handlers queue the same commands their painted
+                // counterparts do. Apply them at this resource boundary,
                 // never through a document write or widget-local click flag.
                 self.drain_commands();
             }
@@ -11566,6 +11617,67 @@ mod responsive_body_tests {
         assert!(
             h.w.error().is_none(),
             "the shared button dispatches the normal refresh command"
+        );
+    }
+
+    #[test]
+    fn shared_toolbar_resource_action_opens_view_options() {
+        let mut h = H::new(None, 1200.0, 720.0);
+        assert!(
+            h.w.invoke_resource_operation(
+                qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                br#""files.view_menu""#,
+                &h.state.doc,
+                &h.state.root,
+            )
+            .unwrap(),
+            "the same resource action an AT-SPI client discovers is handled"
+        );
+        assert!(
+            h.w.context_menu.is_open(),
+            "resource/AT-SPI activation opens the real View options menu"
+        );
+        assert!(
+            h.w.menu_commands
+                .iter()
+                .any(|command| { matches!(command, Some(FileCommand::NewFolder)) }),
+            "the real menu owns the New folder follow-up; this is not a hidden state toggle"
+        );
+    }
+
+    #[test]
+    fn accesskit_view_options_activation_updates_the_exported_menu_tree() {
+        // This is the same retained-control path used by the Unix AT-SPI
+        // provider: find the visual button in an AccessKit update, dispatch
+        // its action through App, then require the newly opened menu item in
+        // the next update. A `DoAction` reply alone is not enough.
+        let mut app = ui::App::new(
+            ui::State::new(),
+            Box::new(FileExplorerWidget::with_persistence(None, None)),
+        );
+        app.init_layout();
+        let before = app.build_a11y_tree_update(1.0);
+        let view_options = before
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::Button && node.label() == Some("View options")
+            })
+            .map(|(id, _)| *id)
+            .expect("the retained View options button is exported");
+
+        assert_eq!(
+            app.dispatch_a11y_action(view_options, &ui::a11y::Action::Activate),
+            None
+        );
+        let after = app.build_a11y_tree_update(1.0);
+        assert!(
+            after
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("New folder")),
+            "AT-SPI activation must publish the actual View options menu, not only acknowledge Click"
         );
     }
 
