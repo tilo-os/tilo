@@ -1,7 +1,7 @@
 //! Root widget for the Themes app. Owns the theme catalog, the three
 //! panels (gallery / preview / customizer) and the top bar, and runs the
-//! per-frame reconciliation that keeps the CRDT, the editor controls and
-//! the selected [`ThemeSpec`] in sync.
+//! per-frame reconciliation that keeps the durable CRDT catalog separate
+//! from per-window editor controls and the selected [`ThemeSpec`].
 //!
 //! ## Responsive layout
 //!
@@ -16,7 +16,9 @@
 //! other adaptive-sidebar app in the suite shares), so no collapse logic is
 //! hand-rolled here.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -82,9 +84,14 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 pub struct ThemesApp {
     catalog: Vec<ThemeSpec>,
     topbar_buttons: Vec<Button>,
+    top_commands: Rc<RefCell<Vec<String>>>,
     gallery: Gallery,
     preview: PreviewPane,
     customizer: Customizer,
+    /// Per-window navigation/editor state. Never placed in the collaborative
+    /// Automerge document or exposed to presence/history.
+    selected: String,
+    edit_token: TokenId,
 
     rect: Rect,
     topbar_node: Option<NodeId>,
@@ -116,6 +123,7 @@ pub struct ThemesApp {
 
     bound_key: Option<(String, TokenId)>,
     status: String,
+    last_export: Option<String>,
     structure_dirty: bool,
 
     /// Framework-owned action dispatch: brackets the undo boundary, encodes and
@@ -170,23 +178,28 @@ impl Default for ThemesApp {
 
 impl ThemesApp {
     pub fn new() -> Self {
+        let top_commands = Rc::new(RefCell::new(Vec::new()));
+        let new_commands = Rc::clone(&top_commands);
         Self {
             catalog: default_catalog(),
             topbar_buttons: vec![
-                Button::new("themes.new", "New", Some(doc::KEY_COMMAND))
-                    .with_click_value("new")
+                Button::new("themes.new", "New", None)
+                    .on_click(move || new_commands.borrow_mut().push("new".into()))
                     .fit_content(34.0),
-                Button::new("themes.export", "Export JSON", Some(doc::KEY_COMMAND))
-                    .with_click_value("export")
+                Button::new("themes.export", "Export JSON", None)
+                    .on_action(crate::actions::export_selected_binding())
                     .fit_content(34.0),
-                Button::new("themes.apply", "Apply theme", Some(doc::KEY_COMMAND))
-                    .with_click_value("apply")
+                Button::new("themes.apply", "Apply theme", None)
+                    .on_action(crate::actions::apply_selected_binding())
                     .fit_content(34.0)
                     .primary(),
             ],
+            top_commands,
             gallery: Gallery::new(),
             preview: PreviewPane::new(),
             customizer: Customizer::new(),
+            selected: String::new(),
+            edit_token: TokenId::Accent,
             rect: Rect::ZERO,
             topbar_node: None,
             topbar_actions_node: None,
@@ -207,6 +220,7 @@ impl ThemesApp {
             last_cursor: Point::ZERO,
             bound_key: None,
             status: String::new(),
+            last_export: None,
             structure_dirty: false,
             actions: ui::ActionHost::new(),
             pending_apply: None,
@@ -412,19 +426,19 @@ impl ThemesApp {
     fn process_command(&mut self, cmd: &str, state: &mut AutoCommit, path: &ObjId) {
         // --- Presentation: view-state only, never an action. ---
         if let Some(id) = cmd.strip_prefix("select:") {
-            doc::put_str(state, path, doc::KEY_SELECTED, id);
+            self.selected = id.to_string();
             self.status.clear();
             return;
         }
         if let Some(key) = cmd.strip_prefix("edittoken:") {
-            doc::put_str(state, path, doc::KEY_EDIT_TOKEN, key);
+            self.edit_token = TokenId::from_key(key).unwrap_or(TokenId::Accent);
             return;
         }
         if let Some(id) = cmd.strip_prefix("rename:") {
             // Select the theme, then hand focus to the sidebar's inline editor.
             // The committed name change rides the customizer reconcile into an
             // upsert; the focus handoff itself is presentation.
-            doc::put_str(state, path, doc::KEY_SELECTED, id);
+            self.selected = id.to_string();
             self.gallery.request_name_focus();
             self.status.clear();
             return;
@@ -440,24 +454,12 @@ impl ThemesApp {
             self.delete_theme(id, state, path);
             return;
         }
-        let selected = doc::get_str(state, path, doc::KEY_SELECTED).unwrap_or_default();
+        let selected = self.selected.clone();
         match cmd {
             "new" => self.new_theme(state, path),
             "duplicate" => self.duplicate_theme(&selected, state, path),
             "delete" => self.delete_theme(&selected, state, path),
-            "apply" => {
-                let _ = self.apply_theme(&selected, state);
-            }
             "reset" => self.reset_theme(&selected, state),
-            "export" => {
-                // Presentation: a derived JSON blob shown in a toast, not a
-                // shared theme mutation.
-                let catalog = doc::load_catalog(state, path).unwrap_or_default();
-                if let Some(src) = catalog.iter().find(|s| s.id == selected) {
-                    doc::put_text(state, path, doc::KEY_EXPORT, &src.to_json());
-                    self.status = format!("Exported “{}” as JSON", src.name);
-                }
-            }
             _ => {}
         }
     }
@@ -470,7 +472,7 @@ impl ThemesApp {
         let order = crate::actions::max_order(&catalog) + 1;
         let spec = crate::actions::new_theme_spec(&id, "New theme", order);
         self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
-        doc::put_str(state, path, doc::KEY_SELECTED, &id);
+        self.selected = id;
         self.status = "Created a new theme".to_string();
         self.structure_dirty = true;
     }
@@ -484,7 +486,7 @@ impl ThemesApp {
             let order = crate::actions::max_order(&catalog) + 1;
             let spec = crate::actions::duplicate_spec(&src, &new_id, order);
             self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
-            doc::put_str(state, path, doc::KEY_SELECTED, &new_id);
+            self.selected = new_id;
             self.status = format!("Duplicated “{}”", src.name);
             self.structure_dirty = true;
         }
@@ -520,7 +522,7 @@ impl ThemesApp {
             .get(idx.min(survivors.len().saturating_sub(1)))
             .cloned()
             .unwrap_or_default();
-        doc::put_str(state, path, doc::KEY_SELECTED, &next);
+        self.selected = next;
         self.status = format!("Deleted “{name}”");
         self.structure_dirty = true;
     }
@@ -563,8 +565,10 @@ impl ThemesApp {
     fn reset_theme(&mut self, id: &str, state: &mut AutoCommit) {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(current) = catalog.iter().find(|s| s.id == id && !s.builtin).cloned() {
-            let spec = crate::actions::reset_spec(&current);
-            self.perform_action(state, &crate::actions::upsert_custom_theme_action(&spec));
+            self.perform_action(
+                state,
+                &crate::actions::reset_custom_theme_action(current.id),
+            );
             self.status = "Reset to defaults".to_string();
             // Force a control reload next frame.
             self.bound_key = None;
@@ -577,8 +581,13 @@ impl ThemesApp {
     /// with its editable custom theme. The demo focuses its editable custom
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
-    fn seed_document_if_needed(&self, state: &mut AutoCommit, path: &ObjId) {
-        if doc::load_catalog(state, path).is_some() {
+    fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // Import the old Phase-1 text before local presentation seeding. The
+        // importer only creates missing ids, so it is safe when an old and a
+        // new client merge concurrently.
+        doc::migrate_legacy_catalog(state, path);
+        doc::initialize_catalog(state, path);
+        if !self.selected.is_empty() {
             return;
         }
         let cat = if self.shot.demo {
@@ -586,25 +595,20 @@ impl ThemesApp {
         } else {
             default_catalog()
         };
+        // Built-ins are product data and custom demo content is inserted as
+        // independently keyed native records (never a JSON catalog blob).
         doc::save_catalog(state, path, &cat);
         let sel = if self.shot.demo {
             cat.last().map(|s| s.id.clone()).unwrap_or_default()
         } else {
             cat.first().map(|s| s.id.clone()).unwrap_or_default()
         };
-        doc::put_str(state, path, doc::KEY_SELECTED, &sel);
-        doc::put_str(state, path, doc::KEY_EDIT_TOKEN, "accent");
-        if let Some(s) = cat.iter().find(|s| s.id == sel) {
-            doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(s.radius_norm));
-            doc::put_f64(state, path, doc::KEY_ED_SPACING, f64::from(s.spacing_norm));
-            doc::put_str(state, path, doc::KEY_ED_FONT, &s.font);
-            doc::put_str(state, path, doc::KEY_ED_NAME, &s.name);
-        }
+        self.selected.clone_from(&sel);
+        self.edit_token = TokenId::Accent;
         // The applied OS theme: adopt whatever is already persisted in the
         // shared store, else default to the seeded selection.
         let active = store::load_active_id().unwrap_or_else(|| sel.clone());
         doc::put_str(state, path, doc::KEY_ACTIVE, &active);
-        doc::put_str(state, path, doc::KEY_COMMAND, "");
     }
 
     /// Steps 3-5 of [`Widget::sync`]: load the persisted catalog, resolve the
@@ -619,14 +623,12 @@ impl ThemesApp {
     ) -> Option<(Vec<ThemeSpec>, usize, String, TokenId, bool)> {
         let mut catalog = doc::load_catalog(state, path).unwrap_or_else(default_catalog);
 
-        let mut selected = doc::get_str(state, path, doc::KEY_SELECTED).unwrap_or_default();
+        let mut selected = self.selected.clone();
         if !catalog.iter().any(|s| s.id == selected) {
             selected = catalog.first().map(|s| s.id.clone()).unwrap_or_default();
-            doc::put_str(state, path, doc::KEY_SELECTED, &selected);
+            self.selected.clone_from(&selected);
         }
-        let edit_token = doc::get_str(state, path, doc::KEY_EDIT_TOKEN)
-            .and_then(|k| TokenId::from_key(&k))
-            .unwrap_or(TokenId::Accent);
+        let edit_token = self.edit_token;
         let idx = catalog.iter().position(|s| s.id == selected).unwrap_or(0);
         let editable = !catalog.get(idx)?.builtin;
 
@@ -636,52 +638,60 @@ impl ThemesApp {
         if changed {
             // LOAD: spec → controls; rebuild the colour picker.
             let spec = catalog.get(idx)?.clone();
-            doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
-            doc::put_f64(
-                state,
-                path,
-                doc::KEY_ED_SPACING,
-                f64::from(spec.spacing_norm),
-            );
-            doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
-            doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
+            self.customizer.load_controls(&spec);
             self.customizer.load_picker(spec.token(edit_token));
             self.bound_key = Some(bound_key);
         } else if editable {
-            // SAVE: controls → spec.
-            if let Some(r) = doc::get_f64(state, path, doc::KEY_ED_RADIUS) {
-                catalog.get_mut(idx)?.radius_norm = (r as f32).clamp(0.0, 1.0);
-            }
-            if let Some(s) = doc::get_f64(state, path, doc::KEY_ED_SPACING) {
-                catalog.get_mut(idx)?.spacing_norm = (s as f32).clamp(0.0, 1.0);
-            }
-            if let Some(f) = doc::get_str(state, path, doc::KEY_ED_FONT)
-                && FONTS.contains(&f.as_str())
+            // SAVE: controls → granular canonical actions.  Do not turn this
+            // cached `ThemeSpec` into a whole-record write: another peer can be
+            // editing a different token at exactly the same time.
+            let current = catalog.get(idx)?.clone();
             {
-                catalog.get_mut(idx)?.font = f;
+                let r = self.customizer.radius() as f32;
+                if (r - current.radius_norm).abs() > f32::EPSILON {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_custom_theme_radius_action(&selected, r),
+                    );
+                }
+            }
+            {
+                let s = self.customizer.spacing() as f32;
+                if (s - current.spacing_norm).abs() > f32::EPSILON {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_custom_theme_spacing_action(&selected, s),
+                    );
+                }
+            }
+            let f = self.customizer.font();
+            if FONTS.contains(&f.as_str()) && f != current.font {
+                self.perform_action(
+                    state,
+                    &crate::actions::set_custom_theme_font_action(&selected, f),
+                );
             }
             // Inline sidebar rename: a non-empty edited name replaces the
             // theme's name (empty is ignored so a mid-edit clear can't wipe it).
-            if let Some(n) = doc::get_str(state, path, doc::KEY_ED_NAME) {
+            if let Some(n) = self.gallery.take_edited_name() {
                 let n = n.trim();
-                if !n.is_empty() {
-                    catalog.get_mut(idx)?.name = n.to_string();
+                if !n.is_empty() && n != current.name {
+                    self.perform_action(
+                        state,
+                        &crate::actions::set_custom_theme_name_action(&selected, n),
+                    );
                 }
             }
             let pc = self.customizer.picker_color();
-            catalog.get_mut(idx)?.set_token(edit_token, pc);
-        } else {
-            // Built-in preset: pin the controls to the read-only values.
-            let spec = catalog.get(idx)?.clone();
-            doc::put_f64(state, path, doc::KEY_ED_RADIUS, f64::from(spec.radius_norm));
-            doc::put_f64(
-                state,
-                path,
-                doc::KEY_ED_SPACING,
-                f64::from(spec.spacing_norm),
-            );
-            doc::put_str(state, path, doc::KEY_ED_FONT, &spec.font);
-            doc::put_str(state, path, doc::KEY_ED_NAME, &spec.name);
+            if pc != current.token(edit_token) {
+                self.perform_action(
+                    state,
+                    &crate::actions::set_custom_theme_token_action(&selected, edit_token, pc),
+                );
+            }
+            // Reflect this frame's action writes without a second whole-list
+            // persistence pass. The next frame also re-resolves remote merges.
+            catalog = doc::load_catalog(state, path).unwrap_or_else(default_catalog);
         }
 
         Some((catalog, idx, selected, edit_token, editable))
@@ -689,7 +699,7 @@ impl ThemesApp {
 
     /// Steps 7-8 of [`Widget::sync`]: push the resolved selection into the
     /// panels and forward `sync` to the embedded controls that read their own
-    /// scratch fields from the document. No-op if `idx` no longer indexes
+    /// local controls. No-op if `idx` no longer indexes
     /// `self.catalog` (defensive; catalog was just written from the same
     /// vector this index was resolved against).
     fn push_view_state(
@@ -709,6 +719,25 @@ impl ThemesApp {
             .set_view(&self.catalog, selected, &active_id, editable);
         self.preview.set_spec(&sel_spec);
         self.customizer.set_view(sel_spec, edit_token, editable);
+
+        // Rebind durable controls from the exact currently-exported resource
+        // specs whenever the selected theme changes. Pointer, keyboard, a11y
+        // and agent invocation therefore share one action envelope.
+        if let Some(theme_resource) = crate::actions::provide_resources(state)
+            .into_iter()
+            .flat_map(|library| library.children)
+            .find(|resource| resource.id.as_str() == format!("themes.theme:{selected}"))
+        {
+            let binding = |id| qos_actions::ActionBinding::unit_for(&theme_resource, id).ok();
+            if let Some(duplicate) = binding("duplicate") {
+                self.customizer.bind_actions(
+                    selected,
+                    duplicate,
+                    binding("reset"),
+                    binding("delete"),
+                );
+            }
+        }
 
         self.customizer.sync(state, path);
         self.gallery.sync(state, path);
@@ -1255,7 +1284,7 @@ impl ThemesApp {
 
 impl Widget for ThemesApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["themes.apply"]
+        &["themes.apply", "themes.export"]
     }
 
     /// Publish the open theme library + its themes so the host's Ctrl+K action
@@ -1270,14 +1299,32 @@ impl Widget for ThemesApp {
         &mut self,
         kind: qos_actions::OperationKind,
         type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
+        payload: &[u8],
+        doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect || type_id != "themes.apply" {
+        if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
         }
-        Err("theme application requires the lifecycle-capable operation host".into())
+        if type_id == "themes.apply" {
+            return Err("theme application requires the lifecycle-capable operation host".into());
+        }
+        if type_id != "themes.export" {
+            return Ok(false);
+        }
+        let id = serde_json::from_slice::<Option<String>>(payload)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| self.selected.clone());
+        let Some(theme) = doc::load_catalog(doc, &automerge::ROOT)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|theme| theme.id == id)
+        else {
+            return Err("Theme is no longer available".into());
+        };
+        self.last_export = Some(theme.to_json());
+        self.status = format!("Exported “{}” as JSON", theme.name);
+        Ok(true)
     }
 
     fn start_resource_operation(
@@ -1295,7 +1342,9 @@ impl Widget for ThemesApp {
         if self.pending_apply.is_some() {
             return Err("another theme is still being applied".into());
         }
-        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let id = serde_json::from_slice::<Option<String>>(payload)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| self.selected.clone());
         let exists = doc::load_catalog(doc, &automerge::ROOT)
             .unwrap_or_default()
             .iter()
@@ -1367,16 +1416,20 @@ impl Widget for ThemesApp {
 
         // `--shots` scenario: force a specific selection for the capture.
         if let Some(id) = self.shot.select.take() {
-            doc::put_str(state, path, doc::KEY_SELECTED, &id);
+            self.selected = id;
         }
 
-        // 2. Drain and dispatch any pending command. A mutating command
-        // dispatches its ThemesAction straight into the document (via the
-        // executor), so the catalog is loaded *after* it, below, to observe the
-        // change.
-        let cmd = doc::take_command(state, path);
-        if !cmd.is_empty() {
-            self.process_command(&cmd, state, path);
+        // 2. Drain local presentation queues. Only the command handlers for
+        // committed mutations dispatch an action into `state`.
+        let mut commands: Vec<String> = self.top_commands.borrow_mut().drain(..).collect();
+        while let Some(command) = self.gallery.take_command() {
+            commands.push(command);
+        }
+        if let Some(token) = self.customizer.take_edit_token() {
+            self.edit_token = token;
+        }
+        for command in commands {
+            self.process_command(&command, state, path);
         }
 
         // 3-5. Load the persisted catalog, resolve the selection + edit
@@ -1390,12 +1443,12 @@ impl Widget for ThemesApp {
             return;
         };
 
-        // 6. Persist + cache.
-        doc::save_catalog(state, path, &catalog);
+        // 6. Cache. Durable custom mutations above are dispatched as granular
+        // ThemesAction values; never write this rendered snapshot wholesale.
         self.catalog = catalog;
 
         // 7-8. Push the resolved selection into the panels and forward sync
-        // to the embedded controls that read their own scratch fields.
+        // to the embedded controls' local state.
         self.push_view_state(state, path, idx, &selected, edit_token, editable);
     }
 
@@ -1756,11 +1809,11 @@ mod tests {
     fn catalog(st: &ui::State) -> Vec<ThemeSpec> {
         doc::load_catalog(&st.doc, &st.root).unwrap()
     }
-    fn selected(st: &ui::State) -> String {
-        doc::get_str(&st.doc, &st.root, doc::KEY_SELECTED).unwrap_or_default()
+    fn selected(app: &ThemesApp) -> String {
+        app.selected.clone()
     }
     fn run(app: &mut ThemesApp, st: &mut ui::State, cmd: &str) {
-        doc::put_str(&mut st.doc, &st.root, doc::KEY_COMMAND, cmd);
+        app.process_command(cmd, &mut st.doc, &st.root);
         app.sync(&mut st.doc, &st.root);
     }
 
@@ -1776,20 +1829,20 @@ mod tests {
             .find(|s| s.name == "qOS Blue copy")
             .expect("named copy exists");
         assert!(!copy.builtin, "the copy is editable");
-        assert_eq!(selected(&st), copy.id, "the copy becomes the selection");
+        assert_eq!(selected(&app), copy.id, "the copy becomes the selection");
     }
 
     #[test]
     fn live_seed_is_presets_only_and_selects_a_preset() {
         // Honest live default: only built-in presets, and the focused theme is
         // one of them — no fabricated "your custom theme".
-        let (_app, st) = seeded();
+        let (app, st) = seeded();
         let cat = catalog(&st);
         assert!(
             cat.iter().all(|s| s.builtin),
             "live catalog is presets only"
         );
-        let sel = selected(&st);
+        let sel = selected(&app);
         assert!(cat.iter().find(|s| s.id == sel).is_some_and(|s| s.builtin));
         assert!(
             !cat.iter().any(|s| s.id == "sunset"),
@@ -1810,7 +1863,7 @@ mod tests {
             "custom theme removed"
         );
         assert!(
-            catalog(&st).iter().any(|s| s.id == selected(&st)),
+            catalog(&st).iter().any(|s| s.id == selected(&app)),
             "selection stays valid"
         );
     }
@@ -1828,14 +1881,88 @@ mod tests {
     fn inline_name_edit_persists_into_the_selected_custom_theme() {
         let (mut app, mut st) = seeded_demo();
         // The demo's editable custom "sunset" is selected out of the box.
-        assert_eq!(selected(&st), "sunset");
-        // The sidebar's inline TextInput writes the edited name to KEY_ED_NAME;
-        // the next sync reconciles it into the catalog (persisted in the CRDT).
-        doc::put_str(&mut st.doc, &st.root, doc::KEY_ED_NAME, "My Theme");
+        assert_eq!(selected(&app), "sunset");
+        // Inline text stays local until reconciliation dispatches the canonical
+        // field action.
+        app.gallery.stage_edited_name("My Theme");
         app.sync(&mut st.doc, &st.root);
         assert_eq!(
             catalog(&st).iter().find(|s| s.id == "sunset").unwrap().name,
             "My Theme"
+        );
+    }
+
+    #[test]
+    fn local_navigation_never_writes_or_overwrites_a_peer_theme_edit() {
+        let (mut app, mut state) = seeded_demo();
+        state.doc.commit();
+        let mut peer = AutoCommit::load(&state.doc.save()).unwrap();
+        assert!(doc::set_token(
+            &mut peer,
+            &automerge::ROOT,
+            "sunset",
+            TokenId::Accent,
+            [1, 2, 3]
+        ));
+        state.doc.merge(&mut peer).unwrap();
+        let heads_after_peer_edit = state.doc.get_heads();
+
+        // Selection, token navigation, and opening the inline name editor are
+        // all per-window presentation. None is a catalog mutation or an undo
+        // boundary, and none may replay stale editor values over the peer edit.
+        run(&mut app, &mut state, "select:qos-blue");
+        run(&mut app, &mut state, "edittoken:border");
+        run(&mut app, &mut state, "rename:sunset");
+
+        assert_eq!(state.doc.get_heads(), heads_after_peer_edit);
+        assert_eq!(
+            catalog(&state)
+                .iter()
+                .find(|theme| theme.id == "sunset")
+                .unwrap()
+                .accent,
+            [1, 2, 3]
+        );
+        assert_eq!(selected(&app), "sunset");
+        assert_eq!(app.edit_token, TokenId::Border);
+    }
+
+    #[test]
+    fn export_is_a_brokered_local_effect_not_document_scratch() {
+        let (mut app, mut state) = seeded_demo();
+        state.doc.commit();
+        let before_heads = state.doc.get_heads();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                "themes.export",
+                &serde_json::to_vec(&()).unwrap(),
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert_eq!(state.doc.get_heads(), before_heads);
+        assert!(
+            app.last_export
+                .as_deref()
+                .is_some_and(|json| json.contains("sunset"))
+        );
+        assert!(app.status.contains("Exported"));
+
+        let resources = Widget::resources(&app, &state.doc);
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "export-selected")
+        );
+        assert!(
+            resources[0]
+                .children
+                .iter()
+                .all(|theme| theme.actions.iter().any(|action| action.id == "export"))
         );
     }
 
@@ -1852,17 +1979,31 @@ mod tests {
         run(&mut app, &mut st, "select:qos-blue");
         run(&mut app, &mut st, &format!("rename:{copy_id}"));
         assert_eq!(
-            selected(&st),
+            selected(&app),
             copy_id,
             "rename selects the target so its name is editable"
         );
     }
 
     #[test]
-    fn apply_command_writes_the_active_theme_to_the_shared_store() {
+    fn selected_apply_operation_writes_the_active_theme_to_the_shared_store() {
         let (mut app, mut st) = seeded();
         run(&mut app, &mut st, "select:dracula");
-        run(&mut app, &mut st, "apply");
+        let invocation = qos_actions::InvocationId::new();
+        assert_eq!(
+            Widget::start_resource_operation(
+                &mut app,
+                invocation,
+                qos_actions::OperationKind::Effect,
+                "themes.apply",
+                &serde_json::to_vec(&()).unwrap(),
+                &st.doc,
+                &st.root,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        );
+        app.sync(&mut st.doc, &st.root);
         // The in-app "Active" badge id updates immediately…
         assert_eq!(
             doc::get_str(&st.doc, &st.root, doc::KEY_ACTIVE).as_deref(),
@@ -1884,7 +2025,7 @@ mod tests {
     fn affordance_dispatches_the_same_encoded_action_as_the_palette_spec() {
         use qos_actions::{ActionInput, ResourceProvider};
         let (mut app, mut st) = seeded_demo();
-        assert_eq!(selected(&st), "sunset");
+        assert_eq!(selected(&app), "sunset");
 
         // The affordance path: the sidebar's "Delete" command for the sunset row.
         run(&mut app, &mut st, "delete:sunset");
