@@ -61,6 +61,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod browse_actions;
 pub mod config;
 pub mod doc_actions;
 pub mod flathub_client;
