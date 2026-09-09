@@ -131,6 +131,16 @@ enum Mode {
     Edit,
 }
 
+/// The single contextual action in an empty list.  It is deliberately local:
+/// query, filter, and focus are view state, while creating a contact crosses
+/// the durable action boundary only when the user activates it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EmptyListAction {
+    None,
+    Create,
+    ClearFilters,
+}
+
 /// Focus order for the unsaved-edit decision dialog.  The safe Cancel action
 /// is the initial focus, so Enter never discards a draft by surprise.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -708,6 +718,10 @@ pub struct ContactsApp {
     group_filter: Option<String>,
 
     popup: Option<Popup>,
+    /// Keyboard focus within the currently-open local popup.  This is view
+    /// state only; popup choices either change a local preference or update a
+    /// draft that remains local until Save.
+    popup_focus: usize,
     toast: Option<(String, Instant)>,
     confirm_delete: Option<ContactId>,
     /// Built lazily while `confirm_delete` is armed and discarded when that
@@ -750,6 +764,7 @@ pub struct ContactsApp {
     /// the toolbar's New button instead of leaving a decorative dead end.
     empty_action_rect: Rect,
     empty_action_focused: bool,
+    empty_list_action: EmptyListAction,
     hit: Hit,
     detail_content_h: f64,
     /// View-mode detail field value hit rects, recomputed every `draw_detail`.
@@ -857,6 +872,7 @@ impl ContactsApp {
             sort: SortKey::Name,
             group_filter: None,
             popup: None,
+            popup_focus: 0,
             toast: None,
             confirm_delete: None,
             delete_dialog: None,
@@ -878,6 +894,7 @@ impl ContactsApp {
             list_rows: Vec::new(),
             empty_action_rect: Rect::ZERO,
             empty_action_focused: false,
+            empty_list_action: EmptyListAction::None,
             hit: Hit::default(),
             detail_content_h: 0.0,
             detail_field_hits: Vec::new(),
@@ -1028,7 +1045,7 @@ impl ContactsApp {
                     },
                     |(_, r)| Rect::new(r.x0 + 40.0, r.center().y, r.x0 + 40.0, r.center().y),
                 );
-            self.popup = Some(Popup::ContextMenu { target: id, anchor });
+            self.open_popup(Popup::ContextMenu { target: id, anchor });
         }
     }
 
@@ -1036,7 +1053,7 @@ impl ContactsApp {
     /// regression review a direct state for the group workflow rather than
     /// relying on a pointer interaction unavailable to the one-frame runner.
     pub fn shots_show_group_filter(&mut self) {
-        self.popup = Some(Popup::GroupFilter {
+        self.open_popup(Popup::GroupFilter {
             anchor: self.hit.group,
         });
         self.dirty = true;
@@ -1051,6 +1068,33 @@ impl ContactsApp {
     fn show_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
         self.dirty = true;
+    }
+
+    fn open_popup(&mut self, popup: Popup) {
+        self.popup = Some(popup);
+        self.popup_focus = 0;
+        self.dirty = true;
+    }
+
+    fn clear_filters(&mut self) {
+        self.search.set_text("");
+        self.group_filter = None;
+        self.list_scroll = 0.0;
+        if self.selected.is_none() {
+            self.selected = self.visible_ids().first().copied();
+        }
+        self.empty_action_focused = false;
+        self.relayout = true;
+        self.dirty = true;
+    }
+
+    fn activate_empty_list_action(&mut self) -> bool {
+        match self.empty_list_action {
+            EmptyListAction::Create => self.begin_new_contact(),
+            EmptyListAction::ClearFilters => self.clear_filters(),
+            EmptyListAction::None => return false,
+        }
+        true
     }
 
     /// `true` when a toast is showing and has outlived [`TOAST_LIFETIME`].
@@ -1895,14 +1939,15 @@ impl ContactsApp {
 
         // Toolbar buttons (right-aligned).
         let btn_y = r.y0 + (TOOLBAR_H - 32.0) / 2.0;
+        let compact_toolbar = self.toolbar_is_compact();
         let mut x = r.x1 - PAD;
-        let new_w = 104.0;
+        let new_w = if compact_toolbar { 40.0 } else { 104.0 };
         self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + 32.0);
-        x -= new_w + 10.0;
-        let exp_w = 86.0;
+        x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let exp_w = if compact_toolbar { 40.0 } else { 86.0 };
         self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + 32.0);
-        x -= exp_w + 10.0;
-        let imp_w = 86.0;
+        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let imp_w = if compact_toolbar { 40.0 } else { 86.0 };
         self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + 32.0);
 
         // Responsive split: side-by-side when wide, single-pane push when
@@ -1978,6 +2023,7 @@ impl ContactsApp {
         // responsive whether they contain ten people or ten thousand.
         let ids = self.visible_ids();
         self.visible_row_count = ids.len();
+        self.empty_list_action = self.empty_list_action_for(ids.is_empty());
         let content_h = ids.len() as f64 * ROW_H;
         let max_scroll = (content_h - self.list_body.height()).max(0.0);
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
@@ -2017,6 +2063,23 @@ impl ContactsApp {
     /// header (action buttons, avatar) clears the Back affordance pill.
     fn detail_top_offset(&self) -> f64 {
         if self.narrow { 44.0 } else { 0.0 }
+    }
+
+    /// At phone-sized widths, preserve all three toolbar actions without
+    /// letting fixed English labels overlap.  The compact glyph labels have
+    /// explicit accessible names and host tooltips (see [`Widget::tooltip`]).
+    fn toolbar_is_compact(&self) -> bool {
+        self.rect.width() < 520.0
+    }
+
+    fn empty_list_action_for(&self, is_empty: bool) -> EmptyListAction {
+        if self.store.is_empty() && self.mode == Mode::View {
+            EmptyListAction::Create
+        } else if is_empty && (!self.search.value().is_empty() || self.group_filter.is_some()) {
+            EmptyListAction::ClearFilters
+        } else {
+            EmptyListAction::None
+        }
     }
 
     /// View-mode detail action rects (favorite / Edit / Delete), pinned to
@@ -2391,7 +2454,7 @@ impl ContactsApp {
         // real chip rectangle.  Live interaction always supplies the rect at
         // activation time, so this is otherwise a harmless no-op.
         if matches!(self.popup, Some(Popup::GroupFilter { anchor }) if anchor == Rect::ZERO) {
-            self.popup = Some(Popup::GroupFilter {
+            self.open_popup(Popup::GroupFilter {
                 anchor: self.hit.group,
             });
         }
@@ -2538,6 +2601,7 @@ impl ContactsApp {
 
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
+        let compact = self.toolbar_is_compact();
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -2586,7 +2650,7 @@ impl ContactsApp {
             tr,
             theme,
             self.hit.import,
-            "Import",
+            if compact { "↓" } else { "Import" },
             false,
             hov(self.hit.import),
             false,
@@ -2601,7 +2665,7 @@ impl ContactsApp {
                 tr,
                 theme,
                 self.hit.export,
-                "Export",
+                if compact { "↑" } else { "Export" },
                 false,
                 hov(self.hit.export),
                 false,
@@ -2612,7 +2676,7 @@ impl ContactsApp {
                 tr,
                 theme,
                 self.hit.new,
-                "+ New",
+                if compact { "+" } else { "+ New" },
                 true,
                 hov(self.hit.new),
                 false,
@@ -2648,6 +2712,7 @@ impl ContactsApp {
             self.last_mouse,
         )
         .unwrap_or(Rect::ZERO);
+        self.empty_list_action = EmptyListAction::Create;
 
         if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
             scene.stroke(
@@ -2817,6 +2882,12 @@ impl ContactsApp {
                 "No contacts yet",
                 "Add someone here, or import an existing vCard address book.",
                 Some("Create contact"),
+            )
+        } else if self.empty_list_action == EmptyListAction::ClearFilters {
+            (
+                "No matching contacts",
+                "Try another name, company, or group.",
+                Some("Clear filters"),
             )
         } else {
             (
@@ -3538,6 +3609,7 @@ impl ContactsApp {
             let hov = r.contains(self.last_mouse);
             if let Some(label) = TYPE_OPTIONS.get(i).copied() {
                 menu_item(scene, t, tr, theme, *r, label, hov, false);
+                self.draw_popup_focus_ring(scene, t, theme, *r, i);
             }
         }
     }
@@ -3555,7 +3627,7 @@ impl ContactsApp {
         let options = [(SortKey::Name, "Name"), (SortKey::Org, "Organization")];
         let (panel, rows) = self.popup_menu_geometry(anchor, options.len(), 180.0);
         menu_panel(scene, t, theme, panel);
-        for ((key, label), row) in options.iter().zip(rows) {
+        for (index, ((key, label), row)) in options.iter().zip(rows).enumerate() {
             menu_item(
                 scene,
                 t,
@@ -3566,6 +3638,7 @@ impl ContactsApp {
                 row.contains(self.last_mouse),
                 *key == self.sort,
             );
+            self.draw_popup_focus_ring(scene, t, theme, row, index);
         }
     }
 
@@ -3592,6 +3665,7 @@ impl ContactsApp {
                 Some(g) => opt == g,
             };
             menu_item(scene, t, tr, theme, *r, opt, hov, sel);
+            self.draw_popup_focus_ring(scene, t, theme, *r, i);
         }
     }
 
@@ -3667,7 +3741,12 @@ impl ContactsApp {
                 t * Affine::translate((r.center().x - dw / 2.0, r.center().y - 8.0)),
                 None,
             );
+            // Calendar focus indexes reserve 0/1 for previous/next month;
+            // day cells begin at 2 (the same order keyboard navigation uses).
+            self.draw_popup_focus_ring(scene, t, theme, *r, *d as usize + 1);
         }
+        self.draw_popup_focus_ring(scene, t, theme, prev, 0);
+        self.draw_popup_focus_ring(scene, t, theme, next, 1);
     }
 
     /// The per-contact right-click context menu (Edit / Favorite / Export /
@@ -3701,6 +3780,26 @@ impl ContactsApp {
             } else {
                 menu_item(scene, t, tr, theme, *r, label, hov, false);
             }
+            self.draw_popup_focus_ring(scene, t, theme, *r, i);
+        }
+    }
+
+    fn draw_popup_focus_ring(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        rect: Rect,
+        index: usize,
+    ) {
+        if self.popup_focus == index {
+            scene.stroke(
+                &Stroke::new(2.0),
+                t,
+                theme.tokens.colors.border_focus,
+                None,
+                &RoundedRect::from_rect(rect.inset(1.0), f64::from(theme.tokens.radii.sm)),
+            );
         }
     }
 
@@ -4460,7 +4559,8 @@ impl ContactsApp {
         let children = TYPE_OPTIONS
             .iter()
             .zip(rows)
-            .map(|(label, bounds)| {
+            .enumerate()
+            .map(|(index, (label, bounds))| {
                 AccessNode::new(Role::RadioButton)
                     .with_name(*label)
                     .with_action_target(type_option_target(id, target, label))
@@ -4468,6 +4568,7 @@ impl ContactsApp {
                     .with_state(
                         AccessState::new()
                             .focusable(true)
+                            .focused(self.popup_focus == index)
                             .checked(*label == selected),
                     )
             })
@@ -4486,13 +4587,19 @@ impl ContactsApp {
         let children = options
             .iter()
             .zip(rows)
-            .map(|(option, bounds)| {
+            .enumerate()
+            .map(|(index, (option, bounds))| {
                 let selected = self.group_filter.as_deref().unwrap_or("All") == option;
                 AccessNode::new(Role::RadioButton)
                     .with_name(option.clone())
                     .with_action_target(group_option_target(option))
                     .with_bounds(bounds)
-                    .with_state(AccessState::new().focusable(true).checked(selected))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.popup_focus == index)
+                            .checked(selected),
+                    )
             })
             .collect();
         AccessNode::new(Role::Menu)
@@ -4508,7 +4615,8 @@ impl ContactsApp {
         let children = options
             .iter()
             .zip(rows)
-            .map(|((sort, label), bounds)| {
+            .enumerate()
+            .map(|(index, ((sort, label), bounds))| {
                 AccessNode::new(Role::RadioButton)
                     .with_name(*label)
                     .with_action_target(format!("contacts.sort.option:{}", sort.label()))
@@ -4516,6 +4624,7 @@ impl ContactsApp {
                     .with_state(
                         AccessState::new()
                             .focusable(true)
+                            .focused(self.popup_focus == index)
                             .checked(*sort == self.sort),
                     )
             })
@@ -4545,12 +4654,20 @@ impl ContactsApp {
                 .with_name("Previous month")
                 .with_action_target(format!("contacts.form.calendar-prev:{id}"))
                 .with_bounds(prev)
-                .with_state(AccessState::new().focusable(true)),
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.popup_focus == 0),
+                ),
             AccessNode::new(Role::Button)
                 .with_name("Next month")
                 .with_action_target(format!("contacts.form.calendar-next:{id}"))
                 .with_bounds(next)
-                .with_state(AccessState::new().focusable(true)),
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.popup_focus == 1),
+                ),
         ];
         children.extend(cells.into_iter().map(|(day, bounds)| {
             let iso = format!("{year:04}-{month:02}-{day:02}");
@@ -4561,6 +4678,7 @@ impl ContactsApp {
                 .with_state(
                     AccessState::new()
                         .focusable(true)
+                        .focused(self.popup_focus == day as usize + 1)
                         .selected(selected.as_deref() == Some(iso.as_str())),
                 )
         }));
@@ -5190,19 +5308,38 @@ impl Widget for ContactsApp {
         // an assistive client.  Positions still describe the full result set,
         // and global search / canonical resource resolution reach every exact
         // contact outside this window.
-        let list_children = if self.visible_row_count == 0 && self.store.is_empty() {
-            vec![
-                AccessNode::new(Role::Button)
-                    .with_name("Create contact")
-                    .with_description("Start an empty contact card")
-                    .with_action_target("contacts.empty.new")
-                    .with_bounds(self.empty_action_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.empty_action_focused),
-                    ),
-            ]
+        let list_children = if self.visible_row_count == 0 {
+            match self.empty_list_action {
+                EmptyListAction::Create => vec![
+                    AccessNode::new(Role::Button)
+                        .with_name("Create contact")
+                        .with_description("Start an empty contact card")
+                        .with_action_target("contacts.empty.new")
+                        .with_bounds(self.empty_action_rect)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.empty_action_focused),
+                        ),
+                ],
+                EmptyListAction::ClearFilters => vec![
+                    AccessNode::new(Role::Button)
+                        .with_name("Clear search and group filter")
+                        .with_description("Show every contact in this address book")
+                        .with_action_target("contacts.empty.clear-filters")
+                        .with_bounds(self.empty_action_rect)
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.empty_action_focused),
+                        ),
+                ],
+                EmptyListAction::None => vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name("No matching contacts")
+                        .with_description("Try another name, company, or group."),
+                ],
+            }
         } else {
             self.list_rows
                 .iter()
@@ -5254,6 +5391,7 @@ impl Widget for ContactsApp {
             );
         let list = AccessNode::new(Role::List)
             .with_name("Contacts")
+            .with_bounds(self.list_body)
             .with_children(list_children);
         let list_controls = AccessNode::new(Role::Group)
             .with_name("Contact list controls")
@@ -5454,7 +5592,7 @@ impl Widget for ContactsApp {
                     .find(|(row, _)| target == type_chip_target(id, *row))
                     .copied()
                 {
-                    self.popup = Some(Popup::TypeMenu {
+                    self.open_popup(Popup::TypeMenu {
                         target: row,
                         anchor,
                     });
@@ -5489,7 +5627,7 @@ impl Widget for ContactsApp {
                             )
                         },
                     );
-                    self.popup = Some(Popup::Calendar {
+                    self.open_popup(Popup::Calendar {
                         year,
                         month,
                         anchor: self.hit.cal_btn,
@@ -5663,7 +5801,7 @@ impl Widget for ContactsApp {
         }
 
         match (target, action) {
-            ("contacts.empty.new", Action::Focus) => {
+            ("contacts.empty.new" | "contacts.empty.clear-filters", Action::Focus) => {
                 self.empty_action_focused = true;
                 self.search.set_focus(false);
                 self.dirty = true;
@@ -5673,6 +5811,7 @@ impl Widget for ContactsApp {
                 self.begin_new_contact();
                 true
             }
+            ("contacts.empty.clear-filters", Action::Activate) => self.activate_empty_list_action(),
             ("contacts.import", Action::Activate) => {
                 self.request_import();
                 true
@@ -5683,7 +5822,7 @@ impl Widget for ContactsApp {
                 true
             }
             ("contacts.sort", Action::Activate | Action::Expand) => {
-                self.popup = Some(Popup::Sort {
+                self.open_popup(Popup::Sort {
                     anchor: self.hit.sort,
                 });
                 self.dirty = true;
@@ -5697,7 +5836,7 @@ impl Widget for ContactsApp {
                 true
             }
             ("contacts.group", Action::Activate | Action::Expand) => {
-                self.popup = Some(Popup::GroupFilter {
+                self.open_popup(Popup::GroupFilter {
                     anchor: self.hit.group,
                 });
                 self.dirty = true;
@@ -5757,6 +5896,31 @@ impl Widget for ContactsApp {
             return Some(winit::window::CursorIcon::Pointer);
         }
         None
+    }
+
+    /// Contacts paints a compact toolbar itself, so expose its labels through
+    /// the shared host tooltip path rather than leaving the arrow/plus glyphs
+    /// unexplained at small widths.  The same words are used as semantic names
+    /// in [`Self::accessibility`].
+    fn tooltip(&self) -> Option<&str> {
+        let point = self.last_mouse;
+        if self.hit.import.contains(point) {
+            Some("Import contacts")
+        } else if !self.store.is_empty() && self.hit.export.contains(point) {
+            Some("Export contacts")
+        } else if !self.store.is_empty() && self.hit.new.contains(point) {
+            Some("Create contact")
+        } else if self.narrow && self.hit.back.contains(point) {
+            Some("Back to contacts")
+        } else if self.hit.fav.contains(point) {
+            Some("Toggle favorite")
+        } else if self.hit.edit.contains(point) {
+            Some("Edit contact")
+        } else if self.hit.delete.contains(point) {
+            Some("Delete contact")
+        } else {
+            None
+        }
     }
 
     fn needs_redraw(&self) -> bool {
@@ -6055,8 +6219,8 @@ impl ContactsApp {
     ) {
         let p = self.last_mouse;
 
-        if self.store.is_empty() && self.mode == Mode::View && self.empty_action_rect.contains(p) {
-            self.begin_new_contact();
+        if self.empty_list_action != EmptyListAction::None && self.empty_action_rect.contains(p) {
+            self.activate_empty_list_action();
             *handled = true;
             return;
         }
@@ -6070,8 +6234,9 @@ impl ContactsApp {
         if self.hit.search.contains(p) {
             self.set_only_focus_search();
         } else if self.list_body.contains(p) {
-            if self.store.is_empty() && self.empty_action_rect.contains(p) {
-                self.begin_new_contact();
+            if self.empty_list_action != EmptyListAction::None && self.empty_action_rect.contains(p)
+            {
+                self.activate_empty_list_action();
                 *handled = true;
                 return;
             }
@@ -6142,14 +6307,14 @@ impl ContactsApp {
 
         // List header chips.
         if self.hit.sort.contains(p) {
-            self.popup = Some(Popup::Sort {
+            self.open_popup(Popup::Sort {
                 anchor: self.hit.sort,
             });
             self.dirty = true;
             return true;
         }
         if self.hit.group.contains(p) {
-            self.popup = Some(Popup::GroupFilter {
+            self.open_popup(Popup::GroupFilter {
                 anchor: self.hit.group,
             });
             self.dirty = true;
@@ -6245,7 +6410,7 @@ impl ContactsApp {
                 let (y, m, _) = date::today();
                 (y, m)
             };
-            self.popup = Some(Popup::Calendar {
+            self.open_popup(Popup::Calendar {
                 year,
                 month,
                 anchor: self.hit.cal_btn,
@@ -6278,7 +6443,7 @@ impl ContactsApp {
             .find(|(_, r)| r.contains(p))
             .copied()
         {
-            self.popup = Some(Popup::TypeMenu { target, anchor });
+            self.open_popup(Popup::TypeMenu { target, anchor });
             self.dirty = true;
             return true;
         }
@@ -6912,7 +7077,7 @@ impl ContactsApp {
         if let Some((id, _)) = self.list_rows.iter().find(|(_, r)| r.contains(p)).copied() {
             self.selected = Some(id);
             let anchor = Rect::new(p.x, p.y, p.x, p.y);
-            self.popup = Some(Popup::ContextMenu { target: id, anchor });
+            self.open_popup(Popup::ContextMenu { target: id, anchor });
             self.relayout = true;
             self.dirty = true;
             *handled = true;
@@ -7106,6 +7271,16 @@ impl ContactsApp {
             return;
         }
 
+        // Menus and the birthday picker are fully keyboard-operable.  They
+        // are local presentation/draft controls, but keyboard selection must
+        // reach the exact same handlers as pointer selection.  This comes
+        // before form navigation so an open calendar owns its arrow keys.
+        if self.popup.is_some() && self.handle_key_popup(ke, state, modifiers) {
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+
         // Edit-form keyboard navigation. Tab / Shift+Tab move across the form
         // fields (wrapping); the arrow keys move directionally between fields
         // (Up/Down between rows; Left/Right hop to the neighbouring field only
@@ -7229,22 +7404,233 @@ impl ContactsApp {
         }
     }
 
+    fn move_popup_focus(&mut self, count: usize, delta: isize) {
+        if count > 0 {
+            self.popup_focus =
+                (self.popup_focus as isize + delta).rem_euclid(count as isize) as usize;
+        }
+    }
+
+    /// Arrow/Tab navigation and activation for the custom painted popup
+    /// surfaces.  Pointer interaction still routes through `handle_popup`;
+    /// keeping this adapter alongside it ensures the two paths mutate the
+    /// same local draft/action state.
+    fn handle_key_popup(
+        &mut self,
+        ke: &KeyEvent,
+        state: &mut AutoCommit,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let Some(popup) = self.popup.as_ref() else {
+            return false;
+        };
+        let count = match popup {
+            Popup::TypeMenu { .. } => TYPE_OPTIONS.len(),
+            Popup::Sort { .. } => 2,
+            Popup::GroupFilter { .. } => self.store.all_groups().len() + 1,
+            Popup::ContextMenu { .. } => CONTEXT_ACTIONS.len(),
+            Popup::Calendar { year, month, .. } => date::days_in_month(*year, *month) as usize + 2,
+        };
+        if count == 0 {
+            return false;
+        }
+        self.popup_focus = self.popup_focus.min(count - 1);
+        match &ke.logical_key {
+            Key::Named(NamedKey::Tab | NamedKey::ArrowDown) => {
+                self.move_popup_focus(count, if modifiers.state().shift_key() { -1 } else { 1 });
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.move_popup_focus(count, -1);
+                true
+            }
+            Key::Named(NamedKey::Home) => {
+                self.popup_focus = 0;
+                true
+            }
+            Key::Named(NamedKey::End) => {
+                self.popup_focus = count - 1;
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) if matches!(popup, Popup::Calendar { .. }) => {
+                self.move_popup_focus(count, -1);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) if matches!(popup, Popup::Calendar { .. }) => {
+                self.move_popup_focus(count, 1);
+                true
+            }
+            Key::Named(NamedKey::PageUp) if matches!(popup, Popup::Calendar { .. }) => {
+                self.activate_popup_calendar_month(false);
+                true
+            }
+            Key::Named(NamedKey::PageDown) if matches!(popup, Popup::Calendar { .. }) => {
+                self.activate_popup_calendar_month(true);
+                true
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                self.activate_popup_focus(state);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn activate_popup_calendar_month(&mut self, next: bool) {
+        let Some(Popup::Calendar {
+            year,
+            month,
+            anchor,
+        }) = self.popup
+        else {
+            return;
+        };
+        let (year, month) = if next {
+            date::next_month(year, month)
+        } else {
+            date::prev_month(year, month)
+        };
+        self.popup = Some(Popup::Calendar {
+            year,
+            month,
+            anchor,
+        });
+        self.popup_focus = 2;
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one focused popup action table keeps keyboard activation aligned with every local popup variant"
+    )]
+    fn activate_popup_focus(&mut self, state: &mut AutoCommit) {
+        let Some(popup) = self.popup.take() else {
+            return;
+        };
+        match popup {
+            Popup::TypeMenu { target, .. } => {
+                if let Some(label) = TYPE_OPTIONS.get(self.popup_focus)
+                    && let Some(form) = &mut self.form
+                {
+                    match target {
+                        TypeTarget::Phone(index) => form
+                            .draft
+                            .phones
+                            .get_mut(index)
+                            .map(|row| row.label = (*label).into()),
+                        TypeTarget::Email(index) => form
+                            .draft
+                            .emails
+                            .get_mut(index)
+                            .map(|row| row.label = (*label).into()),
+                        TypeTarget::Addr(index) => form
+                            .draft
+                            .addresses
+                            .get_mut(index)
+                            .map(|row| row.label = (*label).into()),
+                    };
+                }
+            }
+            Popup::Sort { .. } => {
+                self.sort = if self.popup_focus == 0 {
+                    SortKey::Name
+                } else {
+                    SortKey::Org
+                };
+                self.list_scroll = 0.0;
+                self.relayout = true;
+            }
+            Popup::GroupFilter { .. } => {
+                let mut options = vec!["All".to_string()];
+                options.extend(self.store.all_groups());
+                self.set_group_filter(
+                    (self.popup_focus != 0)
+                        .then(|| options.get(self.popup_focus).cloned())
+                        .flatten(),
+                );
+            }
+            Popup::ContextMenu { target, .. } => {
+                let Some(action) = CONTEXT_ACTIONS.get(self.popup_focus).copied() else {
+                    return;
+                };
+                match action {
+                    ContextAction::Edit => {
+                        if let Some(contact) = self.store.get(target).cloned() {
+                            self.selected = Some(target);
+                            self.begin_edit(contact, false);
+                        }
+                    }
+                    ContextAction::Favorite => {
+                        self.toggle_favorite(state, target);
+                        self.relayout = true;
+                    }
+                    ContextAction::Export => {
+                        self.export_dialog.open([target]);
+                    }
+                    ContextAction::Delete => {
+                        self.selected = Some(target);
+                        self.confirm_delete = Some(target);
+                    }
+                }
+            }
+            Popup::Calendar {
+                year,
+                month,
+                anchor,
+            } => match self.popup_focus {
+                0 => {
+                    let (year, month) = date::prev_month(year, month);
+                    self.popup = Some(Popup::Calendar {
+                        year,
+                        month,
+                        anchor,
+                    });
+                    self.popup_focus = 2;
+                }
+                1 => {
+                    let (year, month) = date::next_month(year, month);
+                    self.popup = Some(Popup::Calendar {
+                        year,
+                        month,
+                        anchor,
+                    });
+                    self.popup_focus = 2;
+                }
+                focused => {
+                    let day = (focused - 1) as u32;
+                    if day <= date::days_in_month(year, month) {
+                        let iso = format!("{year:04}-{month:02}-{day:02}");
+                        if let Some(form) = &mut self.form {
+                            form.draft.birthday = Birthday::parse(&iso);
+                            if let Some(input) = form
+                                .inputs
+                                .iter_mut()
+                                .find(|input| input.slot == Slot::Birthday)
+                            {
+                                input.ti.set_text(&iso);
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    }
+
     /// Global list shortcuts: arrow-key selection, Delete/Backspace opens the
     /// delete-confirm dialog, `n` starts a new contact, `e` edits the
     /// selection, `/` focuses search. Only reached in view mode with no
     /// popup open (see the call site's guard).
     fn handle_key_list_shortcuts(&mut self, ke: &KeyEvent, handled: &mut bool) {
         match &ke.logical_key {
-            Key::Named(NamedKey::Tab) if self.store.is_empty() => {
+            Key::Named(NamedKey::Tab) if self.empty_list_action != EmptyListAction::None => {
                 self.search.set_focus(false);
                 self.empty_action_focused = true;
                 *handled = true;
                 self.dirty = true;
             }
             Key::Named(NamedKey::Enter | NamedKey::Space)
-                if self.store.is_empty() && self.empty_action_focused =>
+                if self.empty_list_action != EmptyListAction::None && self.empty_action_focused =>
             {
-                self.begin_new_contact();
+                self.activate_empty_list_action();
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {
@@ -9589,6 +9975,80 @@ mod tests {
             Some((msg, _)) => assert!(msg.to_lowercase().contains("select")),
             None => panic!("an empty export must surface a guiding toast"),
         }
+    }
+
+    #[test]
+    fn empty_filtered_list_offers_a_keyboard_and_semantic_clear_action() {
+        let mut h = Harness::new(1_280, 800);
+        h.app.search.set_text("definitely no contact");
+        h.relayout();
+        assert_eq!(h.app.visible_row_count, 0);
+        assert_eq!(h.app.empty_list_action, EmptyListAction::ClearFilters);
+
+        let tree = h.app.accessibility().expect("an empty list is semantic");
+        let list = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("contacts list is exposed");
+        assert!(list.children.iter().any(|child| {
+            child.action_target.as_deref() == Some("contacts.empty.clear-filters")
+        }));
+
+        h.press_named(NamedKey::Tab);
+        assert!(
+            h.app.empty_action_focused,
+            "Tab reaches the empty-list action"
+        );
+        h.press_named(NamedKey::Enter);
+        assert!(h.app.search.value().is_empty());
+        assert!(h.app.group_filter.is_none());
+        h.relayout();
+        assert!(
+            h.app.visible_row_count > 0,
+            "clearing restores the address book"
+        );
+    }
+
+    #[test]
+    fn compact_toolbar_has_room_and_tooltips_at_phone_width() {
+        let mut h = Harness::new(320, 640);
+        assert!(h.app.toolbar_is_compact());
+        assert!(h.app.hit.import.x0 >= h.app.rect.x0 + PAD - 0.01);
+        assert!(h.app.hit.import.x1 < h.app.hit.export.x0);
+        assert!(h.app.hit.export.x1 < h.app.hit.new.x0);
+        h.app.last_mouse = h.app.hit.import.center();
+        assert_eq!(Widget::tooltip(&h.app), Some("Import contacts"));
+        h.app.last_mouse = h.app.hit.new.center();
+        assert_eq!(Widget::tooltip(&h.app), Some("Create contact"));
+    }
+
+    #[test]
+    fn popup_keyboard_selects_the_same_type_choice_as_a_pointer() {
+        let mut h = Harness::new(1_280, 800);
+        let id = h.app.selected.expect("sample contact selected");
+        let contact = h.app.store.get(id).cloned().expect("stored contact");
+        h.app.begin_edit(contact, false);
+        h.relayout();
+        let chip = h
+            .app
+            .hit
+            .type_chips
+            .iter()
+            .find(|(target, _)| matches!(target, TypeTarget::Phone(0)))
+            .map(|(_, rect)| *rect)
+            .expect("phone type chip is visible");
+        h.press_left(chip.center());
+        assert!(matches!(h.app.popup, Some(Popup::TypeMenu { .. })));
+        assert_eq!(h.app.popup_focus, 0, "first menu row receives focus");
+        h.press_named(NamedKey::ArrowDown);
+        h.press_named(NamedKey::Enter);
+        assert!(h.app.popup.is_none(), "activation dismisses the menu");
+        assert_eq!(
+            h.app.form.as_ref().expect("still editing").draft.phones[0].label,
+            TYPE_OPTIONS[1],
+            "keyboard activation uses the same draft update as a click"
+        );
     }
 
     #[test]
