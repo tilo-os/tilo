@@ -1,7 +1,8 @@
 //! Root widget for the Maps app.
 //!
-//! `MapsApp` owns the in-memory [`MapModel`] (mirrored into the CRDT every
-//! frame via [`crate::doc::MapsDoc`]) and the static vector [`Basemap`]. It
+//! `MapsApp` owns the in-memory [`MapModel`] and the static vector [`Basemap`].
+//! [`crate::doc::MapsDoc`] synchronizes its explicitly durable resources; the
+//! rest is per-window presentation state. It
 //! is a single full-window custom widget: the map is full-bleed and the UI
 //! (search bar, side panel, zoom controls, place card) floats on top, drawn
 //! straight into the Vello scene with theme-derived colours. Interaction —
@@ -78,15 +79,6 @@ const POI_MIN_ZOOM: f64 = 14.0;
 const POI_MAX: usize = 140;
 /// How many nearby POIs the Explore panel lists (the closest to the anchor).
 const NEARBY_MAX: usize = 10;
-/// Quiet period after the last view change (pan / zoom / in-progress typing)
-/// before the whole model is re-serialised into the CRDT. A continuous gesture
-/// touches `center`/`zoom` every frame; without this, `sync` would
-/// `serde_json::to_string` the entire model (route + transit geometry, places,
-/// regions) 60×/second — the measured hot pass. Coalescing collapses that to one
-/// write once the gesture settles; the view still converges for peers and
-/// survives a restart, just not per-frame.
-const PERSIST_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(120);
-
 /// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
 enum Hit {
@@ -178,17 +170,6 @@ pub struct MapsApp {
 
     // CRDT bridge
     loaded: bool,
-    dirty: bool,
-    /// When the coalesced view-persist should flush. Armed by [`mark_dirty`] and
-    /// pushed forward on every subsequent change, so a continuous pan/zoom writes
-    /// the model to the CRDT once — after [`PERSIST_DEBOUNCE`] of quiet — rather
-    /// than serialising the whole model every frame.
-    persist_deadline: Option<Instant>,
-    /// A committed `MapsAction::CommitSearch` received from the shared document.
-    /// It is intentionally a one-shot UI effect: the action persists only the
-    /// deterministic search intent, while local/offline and live providers
-    /// resolve results after the document has converged.
-    pending_shared_search: Option<String>,
 
     // networking
     net_tx: Sender<NetMsg>,
@@ -571,9 +552,6 @@ impl MapsApp {
             content_h: 0.0,
             content_view_h: 0.0,
             loaded: false,
-            dirty: true,
-            persist_deadline: None,
-            pending_shared_search: None,
             net_tx,
             net_rx,
             pending: 0,
@@ -623,6 +601,14 @@ impl MapsApp {
     /// Screenshot-only hook for the shared attribution dialog.
     pub fn set_demo_attribution(&mut self) {
         self.info_sheet.open(MapInfo::Attribution);
+    }
+
+    /// Screenshot-only hook for an honest recoverable network failure. This
+    /// keeps visual regression review from treating loading and error states as
+    /// interchangeable, while the production app still obtains this text only
+    /// from a real worker failure.
+    pub fn set_demo_error(&mut self) {
+        self.model.status = "Map imagery unavailable offline — reconnect and try again".into();
     }
 
     /// Screenshot-only hook: force the active side panel so each tab can be
@@ -851,7 +837,6 @@ impl MapsApp {
     /// resident tiles scaled under an affine instead of blanking.
     pub fn set_zoom_for_verify(&mut self, zoom: f64) {
         self.model.zoom = zoom.clamp(3.0, 19.0);
-        self.mark_dirty();
     }
 
     /// Live-verify read-back of the current camera zoom.
@@ -1047,40 +1032,27 @@ impl MapsApp {
         // The metadata row is the action; the tile deletion above is external.
         self.perform(doc, &MapsAction::DeleteRegion { id: id.to_string() });
         self.model.status = format!("Removed “{}” · {} freed", region.name, format_bytes(freed));
-        self.mark_dirty();
     }
 
     // --- actions -----------------------------------------------------------
-    fn mark_dirty(&mut self) {
-        self.dirty = true;
-        // Push the persist deadline forward so a continuous gesture coalesces
-        // into a single serialise once it settles (see `PERSIST_DEBOUNCE`).
-        self.persist_deadline = Some(Instant::now() + PERSIST_DEBOUNCE);
-    }
-
     /// Dispatch one collaborative [`MapsAction`] against the shared document.
     ///
-    /// Maps holds its state as an in-memory [`MapModel`] mirrored into a single
-    /// CRDT blob, so this first flushes the live model to `doc` (usually a no-op —
-    /// `sync` already did — but it guarantees the action mutates current state and
-    /// that the [`ActionHost`](ui::ActionHost) brackets *only* the action). The
-    /// host encodes + applies it via the executor (one undo boundary, byte-
-    /// identical replay on peers); we then re-adopt the mutated model so the UI
-    /// and the document agree on a single source of truth.
+    /// The host applies the same canonical binding used by resources and
+    /// on-screen controls. Local presentation state is never pre-flushed.
     fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
-        MapsDoc::save(doc, &self.model);
+        // Test/standalone callers may invoke an action before the widget's
+        // first sync. Seed once only; ordinary interactions never mirror local
+        // presentation back into an existing document.
+        if MapsDoc::load(doc).is_none() {
+            MapsDoc::save(doc, &self.model);
+        }
         self.actions.dispatch_with_context(
             doc,
             MAPS_ACTION_TYPE,
             action,
             qos_actions::ActionContext::for_action("org.qos.Maps", "Maps", action),
         );
-        if let Some(model) = MapsDoc::load(doc) {
-            self.model = model;
-            self.endpoints
-                .sync_queries(&self.model.origin_query, &self.model.dest_query);
-        }
-        self.dirty = false;
+        MapsDoc::apply_durable(doc, &mut self.model);
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -1090,7 +1062,6 @@ impl MapsApp {
         if on {
             self.refresh_traffic();
         }
-        self.mark_dirty();
     }
 
     /// Populate the traffic overlay.
@@ -1139,7 +1110,6 @@ impl MapsApp {
         }
         // Selecting a place (e.g. tapping a map marker) reveals its card.
         self.nav_open = true;
-        self.mark_dirty();
     }
 
     /// Point the destination at the currently-selected place. The explicit
@@ -1172,7 +1142,6 @@ impl MapsApp {
                 self.recompute_route();
             }
         }
-        self.mark_dirty();
     }
 
     /// Resolve the route/transit origin. Uses a prior origin if one is set,
@@ -1283,7 +1252,6 @@ impl MapsApp {
         let q = self.model.query.trim().to_string();
         let matches = self.ranked_matches(&q);
         self.search.query_changed(&q, matches, Instant::now());
-        self.mark_dirty();
     }
 
     /// Fire the debounced live geocode if the quiet period has elapsed. Called
@@ -1329,7 +1297,6 @@ impl MapsApp {
 
         // Live augmentation (best effort).
         self.spawn_search(q);
-        self.mark_dirty();
     }
 
     fn spawn_search(&mut self, query: String) {
@@ -1355,7 +1322,6 @@ impl MapsApp {
                 }
                 let results = self.local_matches(&text);
                 self.endpoints.set_results(endpoint, results);
-                self.mark_dirty();
             }
             EndpointEffect::Search { endpoint, query } => {
                 self.run_endpoint_search(endpoint, query);
@@ -1370,7 +1336,6 @@ impl MapsApp {
         let local_results = self.local_matches(&query);
         self.endpoints.set_results(endpoint, local_results);
         if query.trim().is_empty() {
-            self.mark_dirty();
             return;
         }
         self.pending += 1;
@@ -1387,7 +1352,6 @@ impl MapsApp {
                 });
             });
         }
-        self.mark_dirty();
     }
 
     /// Adopt a geocoded dropdown result as the chosen endpoint: set its coord +
@@ -1411,7 +1375,6 @@ impl MapsApp {
         } else {
             self.recompute_route();
         }
-        self.mark_dirty();
     }
 
     /// Kick off a real device-location fix via the location portal (`GeoClue2`
@@ -1426,7 +1389,6 @@ impl MapsApp {
         if self.online {
             self.location_rx = Some(location::request_location());
         }
-        self.mark_dirty();
     }
 
     /// The wall-clock instant the trip clocks are anchored to. Live sessions use
@@ -1511,7 +1473,6 @@ impl MapsApp {
                 let _ = tx.send(NetMsg::Route(r));
             });
         }
-        self.mark_dirty();
     }
 
     /// React to a change of the leave/arrive time anchor. Transit re-plans the
@@ -1522,7 +1483,6 @@ impl MapsApp {
         if self.model.mode.is_transit() {
             self.recompute_transit();
         }
-        self.mark_dirty();
     }
 
     fn recompute_transit(&mut self) {
@@ -1557,7 +1517,6 @@ impl MapsApp {
                 let _ = tx.send(NetMsg::Transit(r));
             });
         }
-        self.mark_dirty();
     }
 
     fn set_mode(&mut self, mode: TravelMode) {
@@ -1579,13 +1538,20 @@ impl MapsApp {
             // an explicit `saved`, never a read-and-toggle that could diverge on
             // replay.
             let now_saved = self.model.place(&id).is_some_and(|p| p.saved);
+            let saved = !now_saved;
             self.perform(
                 doc,
                 &MapsAction::SetPlaceSaved {
-                    id,
-                    saved: !now_saved,
+                    id: id.clone(),
+                    saved,
                 },
             );
+            // The selection is local; reflect the explicit action payload in
+            // this window even when the selected search result is not yet a
+            // durable bookmark row.
+            if let Some(place) = self.model.places.iter_mut().find(|place| place.id == id) {
+                place.saved = saved;
+            }
         }
     }
 
@@ -1694,14 +1660,12 @@ impl MapsApp {
             self.model.zoom,
         );
         self.schedule_pois();
-        self.mark_dirty();
     }
 
     fn pan_by(&mut self, dx: f64, dy: f64) {
         let cw = geo::lonlat_to_world(self.model.center, self.model.zoom);
         self.model.center = geo::world_to_lonlat(cw.0 - dx, cw.1 - dy, self.model.zoom);
         self.schedule_pois();
-        self.mark_dirty();
     }
 
     // --- POI layer (Overpass) ----------------------------------------------
@@ -1828,7 +1792,6 @@ impl MapsApp {
     /// Open the info card for a POI marker.
     fn select_poi(&mut self, id: &str) {
         self.selected_poi = Some(id.to_string());
-        self.mark_dirty();
     }
 
     /// The viewport POIs the Explore panel lists, nearest-first. The selected
@@ -1861,7 +1824,6 @@ impl MapsApp {
         self.selected_poi = Some(id.to_string());
         // Reveal the drawer on narrow layouts so the tapped result is visible.
         self.nav_open = true;
-        self.mark_dirty();
     }
 
     /// Route to the POI whose info card is open: adopt it as the destination
@@ -1916,15 +1878,24 @@ impl MapsApp {
                   message kinds, and splitting arms out would relocate the code, not \
                   shrink what a reader must trace for one variant"
     )]
-    fn drain_net(&mut self) {
+    fn drain_net(&mut self, mut doc: Option<&mut AutoCommit>) {
         while let Ok(msg) = self.net_rx.try_recv() {
             self.pending = self.pending.saturating_sub(1);
             match msg {
                 NetMsg::Search { query, results } => match results {
                     Ok(found) if !found.is_empty() => {
                         let mut ranked = found;
-                        for p in &ranked {
-                            self.model.upsert_place(p.clone());
+                        if let Some(state) = doc.as_deref_mut() {
+                            self.perform(
+                                state,
+                                &MapsAction::UpsertPlaces {
+                                    places: ranked.clone(),
+                                },
+                            );
+                        } else {
+                            for p in &ranked {
+                                self.model.upsert_place(p.clone());
+                            }
                         }
                         self.rank_results(&mut ranked, &query);
                         if self.search.is_focused() {
@@ -1952,8 +1923,17 @@ impl MapsApp {
                     results,
                 } => match results {
                     Ok(found) if !found.is_empty() => {
-                        for p in &found {
-                            self.model.upsert_place(p.clone());
+                        if let Some(state) = doc.as_deref_mut() {
+                            self.perform(
+                                state,
+                                &MapsAction::UpsertPlaces {
+                                    places: found.clone(),
+                                },
+                            );
+                        } else {
+                            for p in &found {
+                                self.model.upsert_place(p.clone());
+                            }
                         }
                         // Rank the From/To dropdown the same way the top search
                         // is ranked — relevance first, nearest-first within a
@@ -1984,7 +1964,21 @@ impl MapsApp {
                 }
                 NetMsg::Route(r) => match r {
                     Ok(route) => {
-                        self.model.route = Some(route);
+                        if let Some(state) = doc.as_deref_mut() {
+                            self.perform(
+                                state,
+                                &MapsAction::SetRoute {
+                                    route: route.clone(),
+                                    origin: self.model.origin,
+                                    origin_name: self.model.origin_name.clone(),
+                                    dest: self.model.dest,
+                                    dest_name: self.model.dest_name.clone(),
+                                    mode: self.model.mode,
+                                },
+                            );
+                        } else {
+                            self.model.route = Some(route);
+                        }
                         self.fit_route();
                         self.model.status = "Route updated".to_string();
                     }
@@ -1994,7 +1988,20 @@ impl MapsApp {
                 },
                 NetMsg::Transit(t) => match t {
                     Ok(j) if !j.is_empty() => {
-                        self.model.transit = j;
+                        if let Some(state) = doc.as_deref_mut() {
+                            self.perform(
+                                state,
+                                &MapsAction::SetTransit {
+                                    transit: j.clone(),
+                                    origin: self.model.origin,
+                                    origin_name: self.model.origin_name.clone(),
+                                    dest: self.model.dest,
+                                    dest_name: self.model.dest_name.clone(),
+                                },
+                            );
+                        } else {
+                            self.model.transit = j;
+                        }
                         // Frame the map on the itinerary now that we have real
                         // leg geometry (the same courtesy the road route gets).
                         self.fit_current();
@@ -2036,7 +2043,6 @@ impl MapsApp {
             if self.pending == 0 && self.model.status.contains('…') {
                 self.model.status.clear();
             }
-            self.mark_dirty();
         }
     }
 
@@ -2066,7 +2072,6 @@ impl MapsApp {
                         },
                     });
                 }
-                self.mark_dirty();
                 return;
             }
         };
@@ -2118,7 +2123,6 @@ impl MapsApp {
                 }
             }
         }
-        self.mark_dirty();
     }
 
     // --- click dispatch ----------------------------------------------------
@@ -2135,18 +2139,28 @@ impl MapsApp {
                 SearchEffect::Clear => {
                     self.model.query.clear();
                     self.model.results.clear();
-                    self.mark_dirty();
                 }
                 SearchEffect::Pick(place) => {
-                    self.model.upsert_place(place.clone());
+                    self.perform(
+                        doc,
+                        &MapsAction::UpsertPlaces {
+                            places: vec![place.clone()],
+                        },
+                    );
                     place.name.clone_into(&mut self.model.query);
-                    self.model.push_recent(&place.name);
+                    self.perform(
+                        doc,
+                        &MapsAction::CommitSearch {
+                            query: place.name.clone(),
+                        },
+                    );
+                    // Selection is intentionally window-local; only accepting
+                    // the geocoded place crossed the shared action boundary.
                     self.select_place(&place.id);
                 }
             },
             Hit::ToggleCollapse => {
                 self.panel_collapsed = !self.panel_collapsed;
-                self.mark_dirty();
             }
             Hit::PanelBack => {
                 // Return from the Directions view to the plain places list. The
@@ -2155,7 +2169,6 @@ impl MapsApp {
                 self.model.panel = Panel::Explore;
                 self.endpoints.dismiss();
                 self.scroll = 0.0;
-                self.mark_dirty();
             }
             Hit::Mode(m) => self.set_mode(*m),
             Hit::SelectPlace(id) => {
@@ -2164,7 +2177,6 @@ impl MapsApp {
             Hit::SelectPoi(id) => self.select_poi_from_list(id),
             Hit::ClosePoi => {
                 self.selected_poi = None;
-                self.mark_dirty();
             }
             Hit::PoiDirections => self.poi_directions(),
             Hit::Recent(q) => {
@@ -2173,11 +2185,9 @@ impl MapsApp {
             }
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
-                self.mark_dirty();
             }
             Hit::CloseNav => {
                 self.nav_open = false;
-                self.mark_dirty();
             }
             Hit::Directions => self.enter_directions(),
             Hit::Transit => self.enter_transit(),
@@ -2202,7 +2212,6 @@ impl MapsApp {
                 // Frame the newly-selected itinerary on the map (its legs are
                 // what draws now), not just expand the panel card.
                 self.fit_current();
-                self.mark_dirty();
             }
             Hit::ToggleOverflow => {
                 if self.overflow.is_open() {
@@ -2259,7 +2268,6 @@ impl MapsApp {
                     || format!("Downloading {count} tiles for offline use…"),
                     |name| format!("Downloading {count} tiles for {name}…"),
                 );
-                self.mark_dirty();
             }
             OfflineAction::DeleteRegion(id) => self.delete_region(doc, &id),
             OfflineAction::ClearCache => {
@@ -2267,7 +2275,6 @@ impl MapsApp {
                 self.offline_panel.set_cache_bytes(0);
                 self.perform(doc, &MapsAction::ClearRegions);
                 self.model.status = format!("Cleared {} of offline tiles", format_bytes(freed));
-                self.mark_dirty();
             }
             OfflineAction::Consume => {}
         }
@@ -2962,9 +2969,14 @@ impl MapsApp {
         if self.search_overlay_active() {
             return;
         }
-        // Only surface transient/loading status as a top-centre pill — steady
-        // attribution lives in the bottom bar, so we don't duplicate it here.
-        if self.pending == 0 && !self.model.status.contains('…') {
+        // Surface transient progress and recoverable failures. Steady success
+        // messages stay out of the way, but hiding a failure merely because
+        // its worker finished strands a user on a silent map.
+        let status_lower = self.model.status.to_ascii_lowercase();
+        let is_error = ["failed", "unavailable", "denied", "error"]
+            .iter()
+            .any(|word| status_lower.contains(word));
+        if self.pending == 0 && !self.model.status.contains('…') && !is_error {
             return;
         }
         let label = &self.model.status;
@@ -2988,7 +3000,17 @@ impl MapsApp {
         );
         // Small spinner dot.
         let dot = Point::new(r.x0 + 16.0, r.center().y);
-        draw::fill_circle(scene, t, dot, 4.0, theme.accent_primary);
+        draw::fill_circle(
+            scene,
+            t,
+            dot,
+            4.0,
+            if is_error {
+                theme.tokens.colors.semantic.danger
+            } else {
+                theme.accent_primary
+            },
+        );
         draw::text(
             scene,
             tr,
@@ -4634,6 +4656,7 @@ impl Widget for MapsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "maps.locate",
+            "maps.search",
             "maps.toggle-traffic",
             "maps.open-place",
             "maps.directions",
@@ -4642,7 +4665,7 @@ impl Widget for MapsApp {
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Pull any background network results into the model first.
-        self.drain_net();
+        self.drain_net(Some(state));
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
         // Fire a debounced search-as-you-type geocode once typing settles.
@@ -4673,52 +4696,23 @@ impl Widget for MapsApp {
             }
         }
 
-        if !self.loaded {
-            if let Some(loaded) = MapsDoc::load(state) {
-                // Adopt an already-seeded (possibly peer-provided) document,
-                // but keep our generated basemap.
-                self.model = loaded;
+        if self.loaded {
+            // A palette/agent/peer action mutates the CRDT outside this
+            // widget's pointer path. Adopt durable resources; local camera,
+            // panel, selection and ranked results never mirror back into it.
+            MapsDoc::apply_durable(state, &mut self.model);
+        } else {
+            if MapsDoc::load(state).is_some() {
+                // Workspace resources merge into this window; the camera,
+                // panel, draft, selection and status remain local.
+                MapsDoc::apply_durable(state, &mut self.model);
             } else {
                 MapsDoc::save(state, &self.model);
             }
             self.loaded = true;
-            self.dirty = false;
-            self.persist_deadline = None;
-        } else if self.dirty {
-            if self.persist_deadline.is_none_or(|d| Instant::now() >= d) {
-                // The view has settled (or a non-gesture change had no deadline):
-                // flush the whole model once. Coalescing lives in `mark_dirty`.
-                MapsDoc::save(state, &self.model);
-                self.dirty = false;
-                self.persist_deadline = None;
-            }
-        } else if let Some(shared) = MapsDoc::load(state)
-            && shared != self.model
-        {
-            // A palette/agent/peer action mutates the CRDT outside this
-            // widget's pointer path. Adopt it before our next ordinary model
-            // mirror so we never overwrite a remote action with stale local
-            // state. A newly committed search is then resolved below through
-            // the same `run_search` path as Enter in the visible search box.
-            let committed_search = shared.query != self.model.query
-                && shared
-                    .recents
-                    .first()
-                    .is_some_and(|recent| recent.eq_ignore_ascii_case(&shared.query));
-            self.model = shared;
-            if committed_search && !self.model.query.trim().is_empty() {
-                self.pending_shared_search = Some(self.model.query.clone());
-            }
         }
         self.endpoints
             .sync_queries(&self.model.origin_query, &self.model.dest_query);
-        if let Some(query) = self.pending_shared_search.take() {
-            // Do not leave a stale type-ahead popup floating over results that
-            // arrived from another collaborator or an agent action.
-            self.search.dismiss_results();
-            query.clone_into(&mut self.model.query);
-            self.run_search();
-        }
         if let Some(effect) = self.endpoints.take_due_search(Instant::now()) {
             self.apply_endpoint_effect(effect);
         }
@@ -4997,9 +4991,7 @@ impl Widget for MapsApp {
                         // Empty map: close any open POI card and begin a pan.
                         // Claim the press so the compositor/ui App treats the map
                         // as the interaction target for the gesture that follows.
-                        if self.selected_poi.take().is_some() {
-                            self.mark_dirty();
-                        }
+                        self.selected_poi.take();
                         self.dragging = true;
                         self.drag_last = p;
                         *handled = true;
@@ -5141,6 +5133,12 @@ impl Widget for MapsApp {
         _path: &ObjId,
     ) -> Result<bool, String> {
         match (kind, type_id) {
+            (OperationKind::View, "maps.search") => {
+                let query: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.model.query = query;
+                self.run_search();
+            }
             (OperationKind::Effect, "maps.locate") => {
                 if self.location_rx.is_some() {
                     return Err("A location request is already in progress".into());
@@ -5434,10 +5432,6 @@ impl Widget for MapsApp {
         // false and the loop settles instead of re-requesting every frame.
         self.pending > 0
             || !self.loaded
-            // A coalesced view-persist is still pending — keep idling until it
-            // flushes, so a settled pan/zoom always reaches the CRDT even if
-            // nothing else is in flight.
-            || self.dirty
             || self.locating
             || self.location_rx.is_some()
             || self.poi_debounce.is_some()
@@ -5548,8 +5542,7 @@ impl MapsApp {
             && let Some(place_id) = resource.id.as_str().strip_prefix(prefix)
             && self.model.place(place_id).is_some()
         {
-            // Search results already export the durable SelectPlace `open`
-            // action. Saved places need a local presentation-only opener.
+            // Saved places expose a local presentation-only opener.
             if resource.kind == "maps.place"
                 && let Ok(spec) = ActionSpec::operation(
                     "open",
@@ -5598,13 +5591,12 @@ impl MapsApp {
         }
         if self.search.is_focused() {
             match self.search.handle_key(event, scale, modifiers) {
-                SearchKeyEffect::None => {}
+                SearchKeyEffect::None | SearchKeyEffect::Dismissed => {}
                 SearchKeyEffect::Changed(text) => {
                     self.model.query = text;
                     self.on_search_input();
                 }
                 SearchKeyEffect::Submit => self.run_search(),
-                SearchKeyEffect::Dismissed => self.mark_dirty(),
             }
             return true;
         }
@@ -5654,7 +5646,6 @@ impl MapsApp {
             }
             _ => {}
         }
-        self.mark_dirty();
     }
 
     /// Forward a `CursorMoved` to all field inputs so their hover state tracks
@@ -5762,7 +5753,6 @@ impl MapsApp {
                 } else {
                     self.model.selected = None;
                 }
-                self.mark_dirty();
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("m") => {
@@ -5815,7 +5805,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_place_open_uses_the_same_selection_route_as_the_map() {
+    fn resource_place_open_is_window_local() {
         let mut app = MapsApp::offline();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
@@ -5839,6 +5829,32 @@ mod tests {
             .unwrap()
         );
         assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
+        assert!(
+            MapsDoc::load(&state.doc).is_some_and(|model| model.selected.is_none()),
+            "opening a resource never changes another window's selection"
+        );
+    }
+
+    #[test]
+    fn resource_search_is_a_local_brokered_operation() {
+        let mut app = MapsApp::offline();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let recents_before = MapsDoc::load(&state.doc).unwrap().recents;
+        let payload = serde_json::to_vec("Marienplatz").unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                "maps.search",
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.query, "Marienplatz");
+        assert!(!app.model.results.is_empty());
+        assert_eq!(MapsDoc::load(&state.doc).unwrap().recents, recents_before);
     }
 
     fn app_at(w: f64, h: f64) -> MapsApp {
@@ -5915,58 +5931,29 @@ mod tests {
         }
     }
 
-    /// The coalesced view-persist must not write every frame during a gesture,
-    /// yet must reliably flush once the view settles — the correctness half of
-    /// the perf fix (the perf guards above prove the cost half).
     #[test]
-    fn view_persist_is_coalesced_then_flushes() {
-        use crate::doc::MapsDoc;
-        let mut a = app_at(1280.0, 800.0);
+    fn local_pan_cannot_overwrite_a_peer_bookmark() {
+        let mut app = app_at(1280.0, 800.0);
         let mut state = ui::State::new();
-        // First sync seeds the CRDT from the model.
-        a.sync(&mut state.doc, &state.root);
-        assert!(!a.dirty, "loaded model is clean after the seeding sync");
-
-        // A zoom marks the model dirty and arms the debounce in the future.
-        a.zoom_by(1.0, a.view_center());
+        app.sync(&mut state.doc, &state.root);
+        let bytes = state.doc.save();
+        let mut peer = AutoCommit::load(&bytes).expect("peer replica");
+        let id = app.model.places[0].id.clone();
+        MapsDoc::set_place_saved(&mut peer, &id, true);
+        app.pan_by(96.0, 0.0);
+        app.sync(&mut state.doc, &state.root);
+        state.doc.merge(&mut peer).expect("merge peer action");
+        app.sync(&mut state.doc, &state.root);
         assert!(
-            a.dirty && a.persist_deadline.is_some(),
-            "a view change arms a deferred flush"
-        );
-
-        // Immediately after, sync must NOT serialise+write — this is the
-        // per-frame churn we removed. The doc still holds the pre-zoom view.
-        a.sync(&mut state.doc, &state.root);
-        assert!(
-            a.dirty,
-            "a fresh gesture is not persisted on the very next frame"
-        );
-        let mid = MapsDoc::load(&state.doc).expect("doc seeded");
-        assert_ne!(
-            mid.zoom, a.model.zoom,
-            "the in-flight view has not yet reached the doc"
-        );
-
-        // Once the quiet period elapses, the next sync flushes exactly once.
-        a.persist_deadline = Some(
-            Instant::now()
-                .checked_sub(std::time::Duration::from_millis(1))
-                .unwrap(),
-        );
-        a.sync(&mut state.doc, &state.root);
-        assert!(
-            !a.dirty && a.persist_deadline.is_none(),
-            "the settled view flushed and disarmed"
-        );
-        let after = MapsDoc::load(&state.doc).expect("doc seeded");
-        assert!(
-            (after.zoom - a.model.zoom).abs() < 1e-9,
-            "the settled zoom reached the doc"
+            MapsDoc::load(&state.doc)
+                .and_then(|model| model.place(&id).map(|place| place.saved))
+                .unwrap_or(false),
+            "a local camera update must not write stale place data over a peer bookmark"
         );
     }
 
     #[test]
-    fn loaded_endpoint_queries_replace_an_in_progress_local_draft() {
+    fn loaded_endpoint_queries_do_not_replace_an_in_progress_local_draft() {
         let mut a = app_at(1280.0, 800.0);
         a.endpoints.begin_edit(Endpoint::Origin);
         a.endpoints.sync_queries("Local draft", "");
@@ -5979,12 +5966,9 @@ mod tests {
 
         a.sync(&mut state.doc, &state.root);
 
-        assert_eq!(a.model.origin_query, "Peer origin");
-        assert_eq!(a.endpoints.test_query(Endpoint::Origin), "Peer origin");
-        assert_eq!(
-            a.endpoints.test_query(Endpoint::Destination),
-            "Peer destination"
-        );
+        assert_ne!(a.model.origin_query, "Peer origin");
+        assert_eq!(a.endpoints.test_query(Endpoint::Origin), "");
+        assert_eq!(a.endpoints.test_query(Endpoint::Destination), "");
     }
 
     /// The ⋯ overflow menu carries map utilities plus the shared live-navigation
@@ -6520,7 +6504,7 @@ mod tests {
                 pois: Ok(vec![demo_poi("p1", 48.1, 11.5)]),
             })
             .unwrap();
-        a.drain_net();
+        a.drain_net(None);
         assert_eq!(a.pois.len(), 1, "a current reply populates the layer");
 
         a.net_tx
@@ -6529,7 +6513,7 @@ mod tests {
                 pois: Ok(vec![]),
             })
             .unwrap();
-        a.drain_net();
+        a.drain_net(None);
         assert_eq!(
             a.pois.len(),
             1,
@@ -7116,7 +7100,7 @@ mod tests {
                 results: Ok(vec![p]),
             })
             .unwrap();
-        a.drain_net();
+        a.drain_net(None);
         assert!(
             a.endpoints
                 .test_results(Endpoint::Destination)
@@ -7161,7 +7145,7 @@ mod tests {
                 results: Ok(vec![far, near]), // far listed first, as importance order would
             })
             .unwrap();
-        a.drain_net();
+        a.drain_net(None);
         assert_eq!(
             a.endpoints
                 .test_results(Endpoint::Destination)
@@ -7224,7 +7208,7 @@ mod tests {
         let dense_len = worker.join().expect("worker thread completes");
 
         // UI thread folds the worker's reply via the production drain path.
-        a.drain_net();
+        a.drain_net(None);
         let landed = a.model.route.clone().expect("route present after drain");
         assert_eq!(
             landed.distance_m, 4200.0,
@@ -8650,9 +8634,11 @@ mod tests {
             .first()
             .expect("sample search result")
             .clone();
-        let mut saved = result.clone();
-        saved.id = "lazy-saved".to_string();
+        let mut saved = result;
+        saved.id = "eager-saved".to_string();
         saved.saved = true;
+        a.model.places.push(saved.clone());
+        saved.id = "lazy-saved".to_string();
         a.model.places.push(saved);
         let mut doc = AutoCommit::new();
         MapsDoc::save(&mut doc, &a.model);
@@ -8661,7 +8647,7 @@ mod tests {
             .into_iter()
             .next()
             .expect("maps root");
-        let result_resource_id = format!("maps.search-result:{}", result.id);
+        let result_resource_id = "maps.place:eager-saved".to_string();
         let eager_result = root
             .children
             .iter()
