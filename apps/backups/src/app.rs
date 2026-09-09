@@ -7,11 +7,10 @@
 //! ui widgets don't fit a timeline this dense, so we lay it out by hand.
 //!
 //! State split:
-//!   * the *catalog* (snapshot listing) is held in memory ([`Catalog`]) and
-//!     projected from the local backup repository;
-//!   * everything the user changes (open view, selection, restore sheet,
-//!     retention policy) lives in the Automerge doc (see [`BackupsDoc`]),
-//!     read into a small cache on `sync` and kept in step from `handle_event`.
+//!   * the *catalog* (snapshot listing), navigation, selections, modal state,
+//!     focus, and device/backend observations are local to this widget;
+//!   * durable retention policy lives in the Automerge doc (see
+//!     [`BackupsDoc`]) and is changed only through a typed action.
 
 use std::collections::HashMap;
 use std::fs;
@@ -84,8 +83,6 @@ enum Hit {
     Snap(String),
     Dest(String),
     Policy(PolicyField, i64),
-    FileRow(usize),
-    // Used by the optional per-file restore sheet.
     RestoreOpen,
     RestoreConfirm,
     RestoreCancel,
@@ -118,9 +115,9 @@ enum ShotScenario {
     Restore,
 }
 
-/// Cached copy of the CRDT UI state, refreshed on every `sync` and kept in
-/// step after each handled event so `draw` (which has no doc access) sees the
-/// latest selection.
+/// Local view state. It is intentionally never read from or written to the
+/// collaborative document: another device's active modal or local repository
+/// selection must not navigate this device or trigger a restore prompt.
 struct UiCache {
     view: View,
     sel_source: Option<String>,
@@ -155,7 +152,6 @@ pub struct BackupsApp {
     timeline_view: Rect,
     timeline_content_h: f64,
     policy_focus: usize,
-    file_sel: usize,
     toast: Option<(String, ToastKind, Instant)>,
     seeded: bool,
     /// The Timeline source rail as the shared adaptive drawer: docked beside the
@@ -239,7 +235,6 @@ impl BackupsApp {
             timeline_view: Rect::ZERO,
             timeline_content_h: 0.0,
             policy_focus: 0,
-            file_sel: 0,
             toast: None,
             seeded: false,
             drawer: SidebarDrawer::new()
@@ -291,14 +286,7 @@ impl BackupsApp {
     }
 
     fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
-        self.ui = UiCache {
-            view: BackupsDoc::view(doc, root),
-            sel_source: BackupsDoc::selected_source(doc, root),
-            sel_snapshot: BackupsDoc::selected_snapshot(doc, root),
-            sel_dest: BackupsDoc::selected_dest(doc, root),
-            restore_open: BackupsDoc::restore_open(doc, root),
-            policy: BackupsDoc::policy(doc, root),
-        };
+        self.ui.policy = BackupsDoc::policy(doc, root);
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
@@ -483,7 +471,14 @@ impl BackupsApp {
                             }
                         }
                     }
-                    PickPurpose::Restore => self.start_restore(path),
+                    PickPurpose::Restore => {
+                        // The sheet promises a destination chooser, not a
+                        // background restore. Dismiss it only after the user
+                        // explicitly chose a folder; `start_restore` still
+                        // calls the engine with `overwrite = false`.
+                        self.ui.restore_open = false;
+                        self.start_restore(path);
+                    }
                 },
                 ui::portal::PortalOutcome::Cancelled => {}
                 ui::portal::PortalOutcome::Failed(error) => self.toast_error(error),
@@ -1848,7 +1843,7 @@ impl BackupsApp {
             &ButtonFace::new(restore, "Restore…")
                 .primary()
                 .radius(7.0)
-                .hovered(self.hover == Some(Hit::RestoreConfirm)),
+                .hovered(self.hover == Some(Hit::RestoreOpen)),
         );
         self.hits.push((verify, Hit::Verify));
         self.hits.push((restore, Hit::RestoreOpen));
@@ -3354,9 +3349,9 @@ impl BackupsApp {
 
         let (m, narrow_modal) =
             Self::draw_restore_modal_frame(scene, t, tr, theme, self.rect, &snap, src);
-        let (tree, opt) = Self::draw_restore_modal_layout(m, narrow_modal);
-        self.draw_restore_file_tree(scene, t, tr, theme, tree, &snap);
-        Self::draw_restore_options(scene, t, tr, theme, opt, &snap);
+        let (contents, safety) = Self::draw_restore_modal_layout(m, narrow_modal);
+        Self::draw_restore_contents(scene, t, tr, theme, contents, &snap);
+        Self::draw_restore_safety(scene, t, tr, theme, safety, &snap);
         self.draw_restore_footer_buttons(scene, t, tr, theme, m);
     }
 
@@ -3397,45 +3392,108 @@ impl BackupsApp {
             ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
         );
 
-        let title = format!(
-            "Restore  ·  {}  @  {} {}",
-            src.map(|s| s.path.clone()).unwrap_or_default(),
-            Catalog::day_label(snap.day),
-            snap.time
-        );
-        paint::text_bold(
-            scene,
-            tr,
-            t,
-            &title,
-            17.0,
-            c.text_primary,
-            m.x0 + 24.0,
-            m.y0 + 20.0,
-        );
-        paint::text(
-            scene,
-            tr,
-            t,
-            "Choose files to recover, then confirm. Restores never overwrite without asking.",
-            12.0,
-            c.text_dim,
-            m.x0 + 24.0,
-            m.y0 + 46.0,
-        );
+        let inner_w = (m.width() - 48.0).max(0.0) as f32;
+        if narrow_modal {
+            // A long local path or localized date must not squeeze a recovery
+            // warning off a phone-sized sheet. Keep the narrow heading short,
+            // put the bounded provenance beneath it, then reserve a separate
+            // safety line for the operation's real contract.
+            paint::text_bold(
+                scene,
+                tr,
+                t,
+                "Restore snapshot",
+                15.0,
+                c.text_primary,
+                m.x0 + 24.0,
+                m.y0 + 16.0,
+            );
+            let metadata = Self::narrow_restore_metadata(src, snap);
+            let metadata = tr.elide_to_width(&metadata, 11.5, inner_w);
+            let contract = tr.elide_to_width(
+                "Complete snapshot · choose a new or empty folder",
+                11.5,
+                inner_w,
+            );
+            paint::text(
+                scene,
+                tr,
+                t,
+                &metadata,
+                11.5,
+                c.text_dim,
+                m.x0 + 24.0,
+                m.y0 + 37.0,
+            );
+            paint::text(
+                scene,
+                tr,
+                t,
+                &contract,
+                11.5,
+                c.text_dim,
+                m.x0 + 24.0,
+                m.y0 + 55.0,
+            );
+        } else {
+            let title = format!(
+                "Restore  ·  {}  @  {} {}",
+                src.map_or("Unknown source", |source| source.path.as_str()),
+                Catalog::day_label(snap.day),
+                snap.time
+            );
+            let title = tr.elide_to_width_weighted(&title, 17.0, inner_w, TextWeight::Bold);
+            paint::text_bold(
+                scene,
+                tr,
+                t,
+                &title,
+                17.0,
+                c.text_primary,
+                m.x0 + 24.0,
+                m.y0 + 20.0,
+            );
+            let detail = tr.elide_to_width(
+                "Recover the complete snapshot into a new or empty folder. Existing files are never replaced.",
+                12.0,
+                inner_w,
+            );
+            paint::text(
+                scene,
+                tr,
+                t,
+                &detail,
+                12.0,
+                c.text_dim,
+                m.x0 + 24.0,
+                m.y0 + 46.0,
+            );
+        }
         (m, narrow_modal)
     }
 
-    /// Split the modal body into the file-tree and options-column rects: side
-    /// by side when wide, stacked (tree over options) when the modal is too
-    /// narrow for two readable columns. Split out of
+    /// Phone-width provenance deliberately uses a source kind, never an
+    /// unbounded local path. The painter still elides it against the actual
+    /// viewport to accommodate localized day/time labels.
+    fn narrow_restore_metadata(src: Option<&Source>, snap: &Snapshot) -> String {
+        let source = src.map_or("Unknown source", |source| source.kind.label());
+        format!(
+            "From {source} · {} {}",
+            Catalog::day_label(snap.day),
+            snap.time
+        )
+    }
+
+    /// Split the modal body into the contents preview and safety summary: side
+    /// by side when wide, stacked when the modal is too narrow for two readable
+    /// columns. Split out of
     /// [`Self::draw_restore_modal`] to keep it under the line budget.
     fn draw_restore_modal_layout(m: Rect, narrow_modal: bool) -> (Rect, Rect) {
-        let body_y = m.y0 + 74.0;
+        let body_y = m.y0 + if narrow_modal { 92.0 } else { 74.0 };
         let body_bottom = m.y1 - 76.0;
         if narrow_modal {
-            // Give the options column enough height for its four rows + the
-            // estimate line, so nothing overlaps.
+            // Give the safety summary enough height for its four factual rows
+            // and the estimate line, so nothing overlaps.
             let mid = body_y + (body_bottom - body_y) * 0.46;
             (
                 Rect::new(m.x0 + 24.0, body_y, m.x1 - 24.0, mid - 8.0),
@@ -3450,12 +3508,11 @@ impl BackupsApp {
         }
     }
 
-    /// The file browser: an honest empty state when the snapshot has no
-    /// index, otherwise the row-per-file listing (each a hit target). Split
-    /// out of [`Self::draw_restore_modal`] to keep it under the line budget.
+    /// A non-interactive contents preview. The restore engine currently
+    /// restores whole snapshots, so these rows intentionally are not selectable
+    /// and never imply a per-file restore capability.
     #[allow(clippy::too_many_arguments)]
-    fn draw_restore_file_tree(
-        &mut self,
+    fn draw_restore_contents(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3507,16 +3564,15 @@ impl BackupsApp {
             if ry + row_h > tree.y1 - 4.0 {
                 break;
             }
-            self.draw_restore_file_row(scene, t, tr, theme, tree, ry, row_h, i, f);
+            Self::draw_restore_content_row(scene, t, tr, theme, tree, ry, row_h, f);
         }
     }
 
-    /// One row of the restore file tree: selection/hover fill, folder-or-file
-    /// glyph, name, and size. Split out of [`Self::draw_restore_file_tree`]
-    /// to keep it under the line budget.
+    /// One informational row in the snapshot preview. It deliberately has no
+    /// hover, selection, hit target, or checkbox because recovery is all-or-
+    /// nothing at this engine boundary.
     #[allow(clippy::too_many_arguments)]
-    fn draw_restore_file_row(
-        &mut self,
+    fn draw_restore_content_row(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3524,23 +3580,10 @@ impl BackupsApp {
         tree: Rect,
         ry: f64,
         row_h: f64,
-        i: usize,
         f: &SnapFile,
     ) {
         let c = &theme.tokens.colors;
         let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
-        let sel = self.file_sel == i;
-        if sel {
-            paint::fill_rrect(
-                scene,
-                t,
-                row,
-                7.0,
-                theme.accent_primary.with_alpha_factor(0.18),
-            );
-        } else if self.hover == Some(Hit::FileRow(i)) {
-            paint::fill_rrect(scene, t, row, 7.0, c.lift(0.35));
-        }
         let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
         let icol = if f.is_dir {
             theme.accent_primary
@@ -3583,12 +3626,11 @@ impl BackupsApp {
                 row.center().y - 6.0,
             );
         }
-        self.hits.push((row, Hit::FileRow(i)));
     }
 
-    /// The restore-options checkboxes + size summary. Split out of
-    /// [`Self::draw_restore_modal`] to keep it under the line budget.
-    fn draw_restore_options(
+    /// The factual recovery contract and size summary. This replaces decorative
+    /// checkboxes: every statement is enforced by `engine::restore_snapshot`.
+    fn draw_restore_safety(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3601,21 +3643,28 @@ impl BackupsApp {
             scene,
             tr,
             t,
-            "Restore options",
+            "Safe recovery",
             13.5,
             c.text_primary,
             opt.x0,
             opt.y0 + 8.0,
         );
-        let opts = [
-            ("Restore to original location", true),
-            ("Restore to a new folder", false),
-            ("Skip files that already exist", true),
-            ("Verify checksums after restore", true),
+        let facts = [
+            "Restores the complete snapshot",
+            "Choose a new or empty destination folder",
+            "Never replaces existing files",
+            "Verifies every restored file",
         ];
-        for (i, (label, on)) in opts.iter().enumerate() {
-            let oy = opt.y0 + 40.0 + i as f64 * 38.0;
-            Self::draw_restore_option_row(scene, t, tr, theme, opt.x0, oy, label, *on);
+        for (i, fact) in facts.iter().enumerate() {
+            let oy = opt.y0 + 38.0 + i as f64 * 28.0;
+            paint::dot(
+                scene,
+                t,
+                Point::new(opt.x0 + 5.0, oy + 7.0),
+                2.5,
+                theme.accent_primary,
+            );
+            paint::text(scene, tr, t, fact, 12.5, c.text_primary, opt.x0 + 16.0, oy);
         }
         // Size summary.
         paint::hline(
@@ -3649,67 +3698,6 @@ impl BackupsApp {
         );
     }
 
-    /// One restore-option checkbox row: box, checkmark when on, label. Split
-    /// out of [`Self::draw_restore_options`] to keep it under the line
-    /// budget.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_restore_option_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        oy: f64,
-        label: &str,
-        on: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let box_r = Rect::new(x0, oy, x0 + 18.0, oy + 18.0);
-        paint::fill_rrect(
-            scene,
-            t,
-            box_r,
-            5.0,
-            if on {
-                theme.accent_primary
-            } else {
-                c.neutral[2]
-            },
-        );
-        paint::stroke_rrect(
-            scene,
-            t,
-            box_r,
-            5.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
-        if on {
-            paint::poly(
-                scene,
-                t,
-                &[
-                    (box_r.x0 + 4.0, box_r.center().y),
-                    (box_r.x0 + 7.5, box_r.y1 - 5.0),
-                    (box_r.x1 - 4.0, box_r.y0 + 5.0),
-                ],
-                c.text_primary,
-                2.0,
-                false,
-            );
-        }
-        paint::text(
-            scene,
-            tr,
-            t,
-            label,
-            12.5,
-            c.text_primary,
-            box_r.x1 + 12.0,
-            oy + 2.0,
-        );
-    }
-
     /// Footer Restore/Cancel buttons. Split out of [`Self::draw_restore_modal`]
     /// to keep it under the line budget.
     fn draw_restore_footer_buttons(
@@ -3722,13 +3710,13 @@ impl BackupsApp {
     ) {
         let by = m.y1 - 56.0;
         let bh = 38.0;
-        let confirm = Rect::new(m.x1 - 24.0 - 170.0, by, m.x1 - 24.0, by + bh);
+        let confirm = Rect::new(m.x1 - 24.0 - 192.0, by, m.x1 - 24.0, by + bh);
         Button::paint(
             scene,
             t,
             tr,
             theme,
-            &ButtonFace::new(confirm, "Restore selected")
+            &ButtonFace::new(confirm, "Choose empty folder…")
                 .primary()
                 .radius(9.0)
                 .weight(TextWeight::Regular)
@@ -3940,11 +3928,11 @@ impl BackupsApp {
 
     fn dispatch(&mut self, hit: Hit, doc: &mut AutoCommit, root: &ObjId) {
         match hit {
-            Hit::Tab(v) => BackupsDoc::set_view(doc, root, v),
+            Hit::Tab(v) => self.ui.view = v,
             Hit::Source(opt) => {
-                BackupsDoc::set_selected_source(doc, root, opt.as_deref());
-                BackupsDoc::set_selected_snapshot(doc, root, None);
-                BackupsDoc::set_view(doc, root, View::Timeline);
+                self.ui.sel_source = opt;
+                self.ui.sel_snapshot = None;
+                self.ui.view = View::Timeline;
                 self.timeline_scroll = 0.0;
                 // Picking a source from an overlay rail dismisses the drawer.
                 if self.drawer.is_overlay() {
@@ -3953,11 +3941,11 @@ impl BackupsApp {
             }
             Hit::Snap(id) => {
                 let toggle = self.ui.sel_snapshot.as_deref() == Some(id.as_str());
-                BackupsDoc::set_selected_snapshot(doc, root, if toggle { None } else { Some(&id) });
+                self.ui.sel_snapshot = if toggle { None } else { Some(id) };
             }
             Hit::Dest(id) => {
-                BackupsDoc::set_selected_dest(doc, root, &id);
-                BackupsDoc::set_view(doc, root, View::Destinations);
+                self.ui.sel_dest = Some(id);
+                self.ui.view = View::Destinations;
                 if self.drawer.is_overlay() {
                     self.drawer.close();
                 }
@@ -3969,7 +3957,6 @@ impl BackupsApp {
                     .position(|f| *f == field)
                     .unwrap_or(0);
             }
-            Hit::FileRow(i) => self.file_sel = i,
             Hit::Setup => {
                 if self.source_path.is_some() {
                     self.pick_folder(PickPurpose::Destination);
@@ -3979,9 +3966,9 @@ impl BackupsApp {
             }
             Hit::BackupNow => self.start_backup(),
             Hit::Verify => self.start_verify(),
-            Hit::RestoreOpen => BackupsDoc::set_restore_open(doc, root, true),
+            Hit::RestoreOpen => self.ui.restore_open = true,
             Hit::RestoreConfirm => self.pick_folder(PickPurpose::Restore),
-            Hit::RestoreCancel => BackupsDoc::set_restore_open(doc, root, false),
+            Hit::RestoreCancel => self.ui.restore_open = false,
             // The Timeline source-rail collapse / summon toggle.
             Hit::ToggleRail => self.drawer.toggle(),
             // A tap on the scrim behind an open overlay rail dismisses it.
@@ -3990,7 +3977,7 @@ impl BackupsApp {
         self.load_cache(doc, root);
     }
 
-    fn cycle_view(&mut self, dir: i32, doc: &mut AutoCommit, root: &ObjId) {
+    fn cycle_view(&mut self, dir: i32, doc: &AutoCommit, root: &ObjId) {
         let views: &[View] = if self.source_path.is_some() {
             &LIVE_VIEWS
         } else {
@@ -4001,12 +3988,12 @@ impl BackupsApp {
         let next = ((idx + dir) % n + n) % n;
         // `next` is always in `0..n` by construction of the double-modulo above.
         if let Some(&view) = views.get(next as usize) {
-            BackupsDoc::set_view(doc, root, view);
+            self.ui.view = view;
         }
         self.load_cache(doc, root);
     }
 
-    fn move_snapshot_selection(&mut self, dir: i32, doc: &mut AutoCommit, root: &ObjId) {
+    fn move_snapshot_selection(&mut self, dir: i32, doc: &AutoCommit, root: &ObjId) {
         let snaps = self.catalog.timeline(self.ui.sel_source.as_deref());
         if snaps.is_empty() {
             return;
@@ -4030,7 +4017,7 @@ impl BackupsApp {
             return;
         };
         let id = snap.id.clone();
-        BackupsDoc::set_selected_snapshot(doc, root, Some(&id));
+        self.ui.sel_snapshot = Some(id);
         self.load_cache(doc, root);
     }
 }
@@ -4047,8 +4034,9 @@ impl Widget for BackupsApp {
             self.seeded = true;
         }
         self.load_cache(state, path);
-        // Auto-select the newest snapshot in the active filter so the detail
-        // panel + actions are visible (mirrors Notes auto-selecting a page).
+        // Auto-select the newest snapshot locally so the detail panel + actions
+        // are visible. This is a convenience selection, never a replicated
+        // document mutation.
         if self.ui.sel_snapshot.is_none() {
             let newest = self
                 .catalog
@@ -4056,7 +4044,6 @@ impl Widget for BackupsApp {
                 .first()
                 .map(|s| s.id.clone());
             if let Some(id) = newest {
-                BackupsDoc::set_selected_snapshot(state, path, Some(&id));
                 self.ui.sel_snapshot = Some(id);
             }
         }
@@ -4066,22 +4053,18 @@ impl Widget for BackupsApp {
         if let Ok(v) = std::env::var("BACKUPS_VIEW") {
             match v.as_str() {
                 "sources" => {
-                    BackupsDoc::set_view(state, path, View::Sources);
                     self.ui.view = View::Sources;
                 }
                 "destinations" => {
-                    BackupsDoc::set_view(state, path, View::Destinations);
                     self.ui.view = View::Destinations;
                 }
                 "schedules" => {
-                    BackupsDoc::set_view(state, path, View::Schedules);
                     self.ui.view = View::Schedules;
                 }
                 _ => {}
             }
         }
         if self.shot_scenario == Some(ShotScenario::Restore) {
-            BackupsDoc::set_restore_open(state, path, true);
             self.ui.restore_open = true;
         }
     }
@@ -4230,7 +4213,10 @@ impl Widget for BackupsApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if !matches!(
+            kind,
+            qos_actions::OperationKind::Effect | qos_actions::OperationKind::View
+        ) {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -4265,6 +4251,55 @@ impl Widget for BackupsApp {
                 self.ui.sel_snapshot = Some(snapshot_id);
                 self.pick_folder(PickPurpose::Restore);
             }
+            crate::actions::BackupOperation::OpenSource { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.sel_snapshot = None;
+                self.ui.view = View::Sources;
+            }
+            crate::actions::BackupOperation::OpenDestination { destination_id } => {
+                if !self
+                    .catalog
+                    .destinations
+                    .iter()
+                    .any(|destination| destination.id == destination_id)
+                {
+                    return Err("That destination is unavailable on this device.".into());
+                }
+                self.ui.sel_dest = Some(destination_id);
+                self.ui.view = View::Destinations;
+            }
+            crate::actions::BackupOperation::OpenSnapshot { snapshot_id } => {
+                if !self
+                    .catalog
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.id == snapshot_id)
+                {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.ui.view = View::Timeline;
+            }
+            crate::actions::BackupOperation::OpenSchedule { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That schedule's source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.view = View::Schedules;
+            }
         }
         Ok(true)
     }
@@ -4273,11 +4308,15 @@ impl Widget for BackupsApp {
         self.rect
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match keeps every painted hit target paired with its semantic name"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
         let controls = self
             .hits
             .iter()
-            .filter_map(|(rect, hit)| {
+            .map(|(rect, hit)| {
                 let (name, role, state) = match hit {
                     Hit::Tab(view) => (
                         format!("{} view", view.title()),
@@ -4347,19 +4386,26 @@ impl Widget for BackupsApp {
                         AccessState::new().focusable(true),
                     ),
                     Hit::RestoreOpen => (
-                        "Choose files to restore".into(),
+                        "Recover complete snapshot".into(),
                         Role::Button,
                         AccessState::new().focusable(true),
                     ),
-                    Hit::FileRow(_) | Hit::RestoreConfirm | Hit::RestoreCancel => return None,
+                    Hit::RestoreConfirm => (
+                        "Choose an empty folder for recovery".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
+                    Hit::RestoreCancel => (
+                        "Cancel recovery".into(),
+                        Role::Button,
+                        AccessState::new().focusable(true),
+                    ),
                 };
-                Some(
-                    AccessNode::new(role)
-                        .with_name(name)
-                        .with_state(state)
-                        .with_bounds(*rect)
-                        .with_action_target(format!("backups.hit:{hit:?}")),
-                )
+                AccessNode::new(role)
+                    .with_name(name)
+                    .with_state(state)
+                    .with_bounds(*rect)
+                    .with_action_target(format!("backups.hit:{hit:?}"))
             })
             .collect();
         Some(
@@ -4407,9 +4453,9 @@ impl BackupsApp {
         match key {
             Key::Named(NamedKey::Escape) => {
                 if self.ui.restore_open {
-                    BackupsDoc::set_restore_open(doc, root, false);
+                    self.ui.restore_open = false;
                 } else {
-                    BackupsDoc::set_selected_snapshot(doc, root, None);
+                    self.ui.sel_snapshot = None;
                 }
                 self.load_cache(doc, root);
                 *handled = true;
@@ -4475,23 +4521,23 @@ impl BackupsApp {
     ) {
         match s {
             "1" => {
-                BackupsDoc::set_view(doc, root, View::Timeline);
+                self.ui.view = View::Timeline;
                 self.load_cache(doc, root);
                 *handled = true;
             }
             "2" => {
-                BackupsDoc::set_view(doc, root, View::Sources);
+                self.ui.view = View::Sources;
                 self.load_cache(doc, root);
                 *handled = true;
             }
             "3" => {
-                BackupsDoc::set_view(doc, root, View::Destinations);
+                self.ui.view = View::Destinations;
                 self.load_cache(doc, root);
                 *handled = true;
             }
             "4" => {
                 if self.source_path.is_none() {
-                    BackupsDoc::set_view(doc, root, View::Schedules);
+                    self.ui.view = View::Schedules;
                     self.load_cache(doc, root);
                     *handled = true;
                 }
@@ -4563,7 +4609,8 @@ mod tests {
     /// A headless harness that drives the **production** widget path: it draws a
     /// real frame (populating the hit map exactly as the live app does), then
     /// synthesises the pointer events a real click produces and feeds them
-    /// through `handle_event`. Assertions read back the CRDT via `BackupsDoc`.
+    /// through `handle_event`. Assertions read the widget's local navigation
+    /// state while durable policy assertions continue to use `BackupsDoc`.
     struct Frame {
         app: BackupsApp,
         state: ui::State,
@@ -4671,7 +4718,7 @@ mod tests {
         }
 
         fn view(&self) -> View {
-            BackupsDoc::view(&self.state.doc, &self.state.root)
+            self.app.ui.view
         }
     }
 
@@ -4684,11 +4731,28 @@ mod tests {
         assert_eq!(
             f.view(),
             View::Destinations,
-            "clicking the tab wrote the view through the production path"
+            "clicking the tab changed the local view through the production path"
         );
         // And a second tab confirms it is not a one-shot.
         f.click_hit(|h| matches!(h, Hit::Tab(View::Schedules)));
         assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn navigation_and_modal_state_do_not_mutate_the_collaborative_document() {
+        let mut f = Frame::demo();
+        f.state.doc.commit();
+        let before = f.state.doc.get_heads();
+
+        f.click_hit(|h| matches!(h, Hit::Tab(View::Destinations)));
+        assert_eq!(f.view(), View::Destinations);
+        assert_eq!(f.state.doc.get_heads(), before, "view is device-local");
+
+        // Timeline exposes the restore sheet; opening it must be equally local.
+        f.click_hit(|h| matches!(h, Hit::Tab(View::Timeline)));
+        f.click_hit(|h| matches!(h, Hit::RestoreOpen));
+        assert!(f.app.ui.restore_open);
+        assert_eq!(f.state.doc.get_heads(), before, "modal is device-local");
     }
 
     #[test]
@@ -4707,17 +4771,34 @@ mod tests {
 
     #[test]
     fn real_storage_effects_are_reachable_from_the_timeline() {
-        let f = Frame::demo();
-        assert!(
-            f.app
-                .hits
-                .iter()
-                .all(|(_, hit)| !matches!(hit, Hit::FileRow(_))),
-            "individual file selection remains in the optional restore sheet"
-        );
+        let mut f = Frame::demo();
         assert!(f.has_hit(|hit| matches!(hit, Hit::BackupNow)));
         assert!(f.has_hit(|hit| matches!(hit, Hit::Verify)));
         assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreOpen)));
+        f.click_hit(|hit| matches!(hit, Hit::RestoreOpen));
+        assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreConfirm)));
+        assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreCancel)));
+        assert_eq!(
+            f.app
+                .hits
+                .iter()
+                .filter(|(_, hit)| matches!(hit, Hit::RestoreConfirm | Hit::RestoreCancel))
+                .count(),
+            2,
+            "the sheet has only its truthful choose-folder and cancel controls"
+        );
+        let a11y = f.app.accessibility().expect("restore accessibility tree");
+        let names: Vec<&str> = a11y
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Choose an empty folder for recovery"));
+        assert!(names.contains(&"Cancel recovery"));
+        assert!(
+            !names.iter().any(|name| name.contains("Choose files")),
+            "screen readers receive the same whole-snapshot contract as sighted users"
+        );
         let resources = Widget::resources(&f.app, &f.state.doc);
         assert_eq!(resources.len(), 2, "policy and catalog are driveable");
         assert!(
@@ -4765,5 +4846,22 @@ mod tests {
             Catalog::empty().snapshots.is_empty(),
             "the live catalog has no snapshots to fabricate files for"
         );
+    }
+
+    #[test]
+    fn narrow_restore_metadata_never_exposes_or_depends_on_a_long_local_path() {
+        let mut catalog = Catalog::sample();
+        let source = catalog.sources.first_mut().expect("sample source");
+        source.path =
+            "/an/intentionally/very/long/device/local/path/that/cannot/fit/a/phone/header".into();
+        let snapshot = catalog.snapshots.first().expect("sample snapshot");
+        let source = catalog.source(&snapshot.source_id);
+        let metadata = BackupsApp::narrow_restore_metadata(source, snapshot);
+
+        assert!(metadata.starts_with("From "));
+        assert!(!metadata.contains("/an/intentionally"));
+        let mut renderer = TextRenderer::new();
+        let fitted = renderer.elide_to_width(&metadata, 11.5, 342.0);
+        assert!(renderer.measure(&fitted, 11.5, None).0 <= 342.0);
     }
 }
