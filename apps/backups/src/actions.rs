@@ -42,9 +42,27 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BackupOperation {
     BackupNow,
-    Verify { snapshot_id: String },
-    Restore { snapshot_id: String },
+    Verify {
+        snapshot_id: String,
+    },
+    Restore {
+        snapshot_id: String,
+    },
     Setup,
+    /// Local navigation only. These IDs are stable catalog identities, never
+    /// paths or display labels, so search/agents can target a concrete item.
+    OpenSource {
+        source_id: String,
+    },
+    OpenDestination {
+        destination_id: String,
+    },
+    OpenSnapshot {
+        snapshot_id: String,
+    },
+    OpenSchedule {
+        source_id: String,
+    },
 }
 
 /// # Errors
@@ -59,15 +77,13 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<BackupOp
         .map_err(|error| format!("invalid Backups operation: {error}"))
 }
 
-fn operation_spec(id: &str, label: &str, operation: &BackupOperation) -> Option<ActionSpec> {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::Effect,
-        BACKUPS_OPERATION_TYPE,
-        operation,
-    )
-    .ok()
+fn operation_spec(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    operation: &BackupOperation,
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, kind, BACKUPS_OPERATION_TYPE, operation).ok()
 }
 
 /// Every collaborative operation the Backups app exports on its stored
@@ -191,6 +207,10 @@ fn policy_contract() -> ActionContract {
 /// The resource tree Backups publishes: the retention policy, with a child per
 /// class exporting set / increase / decrease, each the same action the
 /// on-screen affordance dispatches.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete stable resource hierarchy is intentionally visible together"
+)]
 pub fn provide_resources(
     policy: &RetentionPolicy,
     catalog: &Catalog,
@@ -239,8 +259,12 @@ pub fn provide_resources(
     }
 
     let mut backups = Resource::new("backups", "backups.workspace", "Backups");
-    if let Some(spec) = operation_spec("backup-now", "Run backup now", &BackupOperation::BackupNow)
-    {
+    if let Some(spec) = operation_spec(
+        "backup-now",
+        "Run backup now",
+        OperationKind::Effect,
+        &BackupOperation::BackupNow,
+    ) {
         backups = backups.with_action(if configured {
             spec
         } else {
@@ -250,17 +274,51 @@ pub fn provide_resources(
             )
         });
     }
-    if let Some(spec) = operation_spec("setup", "Set up backups", &BackupOperation::Setup) {
+    if let Some(spec) = operation_spec(
+        "setup",
+        "Set up backups",
+        OperationKind::Effect,
+        &BackupOperation::Setup,
+    ) {
         backups = backups.with_action(spec);
     }
 
     let mut sources = Resource::new("backups.sources", "backups.source-set", "Backup sources");
     for source in &catalog.sources {
-        sources = sources.with_child(Resource::new(
+        let source_id = source.id.clone();
+        let mut source_resource = Resource::new(
             format!("backups.source:{}", source.id),
             "backups.source",
             format!("{} · {}", source.kind.label(), source.cadence.label()),
-        ));
+        );
+        if let Some(spec) = operation_spec(
+            "open",
+            "Show source",
+            OperationKind::View,
+            &BackupOperation::OpenSource {
+                source_id: source_id.clone(),
+            },
+        ) {
+            source_resource = source_resource.with_action(spec);
+        }
+        let mut schedule = Resource::new(
+            format!("backups.schedule:{}", source.id),
+            "backups.schedule",
+            format!(
+                "{} schedule · {}",
+                source.kind.label(),
+                source.cadence.label()
+            ),
+        );
+        if let Some(spec) = operation_spec(
+            "open",
+            "Show schedule",
+            OperationKind::View,
+            &BackupOperation::OpenSchedule { source_id },
+        ) {
+            schedule = schedule.with_action(spec);
+        }
+        sources = sources.with_child(source_resource.with_child(schedule));
     }
     backups = backups.with_child(sources);
 
@@ -270,11 +328,22 @@ pub fn provide_resources(
         "Backup destinations",
     );
     for destination in &catalog.destinations {
-        destinations = destinations.with_child(Resource::new(
+        let mut destination_resource = Resource::new(
             format!("backups.destination:{}", destination.id),
             "backups.destination",
             format!("{} · {}", destination.name, destination.kind.label()),
-        ));
+        );
+        if let Some(spec) = operation_spec(
+            "open",
+            "Show destination",
+            OperationKind::View,
+            &BackupOperation::OpenDestination {
+                destination_id: destination.id.clone(),
+            },
+        ) {
+            destination_resource = destination_resource.with_action(spec);
+        }
+        destinations = destinations.with_child(destination_resource);
     }
     backups = backups.with_child(destinations);
 
@@ -301,8 +370,19 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
         ),
     );
     if let Some(spec) = operation_spec(
+        "open",
+        "Show snapshot",
+        OperationKind::View,
+        &BackupOperation::OpenSnapshot {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        resource = resource.with_action(spec);
+    }
+    if let Some(spec) = operation_spec(
         "verify",
         "Verify snapshot",
+        OperationKind::Effect,
         &BackupOperation::Verify {
             snapshot_id: snapshot.id.clone(),
         },
@@ -318,7 +398,8 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
     }
     if let Some(spec) = operation_spec(
         "restore",
-        "Restore snapshot…",
+        "Restore snapshot into a new or empty folder…",
+        OperationKind::Effect,
         &BackupOperation::Restore {
             snapshot_id: snapshot.id.clone(),
         },
@@ -435,6 +516,46 @@ mod tests {
                 .any(|l| l.contains("retention") || l.contains("keep") || l.contains("Set")),
             "{labels:?}"
         );
+
+        let catalog_resources =
+            provide_resources(&BackupsDoc::policy(&doc, &ROOT), &Catalog::sample(), false);
+        let workspace = catalog_resources
+            .iter()
+            .find(|resource| resource.kind == "backups.workspace")
+            .expect("backup workspace root");
+        let source = workspace
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups.sources")
+            .expect("sources root")
+            .children
+            .first()
+            .expect("a source");
+        assert!(source.id.as_str().starts_with("backups.source:"));
+        assert!(
+            source.children[0]
+                .id
+                .as_str()
+                .starts_with("backups.schedule:")
+        );
+        let destination = workspace
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups.destinations")
+            .expect("destinations root")
+            .children
+            .first()
+            .expect("a destination");
+        assert!(destination.id.as_str().starts_with("backups.destination:"));
+        let snapshot = workspace
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups.snapshots")
+            .expect("snapshots root")
+            .children
+            .first()
+            .expect("a snapshot");
+        assert!(snapshot.id.as_str().starts_with("backups.snapshot:"));
     }
 
     #[test]
