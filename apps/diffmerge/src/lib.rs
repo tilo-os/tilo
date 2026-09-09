@@ -65,9 +65,12 @@ pub fn app_root_demo() -> Box<dyn Widget> {
 /// pinned open, so a single headless still shows the summary overlay (not a
 /// bottom strip).
 pub fn app_root_status() -> Box<dyn Widget> {
-    let mut app = DiffMergeApp::new_demo();
-    app.arm_status_bubble_for_shots();
-    Box::new(app)
+    Box::new(DiffMergeApp::for_shot(Some("status")))
+}
+
+/// Screenshot-only fixture states for visual regression review.
+pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
+    Box::new(DiffMergeApp::for_shot(scenario))
 }
 
 pub fn app_root() -> Box<dyn Widget> {
