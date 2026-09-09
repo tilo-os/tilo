@@ -9,9 +9,8 @@
 //! forwarded events.
 //!
 //! State lives in the shared Automerge document (`doc.rs`): every mutation
-//! re-serialises the config into the `config` Text object, and `sync`
-//! adopts remote edits, so two instances pointed at one collab socket edit
-//! the same ruleset live.
+//! addresses a native scalar, text, or stable record, and `sync` adopts remote
+//! edits so two instances pointed at one collab socket edit the same ruleset.
 
 use std::collections::HashMap;
 
@@ -59,6 +58,9 @@ const RULE_ROW_H: f64 = 40.0;
 /// the table is too narrow for five abreast columns.
 const RULE_ROW_H_NARROW: f64 = 58.0;
 const SVC_ROW_H: f64 = 46.0;
+/// Dense but still two-line-readable rows let every catalog service fit in the
+/// compact Services route without making the window scroll-dependent.
+const SVC_ROW_H_NARROW: f64 = 30.0;
 const CTRL_H: f64 = 34.0;
 const TOGGLE_SIZE: f64 = 34.0;
 
@@ -76,6 +78,13 @@ pub enum Filter {
     All,
     Allow,
     Deny,
+}
+
+/// Local-only content route used when the desktop services column cannot fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompactView {
+    Rules,
+    Services,
 }
 
 impl Filter {
@@ -173,6 +182,8 @@ struct Layout {
     set_active_btn: Rect,
 
     filter_seg: Vec<Rect>,
+    content_seg: Vec<Rect>,
+    compact_services: bool,
     table: Rect,
     rule_rows: Vec<RuleRow>,
 
@@ -217,6 +228,7 @@ pub struct FirewallApp {
     selected_zone: ZoneKind,
     selected_rule: Option<RuleId>,
     filter: Filter,
+    compact_view: CompactView,
     form: FormState,
     backend: Backend,
     status: String,
@@ -316,6 +328,10 @@ impl FirewallApp {
                 self.available = false;
                 self.status = "Permission denied while contacting firewalld. Check administrator authorization, then retry.".into();
             }
+            "services" => {
+                self.compact_view = CompactView::Services;
+                self.status = "Showing services (press S for rules)".into();
+            }
             _ => {}
         }
     }
@@ -327,6 +343,7 @@ impl FirewallApp {
             selected_zone,
             selected_rule: None,
             filter: Filter::All,
+            compact_view: CompactView::Rules,
             form: FormState::new(),
             backend: Backend::detect(),
             status: String::new(),
@@ -377,7 +394,7 @@ impl FirewallApp {
     /// on peers), exactly as the palette does. The document heads captured just
     /// before the first action of an event are stashed so the host records
     /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
-    /// The action mutates the shared config blob in the document; we then adopt
+    /// The action mutates its addressed shared document field; we then adopt
     /// the result back into the in-memory view so the next frame paints it, and
     /// remember the JSON so `sync` doesn't re-adopt our own write as a remote
     /// edit.
@@ -393,11 +410,9 @@ impl FirewallApp {
             qos_actions::ActionContext::for_action("org.qos.Firewall", "Firewall", action),
         );
         // Adopt the mutated config so the in-memory view matches the document.
-        if let Some(json) = FirewallDoc::load_json(state) {
-            if let Some(cfg) = FirewallConfig::from_json(&json) {
-                self.config = cfg;
-            }
-            self.last_json = Some(json);
+        if let Some(cfg) = FirewallDoc::load(state) {
+            self.last_json = Some(cfg.to_json());
+            self.config = cfg;
         }
     }
 
@@ -433,6 +448,7 @@ impl FirewallApp {
         let services_visible = r.width() >= SERVICES_BREAKPOINT;
         l.narrow = narrow;
         l.services_visible = services_visible;
+        l.compact_services = !services_visible && self.compact_view == CompactView::Services;
 
         let by = Self::layout_header(r, &mut l, narrow);
         let unavailable_area = Rect::new(r.x0, l.header.y1, r.x1, r.y1);
@@ -570,31 +586,66 @@ impl FirewallApp {
             let x = cx1 - seg_total + f64::from(i) * seg_w;
             l.filter_seg.push(Rect::new(x, fy, x + seg_w, fy + seg_h));
         }
+        if !services_visible {
+            let compact_w = 66.0;
+            for i in 0..2 {
+                let x = cx0 + f64::from(i) * compact_w;
+                l.content_seg
+                    .push(Rect::new(x, fy, x + compact_w, fy + seg_h));
+            }
+        }
 
         // Form card pinned to the bottom (taller when its controls stack).
         let form_h = if narrow { FORM_H_NARROW } else { FORM_H };
-        l.form = Rect::new(cx0, cy1 - form_h, cx1, cy1);
+        l.form = if l.compact_services {
+            Rect::ZERO
+        } else {
+            Rect::new(cx0, cy1 - form_h, cx1, cy1)
+        };
 
         // Rules table fills the gap.
-        l.table = Rect::new(cx0, fy + seg_h + 10.0, cx1, l.form.y0 - PAD);
-        self.build_table_rows(l, narrow);
+        l.table = Rect::new(
+            cx0,
+            fy + seg_h + 10.0,
+            cx1,
+            if l.compact_services {
+                cy1
+            } else {
+                l.form.y0 - PAD
+            },
+        );
+        if !l.compact_services {
+            self.build_table_rows(l, narrow);
+        }
 
         // Form internals.
-        self.build_form(l, narrow);
+        if !l.compact_services {
+            self.build_form(l, narrow);
+        }
 
         // Services rows.
-        if services_visible {
-            let svc_top = l.services.y0 + 48.0;
+        if services_visible || l.compact_services {
+            let panel = if l.compact_services {
+                l.table
+            } else {
+                l.services
+            };
+            let row_h = if l.compact_services {
+                SVC_ROW_H_NARROW
+            } else {
+                SVC_ROW_H
+            };
+            let svc_top = panel.y0 + if l.compact_services { 38.0 } else { 48.0 };
             for (i, def) in ServiceCatalog::ALL.iter().enumerate() {
-                let y = svc_top + i as f64 * SVC_ROW_H;
-                if y + SVC_ROW_H > l.services.y1 - 6.0 {
+                let y = svc_top + i as f64 * row_h;
+                if y + row_h > panel.y1 - 6.0 {
                     break;
                 }
                 let row = Rect::new(
-                    l.services.x0 + 12.0,
+                    panel.x0 + 12.0,
                     y,
-                    l.services.x1 - 12.0,
-                    y + SVC_ROW_H - 6.0,
+                    panel.x1 - 12.0,
+                    y + row_h - if l.compact_services { 2.0 } else { 6.0 },
                 );
                 let toggle = Rect::new(
                     row.x1 - 44.0,
@@ -785,7 +836,7 @@ impl FirewallApp {
                 self.config = config;
                 self.available = true;
                 self.pending_delete = None;
-                let json = FirewallDoc::store(state, &self.config);
+                let json = FirewallDoc::reconcile_probe(state, &self.config);
                 self.last_json = Some(json);
                 self.status = "Connected to firewalld and refreshed the live configuration".into();
             }
@@ -846,9 +897,14 @@ impl FirewallApp {
     }
 
     fn toggle_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
+        let on = self
+            .config
+            .zone(self.selected_zone)
+            .and_then(|zone| zone.rules.iter().find(|rule| rule.id == id))
+            .is_some_and(|rule| !rule.enabled);
         self.perform_action(
             state,
-            &crate::actions::toggle_rule_action(self.selected_zone, id),
+            &crate::actions::set_rule_enabled_action(self.selected_zone, id, on),
         );
     }
 
@@ -987,16 +1043,21 @@ impl Widget for FirewallApp {
             // imported from firewalld or (in the demo build) the sample.
             // An unavailable firewall has no zones, so nothing fabricated is
             // ever written into the shared document.
-            if let Some(json) = FirewallDoc::load_json(state) {
-                if let Some(cfg) = FirewallConfig::from_json(&json)
-                    && cfg.validate().is_ok()
-                {
+            if let Some(cfg) = FirewallDoc::load(state) {
+                if cfg.validate().is_ok() {
                     self.config = cfg;
                     self.available = true;
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
-                    self.last_json = Some(json);
+                    // A legacy JSON document is accepted once, then promoted
+                    // to native maps before any visible control can dispatch.
+                    let snapshot = if FirewallDoc::has_native(state) {
+                        self.config.to_json()
+                    } else {
+                        FirewallDoc::store(state, &self.config)
+                    };
+                    self.last_json = Some(snapshot);
                 } else {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
@@ -1038,10 +1099,11 @@ impl Widget for FirewallApp {
             });
         }
         // Adopt genuine remote edits (collab).
-        if let Some(json) = FirewallDoc::load_json(state)
-            && self.last_json.as_deref() != Some(json.as_str())
-            && let Some(cfg) = FirewallConfig::from_json(&json)
-        {
+        if let Some(cfg) = FirewallDoc::load(state) {
+            let json = cfg.to_json();
+            if self.last_json.as_deref() == Some(json.as_str()) {
+                return;
+            }
             if cfg.validate().is_ok() {
                 self.config = cfg;
                 if self.config.zone(self.selected_zone).is_none() {
@@ -1205,6 +1267,10 @@ impl Widget for FirewallApp {
         self.rect
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the complete accessibility tree is intentionally visible together"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Window)
             .with_name("Firewall")
@@ -1274,6 +1340,52 @@ impl Widget for FirewallApp {
             );
         }
         root.children.push(zones);
+        if !self.layout.content_seg.is_empty() {
+            let mut route = AccessNode::new(Role::Group)
+                .with_name("Compact firewall content")
+                .with_description(
+                    "Rules and Services. Press S to switch when no text field is focused.",
+                );
+            for (index, bounds) in self.layout.content_seg.iter().enumerate() {
+                let services = index == 1;
+                route.children.push(
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(if services { "Services" } else { "Rules" })
+                        .with_bounds(*bounds)
+                        .with_state(AccessState::new().focusable(true).checked(
+                            self.compact_view
+                                == if services {
+                                    CompactView::Services
+                                } else {
+                                    CompactView::Rules
+                                },
+                        )),
+                );
+            }
+            root.children.push(route);
+        }
+        if self.layout.compact_services {
+            let mut services = AccessNode::new(Role::List)
+                .with_name(format!("Services in {}", self.selected_zone.name()))
+                .with_bounds(self.layout.table);
+            let zone = self.config.zone(self.selected_zone);
+            for (index, row, _) in &self.layout.service_rows {
+                if let Some(service) = ServiceCatalog::ALL.get(*index) {
+                    services.children.push(
+                        AccessNode::new(Role::Switch)
+                            .with_name(service.name)
+                            .with_description(format!("{}/{}", service.ports, service.proto))
+                            .with_bounds(*row)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .checked(zone.is_some_and(|zone| zone.has_service(service.id))),
+                            ),
+                    );
+                }
+            }
+            root.children.push(services);
+        }
         root.children.push(
             AccessNode::new(Role::Table)
                 .with_name(format!("Rules in {}", self.selected_zone.name()))
@@ -1450,6 +1562,10 @@ impl Widget for FirewallApp {
 }
 
 impl FirewallApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keyboard routing stays together so focus precedence is auditable"
+    )]
     fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -1550,6 +1666,16 @@ impl FirewallApp {
                         Filter::All => Filter::Allow,
                         Filter::Allow => Filter::Deny,
                         Filter::Deny => Filter::All,
+                    };
+                    *handled = true;
+                } else if s.eq_ignore_ascii_case("s") && !self.layout.services_visible {
+                    self.compact_view = match self.compact_view {
+                        CompactView::Rules => CompactView::Services,
+                        CompactView::Services => CompactView::Rules,
+                    };
+                    self.status = match self.compact_view {
+                        CompactView::Rules => "Showing rules (press S for services)".into(),
+                        CompactView::Services => "Showing services (press S for rules)".into(),
                     };
                     *handled = true;
                 }
@@ -1689,6 +1815,19 @@ impl FirewallApp {
         // Summary set-active.
         if l.set_active_btn.contains(p) {
             self.set_active_zone(state);
+            *handled = true;
+            self.set_form_focus(None);
+            return true;
+        }
+
+        // Compact Rules/Services route. It is local presentation state, so a
+        // narrow window never removes service management from the app.
+        if let Some(index) = seg_index(&l.content_seg, p) {
+            self.compact_view = if index == 0 {
+                CompactView::Rules
+            } else {
+                CompactView::Services
+            };
             *handled = true;
             self.set_form_focus(None);
             return true;
@@ -1912,11 +2051,15 @@ impl FirewallApp {
         // Center content first, so the (overlay) rail + scrim draw over it.
         self.draw_summary(scene, t, tr, theme, &l);
         self.draw_filter(scene, t, tr, theme, &l);
-        self.draw_table(scene, t, tr, theme, &l);
-        if l.services_visible {
+        if l.compact_services {
             self.draw_services(scene, t, tr, theme, &l);
+        } else {
+            self.draw_table(scene, t, tr, theme, &l);
+            if l.services_visible {
+                self.draw_services(scene, t, tr, theme, &l);
+            }
+            self.draw_form(scene, t, tr, theme, presence, &l);
         }
-        self.draw_form(scene, t, tr, theme, presence, &l);
 
         // Overlay drawer: dim the content behind the sliding rail.
         let scrim = self.rail.scrim_rect();
@@ -2568,6 +2711,14 @@ impl FirewallApp {
             return;
         };
         let y0 = first_seg.y0;
+        if !l.content_seg.is_empty() {
+            let labels = ["Rules", "Services"];
+            let selected = usize::from(l.compact_services);
+            Self::draw_segmented(scene, t, tr, theme, &l.content_seg, &labels, selected);
+            if l.compact_services {
+                return;
+            }
+        }
         paint::label_v(
             tr,
             scene,
@@ -2575,7 +2726,13 @@ impl FirewallApp {
             "Rules",
             15.0,
             theme.text_primary,
-            l.summary.x0,
+            if l.content_seg.is_empty() {
+                l.summary.x0
+            } else {
+                l.content_seg
+                    .last()
+                    .map_or(l.summary.x0, |rect| rect.x1 + 10.0)
+            },
             y0,
             first_seg.height(),
             120.0,
@@ -2990,7 +3147,11 @@ impl FirewallApp {
         theme: &Theme,
         l: &Layout,
     ) {
-        let panel = l.services;
+        let panel = if l.compact_services {
+            l.table
+        } else {
+            l.services
+        };
         paint::fill_rect(scene, t, panel, theme.tokens.colors.neutral[0]);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -3014,7 +3175,7 @@ impl FirewallApp {
             11.0,
             theme.text_dim,
             panel.x0 + 16.0,
-            panel.y0 + 18.0,
+            panel.y0 + 14.0,
             120.0,
         );
         paint::label_right_v(
@@ -3025,8 +3186,8 @@ impl FirewallApp {
             11.0,
             theme.accent_primary,
             panel.x1 - 16.0,
-            panel.y0,
-            36.0,
+            panel.y0 - 2.0,
+            32.0,
         );
 
         let Some(z) = self.config.zone(self.selected_zone) else {
@@ -3040,15 +3201,16 @@ impl FirewallApp {
             if on {
                 paint::fill_rrect(scene, t, *row, 8.0, theme.tokens.colors.lift(0.35));
             }
+            let compact = l.compact_services;
             paint::label(
                 tr,
                 scene,
                 t,
                 def.name,
-                14.0,
+                if compact { 13.0 } else { 14.0 },
                 theme.text_primary,
                 row.x0 + 10.0,
-                row.y0 + 5.0,
+                row.y0 + if compact { 3.0 } else { 5.0 },
                 row.width() - 60.0,
             );
             let detail = format!("{}/{}", def.ports, def.proto);
@@ -3057,11 +3219,19 @@ impl FirewallApp {
                 scene,
                 t,
                 &detail,
-                11.0,
+                10.0,
                 theme.text_dim,
-                row.x0 + 10.0,
-                row.y0 + 24.0,
-                row.width() - 60.0,
+                if compact {
+                    row.x0 + 118.0
+                } else {
+                    row.x0 + 10.0
+                },
+                row.y0 + if compact { 5.0 } else { 24.0 },
+                if compact {
+                    row.width() - 180.0
+                } else {
+                    row.width() - 60.0
+                },
             );
             draw_toggle(scene, t, theme, *toggle, on);
         }
@@ -3440,6 +3610,43 @@ mod tests {
     }
 
     #[test]
+    fn presentation_changes_do_not_create_document_heads() {
+        let mut app = app_with_rect();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let heads = doc.get_heads();
+
+        // Selection, filters, drawer geometry and draft focus are deliberately
+        // per-window presentation state, never collaborative data.
+        app.select_zone(ZoneKind::Home);
+        app.filter = Filter::Allow;
+        app.rail.toggle();
+        app.set_form_focus(Some(FocusField::Port));
+        app.relayout();
+
+        assert_eq!(doc.get_heads(), heads);
+    }
+
+    #[test]
+    fn compact_services_route_keeps_the_entire_catalog_interactive() {
+        for width in [640.0, 900.0] {
+            let mut app = app_with_rect();
+            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.compact_view = CompactView::Services;
+            app.relayout();
+
+            assert!(app.layout.compact_services);
+            assert_eq!(app.layout.content_seg.len(), 2);
+            assert_eq!(app.layout.service_rows.len(), ServiceCatalog::ALL.len());
+            let semantics = app.accessibility().expect("compact services semantics");
+            assert!(semantics.children.iter().any(|node| {
+                node.name.as_deref() == Some("Services in public")
+                    && node.children.len() == ServiceCatalog::ALL.len()
+            }));
+        }
+    }
+
+    #[test]
     fn add_rule_from_form_appends_and_selects() {
         let mut a = app_with_rect();
         let mut doc = AutoCommit::new();
@@ -3475,7 +3682,7 @@ mod tests {
         a.toggle_service(0, &mut doc);
         let now = a.selected_zone_ref().unwrap().has_service("ssh");
         assert_ne!(was, now);
-        // Persisted JSON reflects the change.
+        // The native shared document reflects the change.
         let reloaded = FirewallDoc::load(&doc).unwrap();
         assert_eq!(
             reloaded.zone(ZoneKind::Public).unwrap().has_service("ssh"),
