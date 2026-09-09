@@ -841,9 +841,12 @@ pub fn mark_read_action(channel: &str, user: &str, count: i64) -> ChatAction {
 pub fn set_agent_work_action(
     channel: &str,
     msg: &str,
-    work: crate::model::AgentWork,
+    mut work: crate::model::AgentWork,
     say: Option<&str>,
 ) -> ChatAction {
+    // Stable trace ids are minted exactly once, before the action crosses the
+    // replay boundary. A peer applying this payload only writes these ids.
+    work.ensure_trace_ids();
     ChatAction::SetAgentWork {
         channel: channel.to_string(),
         msg: msg.to_string(),
@@ -1107,6 +1110,10 @@ fn workspace_resource(id: &str, name: &str) -> Resource {
 
 /// Resolve a stable resource from the complete document without expanding the
 /// bounded contextual page. Stale ids intentionally fail closed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive stable-id resolver keeps every resource kind and its canonical action builder adjacent"
+)]
 pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
     if id == "chat.people" {
         return Some(Resource::new("chat.people", "chat.people", "People"));
@@ -1160,6 +1167,20 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
                     &ChatOperation::OpenPerson { user: user.id },
                 )),
         );
+    }
+    if let Some(channel_id) = id.strip_prefix("chat.call:") {
+        let channel = ChatDoc::list_channels(doc)
+            .into_iter()
+            .find(|channel| channel.id == channel_id && channel.kind == ChannelKind::Voice)?;
+        let model = ChannelResource {
+            id: channel.id,
+            name: channel.name,
+            kind: channel.kind,
+            archived: channel.archived,
+        };
+        let mut resource = build_call_resource(ctx, doc, &channel.workspace, &model);
+        annotate_contracts(&mut resource);
+        return Some(resource);
     }
     let message_id = id.strip_prefix("chat.message:")?;
     let message = ChatDoc::list_channels(doc)
@@ -1296,7 +1317,8 @@ fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> R
 /// plus — only when it's the open channel — its messages as sub-resources.
 #[allow(
     clippy::expect_used,
-    reason = "ChatOperation consists only of serde-serializable strings; ActionSpec's infallible builder cannot return an error"
+    clippy::too_many_lines,
+    reason = "the channel action inventory is deliberately adjacent to its canonical resource; ChatOperation consists only of serde-serializable strings, so ActionSpec's infallible builder cannot return an error"
 )]
 fn build_channel_resource(
     ctx: &ChatResourceCtx,
@@ -1417,12 +1439,111 @@ fn build_channel_resource(
         &delete_channel_action(&ch.id),
     ));
 
+    // A voice channel owns one durable call resource. The call's capture and
+    // transport remain local effects, but every shared membership/control fact
+    // lives beneath this same canonical address for history, collaboration, and
+    // palette invocation.
+    if ch.kind == ChannelKind::Voice {
+        channel = channel.with_child(build_call_resource(ctx, doc, workspace_id, ch));
+    }
+
     for m in messages {
         let message = build_message_resource(ctx, workspace_id, ch, m);
         channel = channel.with_child(message);
     }
 
     channel
+}
+
+/// The shared-state half of a voice call. The ticket and screen-capture source
+/// deliberately have no prompted action: both are opaque local transport
+/// outputs, not values a caller can safely invent. Join/leave and each visible
+/// call preference are ordinary replayable document actions.
+fn build_call_resource(
+    ctx: &ChatResourceCtx,
+    doc: &AutoCommit,
+    workspace_id: &str,
+    ch: &ChannelResource,
+) -> Resource {
+    let member = ChatDoc::list_voice_members(doc, &ch.id)
+        .into_iter()
+        .find(|member| member.user == ctx.me);
+    let mut call = Resource::new(
+        format!("chat.call:{}", ch.id),
+        "chat.call",
+        format!("Call: {}", channel_label(ch)),
+    )
+    .with_action(view_operation(
+        "open",
+        "Open call conversation",
+        &ChatOperation::OpenChannel {
+            workspace: workspace_id.to_string(),
+            channel: ch.id.clone(),
+        },
+    ));
+    if let Some(member) = member {
+        call = call.with_action(immediate_spec(
+            "leave",
+            "Leave call",
+            &leave_call_action(&ch.id, &ctx.me),
+        ));
+        call = call.with_action(immediate_spec(
+            if member.muted { "unmute" } else { "mute" },
+            if member.muted { "Unmute" } else { "Mute" },
+            &call_state_action(
+                &ch.id,
+                &ctx.me,
+                !member.muted,
+                member.deafened,
+                member.audio_only,
+            ),
+        ));
+        call = call.with_action(immediate_spec(
+            if member.deafened {
+                "undeafen"
+            } else {
+                "deafen"
+            },
+            if member.deafened {
+                "Undeafen"
+            } else {
+                "Deafen"
+            },
+            &call_state_action(
+                &ch.id,
+                &ctx.me,
+                member.muted,
+                !member.deafened,
+                member.audio_only,
+            ),
+        ));
+        call = call.with_action(immediate_spec(
+            if member.audio_only {
+                "enable-camera"
+            } else {
+                "audio-only"
+            },
+            if member.audio_only {
+                "Enable camera"
+            } else {
+                "Audio only"
+            },
+            &call_state_action(
+                &ch.id,
+                &ctx.me,
+                member.muted,
+                member.deafened,
+                !member.audio_only,
+            ),
+        ));
+    } else {
+        call = call.with_action(immediate_spec(
+            "join",
+            "Join call",
+            &join_call_action(&ch.id, &ctx.me),
+        ));
+    }
+    call
 }
 
 /// A message resource: edit/react (prompted), pin-or-unpin, and delete.
@@ -1635,8 +1756,12 @@ mod tests {
     /// Ctrl+K keeps the workspace/channel snapshot small while message actions
     /// remain available through stable lazy resolution.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the resource covenant is intentionally asserted as one end-to-end inventory"
+    )]
     fn ctrl_k_publishes_workspace_channel_and_message_tree() {
-        let doc = seeded();
+        let mut doc = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
         let ws = resources
             .iter()
@@ -1690,6 +1815,48 @@ mod tests {
             .expect("a second channel is present");
         assert!(general.children.is_empty());
 
+        let call = resolve_resource(&ctx, &doc, "chat.call:c_huddle")
+            .expect("voice call resolves as its own canonical resource");
+        assert_eq!(call.kind, "chat.call");
+        let call_actions: Vec<_> = call
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for want in ["open", "join"] {
+            assert!(
+                call_actions.contains(&want),
+                "call missing {want}: {call_actions:?}"
+            );
+        }
+        let join = call
+            .actions
+            .iter()
+            .find(|action| action.id == "join")
+            .expect("join action");
+        let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
+        let joined = registry().decode(&immediate_encode(join)).unwrap();
+        let mut transport = LocalTransport::new();
+        qos_actions::dispatch(
+            &mut call_doc,
+            joined.as_ref(),
+            immediate_encode(join),
+            &mut transport,
+        )
+        .unwrap();
+        let joined_call = resolve_resource(&ctx, &call_doc, "chat.call:c_huddle").unwrap();
+        let joined_actions: Vec<_> = joined_call
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for want in ["leave", "mute", "deafen", "audio-only"] {
+            assert!(
+                joined_actions.contains(&want),
+                "call missing {want}: {joined_actions:?}"
+            );
+        }
+
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.
         let flat = qos_actions::flatten(&resources);
@@ -1727,7 +1894,10 @@ mod tests {
                 .iter()
                 .flat_map(|workspace| &workspace.children)
                 .filter(|resource| resource.kind == "chat.channel")
-                .all(|channel| channel.children.is_empty())
+                .all(|channel| channel
+                    .children
+                    .iter()
+                    .all(|child| child.kind != "chat.message"))
         );
     }
 
