@@ -386,11 +386,15 @@ arch)
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
+    # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives its
+    # hand-written assembly. BLAKE3 officially supports Rust SIMD intrinsics;
+    # select that equivalent implementation for this userspace only.
+    export QOS_BLAKE3_PREFER_INTRINSICS=1
     stage=prepare-arch-builder
     useradd --create-home builder
     chown -R builder:builder /workspace
     stage=build-arch
-    su builder -c 'cd /workspace && dist/arch/build-arch.sh'
+    su builder -c 'cd /workspace && CARGO_FEATURE_PREFER_INTRINSICS="$QOS_BLAKE3_PREFER_INTRINSICS" dist/arch/build-arch.sh'
     stage=inspect-arch
     pacman -Qip dist/arch/build/qos-session-*.pkg.tar.*
     stage=lint-arch
