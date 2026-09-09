@@ -14,6 +14,7 @@
 //! bespoke rendering. The action button label + click path are wired by the
 //! caller: this fn is pure composition.
 
+use ui::text_render::TextWeight;
 use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
@@ -56,7 +57,11 @@ pub fn store_card(
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(5.0)
-        .push(Box::new(Text::new(&item.name).with_size(18.0)))
+        .push(Box::new(
+            Text::new(&item.name)
+                .with_size(18.0)
+                .with_weight(TextWeight::Semibold),
+        ))
         .push(Box::new(
             Text::new(&badge_line(item))
                 .with_size(13.0)
@@ -78,9 +83,11 @@ pub fn store_card(
         action_btn = action_btn.on_action(binding);
     }
     let action_btn = match action {
-        ActionKind::Update | ActionKind::FlatpakInstall | ActionKind::FlatpakUpdate => {
-            action_btn.primary()
-        }
+        ActionKind::Open
+        | ActionKind::Update
+        | ActionKind::FlatpakInstall
+        | ActionKind::FlatpakUpdate
+        | ActionKind::FlatpakOpen => action_btn.primary(),
         _ => action_btn,
     }
     .tooltip(format!("{} {}", action.label(), item.name));
