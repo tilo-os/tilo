@@ -33,8 +33,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::{ActionEmitter, TaffyTreeExt, Widget};
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
@@ -257,6 +256,10 @@ pub struct EmptyState {
     message: Option<String>,
     action_label: Option<String>,
     action_id: Option<String>,
+    /// Canonical resource action emitted by every activation path. When set,
+    /// this replaces the legacy document-key/drain channels just like
+    /// [`super::Button::on_action`].
+    action: Option<ActionEmitter<()>>,
     /// Optional CRDT action key, matching [`super::Button`]'s action-path
     /// contract. The drain channel remains available for immediate-mode
     /// parents; a retained shell can instead observe this semantic key.
@@ -282,6 +285,7 @@ impl EmptyState {
             message: None,
             action_label: None,
             action_id: None,
+            action: None,
             action_path: None,
             action_fired: false,
             rect: Rect::ZERO,
@@ -321,16 +325,35 @@ impl EmptyState {
         self
     }
 
+    /// Route pointer, keyboard and accessibility activation through an
+    /// exported resource action. The host revalidates the binding against the
+    /// current resource tree before dispatch, so empty-state recovery controls
+    /// follow the same policy/history path as ordinary buttons.
+    #[must_use]
+    pub fn on_action(mut self, binding: qos_actions::ActionBinding<()>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self.action_path = None;
+        self.action_fired = false;
+        self
+    }
+
     /// Publish activation at `path` in the app document as well as through
     /// [`Self::take_action`]. This gives an empty state's primary action the
     /// same pointer, keyboard and accessibility route as a normal button.
     #[must_use]
     pub fn with_action_path(mut self, path: impl Into<String>) -> Self {
+        self.action = None;
         self.action_path = Some(path.into());
         self
     }
 
     fn fire_action(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(()) {
+                tracing::warn!(%error, empty_state = %self.title, "action-bound empty state refused its arguments");
+            }
+            return;
+        }
         self.action_fired = true;
         if let Some(action_path) = &self.action_path {
             use automerge::transaction::Transactable as _;
@@ -489,7 +512,10 @@ impl Widget for EmptyState {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) => {
+            } if self.is_enabled()
+                && self.action_label.is_some()
+                && self.action_rect.contains(self.last_cursor) =>
+            {
                 self.fire_action(state, path);
                 *handled = true;
             }
@@ -506,7 +532,11 @@ impl Widget for EmptyState {
     }
 
     fn is_focusable(&self) -> bool {
-        self.action_label.is_some()
+        self.action_label.is_some() && self.is_enabled()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -523,7 +553,10 @@ impl Widget for EmptyState {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        if self.action_label.is_some() && matches!(action, crate::a11y::Action::Activate) {
+        if self.is_enabled()
+            && self.action_label.is_some()
+            && matches!(action, crate::a11y::Action::Activate)
+        {
             self.fire_action(state, path);
             true
         } else {
@@ -561,6 +594,7 @@ impl Widget for EmptyState {
                         .with_state(AccessState {
                             focusable: true,
                             focused: self.action_focused,
+                            disabled: !self.is_enabled(),
                             ..Default::default()
                         });
                     if let Some(id) = &self.action_id {
@@ -577,12 +611,46 @@ impl Widget for EmptyState {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        if matches!(path, [0]) && self.action_label.is_some() {
+        if matches!(path, [0]) && self.action_label.is_some() && self.is_enabled() {
             self.action_focused = true;
             true
         } else {
             false
         }
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        if let Some(action) = &self.action {
+            return vec![
+                action.metadata(
+                    self.action_id
+                        .clone()
+                        .unwrap_or_else(|| format!("empty-state:{}", self.title)),
+                ),
+            ];
+        }
+        self.action_path.as_ref().map_or_else(Vec::new, |path| {
+            vec![crate::widget::ControlBindingMetadata {
+                control_id: self
+                    .action_id
+                    .clone()
+                    .unwrap_or_else(|| format!("empty-state:{}", self.title)),
+                kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
+            }]
+        })
     }
 }
 
@@ -831,6 +899,49 @@ mod tests {
         assert!(matches!(
             doc.get(&root, key),
             Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+        ));
+    }
+
+    #[test]
+    fn canonical_action_binding_replaces_the_legacy_document_channel() {
+        let resource = qos_actions::Resource::new("catalog", "catalog", "Catalog").with_action(
+            qos_actions::ActionSpec::operation(
+                "refresh",
+                "Refresh catalog",
+                qos_actions::OperationKind::Effect,
+                "test.refresh",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = qos_actions::ActionBinding::unit_for(&resource, "refresh").unwrap();
+        let mut es = EmptyState::new("Unavailable")
+            .with_action("Refresh catalog")
+            .with_action_id("catalog.empty.refresh")
+            .with_action_path("legacy.refresh")
+            .on_action(binding);
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+
+        let target = es.action_rect().center();
+        dispatch(&mut es, &cursor(target));
+        assert!(dispatch(&mut es, &press()));
+        let invocation = Widget::take_control_invocation(&mut es).expect("canonical invocation");
+        assert_eq!(
+            invocation.address,
+            qos_actions::ActionAddress::new("catalog", "refresh")
+        );
+        assert!(
+            !es.take_action(),
+            "action-bound activation cannot also fire the legacy drain channel"
+        );
+        assert!(matches!(
+            Widget::control_action_bindings(&es).as_slice(),
+            [crate::widget::ControlBindingMetadata {
+                control_id,
+                kind: crate::widget::ControlBindingKind::Action(address),
+            }] if control_id == "catalog.empty.refresh"
+                && address == &qos_actions::ActionAddress::new("catalog", "refresh")
         ));
     }
 
