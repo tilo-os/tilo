@@ -6,18 +6,25 @@
 //! ├── "settings"        (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
 //! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added }
 //! ├── "progress"        (Map keyed by book-id)  { chapter, page, fraction }
-//! └── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
-//!                                                 start, end, excerpt, note,
-//!                                                 color, created }
+//! ├── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
+//! │                                               start, end, excerpt, note,
+//! │                                               color, created }
+//! ├── "annotation_tombstones" (Map keyed by uuid) true
+//! └── "highlight_tombstones"  (Map keyed by group uuid) true
 //! ```
 //!
 //! Library, progress and annotations are all keyed by the content-hash book
 //! id, so a book's shelf entry, reading position, and every annotation
-//! travel together across devices and to anyone it's shared with. Raw source
+//! travel together across devices and to anyone it's shared with. Annotation
+//! and highlight tombstones are monotonic: a delete wins over an offline
+//! edit/add that arrives later, rather than allowing a removed row to be
+//! resurrected by a concurrent map write. Raw source
 //! locations and watched folders are local capability state, never document
 //! data. The reader's transient view (open book, page, selection) stays
 //! per-peer, out of the document.
 
+#[cfg(test)]
+use automerge::ActorId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use uuid::Uuid;
@@ -440,7 +447,75 @@ impl BooksDoc {
         Self::root_map(doc, "annotations")
     }
 
+    /// A deletion marker is deliberately a separate, keyed CRDT map rather
+    /// than a `delete` of the annotation entry. Automerge merges a map delete
+    /// with a concurrent field edit, which can make a supposedly deleted
+    /// annotation visible again. A monotonic marker gives deletion a stable
+    /// winner without turning the annotation collection into a JSON blob.
+    fn tombstone_map(doc: &mut AutoCommit, key: &str) -> ObjId {
+        Self::root_map(doc, key)
+    }
+
+    fn has_tombstone(doc: &AutoCommit, key: &str, id: &str) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(&ROOT, key) else {
+            return false;
+        };
+        Self::scalar_bool(doc, &tombstones, id).unwrap_or(false)
+    }
+
+    pub fn annotation_is_deleted(doc: &AutoCommit, id: Uuid) -> bool {
+        Self::has_tombstone(doc, "annotation_tombstones", &id.to_string())
+    }
+
+    pub fn group_is_deleted(doc: &AutoCommit, group: Uuid) -> bool {
+        Self::has_tombstone(doc, "highlight_tombstones", &group.to_string())
+    }
+
+    /// Whether a row may still be changed or shown.  A row tombstone is
+    /// sufficient to hide a standalone annotation; rows belonging to a
+    /// deleted highlight group are hidden as well.  Keeping this check here
+    /// prevents a late edit action from mutating an otherwise invisible row
+    /// after a collaborator deleted its parent highlight.
+    pub fn annotation_is_live(doc: &AutoCommit, id: Uuid) -> bool {
+        if Self::annotation_is_deleted(doc, id) {
+            return false;
+        }
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "annotations") else {
+            return false;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&map, id.to_string()) else {
+            return false;
+        };
+        let group = Self::scalar_str(doc, &entry, "group")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(id);
+        !Self::group_is_deleted(doc, group)
+    }
+
+    fn mark_tombstone(doc: &mut AutoCommit, map_key: &str, id: Uuid) {
+        let tombstones = Self::tombstone_map(doc, map_key);
+        let _ = doc.put(&tombstones, id.to_string().as_str(), true);
+    }
+
     pub fn upsert_annotation(doc: &mut AutoCommit, a: &Annotation) {
+        // IDs and logical highlight groups are minted exactly once. Never let
+        // a delayed duplicate/add resurrect something a collaborator deleted.
+        if Self::annotation_is_deleted(doc, a.id) || Self::group_is_deleted(doc, a.group) {
+            return;
+        }
+        // An annotation id never changes logical highlight group. Apart from
+        // making accidental UUID reuse harmless, this prevents a stale row
+        // hidden by a group tombstone from being reattached to a new group.
+        if let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "annotations")
+            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&map, a.id.to_string())
+        {
+            let existing_group = Self::scalar_str(doc, &entry, "group")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(a.id);
+            if existing_group != a.group || Self::group_is_deleted(doc, existing_group) {
+                return;
+            }
+        }
         let map = Self::annotations_map(doc);
         let key = a.id.to_string();
         let entry = Self::get_or_make_map(doc, &map, &key);
@@ -458,18 +533,22 @@ impl BooksDoc {
     }
 
     pub fn remove_annotation(doc: &mut AutoCommit, id: Uuid) {
-        let map = Self::annotations_map(doc);
-        let _ = doc.delete(&map, id.to_string().as_str());
+        Self::mark_tombstone(doc, "annotation_tombstones", id);
     }
 
     /// Remove every annotation row belonging to one logical group — a highlight
     /// (its per-block pieces) together with all of its comments.
     pub fn remove_group(doc: &mut AutoCommit, group: Uuid) {
+        // Capture current children while they are still visible, then write
+        // both the durable group marker and child markers. The operation is
+        // atomic on this replica; the group marker still hides any offline
+        // comment which arrives later through a merge.
         let ids: Vec<Uuid> = Self::list_annotations(doc)
             .into_iter()
             .filter(|a| a.group == group)
             .map(|a| a.id)
             .collect();
+        Self::mark_tombstone(doc, "highlight_tombstones", group);
         for id in ids {
             Self::remove_annotation(doc, id);
         }
@@ -484,6 +563,9 @@ impl BooksDoc {
             let Ok(id) = key.parse::<Uuid>() else {
                 continue;
             };
+            if Self::annotation_is_deleted(doc, id) {
+                continue;
+            }
             let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&map, key.as_str()) else {
                 continue;
             };
@@ -505,7 +587,9 @@ impl BooksDoc {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(id),
             };
-            out.push(a);
+            if !Self::group_is_deleted(doc, a.group) {
+                out.push(a);
+            }
         }
         out
     }
@@ -672,6 +756,67 @@ mod tests {
         // Remove.
         BooksDoc::remove_annotation(&mut doc, id);
         assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
+        assert!(BooksDoc::annotation_is_deleted(&doc, id));
+
+        // A stale peer can still carry the old row. It must not revive a
+        // deletion just because its map write arrives after the tombstone.
+        BooksDoc::upsert_annotation(&mut doc, &a2);
+        assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
+    }
+
+    #[test]
+    fn group_tombstone_hides_a_late_comment_without_deleting_unrelated_rows() {
+        let mut doc = AutoCommit::new();
+        let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        let highlight = Annotation::new("book:x", AnnoKind::Highlight, 0, 1).with_group(group);
+        let comment = Annotation::new("book:x", AnnoKind::Note, 0, 1)
+            .with_group(group)
+            .with_note("late peer comment");
+        let unrelated = Annotation::new("book:x", AnnoKind::Note, 0, 2).with_note("keep me");
+        BooksDoc::upsert_annotation(&mut doc, &highlight);
+        BooksDoc::remove_group(&mut doc, group);
+        // Simulate an offline peer's comment arriving after the group was
+        // deleted. The row is never reintroduced to the visible collection.
+        BooksDoc::upsert_annotation(&mut doc, &comment);
+        BooksDoc::upsert_annotation(&mut doc, &unrelated);
+
+        assert!(BooksDoc::group_is_deleted(&doc, group));
+        assert!(BooksDoc::annotation_is_deleted(&doc, highlight.id));
+        let rows = BooksDoc::annotations_for(&doc, "book:x");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, unrelated.id);
+    }
+
+    #[test]
+    fn tombstones_win_when_independent_replicas_merge() {
+        let mut base = AutoCommit::new();
+        let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        let highlight = Annotation::new("book:x", AnnoKind::Highlight, 0, 1).with_group(group);
+        let comment = Annotation::new("book:x", AnnoKind::Note, 0, 1)
+            .with_group(group)
+            .with_note("offline comment");
+        BooksDoc::upsert_annotation(&mut base, &highlight);
+
+        // Different actors diverge from the same ancestor: one reader deletes
+        // the highlight while another reader adds a comment to it offline.
+        let mut deleting_peer = base.fork().with_actor(ActorId::random());
+        let mut editing_peer = base.fork().with_actor(ActorId::random());
+        BooksDoc::remove_group(&mut deleting_peer, group);
+        BooksDoc::upsert_annotation(&mut editing_peer, &comment);
+
+        deleting_peer
+            .merge(&mut editing_peer)
+            .expect("independent replicas merge");
+        editing_peer
+            .merge(&mut deleting_peer)
+            .expect("second replica converges");
+
+        for peer in [&deleting_peer, &editing_peer] {
+            assert!(BooksDoc::group_is_deleted(peer, group));
+            assert!(BooksDoc::annotations_for(peer, "book:x").is_empty());
+            assert!(!BooksDoc::annotation_is_live(peer, highlight.id));
+            assert!(!BooksDoc::annotation_is_live(peer, comment.id));
+        }
     }
 
     #[test]
