@@ -169,6 +169,17 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .filter(|h| !h.trim().is_empty());
 
     let rfc_message_id = parsed.message_id().map(std::string::ToString::to_string);
+    // RFC linkage is data, not presentation: retain the oldest References
+    // token as the canonical root, falling back to In-Reply-To. `References`
+    // makes a C→B→A reply stable even if C arrives before B and A; a lone
+    // In-Reply-To can only name its immediate parent until more history is
+    // loaded. The model normalizes the token before using it as an identity.
+    let in_reply_to = parsed
+        .references()
+        .as_text_list()
+        .and_then(|ids| ids.first())
+        .map(std::string::ToString::to_string)
+        .or_else(|| parsed.in_reply_to().as_text().map(str::to_string));
 
     let attachments: Vec<Attachment> = parsed
         .attachments()
@@ -204,7 +215,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
     Some(Message {
         id,
         rfc_message_id,
-        in_reply_to: None,
+        in_reply_to,
         from,
         to,
         cc,
@@ -381,6 +392,43 @@ Body of the message.\r\n";
             mb.messages_in(Folder::Inbox).len(),
             1,
             "re-inserting the same server message must not duplicate it"
+        );
+    }
+
+    #[test]
+    fn parse_eml_retains_rfc_reply_linkage_for_threading() {
+        let raw = b"From: Ada <ada@x.example>\r\n\
+To: you@qos.example\r\n\
+Subject: Re: Launch\r\n\
+Message-ID: <thread-reply@x.example>\r\n\
+In-Reply-To: <thread-root@x.example>\r\n\
+\r\n\
+Reply body.\r\n";
+        let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
+        assert_eq!(
+            message.rfc_message_id.as_deref(),
+            Some("thread-reply@x.example")
+        );
+        assert_eq!(
+            message.in_reply_to.as_deref(),
+            Some("thread-root@x.example")
+        );
+    }
+
+    #[test]
+    fn parse_eml_uses_the_references_root_over_an_intermediate_reply() {
+        let raw = b"From: Ada <ada@x.example>\r\n\
+To: you@qos.example\r\n\
+Subject: Re: Launch\r\n\
+Message-ID: <thread-latest@x.example>\r\n\
+References: <thread-root@x.example> <thread-middle@x.example>\r\n\
+In-Reply-To: <thread-middle@x.example>\r\n\
+\r\n\
+Latest reply.\r\n";
+        let message = parse_eml(raw, 1000, Folder::Inbox).expect("valid message");
+        assert_eq!(
+            message.in_reply_to.as_deref(),
+            Some("thread-root@x.example")
         );
     }
 
