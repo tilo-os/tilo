@@ -168,8 +168,8 @@ impl LogEntry {
     }
 }
 
-/// The live filter applied to the entry list. Derived from CRDT view
-/// state on every sync; pure predicate logic lives in [`Filter::passes`].
+/// The process-local live filter applied to the entry list. Pure predicate
+/// logic lives in [`Filter::passes`].
 #[derive(Clone, Debug)]
 pub struct Filter {
     /// Show entries with `priority.level() <= min_priority`. 7 = show all,
