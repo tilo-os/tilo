@@ -124,7 +124,13 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         // Set once at startup, before the drive probe can start worker threads.
         unsafe { std::env::set_var("IMAGER_LIVE", "1") };
     }
-    Ok(imager::app_root())
+    if args.has("--demo") {
+        let mut app = imager::ImagerApp::new();
+        app.seed_local_demo_state();
+        Ok(Box::new(app))
+    } else {
+        Ok(imager::app_root())
+    }
 }
 
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {

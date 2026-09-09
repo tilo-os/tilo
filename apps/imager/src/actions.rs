@@ -61,7 +61,7 @@ use qos_actions::{
 };
 
 use crate::doc::ImagerDoc;
-use crate::model::{InstallMode, InstallProfile};
+use crate::model::{InstallMode, InstallProfile, Source, TargetDrive};
 
 /// Registry `type_id` for every imager action.
 pub const IMAGER_ACTION_TYPE: &str = "imager.action";
@@ -257,6 +257,18 @@ pub fn operation_resource(
 /// value for a toggle; the action itself carries only the target.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ImagerAction {
+    /// Review and select a source. This is an absolute authored record; the
+    /// privileged writer still re-validates its identity at execution time.
+    SelectSource {
+        source: Box<Source>,
+        /// The previous reviewed source, captured at authoring time so its
+        /// history update is deterministic on every peer.
+        previous: Option<Box<Source>>,
+        /// Authored MRU position; same-rank concurrent choices use source id.
+        recent_rank: i64,
+    },
+    /// Clear the reviewed source without deleting its tombstoned history.
+    ClearSource,
     /// Set the install mode. `mode` is the document's string form
     /// (`"live"` | `"persistent"` | `"disk"`); any other value normalises to
     /// `"live"`.
@@ -271,9 +283,6 @@ pub enum ImagerAction {
     SetFullName { value: String },
     /// Set the first user's login name.
     SetUsername { value: String },
-    /// Set the first user's password (a secret — dispatched by the on-screen
-    /// field, never surfaced through the Ctrl+K palette).
-    SetPassword { value: String },
     /// Set the installed system locale.
     SetLocale { value: String },
     /// Set the system timezone.
@@ -284,25 +293,44 @@ pub enum ImagerAction {
 
 impl Action for ImagerAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // Read the current profile, mutate exactly one field, write it back.
-        // Reading the document is deterministic; the payload carries the
-        // absolute target, so the same envelope replays identically everywhere.
-        let mut p = ImagerDoc::profile(doc);
         match self {
-            // Normalise through the enum so an unknown payload lands on a valid
-            // mode instead of wedging.
-            ImagerAction::SetInstallMode { mode } => p.mode = InstallMode::from_key(mode),
-            ImagerAction::SetEncrypt { on } => p.encrypt = *on,
-            ImagerAction::SetAutologin { on } => p.user.autologin = *on,
-            ImagerAction::SetHostname { value } => p.hostname.clone_from(value),
-            ImagerAction::SetFullName { value } => p.user.full_name.clone_from(value),
-            ImagerAction::SetUsername { value } => p.user.username.clone_from(value),
-            ImagerAction::SetPassword { value } => p.user.password.clone_from(value),
-            ImagerAction::SetLocale { value } => p.locale.clone_from(value),
-            ImagerAction::SetTimezone { value } => p.timezone.clone_from(value),
-            ImagerAction::SetKeyboard { value } => p.keyboard.clone_from(value),
+            ImagerAction::SelectSource {
+                source,
+                previous,
+                recent_rank,
+            } => {
+                if let Some(previous) = previous.as_deref()
+                    && ImagerDoc::source_id(previous) != ImagerDoc::source_id(source)
+                {
+                    ImagerDoc::remember_recent_source(doc, previous, *recent_rank);
+                }
+                ImagerDoc::set_source(doc, Some(source));
+            }
+            ImagerAction::ClearSource => ImagerDoc::set_source(doc, None),
+            // Each action addresses only its own CRDT field. No action reads
+            // and re-saves a compound profile, so concurrent edits merge.
+            ImagerAction::SetInstallMode { mode } => {
+                ImagerDoc::set_profile_mode(doc, InstallMode::from_key(mode));
+            }
+            ImagerAction::SetEncrypt { on } => ImagerDoc::set_profile_encrypt(doc, *on),
+            ImagerAction::SetAutologin { on } => ImagerDoc::set_profile_autologin(doc, *on),
+            ImagerAction::SetHostname { value } => {
+                ImagerDoc::set_profile_text(doc, "hostname", value);
+            }
+            ImagerAction::SetFullName { value } => {
+                ImagerDoc::set_profile_text(doc, "full_name", value);
+            }
+            ImagerAction::SetUsername { value } => {
+                ImagerDoc::set_profile_text(doc, "username", value);
+            }
+            ImagerAction::SetLocale { value } => ImagerDoc::set_profile_text(doc, "locale", value),
+            ImagerAction::SetTimezone { value } => {
+                ImagerDoc::set_profile_text(doc, "timezone", value);
+            }
+            ImagerAction::SetKeyboard { value } => {
+                ImagerDoc::set_profile_text(doc, "keyboard", value);
+            }
         }
-        ImagerDoc::set_profile(doc, &p);
         Ok(())
     }
 
@@ -481,14 +509,103 @@ pub fn provide_resources(source_label: &str, _profile: &InstallProfile) -> Vec<R
     vec![res]
 }
 
+fn source_resource(source: &Source) -> Resource {
+    let clear = ActionSpec::immediate_encoded(
+        "clear-source",
+        "Clear reviewed image",
+        ExecutionLocus::ClientLocal,
+        encode(&ImagerAction::ClearSource),
+    )
+    .with_contract(ActionContract {
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags: vec!["image-source".into(), "review".into()],
+        ..ActionContract::default()
+    });
+    Resource::new(
+        ImagerDoc::source_id(source),
+        "imager.source",
+        source.name.clone(),
+    )
+    .with_action(clear)
+}
+
+fn target_id(target: &TargetDrive) -> String {
+    let identity = target.stable_id.as_deref().unwrap_or(&target.name);
+    format!("imager.target:{identity}")
+}
+
+/// The complete resource topology, including local device/job observations.
+/// Source/profile records are collaborative; device and job resources are
+/// explicitly local capability projections and expose only safe status/write
+/// operations with their contracts.
+pub fn plan_resources(
+    source: Option<&Source>,
+    targets: &[TargetDrive],
+    progress: &crate::model::Progress,
+    profile: &InstallProfile,
+) -> Vec<Resource> {
+    let mut resources = Vec::new();
+    let source_root = source.map_or_else(
+        || Resource::new("imager.sources", "imager.sources", "Image sources"),
+        |source| {
+            Resource::new("imager.sources", "imager.sources", "Image sources")
+                .with_child(source_resource(source))
+        },
+    );
+    resources.push(source_root);
+
+    if let Some(source) = source.filter(|source| source.installable) {
+        resources.extend(provide_resources(&source.name, profile));
+    }
+
+    let target_children = targets
+        .iter()
+        .map(|target| Resource::new(target_id(target), "imager.target", target.dev_path()));
+    resources.push(
+        Resource::new("imager.targets", "imager.targets", "Local write targets")
+            .with_children(target_children),
+    );
+
+    let phase = progress.phase.key();
+    resources.push(
+        Resource::new(
+            format!("imager.job:{phase}"),
+            "imager.job",
+            format!("Image write: {phase}"),
+        )
+        .with_action(operation_spec(
+            "status",
+            "Show image-write status",
+            OperationKind::View,
+            ImagerOperation::Status,
+        )),
+    );
+    if matches!(
+        progress.phase,
+        crate::model::JobPhase::Success | crate::model::JobPhase::Failed
+    ) {
+        resources.push(Resource::new(
+            format!("imager.result:{phase}"),
+            "imager.result",
+            if progress.phase == crate::model::JobPhase::Success {
+                "Verified image result"
+            } else {
+                "Image write failure"
+            },
+        ));
+    }
+    resources
+}
+
 impl ResourceProvider for crate::app::ImagerApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Only an installable qOS image has a profile to customize; a plain ISO
-        // is written as-is, so it publishes nothing.
-        match self.customization_source_label() {
-            Some(label) => provide_resources(&label, &ImagerDoc::profile(doc)),
-            None => Vec::new(),
-        }
+        plan_resources(
+            self.resource_source(),
+            self.resource_targets(),
+            self.resource_progress(),
+            &ImagerDoc::profile(doc),
+        )
     }
 }
 
@@ -560,12 +677,6 @@ mod tests {
         );
         dispatch(
             &mut doc,
-            &ImagerAction::SetPassword {
-                value: "s3cret".into(),
-            },
-        );
-        dispatch(
-            &mut doc,
             &ImagerAction::SetLocale {
                 value: "nl_NL.UTF-8".into(),
             },
@@ -585,7 +696,10 @@ mod tests {
         assert_eq!(p.hostname, "lab01");
         assert_eq!(p.user.full_name, "Ada Lovelace");
         assert_eq!(p.user.username, "ada");
-        assert_eq!(p.user.password, "s3cret");
+        assert!(
+            p.user.password.is_empty(),
+            "secrets are never collaborative"
+        );
         assert_eq!(p.locale, "nl_NL.UTF-8");
         assert_eq!(p.timezone, "Europe/Amsterdam");
         assert_eq!(p.keyboard, "nl");
@@ -753,10 +867,8 @@ mod tests {
         assert_eq!(status.contract.discovery, DiscoveryScope::Launchable);
     }
 
-    /// A plain ISO (or no source) has no profile to customize, so the app
-    /// publishes an empty resource tree. Drives the real `ResourceProvider`
-    /// through the app's own `sync` (the source is presentation state read back
-    /// from the document each frame).
+    /// A plain ISO stays a first-class source resource, but never publishes a
+    /// qOS customization resource it cannot apply.
     #[test]
     fn plain_iso_publishes_no_resources() {
         use crate::app::ImagerApp;
@@ -779,9 +891,18 @@ mod tests {
         };
         ImagerDoc::set_source(&mut doc, Some(&iso));
         app.sync(&mut doc, &automerge::ROOT);
+        let resources = ResourceProvider::resources(&app, &doc);
+        assert!(resources.iter().any(|resource| {
+            resource.kind == "imager.source"
+                || resource
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "imager.source")
+        }));
         assert!(
-            ResourceProvider::resources(&app, &doc).is_empty(),
-            "a plain ISO exposes no customization actions"
+            !resources
+                .iter()
+                .any(|resource| resource.kind == "imager.customization")
         );
     }
 
@@ -867,6 +988,86 @@ mod tests {
             "replay reproduced the identical change"
         );
         assert_eq!(ImagerDoc::profile(&b).hostname, "lab01");
+    }
+
+    #[test]
+    fn concurrent_profile_fields_merge_without_a_whole_profile_clobber() {
+        let mut left = seeded();
+        let bytes = left.save();
+        let mut right = AutoCommit::load(&bytes).unwrap();
+        ImagerAction::SetHostname {
+            value: "studio".into(),
+        }
+        .apply(&mut left)
+        .unwrap();
+        ImagerAction::SetKeyboard { value: "de".into() }
+            .apply(&mut right)
+            .unwrap();
+        left.commit();
+        right.commit();
+        left.merge(&mut right).unwrap();
+        let profile = ImagerDoc::profile(&left);
+        assert_eq!(profile.hostname, "studio");
+        assert_eq!(profile.keyboard, "de");
+    }
+
+    #[test]
+    fn sequential_source_reselection_moves_the_previous_source_to_mru_front() {
+        let mut doc = seeded();
+        let first = crate::model::sample_source();
+        let second = crate::model::sample_recent_sources()[1].clone();
+        ImagerAction::SelectSource {
+            source: Box::new(second.clone()),
+            previous: Some(Box::new(first.clone())),
+            recent_rank: -10,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        ImagerAction::SelectSource {
+            source: Box::new(first),
+            previous: Some(Box::new(second.clone())),
+            recent_rank: -11,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            ImagerDoc::recent(&doc).first().map(|source| &source.path),
+            Some(&second.path)
+        );
+    }
+
+    #[test]
+    fn concurrent_equal_rank_history_entries_have_stable_id_tie_breaking() {
+        let mut left = seeded();
+        let mut right = AutoCommit::load(&left.save()).unwrap();
+        let a = crate::model::sample_recent_sources()[1].clone();
+        let b = crate::model::sample_recent_sources()[2].clone();
+        ImagerAction::SelectSource {
+            source: Box::new(a.clone()),
+            previous: Some(Box::new(b.clone())),
+            recent_rank: -77,
+        }
+        .apply(&mut left)
+        .unwrap();
+        ImagerAction::SelectSource {
+            source: Box::new(b.clone()),
+            previous: Some(Box::new(a.clone())),
+            recent_rank: -77,
+        }
+        .apply(&mut right)
+        .unwrap();
+        left.commit();
+        right.commit();
+        left.merge(&mut right).unwrap();
+        let head = ImagerDoc::recent(&left);
+        assert_eq!(
+            head[0].path,
+            if ImagerDoc::source_id(&a) < ImagerDoc::source_id(&b) {
+                a.path
+            } else {
+                b.path
+            }
+        );
     }
 
     /// Choices outside the secret-free media contract remain decodable for old
