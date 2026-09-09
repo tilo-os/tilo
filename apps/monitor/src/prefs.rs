@@ -1,24 +1,12 @@
-//! Persisted preferences, stored in the shared Automerge document so they
-//! survive restarts and replicate to collaborators. Surviving a restart is
-//! the store's doing, not this module's: `main` opens the app's document
-//! through `ui::persist` and hands the writer to `App::with_autosave`, so
-//! everything written here is on disk within the debounce window. View-level
-//! state
-//! (current sort, filter text, selected row, active tab) deliberately
-//! lives in widget fields instead — see [`crate::app`].
+//! Per-window Monitor preferences.
 //!
-//! Layout: scalar keys written straight onto the app's root object.
-//!
-//! ```text
-//! root
-//! ├── "interval_ms"          (Int)  refresh cadence
-//! ├── "auto_refresh"         (Bool) periodic sampling enabled
-//! ├── "show_kernel_threads"  (Bool)
-//! └── "confirm_kill"         (Bool)
-//! ```
-
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+//! These values describe how **this device** observes a live system:
+//! sampling cadence, whether it is currently sampling, kernel-thread
+//! visibility, and the local confirmation affordance. They must not enter
+//! Automerge, history, or collaboration: another window's paused sampler or
+//! relaxed confirmation preference is never authority over this machine.
+//! `MonitorApp` owns one [`Prefs`] value per window; a host may later bind it
+//! to a device-preference service without changing that boundary.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Prefs {
@@ -31,7 +19,8 @@ pub struct Prefs {
     pub auto_refresh: bool,
     /// Whether the process table lists Linux kernel worker threads.
     pub show_kernel_threads: bool,
-    /// Whether the kill action pops a confirmation dialog first.
+    /// Whether the local Kill button pops a confirmation dialog first. The
+    /// resource action remains contract-confirmed independently.
     pub confirm_kill: bool,
 }
 
@@ -46,46 +35,7 @@ impl Default for Prefs {
     }
 }
 
-fn get_int(doc: &AutoCommit, path: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(path, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
-        _ => None,
-    }
-}
-
-fn get_bool(doc: &AutoCommit, path: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(path, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 impl Prefs {
-    /// Read prefs out of the document, falling back to defaults for any
-    /// key that hasn't been written yet.
-    pub fn load(doc: &AutoCommit, path: &ObjId) -> Self {
-        let d = Prefs::default();
-        Prefs {
-            interval_ms: get_int(doc, path, "interval_ms")
-                .map_or(d.interval_ms, |v| v.clamp(250, 60_000) as u64),
-            auto_refresh: get_bool(doc, path, "auto_refresh").unwrap_or(d.auto_refresh),
-            show_kernel_threads: get_bool(doc, path, "show_kernel_threads")
-                .unwrap_or(d.show_kernel_threads),
-            confirm_kill: get_bool(doc, path, "confirm_kill").unwrap_or(d.confirm_kill),
-        }
-    }
-
-    /// Write the full prefs set back into the document.
-    pub fn store(&self, doc: &mut AutoCommit, path: &ObjId) {
-        let _ = doc.put(path, "interval_ms", self.interval_ms as i64);
-        let _ = doc.put(path, "auto_refresh", self.auto_refresh);
-        let _ = doc.put(path, "show_kernel_threads", self.show_kernel_threads);
-        let _ = doc.put(path, "confirm_kill", self.confirm_kill);
-    }
-
     /// Advance to the next refresh cadence (1s → 1.5s → 2s → 3s → 5s → 1s).
     /// Any off-grid value (e.g. loaded from an older document) snaps back
     /// to the start of the cycle.
@@ -112,29 +62,10 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
 
     #[test]
-    fn round_trip_through_doc() {
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let p = Prefs {
-            interval_ms: 3000,
-            auto_refresh: false,
-            show_kernel_threads: true,
-            confirm_kill: false,
-        };
-        p.store(&mut doc, &root);
-
-        let loaded = Prefs::load(&doc, &root);
-        assert_eq!(loaded, p);
-    }
-
-    #[test]
-    fn defaults_when_empty() {
-        let doc = AutoCommit::new();
-        let loaded = Prefs::load(&doc, &automerge::ROOT);
-        assert_eq!(loaded, Prefs::default());
+    fn defaults_are_window_local() {
+        assert_eq!(Prefs::default(), Prefs::default());
     }
 
     #[test]
