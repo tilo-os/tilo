@@ -309,16 +309,20 @@ impl MailState {
         v
     }
 
-    // ---- mutations (write through to the CRDT) ----
-
-    pub fn persist_flags(&self, doc: &mut AutoCommit, id: MessageId) {
-        if let Some(m) = self.mailbox.get(id) {
-            MailDoc::store_flags(doc, &m.clone());
-        }
-    }
-
-    pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
+    /// Open a message through the user-visible read boundary.
+    ///
+    /// This is deliberately an interaction/domain method, rather than a
+    /// render-time side effect.  Callers which offer normal opening (rows,
+    /// keyboard activation, and the admitted resource operation) all use it,
+    /// so an unread message produces the same canonical `SetRead` action.
+    /// [`Self::preview_message`] is the only read-neutral alternative.
+    pub fn open_message(&mut self, doc: &mut AutoCommit, id: MessageId) -> bool {
+        let Some(folder) = self.mailbox.get(id).map(|message| message.folder) else {
+            return false;
+        };
         let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
+        self.folder = folder;
+        self.search.clear();
         self.selected = Some(id);
         self.inspection = None;
         // Opening is the user-visible read boundary. Use the exact same typed,
@@ -328,8 +332,15 @@ impl MailState {
         if was_unread {
             self.set_read(doc, id, true);
         }
-        MailDoc::set_selected(doc, Some(&id.to_string()));
         self.push_intent(Intent::ShowDetail);
+        true
+    }
+
+    /// Compatibility entry point for the existing painted list controls.
+    /// New code should name the domain boundary explicitly with
+    /// [`Self::open_message`].
+    pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
+        let _ = self.open_message(doc, id);
     }
 
     /// Push a live-path request to mirror a message's flags to the server
@@ -394,18 +405,13 @@ impl MailState {
         self.dirty = true;
     }
 
-    pub fn select_folder(&mut self, doc: &mut AutoCommit, folder: Folder) {
+    pub fn select_folder(&mut self, _doc: &mut AutoCommit, folder: Folder) {
         self.folder = folder;
         self.search.clear();
-        MailDoc::set_folder(doc, folder);
         self.selected = self
             .current_threads()
             .first()
             .and_then(|t| t.message_ids.last().copied());
-        match self.selected {
-            Some(sel) => MailDoc::set_selected(doc, Some(&sel.to_string())),
-            None => MailDoc::set_selected(doc, None),
-        }
         // Ask the live engine to fetch this folder (a no-op offline).
         let account = self.accounts.active_config();
         if !account.email.is_empty() {
@@ -431,32 +437,27 @@ impl MailState {
         self.dirty = true;
     }
 
-    /// Reveal a loaded message as presentation state. The owning app follows a
-    /// *normal open* with the collaborative mark-read action at its next
-    /// mutable document boundary; an explicit inspection remains read-state
-    /// neutral and is visibly tagged in the reader.
-    pub fn reveal_message(&mut self, id: MessageId, inspect_without_marking_read: bool) -> bool {
+    /// Inspect a loaded message without changing collaborative message state.
+    /// This is intentionally reserved for the explicitly-labelled Preview
+    /// operation; normal opens must call [`Self::open_message`].
+    pub fn preview_message(&mut self, id: MessageId) -> bool {
         let Some(folder) = self.mailbox.get(id).map(|message| message.folder) else {
             return false;
         };
         self.folder = folder;
         self.search.clear();
         self.selected = Some(id);
-        self.inspection = inspect_without_marking_read.then_some(id);
+        self.inspection = Some(id);
         self.push_intent(Intent::ShowDetail);
         self.dirty = true;
         true
     }
 
-    pub fn reselect_after_remove(&mut self, doc: &mut AutoCommit) {
+    pub fn reselect_after_remove(&mut self, _doc: &mut AutoCommit) {
         self.selected = self
             .current_threads()
             .first()
             .and_then(|t| t.message_ids.last().copied());
-        match self.selected {
-            Some(sel) => MailDoc::set_selected(doc, Some(&sel.to_string())),
-            None => MailDoc::set_selected(doc, None),
-        }
         self.dirty = true;
     }
 
@@ -627,7 +628,6 @@ impl MailState {
         if was_unread {
             self.set_read(doc, id, true);
         }
-        MailDoc::set_selected(doc, Some(&id.to_string()));
         self.dirty = true;
     }
 }
