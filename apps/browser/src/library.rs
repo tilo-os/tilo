@@ -42,15 +42,6 @@ impl Bookmarks {
         }
     }
 
-    pub(crate) fn to_json(&self) -> String {
-        let rows: Vec<_> = self
-            .entries
-            .iter()
-            .map(|entry| serde_json::json!({ "url": entry.url, "title": entry.title }))
-            .collect();
-        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
-    }
-
     pub fn entries(&self) -> &[Bookmark] {
         &self.entries
     }
