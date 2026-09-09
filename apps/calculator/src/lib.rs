@@ -1,9 +1,10 @@
 //! Calculator — qOS native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! An everyday scientific calculator that also does proper 2D and 3D
-//! graphing. State (expression, history, plotted functions, view
-//! transforms) lives in an Automerge document so undo/redo and live
-//! collaboration come for free; the panels are custom Vello-drawn widgets.
+//! graphing. Durable artifacts (history and plotted functions) live in an
+//! Automerge document so undo/redo and live collaboration come for free;
+//! per-window expression, selection, angle unit, and camera state stay local.
+//! The panels are custom Vello-drawn widgets.
 //!
 //! `app_root()` is the single integration point used by both the live
 //! event loop and the `--shots` offscreen renderer.
