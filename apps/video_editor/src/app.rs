@@ -34,9 +34,10 @@ use ui::widget::{
 };
 
 use crate::actions::{
-    VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx, clip_field_patch_action,
-    delete_clip_action, remove_media_action, ripple_delete_action, set_project_meta_action,
-    split_clip_action, upsert_clip_action, upsert_media_action, upsert_track_action,
+    MarkerTextField, VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx,
+    clip_field_patch_action, delete_clip_action, remove_media_action, ripple_delete_action,
+    set_project_meta_action, split_clip_action, upsert_clip_action, upsert_media_action,
+    upsert_track_action,
 };
 use crate::doc::VideoDoc;
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
@@ -4319,11 +4320,14 @@ impl VideoEditorApp {
         let mut next = self.project.clone();
         let palette = (next.markers.len() as u8 % 6) + 1;
         let id = next.add_marker(self.playhead, "Marker", palette);
+        let Some(marker) = next.marker(id).cloned() else {
+            return;
+        };
         self.project = next.clone();
         self.actions.dispatch(
             doc,
             VIDEO_EDITOR_ACTION_TYPE,
-            &set_project_meta_action(&next),
+            &VideoEditorAction::AddProjectMarker { marker },
         );
         self.collapsed.remove(&Section::Markers);
         self.begin_marker_rename(MarkerRef {
@@ -4481,6 +4485,12 @@ impl VideoEditorApp {
         };
         match m.clip {
             None => {
+                let Some(expected) = self.project.marker(m.id).map(|mk| match field {
+                    MarkerField::Name => mk.name.clone(),
+                    MarkerField::Note => mk.note.clone(),
+                }) else {
+                    return false;
+                };
                 let mut next = self.project.clone();
                 let Some(mk) = next.marker_mut(m.id) else {
                     return false;
@@ -4492,11 +4502,30 @@ impl VideoEditorApp {
                 self.actions.dispatch(
                     doc,
                     VIDEO_EDITOR_ACTION_TYPE,
-                    &set_project_meta_action(&next),
+                    &VideoEditorAction::SetProjectMarkerText {
+                        marker: m.id.to_string(),
+                        field: match field {
+                            MarkerField::Name => MarkerTextField::Name,
+                            MarkerField::Note => MarkerTextField::Note,
+                        },
+                        expected,
+                        value: text,
+                    },
                 );
                 true
             }
             Some(cid) => {
+                let Some(expected) = self
+                    .project
+                    .clip(cid)
+                    .and_then(|clip| clip.markers.iter().find(|mk| mk.id == m.id))
+                    .map(|mk| match field {
+                        MarkerField::Name => mk.name.clone(),
+                        MarkerField::Note => mk.note.clone(),
+                    })
+                else {
+                    return false;
+                };
                 self.remember_clip_before(cid);
                 let changed = self
                     .project
@@ -4504,7 +4533,20 @@ impl VideoEditorApp {
                     .and_then(|c| c.markers.iter_mut().find(|mk| mk.id == m.id).map(write))
                     .unwrap_or(false);
                 if changed {
-                    self.dispatch_clip(doc, cid);
+                    self.actions.dispatch(
+                        doc,
+                        VIDEO_EDITOR_ACTION_TYPE,
+                        &VideoEditorAction::SetClipMarkerText {
+                            clip: cid.to_string(),
+                            marker: m.id.to_string(),
+                            field: match field {
+                                MarkerField::Name => MarkerTextField::Name,
+                                MarkerField::Note => MarkerTextField::Note,
+                            },
+                            expected,
+                            value: text,
+                        },
+                    );
                 }
                 changed
             }
@@ -4545,7 +4587,9 @@ impl VideoEditorApp {
                 self.actions.dispatch(
                     doc,
                     VIDEO_EDITOR_ACTION_TYPE,
-                    &set_project_meta_action(&next),
+                    &VideoEditorAction::RemoveProjectMarker {
+                        marker: m.id.to_string(),
+                    },
                 );
             }
             Some(cid) => {
@@ -4556,7 +4600,14 @@ impl VideoEditorApp {
                     .map(|c| c.remove_marker(m.id))
                     .unwrap_or(false);
                 if gone {
-                    self.dispatch_clip(doc, cid);
+                    self.actions.dispatch(
+                        doc,
+                        VIDEO_EDITOR_ACTION_TYPE,
+                        &VideoEditorAction::RemoveClipMarker {
+                            clip: cid.to_string(),
+                            marker: m.id.to_string(),
+                        },
+                    );
                 }
             }
         }
@@ -4676,7 +4727,7 @@ impl VideoEditorApp {
         let Some(clip) = self.project.clip(id) else {
             return;
         };
-        let expected_stack = clip.effects.iter().map(|effect| effect.id).collect();
+        let ordinal = clip.effects.len();
         let effect = crate::model::ClipEffect::new(kind);
         if let Some(clip) = self.project.clip_mut(id) {
             clip.effects.push(effect);
@@ -4686,7 +4737,8 @@ impl VideoEditorApp {
             VIDEO_EDITOR_ACTION_TYPE,
             &VideoEditorAction::AddEffect {
                 clip: id.to_string(),
-                expected_stack,
+                expected_stack: Vec::new(),
+                ordinal,
                 effect,
             },
         );
