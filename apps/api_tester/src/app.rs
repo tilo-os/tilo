@@ -62,8 +62,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Checkbox, CheckboxFace, Dropdown, SidebarDrawer, SplitLayout, TextInput, TextInputKind,
-    ToggleGroup, Widget,
+    Button, Checkbox, CheckboxFace, Dropdown, EmptyState, SidebarDrawer, SplitLayout, TextInput,
+    TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
@@ -84,6 +84,12 @@ const METHOD_W: f64 = 104.0;
 const HAMBURGER_W: f64 = 36.0;
 const SEND_W: f64 = 96.0;
 const URLBAR_H: f64 = 56.0;
+/// On a phone, method/send stay on the first row and the URL gets a full
+/// second row. Keeping all four controls in one row leaves only a clipped
+/// sliver of the endpoint — especially unhelpful when it starts with a
+/// `{{variable}}` reference.
+const COMPACT_URLBAR_H: f64 = 100.0;
+const COMPACT_URLBAR_BREAKPOINT: f64 = 480.0;
 const TAB_STRIP_H: f64 = 40.0;
 const PAD: f64 = 16.0;
 const JSON_LINE_H: f64 = 20.0;
@@ -138,12 +144,58 @@ enum SendOutcome {
 /// widgets and the mutation of the model cleanly separated.
 #[derive(Clone, Debug)]
 enum Cmd {
-    Send,
+    ToggleRail,
     SetTab(usize),
     SetView(usize),
     ToggleCollection(usize),
     LoadRequest(usize, usize),
     ReplayHistory(usize),
+    OpenForm(FormMode),
+    SubmitForm,
+    CancelForm,
+    DeleteRequest,
+    DeleteEnvironment,
+}
+
+/// The rail never leaves a generic text field lying around.  A field appears
+/// only while the user is completing one named, contextual durable action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FormMode {
+    NewCollection,
+    SaveRequest,
+    RenameCollection,
+    RenameRequest,
+    NewEnvironment,
+    RenameEnvironment,
+    NewVariable,
+    DeleteVariable,
+}
+
+impl FormMode {
+    fn heading(self) -> &'static str {
+        match self {
+            Self::NewCollection => "New collection",
+            Self::SaveRequest => "Save request",
+            Self::RenameCollection => "Rename collection",
+            Self::RenameRequest => "Rename request",
+            Self::NewEnvironment => "New environment",
+            Self::RenameEnvironment => "Rename environment",
+            Self::NewVariable => "Add variable",
+            Self::DeleteVariable => "Delete variable",
+        }
+    }
+
+    fn needs_variable_fields(self) -> bool {
+        matches!(self, Self::NewVariable | Self::DeleteVariable)
+    }
+
+    fn needs_value(self) -> bool {
+        matches!(self, Self::NewVariable)
+    }
+
+    fn needs_name(self) -> bool {
+        !self.needs_variable_fields()
+    }
 }
 
 type Sink = Rc<RefCell<Vec<Cmd>>>;
@@ -151,10 +203,15 @@ type Sink = Rc<RefCell<Vec<Cmd>>>;
 /// Structural signature of the child set. When it changes, the app reports
 /// `take_structure_dirty` so the host rebuilds the taffy tree + focus order.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag describes an independent retained-child category"
+)]
 struct ChildSig {
     tab: u8,
     body_field: bool,
     resp_view: bool,
+    hamburger: bool,
     sidebar: bool,
     nav_rows: usize,
 }
@@ -175,6 +232,11 @@ struct Layout {
     send: Rect,
     tabs: Rect,
     env: Rect,
+    form_name: Rect,
+    form_key: Rect,
+    form_value: Rect,
+    form_actions: [Rect; 2],
+    manage: Vec<Rect>,
     body: Rect,
     resp_view: Rect,
     nav: Vec<Rect>,
@@ -185,6 +247,9 @@ struct Layout {
     response: Rect,
     resp_status: Rect,
     resp_body: Rect,
+    collection_manage_label: Point,
+    environment_manage_label: Point,
+    form_heading: Point,
     collections_label: Point,
     history_label: Point,
     body_region: Rect,
@@ -218,12 +283,24 @@ pub struct ApiTesterApp {
 
     // --- Real child widgets ---
     method_dropdown: Dropdown,
+    rail_button: Button,
     env_dropdown: Dropdown,
     url_input: TextInput,
     body_input: TextInput,
     send_button: Button,
     request_tabs: ToggleGroup,
     response_view_toggle: ToggleGroup,
+    /// Shared accessible recovery surfaces for an empty response and a failed
+    /// transport. They own their CTA focus/Enter/AT activation.
+    response_empty: EmptyState,
+    response_error: EmptyState,
+    form_name_input: TextInput,
+    form_key_input: TextInput,
+    form_value_input: TextInput,
+    form_submit: Button,
+    form_cancel: Button,
+    form: Option<FormMode>,
+    manage_buttons: Vec<Button>,
     nav_rows: Vec<NavRow>,
     /// Parallel to `nav_rows`: what each row draws + does (rebuilt together).
     nav_meta: Vec<NavMeta>,
@@ -284,6 +361,7 @@ struct BuiltModel {
 /// [`ApiTesterApp::build_widgets`].
 struct BuiltWidgets {
     method_dropdown: Dropdown,
+    rail_button: Button,
     env_dropdown: Dropdown,
     url_input: TextInput,
     body_input: TextInput,
@@ -291,9 +369,25 @@ struct BuiltWidgets {
     request_tabs: ToggleGroup,
     response_view_toggle: ToggleGroup,
     sink: Sink,
+    form_name_input: TextInput,
+    form_key_input: TextInput,
+    form_value_input: TextInput,
+    form_submit: Button,
+    form_cancel: Button,
+    manage_buttons: Vec<Button>,
 }
 
 impl ApiTesterApp {
+    #[allow(
+        clippy::expect_used,
+        reason = "the static active-request resource always publishes its nullary send operation"
+    )]
+    fn active_send_binding() -> qos_actions::ActionBinding<()> {
+        let resource = actions::active_request_resource();
+        qos_actions::ActionBinding::unit_for(&resource, "send")
+            .expect("active request resource publishes a nullary send action")
+    }
+
     /// The live app: no fabricated saved collections/history and NO canned
     /// response — the response pane is empty until a real Send. It opens on a
     /// single blank starter request.
@@ -305,6 +399,43 @@ impl ApiTesterApp {
     /// history and a rendered example response so the screenshot is populated.
     pub fn new_demo() -> Self {
         Self::build(true)
+    }
+
+    /// Screenshot/test staging only: render the same failure surface a real
+    /// transport error uses, without manufacturing a successful response.
+    pub fn shot_error(&mut self) {
+        self.response = None;
+        self.sending = false;
+        self.error = Some(
+            "Could not reach api.example.com. Check the URL or your network connection.".into(),
+        );
+        self.dirty = true;
+    }
+
+    /// Screenshot/test staging for the native `TextInput` focus treatment.
+    pub fn shot_focus_url(&mut self) {
+        self.url_input.set_focus(true);
+        self.dirty = true;
+    }
+
+    /// Screenshot staging for each contextual management form.  This keeps
+    /// visual regression coverage honest without making the form state durable.
+    pub fn shot_form(&mut self, name: &str) {
+        let mode = match name {
+            "new-collection" => Some(FormMode::NewCollection),
+            "save-request" => Some(FormMode::SaveRequest),
+            "rename-collection" => Some(FormMode::RenameCollection),
+            "rename-request" => Some(FormMode::RenameRequest),
+            "new-environment" => Some(FormMode::NewEnvironment),
+            "rename-environment" => Some(FormMode::RenameEnvironment),
+            "new-variable" => Some(FormMode::NewVariable),
+            "delete-variable" => Some(FormMode::DeleteVariable),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            self.open_form(mode);
+            self.dirty = true;
+        }
     }
 
     fn build(demo: bool) -> Self {
@@ -331,12 +462,32 @@ impl ApiTesterApp {
             body_scroll: 0.0,
             selected: if demo { Some((0, 0)) } else { None },
             method_dropdown: widgets.method_dropdown,
+            rail_button: widgets.rail_button,
             env_dropdown: widgets.env_dropdown,
             url_input: widgets.url_input,
             body_input: widgets.body_input,
             send_button: widgets.send_button,
             request_tabs: widgets.request_tabs,
             response_view_toggle: widgets.response_view_toggle,
+            response_empty: EmptyState::new("No response yet")
+                .with_icon(Icon::Globe)
+                .with_message("Enter a URL and send a request to inspect its response.")
+                .with_action("Send request")
+                .with_action_id("api.response.send")
+                .on_action(Self::active_send_binding()),
+            response_error: EmptyState::new("Request failed")
+                .with_icon(Icon::Refresh)
+                .with_message("Check the URL or network, then retry.")
+                .with_action("Retry request")
+                .with_action_id("api.response.retry")
+                .on_action(Self::active_send_binding()),
+            form_name_input: widgets.form_name_input,
+            form_key_input: widgets.form_key_input,
+            form_value_input: widgets.form_value_input,
+            form_submit: widgets.form_submit,
+            form_cancel: widgets.form_cancel,
+            form: None,
+            manage_buttons: widgets.manage_buttons,
             nav_rows: Vec::new(),
             nav_meta: Vec::new(),
             sink: widgets.sink,
@@ -399,6 +550,10 @@ impl ApiTesterApp {
 
     /// The real child widgets for a fresh app, wired to `model`'s starting
     /// values. Split out of [`Self::build`] to keep it under the line budget.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor keeps all retained controls and command bindings together"
+    )]
     fn build_widgets(model: &BuiltModel) -> BuiltWidgets {
         let mut url_input = TextInput::local().with_kind(TextInputKind::Url);
         url_input.set_plain_chrome(true);
@@ -427,17 +582,27 @@ impl ApiTesterApp {
         )
         .with_id("api.method");
 
+        // A real retained menu button replaces the painted-only hamburger in
+        // overlay mode, so a keyboard or screen-reader user can open the
+        // workspace rail on a narrow display.
+        let rail_sink = sink.clone();
+        let rail_button = Button::new("api.workspace-menu", "", None)
+            .with_icon(Icon::Menu)
+            .with_accessible_name("Open workspace")
+            .tooltip("Open workspace")
+            .with_size(HAMBURGER_W as f32, 36.0)
+            .on_effect(move || rail_sink.borrow_mut().push(Cmd::ToggleRail));
+
         // Environment picker — "No Environment" plus each named environment.
         let mut env_options = vec![NO_ENV.to_string()];
         env_options.extend(model.environments.iter().map(|e| e.name.clone()));
         let env_dropdown = Dropdown::new(env_options, ENV_PATH).with_id("api.env");
 
         // Send — the accent primary action.
-        let send_sink = sink.clone();
         let send_button = Button::new("api.send", "Send", None)
             .primary()
             .with_size(SEND_W as f32, 36.0)
-            .on_effect(move || send_sink.borrow_mut().push(Cmd::Send));
+            .on_action(Self::active_send_binding());
 
         // Request-builder tabs.
         let tab_sink = sink.clone();
@@ -465,8 +630,87 @@ impl ApiTesterApp {
             view_sink.borrow_mut().push(Cmd::SetView(i));
         });
 
+        let form_name_input = TextInput::local()
+            .with_placeholder("Name")
+            .with_id("api.form-name")
+            .with_accessible_name("Name");
+        let form_key_input = TextInput::local()
+            .with_placeholder("Key")
+            .with_id("api.form-variable-key")
+            .with_accessible_name("Variable key");
+        let form_value_input = TextInput::local()
+            .with_placeholder("Value")
+            .with_id("api.form-variable-value")
+            .with_accessible_name("Variable value");
+        let submit_sink = sink.clone();
+        let form_submit = Button::new("api.form-confirm", "Confirm", None)
+            .primary()
+            .on_effect(move || submit_sink.borrow_mut().push(Cmd::SubmitForm));
+        let cancel_sink = sink.clone();
+        let form_cancel = Button::new("api.form-cancel", "Cancel", None)
+            .on_effect(move || cancel_sink.borrow_mut().push(Cmd::CancelForm));
+        let management = [
+            (
+                "api.new-collection",
+                "New collection",
+                Cmd::OpenForm(FormMode::NewCollection),
+            ),
+            (
+                "api.save-request",
+                "Save request",
+                Cmd::OpenForm(FormMode::SaveRequest),
+            ),
+            (
+                "api.rename-collection",
+                "Rename collection",
+                Cmd::OpenForm(FormMode::RenameCollection),
+            ),
+            (
+                "api.rename-request",
+                "Rename request",
+                Cmd::OpenForm(FormMode::RenameRequest),
+            ),
+            ("api.delete-request", "Delete request", Cmd::DeleteRequest),
+            (
+                "api.new-environment",
+                "New environment",
+                Cmd::OpenForm(FormMode::NewEnvironment),
+            ),
+            (
+                "api.rename-environment",
+                "Rename environment",
+                Cmd::OpenForm(FormMode::RenameEnvironment),
+            ),
+            (
+                "api.delete-environment",
+                "Delete environment",
+                Cmd::DeleteEnvironment,
+            ),
+            (
+                "api.new-variable",
+                "Add variable",
+                Cmd::OpenForm(FormMode::NewVariable),
+            ),
+            (
+                "api.delete-variable",
+                "Delete variable",
+                Cmd::OpenForm(FormMode::DeleteVariable),
+            ),
+        ];
+        let manage_buttons = management
+            .into_iter()
+            .map(|(id, label, command)| {
+                let sink = sink.clone();
+                Button::new(id, label, None)
+                    .with_accessible_name(label)
+                    .tooltip(label)
+                    .on_effect(move || sink.borrow_mut().push(command.clone()))
+            })
+            .collect();
+
         BuiltWidgets {
             method_dropdown,
+            rail_button,
             env_dropdown,
             url_input,
             body_input,
@@ -474,6 +718,12 @@ impl ApiTesterApp {
             request_tabs,
             response_view_toggle,
             sink,
+            form_name_input,
+            form_key_input,
+            form_value_input,
+            form_submit,
+            form_cancel,
+            manage_buttons,
         }
     }
 
@@ -592,8 +842,9 @@ impl ApiTesterApp {
         }
     }
 
-    /// Push the whole workspace into the shared CRDT.
-    fn persist(&self, state: &mut AutoCommit, root: &ObjId) {
+    /// Seed a previously empty document through the native per-resource
+    /// writers. Normal interactions use precise actions and never call this.
+    fn seed_workspace(&self, state: &mut AutoCommit, root: &ObjId) {
         let mut snap = self.request.clone();
         snap.url = self.url_input.value().to_string();
         snap.body_text = self.body_input.value().to_string();
@@ -636,18 +887,11 @@ impl ApiTesterApp {
         self.rebuild_nav();
     }
 
-    /// Dispatch one collaborative [`ApiTesterAction`] against the shared document.
-    ///
-    /// The API tester holds its workspace as an in-memory model mirrored into
-    /// per-key JSON snapshots, so this first flushes the live model to `doc`
-    /// (usually a no-op — the app already persisted — but it guarantees the
-    /// action mutates current state and that the
-    /// [`ActionHost`](ui::ActionHost) brackets *only* the action). The host
-    /// encodes + applies it via the executor (one undo boundary, byte-identical
-    /// replay on peers); we then re-adopt the mutated snapshots so the UI and the
-    /// document agree on a single source of truth.
+    /// Dispatch one canonical action against the document's current projection.
+    /// Presentation commands never flush the in-memory workspace first; the
+    /// action owns the precise durable record it mutates, then we re-adopt the
+    /// authoritative result.
     fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: &ApiTesterAction) {
-        self.persist(state, path);
         self.actions.dispatch_with_context(
             state,
             API_TESTER_ACTION_TYPE,
@@ -708,6 +952,7 @@ impl ApiTesterApp {
             tab: self.tab_index() as u8,
             body_field: self.body_field_visible(),
             resp_view: self.response.is_some(),
+            hamburger: self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay,
             sidebar: self.sidebar_visible(),
             nav_rows: self.nav_rows.len(),
         }
@@ -746,16 +991,17 @@ impl ApiTesterApp {
     fn compute_nav_meta(&self) -> Vec<NavMeta> {
         let mut v = Vec::new();
         for (ci, col) in self.collections.iter().enumerate() {
+            let expanded = !self.collapsed.contains(&ci);
             v.push(NavMeta {
                 kind: NavKind::Collection {
-                    expanded: col.expanded,
+                    expanded,
                     count: col.requests.len(),
                 },
                 label: col.name.clone(),
                 a11y_name: format!("{}, collection, {} requests", col.name, col.requests.len()),
                 cmd: Cmd::ToggleCollection(ci),
             });
-            if col.expanded {
+            if expanded {
                 for (ri, req) in col.requests.iter().enumerate() {
                     v.push(NavMeta {
                         kind: NavKind::Request {
@@ -802,14 +1048,38 @@ impl ApiTesterApp {
             &self.send_button,
             &self.request_tabs,
         ];
+        if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
+            v.insert(0, &self.rail_button);
+        }
         if self.body_field_visible() {
             v.push(&self.body_input);
         }
         if self.response.is_some() {
             v.push(&self.response_view_toggle);
+        } else if self.error.is_some() {
+            v.push(&self.response_error);
+        } else {
+            v.push(&self.response_empty);
         }
         if self.sidebar_visible() {
-            v.push(&self.env_dropdown);
+            if let Some(form) = self.form {
+                if form.needs_name() {
+                    v.push(&self.form_name_input);
+                }
+                if form.needs_variable_fields() {
+                    v.push(&self.form_key_input);
+                    if form.needs_value() {
+                        v.push(&self.form_value_input);
+                    }
+                }
+                v.push(&self.form_cancel);
+                v.push(&self.form_submit);
+            } else {
+                v.push(&self.env_dropdown);
+                for button in &self.manage_buttons {
+                    v.push(button);
+                }
+            }
             for r in &self.nav_rows {
                 v.push(r);
             }
@@ -822,6 +1092,10 @@ impl ApiTesterApp {
         let body = self.body_field_visible();
         let resp = self.response.is_some();
         let sidebar = self.sidebar_visible();
+        let hamburger = self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay;
+        if hamburger {
+            v.push(&mut self.rail_button);
+        }
         v.push(&mut self.method_dropdown);
         v.push(&mut self.url_input);
         v.push(&mut self.send_button);
@@ -831,9 +1105,30 @@ impl ApiTesterApp {
         }
         if resp {
             v.push(&mut self.response_view_toggle);
+        } else if self.error.is_some() {
+            v.push(&mut self.response_error);
+        } else {
+            v.push(&mut self.response_empty);
         }
         if sidebar {
-            v.push(&mut self.env_dropdown);
+            if let Some(form) = self.form {
+                if form.needs_name() {
+                    v.push(&mut self.form_name_input);
+                }
+                if form.needs_variable_fields() {
+                    v.push(&mut self.form_key_input);
+                    if form.needs_value() {
+                        v.push(&mut self.form_value_input);
+                    }
+                }
+                v.push(&mut self.form_cancel);
+                v.push(&mut self.form_submit);
+            } else {
+                v.push(&mut self.env_dropdown);
+                for button in &mut self.manage_buttons {
+                    v.push(button);
+                }
+            }
             for r in &mut self.nav_rows {
                 v.push(r);
             }
@@ -845,6 +1140,9 @@ impl ApiTesterApp {
     /// order `children_mut_ref` / `build_layout` use.
     fn position_children(&mut self) {
         let l = self.layout.clone();
+        if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
+            self.rail_button.apply_layout_external(l.hamburger);
+        }
         self.method_dropdown.apply_layout_external(l.method);
         self.url_input.apply_layout_external(l.url);
         self.send_button.apply_layout_external(l.send);
@@ -854,9 +1152,30 @@ impl ApiTesterApp {
         }
         if self.response.is_some() {
             self.response_view_toggle.apply_layout_external(l.resp_view);
+        } else if self.error.is_some() {
+            self.response_error.apply_layout_external(l.resp_body);
+        } else {
+            self.response_empty.apply_layout_external(l.resp_body);
         }
         if self.sidebar_visible() {
-            self.env_dropdown.apply_layout_external(l.env);
+            if let Some(form) = self.form {
+                if form.needs_name() {
+                    self.form_name_input.apply_layout_external(l.form_name);
+                }
+                if form.needs_variable_fields() {
+                    self.form_key_input.apply_layout_external(l.form_key);
+                    if form.needs_value() {
+                        self.form_value_input.apply_layout_external(l.form_value);
+                    }
+                }
+                self.form_cancel.apply_layout_external(l.form_actions[0]);
+                self.form_submit.apply_layout_external(l.form_actions[1]);
+            } else {
+                self.env_dropdown.apply_layout_external(l.env);
+                for (button, rect) in self.manage_buttons.iter_mut().zip(&l.manage) {
+                    button.apply_layout_external(*rect);
+                }
+            }
             for (row, rect) in self.nav_rows.iter_mut().zip(l.nav.iter()) {
                 row.apply_layout_external(*rect);
             }
@@ -870,6 +1189,10 @@ impl ApiTesterApp {
     /// Compute all chrome regions + control rects for the current window rect
     /// and rail state. Pure geometry; called from both `apply_layout` and
     /// `draw`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pure geometry pass keeps the hand-positioned controls and painted chrome in lockstep"
+    )]
     fn compute_layout(&mut self) -> Layout {
         // The shared drawer resolves docked-vs-overlay from the rect and hands
         // back the sidebar / content / scrim rects: a docked column with inset
@@ -884,7 +1207,14 @@ impl ApiTesterApp {
 
         // --- URL bar row ---
         let area = l.main;
-        l.urlbar = Rect::new(area.x0, area.y0, area.x1, area.y0 + URLBAR_H);
+        let compact_urlbar =
+            split == SplitLayout::Overlay && area.width() < COMPACT_URLBAR_BREAKPOINT;
+        let urlbar_h = if compact_urlbar {
+            COMPACT_URLBAR_H
+        } else {
+            URLBAR_H
+        };
+        l.urlbar = Rect::new(area.x0, area.y0, area.x1, area.y0 + urlbar_h);
         let cy0 = l.urlbar.y0 + (URLBAR_H - 36.0) / 2.0;
         let mut row_x0 = area.x0 + PAD;
         if split == SplitLayout::Overlay {
@@ -893,7 +1223,16 @@ impl ApiTesterApp {
         }
         l.method = Rect::new(row_x0, cy0, row_x0 + METHOD_W, cy0 + 36.0);
         l.send = Rect::new(area.x1 - PAD - SEND_W, cy0, area.x1 - PAD, cy0 + 36.0);
-        l.url = Rect::new(l.method.x1 + 8.0, cy0, l.send.x0 - 8.0, cy0 + 36.0);
+        l.url = if compact_urlbar {
+            Rect::new(
+                area.x0 + PAD,
+                l.urlbar.y0 + URLBAR_H,
+                area.x1 - PAD,
+                l.urlbar.y0 + URLBAR_H + 36.0,
+            )
+        } else {
+            Rect::new(l.method.x1 + 8.0, cy0, l.send.x0 - 8.0, cy0 + 36.0)
+        };
 
         // --- Tab strip ---
         l.tab_strip = Rect::new(area.x0, l.urlbar.y1, area.x1, l.urlbar.y1 + TAB_STRIP_H);
@@ -906,7 +1245,7 @@ impl ApiTesterApp {
         );
 
         // --- Editor / response split ---
-        let editor_h = ((area.height() - URLBAR_H - TAB_STRIP_H) * 0.42).max(150.0);
+        let editor_h = ((area.height() - urlbar_h - TAB_STRIP_H) * 0.42).max(150.0);
         l.editor = Rect::new(area.x0, l.tab_strip.y1, area.x1, l.tab_strip.y1 + editor_h);
         l.response = Rect::new(area.x0, l.editor.y1, area.x1, area.y1);
 
@@ -960,8 +1299,49 @@ impl ApiTesterApp {
             // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
             // picker leads the sidebar. Keep room above it for the ENV caption.
             let mut y = s.y0 + PAD + 16.0;
-            l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0);
-            y += 54.0;
+            let control_x = s.x0 + PAD;
+            let control_w = s.width() - PAD * 2.0;
+            let action_rows = |count: usize, at: f64| {
+                (0..count).map(move |index| {
+                    let y0 = at + index as f64 * 38.0;
+                    Rect::new(control_x, y0, control_x + control_w, y0 + 34.0)
+                })
+            };
+            if let Some(form) = self.form {
+                l.form_heading = Point::new(control_x, y);
+                y += 20.0;
+                if form.needs_name() {
+                    l.form_name = Rect::new(control_x, y, s.x1 - PAD, y + 32.0);
+                    y += 42.0;
+                }
+                if form.needs_variable_fields() {
+                    l.form_key = Rect::new(control_x, y, s.x1 - PAD, y + 32.0);
+                    y += 40.0;
+                    if form.needs_value() {
+                        l.form_value = Rect::new(control_x, y, s.x1 - PAD, y + 32.0);
+                        y += 42.0;
+                    }
+                }
+                let half = (control_w - 8.0) / 2.0;
+                l.form_actions = [
+                    Rect::new(control_x, y, control_x + half, y + 36.0),
+                    Rect::new(control_x + half + 8.0, y, s.x1 - PAD, y + 36.0),
+                ];
+                y += 52.0;
+            } else {
+                l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0);
+                y += 78.0;
+                l.collection_manage_label = Point::new(control_x, y);
+                y += 18.0;
+                l.manage.extend(action_rows(5, y));
+                y += 5.0 * 38.0 + 12.0;
+                l.environment_manage_label = Point::new(control_x, y);
+                y += 18.0;
+                l.manage.extend(action_rows(3, y));
+                y += 3.0 * 38.0 + 12.0;
+                l.manage.extend(action_rows(2, y));
+                y += 2.0 * 38.0 + 16.0;
+            }
             l.collections_label = Point::new(s.x0 + PAD, y);
             y += 24.0;
             // Rows follow the same order as `compute_nav_meta`.
@@ -1045,20 +1425,59 @@ impl ApiTesterApp {
         scene.fill(Fill::NonZero, t, c.border_standard, None, &div);
 
         // ENV label above the picker.
-        tr.draw_text_weighted(
-            scene,
-            "ENV",
-            9.0,
-            c.text_dim,
-            t * Affine::translate((l.env.x0, l.env.y0 - 14.0)),
-            None,
-            TextWeight::Bold,
-        );
+        if self.form.is_none() {
+            tr.draw_text_weighted(
+                scene,
+                "ENV",
+                9.0,
+                c.text_dim,
+                t * Affine::translate((l.env.x0, l.env.y0 - 14.0)),
+                None,
+                TextWeight::Bold,
+            );
+        }
         Self::draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
         Self::draw_section_label(scene, t, tr, theme, l.history_label, "HISTORY");
+        Self::draw_section_label(
+            scene,
+            t,
+            tr,
+            theme,
+            l.collection_manage_label,
+            "COLLECTIONS & REQUESTS",
+        );
+        Self::draw_section_label(
+            scene,
+            t,
+            tr,
+            theme,
+            l.environment_manage_label,
+            "ENVIRONMENTS",
+        );
+        if let Some(form) = self.form {
+            Self::draw_section_label(scene, t, tr, theme, l.form_heading, form.heading());
+        }
 
-        // The env dropdown + every nav row draw themselves.
-        self.env_dropdown.draw(scene, t, tr, theme, presence);
+        // The environment plus visible management controls are all retained
+        // widgets, so their labels/tooltips/focus state are exposed to AT.
+        if let Some(form) = self.form {
+            if form.needs_name() {
+                self.form_name_input.draw(scene, t, tr, theme, presence);
+            }
+            if form.needs_variable_fields() {
+                self.form_key_input.draw(scene, t, tr, theme, presence);
+                if form.needs_value() {
+                    self.form_value_input.draw(scene, t, tr, theme, presence);
+                }
+            }
+            self.form_cancel.draw(scene, t, tr, theme, presence);
+            self.form_submit.draw(scene, t, tr, theme, presence);
+        } else {
+            self.env_dropdown.draw(scene, t, tr, theme, presence);
+            for button in &mut self.manage_buttons {
+                button.draw(scene, t, tr, theme, presence);
+            }
+        }
         for row in &mut self.nav_rows {
             row.draw(scene, t, tr, theme, presence);
         }
@@ -1103,13 +1522,8 @@ impl ApiTesterApp {
         let bar_div = Rect::new(area.x0, l.urlbar.y1 - 1.0, area.x1, l.urlbar.y1);
         scene.fill(Fill::NonZero, t, c.border_standard, None, &bar_div);
 
-        // Hamburger (overlay only) — a painted chrome affordance.
         if self.rail.layout() == SplitLayout::Overlay {
-            let ham = l.hamburger;
-            let shape = RoundedRect::from_rect(ham, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.lift(0.35), None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-            draw_hamburger(scene, t, ham, c.text_primary);
+            self.rail_button.draw(scene, t, tr, theme, presence);
         }
 
         // Method picker draws itself; keep the method-tinted rest look via the
@@ -1757,32 +2171,35 @@ impl ApiTesterApp {
                 }
             }
         } else if let Some(err) = &self.error {
-            tr.draw_text_weighted(
-                scene,
-                "Request failed",
-                theme.tokens.typography.scale.base,
-                c.semantic.danger,
-                t * Affine::translate((x0, cy - 7.0)),
+            let body_area = l.resp_body;
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.tokens.colors.neutral[1],
                 None,
-                TextWeight::Bold,
+                &body_area,
             );
+            self.response_error.draw(scene, t, tr, theme, presence);
+            // Preserve the transport's actual detail below the shared recovery
+            // treatment; the CTA remains visible and keyboard-accessible.
             tr.draw_text(
                 scene,
                 err,
                 theme.tokens.typography.scale.sm,
                 c.text_dim,
-                t * Affine::translate((x0, row.y1 + 12.0)),
-                Some((area.width() - PAD * 2.0) as f32),
+                t * Affine::translate((body_area.x0 + PAD, body_area.y1 - 48.0)),
+                Some((body_area.width() - PAD * 2.0) as f32),
             );
         } else {
-            tr.draw_text(
-                scene,
-                "Send a request to see the response here.",
-                theme.tokens.typography.scale.base,
-                c.text_dim,
-                t * Affine::translate((x0, cy - 7.0)),
+            let body_area = l.resp_body;
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.tokens.colors.neutral[1],
                 None,
+                &body_area,
             );
+            self.response_empty.draw(scene, t, tr, theme, presence);
         }
     }
 
@@ -1989,6 +2406,10 @@ impl ApiTesterApp {
 
     /// Drain the command sink and apply each command, persisting when a
     /// command changes shared state. Returns `true` if anything was applied.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match is the authoritative mapping from visible commands to canonical actions"
+    )]
     fn drain_commands(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
         if cmds.is_empty() {
@@ -1996,7 +2417,7 @@ impl ApiTesterApp {
         }
         for cmd in cmds {
             match cmd {
-                Cmd::Send => self.send(),
+                Cmd::ToggleRail => self.rail.toggle(),
                 Cmd::SetTab(i) => {
                     if let Some(&tab) = RequestTab::ALL.get(i) {
                         self.active_tab = tab;
@@ -2008,30 +2429,189 @@ impl ApiTesterApp {
                     }
                 }
                 Cmd::ToggleCollection(ci) => {
-                    if let Some(col) = self.collections.get_mut(ci) {
-                        col.expanded = !col.expanded;
+                    if self.collapsed.contains(&ci) {
+                        self.collapsed.remove(&ci);
+                    } else {
+                        self.collapsed.insert(ci);
                     }
                     self.rebuild_nav();
-                    self.persist(state, path);
                 }
                 Cmd::LoadRequest(ci, ri) => {
                     self.load_request(ci, ri);
-                    self.seed_method_env(state, path);
-                    self.persist(state, path);
                 }
                 Cmd::ReplayHistory(hi) => {
                     if let Some(h) = self.history.get(hi).cloned() {
                         self.request.method = h.method;
                         self.url_input.set_text(&h.url);
                         self.request.url = h.url;
-                        self.seed_method_env(state, path);
                     }
-                    self.persist(state, path);
+                }
+                Cmd::OpenForm(mode) => self.open_form(mode),
+                Cmd::CancelForm => self.form = None,
+                Cmd::SubmitForm => self.submit_form(state, path),
+                Cmd::DeleteRequest => {
+                    if let Some((collection_index, request_index)) = self.selected
+                        && let Some(collection) = self.collections.get(collection_index)
+                        && let Some(request) = collection.requests.get(request_index)
+                    {
+                        self.perform(
+                            state,
+                            path,
+                            &actions::delete_request_action(collection.id, request.id),
+                        );
+                    }
+                }
+                Cmd::DeleteEnvironment => {
+                    if let Some(environment_id) = self.active_env {
+                        self.perform(
+                            state,
+                            path,
+                            &actions::delete_environment_action(environment_id),
+                        );
+                    }
                 }
             }
         }
         self.dirty = true;
         true
+    }
+
+    fn current_collection_id(&self) -> Option<uuid::Uuid> {
+        self.selected
+            .and_then(|(index, _)| self.collections.get(index))
+            .or_else(|| self.collections.first())
+            .map(|collection| collection.id)
+    }
+
+    fn open_form(&mut self, mode: FormMode) {
+        self.form = Some(mode);
+        self.form_name_input.set_text(match mode {
+            FormMode::RenameCollection => self
+                .current_collection_id()
+                .and_then(|id| self.collections.iter().find(|c| c.id == id))
+                .map_or("", |c| c.name.as_str()),
+            FormMode::RenameRequest => self
+                .selected
+                .and_then(|(ci, ri)| self.collections.get(ci)?.requests.get(ri))
+                .map_or("", |r| r.name.as_str()),
+            FormMode::RenameEnvironment => self
+                .active_env
+                .and_then(|id| self.environments.iter().find(|e| e.id == id))
+                .map_or("", |e| e.name.as_str()),
+            FormMode::SaveRequest => self.request.name.as_str(),
+            _ => "",
+        });
+        self.form_key_input.set_text("");
+        self.form_value_input.set_text("");
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive form-to-canonical-action mapping makes contextual management easy to audit"
+    )]
+    fn submit_form(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let Some(mode) = self.form else { return };
+        let name = self.form_name_input.value().trim().to_string();
+        match mode {
+            FormMode::NewCollection => {
+                let name = if name.is_empty() {
+                    format!("Collection {}", self.collections.len() + 1)
+                } else {
+                    name
+                };
+                self.perform(
+                    state,
+                    path,
+                    &actions::create_collection_action(uuid::Uuid::new_v4(), &name),
+                );
+            }
+            FormMode::RenameCollection => {
+                if let Some(id) = self.current_collection_id().filter(|_| !name.is_empty()) {
+                    self.perform(state, path, &actions::rename_collection_action(id, &name));
+                }
+            }
+            FormMode::SaveRequest => {
+                if let Some(collection_id) = self.current_collection_id() {
+                    let mut request = self.request.clone();
+                    request.name = if name.is_empty() {
+                        "Saved request".into()
+                    } else {
+                        name
+                    };
+                    request.url = self.url_input.value().to_string();
+                    request.body_text = self.body_input.value().to_string();
+                    self.perform(
+                        state,
+                        path,
+                        &actions::save_request_action(collection_id, request),
+                    );
+                }
+            }
+            FormMode::RenameRequest => {
+                if let Some((ci, ri)) = self.selected
+                    && let Some(collection) = self.collections.get(ci)
+                    && let Some(request) = collection.requests.get(ri)
+                    && !name.is_empty()
+                {
+                    self.perform(
+                        state,
+                        path,
+                        &actions::rename_request_action(collection.id, request.id, &name),
+                    );
+                }
+            }
+            FormMode::NewEnvironment => {
+                let name = if name.is_empty() {
+                    format!("Environment {}", self.environments.len() + 1)
+                } else {
+                    name
+                };
+                self.perform(
+                    state,
+                    path,
+                    &actions::create_environment_action(uuid::Uuid::new_v4(), &name),
+                );
+            }
+            FormMode::RenameEnvironment => {
+                if let Some(id) = self.active_env.filter(|_| !name.is_empty()) {
+                    self.perform(state, path, &actions::rename_environment_action(id, &name));
+                }
+            }
+            FormMode::NewVariable => {
+                let key = self.form_key_input.value().trim().to_string();
+                let value = self.form_value_input.value().trim().to_string();
+                if let Some(env_id) = self.active_env.filter(|_| !key.is_empty()) {
+                    let stable_id = self
+                        .environments
+                        .iter()
+                        .find(|env| env.id == env_id)
+                        .and_then(|env| env.variables.iter().find(|row| row.key == key))
+                        .map_or_else(|| uuid::Uuid::new_v4().to_string(), |row| row.id.clone());
+                    self.perform(
+                        state,
+                        path,
+                        &actions::set_variable_action(env_id, stable_id, &key, &value),
+                    );
+                }
+            }
+            FormMode::DeleteVariable => {
+                let key = self.form_key_input.value().trim();
+                if let Some(env_id) = self.active_env.filter(|_| !key.is_empty())
+                    && let Some(variable) = self
+                        .environments
+                        .iter()
+                        .find(|env| env.id == env_id)
+                        .and_then(|env| env.variables.iter().find(|row| row.key == key))
+                {
+                    self.perform(
+                        state,
+                        path,
+                        &actions::delete_variable_action(env_id, &variable.id),
+                    );
+                }
+            }
+        }
+        self.form = None;
     }
 
     /// Reconcile the model from the CRDT-bound pickers after they may have
@@ -2088,11 +2668,6 @@ impl ApiTesterApp {
 // Small drawing primitives (chrome)
 // ===========================================================================
 
-/// Three stacked bars — the hamburger toggle that summons the overlay rail.
-fn draw_hamburger(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    Icon::Menu.draw(scene, t, rect, color);
-}
-
 /// A triangle fold caret: pointing down when `expanded`, right when not.
 fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, expanded: bool) {
     let mut p = BezPath::new();
@@ -2123,7 +2698,7 @@ impl Widget for ApiTesterApp {
         if !self.adopted {
             if ApiDoc::is_empty(state, path) {
                 if !self.seeded {
-                    self.persist(state, path);
+                    self.seed_workspace(state, path);
                     let url = self.url_input.value().to_string();
                     let body = self.body_input.value().to_string();
                     ApiDoc::set_text(state, path, "url", &url);
@@ -2408,18 +2983,25 @@ impl Widget for ApiTesterApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect
-            || type_id != crate::actions::API_TESTER_OPERATION_TYPE
-        {
+        if type_id != crate::actions::API_TESTER_OPERATION_TYPE {
             return Ok(false);
         }
         let operation: crate::actions::ApiTesterOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match operation {
+            crate::actions::ApiTesterOperation::SendActiveRequest => {
+                if kind != qos_actions::OperationKind::Effect {
+                    return Ok(false);
+                }
+                self.send();
+            }
             crate::actions::ApiTesterOperation::SendRequest {
                 collection_id,
                 request_id,
             } => {
+                if kind != qos_actions::OperationKind::Effect {
+                    return Ok(false);
+                }
                 let collection_id = uuid::Uuid::parse_str(&collection_id)
                     .map_err(|_| "invalid API Tester collection id".to_string())?;
                 let request_id = uuid::Uuid::parse_str(&request_id)
@@ -2443,6 +3025,21 @@ impl Widget for ApiTesterApp {
                 };
                 self.load_request(collection_index, request_index);
                 self.send();
+            }
+            crate::actions::ApiTesterOperation::ReplayHistory { history_id } => {
+                if kind != qos_actions::OperationKind::View {
+                    return Ok(false);
+                }
+                let history_id = uuid::Uuid::parse_str(&history_id)
+                    .map_err(|_| "invalid API Tester history id".to_string())?;
+                let Some(entry) = self.history.iter().find(|entry| entry.id == history_id) else {
+                    return Err("history entry no longer exists".to_string());
+                };
+                self.request.method = entry.method;
+                self.request.url.clone_from(&entry.url);
+                self.url_input.set_text(&entry.url);
+                self.error = None;
+                self.dirty = true;
             }
         }
         Ok(true)
@@ -2530,23 +3127,18 @@ impl Widget for ApiTesterApp {
 }
 
 impl ApiTesterApp {
-    /// Handle a left-press on painted chrome that has no backing widget:
-    /// the hamburger toggle, the overlay scrim, and JSON fold carets.
+    /// Handle a left-press on painted chrome that has no backing widget: the
+    /// overlay scrim and JSON fold carets. The menu toggle itself is a real
+    /// [`Button`], so it participates in focus and accessibility.
     fn on_chrome_click(&mut self, p: Point) {
-        if self.rail.layout() == SplitLayout::Overlay {
-            if self.layout.hamburger.width() > 0.0 && self.layout.hamburger.contains(p) {
-                self.rail.toggle();
-                self.dirty = true;
-                return;
-            }
-            if self.rail.is_open()
-                && !self.layout.sidebar.contains(p)
-                && self.layout.scrim.contains(p)
-            {
-                self.rail.close();
-                self.dirty = true;
-                return;
-            }
+        if self.rail.layout() == SplitLayout::Overlay
+            && self.rail.is_open()
+            && !self.layout.sidebar.contains(p)
+            && self.layout.scrim.contains(p)
+        {
+            self.rail.close();
+            self.dirty = true;
+            return;
         }
         for (rect, idx) in self.layout.fold_carets.clone() {
             if rect.contains(p) {
@@ -2634,7 +3226,7 @@ mod tests {
         let a = app();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        a.persist(&mut doc, &root);
+        a.seed_workspace(&mut doc, &root);
 
         let mut b = ApiTesterApp::new();
         b.collections.clear();
@@ -2687,6 +3279,65 @@ mod tests {
     }
 
     #[test]
+    fn visible_workspace_management_commands_use_canonical_actions() {
+        let mut a = ApiTesterApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        a.seed_workspace(&mut doc, &root);
+
+        a.open_form(FormMode::NewCollection);
+        a.form_name_input.set_text("Billing API");
+        a.sink.borrow_mut().push(Cmd::SubmitForm);
+        assert!(a.drain_commands(&mut doc, &root));
+        assert!(
+            ApiDoc::collections(&doc, &root)
+                .iter()
+                .any(|collection| collection.name == "Billing API"),
+            "the visible New collection control dispatched its canonical action"
+        );
+        let create = a
+            .actions
+            .last_dispatched()
+            .expect("action host recorded create");
+        assert_eq!(create.type_id, API_TESTER_ACTION_TYPE);
+
+        a.open_form(FormMode::NewVariable);
+        a.form_key_input.set_text("region");
+        a.form_value_input.set_text("eu-west-1");
+        a.sink.borrow_mut().push(Cmd::SubmitForm);
+        assert!(a.drain_commands(&mut doc, &root));
+        let active = a.active_env.expect("demo has an active environment");
+        assert!(
+            ApiDoc::environments(&doc, &root)
+                .iter()
+                .find(|environment| environment.id == active)
+                .is_some_and(|environment| environment
+                    .variables
+                    .iter()
+                    .any(|variable| variable.key == "region" && variable.value == "eu-west-1")),
+            "the visible Set variable control dispatched its canonical action"
+        );
+        let set_variable = a
+            .actions
+            .last_dispatched()
+            .expect("action host recorded variable update");
+        assert_eq!(set_variable.type_id, API_TESTER_ACTION_TYPE);
+    }
+
+    #[test]
+    fn folding_a_collection_is_device_local_and_emits_no_document_change() {
+        let mut a = ApiTesterApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        a.seed_workspace(&mut doc, &root);
+        let heads = doc.get_heads();
+        a.sink.borrow_mut().push(Cmd::ToggleCollection(0));
+        assert!(a.drain_commands(&mut doc, &root));
+        assert_eq!(doc.get_heads(), heads, "fold state stays off the CRDT wire");
+        assert!(a.collapsed.contains(&0));
+    }
+
+    #[test]
     fn demo_builds_nav_rows_for_collections_and_history() {
         let a = app();
         // At least the collection headers + the seeded history entries.
@@ -2713,15 +3364,31 @@ mod tests {
     }
 
     #[test]
+    fn phone_url_bar_gives_the_endpoint_a_full_second_row() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let layout = a.compute_layout();
+        assert!((layout.urlbar.height() - COMPACT_URLBAR_H).abs() < f64::EPSILON);
+        assert!(layout.url.y0 >= layout.method.y1 + 8.0);
+        assert!(
+            layout.url.width() >= 350.0,
+            "URL input is not a clipped sliver"
+        );
+        assert!(layout.url.x0 >= layout.main.x0 + PAD);
+        assert!(layout.url.x1 <= layout.main.x1 - PAD);
+        assert!(layout.tab_strip.y0 >= layout.url.y1 + 8.0);
+    }
+
+    #[test]
     fn compact_response_chrome_gets_a_separate_switcher_row() {
         let mut a = app();
         a.response = Some(http::sample_response());
         a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
         let layout = a.compute_layout();
-        assert_eq!(layout.resp_status.height(), COMPACT_RESPONSE_STATUS_H);
+        assert!((layout.resp_status.height() - COMPACT_RESPONSE_STATUS_H).abs() < f64::EPSILON);
         assert!(layout.resp_view.y0 >= layout.resp_status.y0 + 44.0);
         assert!(layout.resp_view.y1 <= layout.resp_status.y1);
-        assert_eq!(layout.resp_body.y0, layout.resp_status.y1);
+        assert!((layout.resp_body.y0 - layout.resp_status.y1).abs() < f64::EPSILON);
         assert!(layout.resp_view.x0 >= layout.response.x0 + PAD);
         assert!(layout.resp_view.x1 <= layout.response.x1 - PAD);
         assert!(
@@ -2736,8 +3403,8 @@ mod tests {
         a.response = Some(http::sample_response());
         a.rect = Rect::new(0.0, 0.0, 1024.0, 800.0);
         let layout = a.compute_layout();
-        assert_eq!(layout.resp_status.height(), RESPONSE_STATUS_H);
-        assert_eq!(layout.resp_view.x1, layout.response.x1 - PAD);
+        assert!((layout.resp_status.height() - RESPONSE_STATUS_H).abs() < f64::EPSILON);
+        assert!((layout.resp_view.x1 - (layout.response.x1 - PAD)).abs() < f64::EPSILON);
         assert!(layout.resp_view.y0 < layout.resp_status.y1);
     }
 
