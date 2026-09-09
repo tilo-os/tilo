@@ -137,6 +137,7 @@ pub struct ThemesApp {
     /// store write and active-id action remain one semantic transaction.
     pending_apply: Option<(String, qos_actions::InvocationId)>,
     completed_apply: Option<qos_actions::InvocationUpdate>,
+    pending_new: bool,
 
     /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
     scroll: f64,
@@ -179,12 +180,11 @@ impl Default for ThemesApp {
 impl ThemesApp {
     pub fn new() -> Self {
         let top_commands = Rc::new(RefCell::new(Vec::new()));
-        let new_commands = Rc::clone(&top_commands);
         Self {
             catalog: default_catalog(),
             topbar_buttons: vec![
                 Button::new("themes.new", "New", None)
-                    .on_click(move || new_commands.borrow_mut().push("new".into()))
+                    .on_action(crate::actions::new_default_binding())
                     .fit_content(34.0),
                 Button::new("themes.export", "Export JSON", None)
                     .on_action(crate::actions::export_selected_binding())
@@ -225,6 +225,7 @@ impl ThemesApp {
             actions: ui::ActionHost::new(),
             pending_apply: None,
             completed_apply: None,
+            pending_new: false,
             scroll: 0.0,
             scroll_content_h: 0.0,
             scroll_viewport_h: 0.0,
@@ -1284,7 +1285,7 @@ impl ThemesApp {
 
 impl Widget for ThemesApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["themes.apply", "themes.export"]
+        &["themes.apply", "themes.export", "themes.new"]
     }
 
     /// Publish the open theme library + its themes so the host's Ctrl+K action
@@ -1305,6 +1306,10 @@ impl Widget for ThemesApp {
     ) -> Result<bool, String> {
         if kind != qos_actions::OperationKind::Effect {
             return Ok(false);
+        }
+        if type_id == "themes.new" {
+            self.pending_new = true;
+            return Ok(true);
         }
         if type_id == "themes.apply" {
             return Err("theme application requires the lifecycle-capable operation host".into());
@@ -1395,6 +1400,10 @@ impl Widget for ThemesApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // 1. Seed the document on first run.
         self.seed_document_if_needed(state, path);
+
+        if std::mem::take(&mut self.pending_new) {
+            self.new_theme(state, path);
+        }
 
         if let Some((id, invocation)) = self.pending_apply.take() {
             self.completed_apply = Some(match self.apply_theme(&id, state) {
@@ -1963,6 +1972,39 @@ mod tests {
                 .children
                 .iter()
                 .all(|theme| theme.actions.iter().any(|action| action.id == "export"))
+        );
+    }
+
+    #[test]
+    fn visible_new_operation_dispatches_the_canonical_create_action() {
+        let (mut app, mut state) = seeded_demo();
+        let before = catalog(&state).len();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                qos_actions::OperationKind::Effect,
+                "themes.new",
+                &serde_json::to_vec(&()).unwrap(),
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(catalog(&state).len(), before + 1);
+        let dispatched = app.last_dispatched().expect("create action dispatched");
+        assert_eq!(dispatched.type_id, crate::actions::THEMES_ACTION_TYPE);
+        assert!(matches!(
+            serde_json::from_slice::<crate::actions::ThemesAction>(&dispatched.payload).unwrap(),
+            crate::actions::ThemesAction::CreateCustomTheme { .. }
+        ));
+        assert!(
+            Widget::resources(&app, &state.doc)[0]
+                .actions
+                .iter()
+                .any(|action| {
+                    action.id == "new" && action.kind == qos_actions::OperationKind::Effect
+                })
         );
     }
 
