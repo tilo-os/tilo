@@ -1,74 +1,40 @@
-//! CRDT (Automerge) persistence for the Themes catalog.
+//! Native Automerge persistence for the Themes catalog.
 //!
-//! All app state lives in the shared `ui::State::doc` so undo/redo and
-//! live collaboration work for free, and — because `main` opens that
-//! document through `ui::persist` — so does the catalog itself: custom
-//! themes the user builds are still there on the next launch. The single
-//! *active* theme additionally goes to `~/.config/qos/settings.json`
-//! (see [`crate::store`]) because that is the file the rest of the
-//! desktop reads. The layout is intentionally simple and collab-friendly:
-//!
-//! ```text
-//! root
-//! ├── "catalog"    (Text)  # JSON array of ThemeSpec — the saved themes
-//! ├── "selected"   (Str)   # id of the focused theme
-//! ├── "edit_token" (Str)   # which colour slot the picker edits
-//! ├── "command"    (Str)   # one-shot command bus (consumed each frame)
-//! ├── "ed_radius"  (F64)   # radius slider scratch (0..1)
-//! ├── "ed_spacing" (F64)   # spacing slider scratch (0..1)
-//! ├── "ed_font"    (Str)   # font dropdown scratch
-//! └── "export"     (Str)   # last exported theme JSON (shown in a toast)
-//! ```
-//!
-//! Storing the theme list as a single JSON `Text` blob mirrors the notes
-//! app's Phase-1 approach: concurrent *structural* edits to the list are
-//! rare for a settings app, while the per-theme scalar controls (which DO
-//! get rapid concurrent edits) ride dedicated scalar fields.
+//! `catalog` is the legacy Phase-1 JSON text.  New records live in a map keyed
+//! by stable id, so unrelated themes and fields merge without whole-list writes.
 
+use crate::model::{FONTS, ThemeSpec, TokenId, hex, parse_hex, presets};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
-use crate::model::ThemeSpec;
-
 pub const KEY_CATALOG: &str = "catalog";
-pub const KEY_SELECTED: &str = "selected";
-pub const KEY_EDIT_TOKEN: &str = "edit_token";
-pub const KEY_COMMAND: &str = "command";
-pub const KEY_ED_RADIUS: &str = "ed_radius";
-pub const KEY_ED_SPACING: &str = "ed_spacing";
-pub const KEY_ED_FONT: &str = "ed_font";
-/// Inline sidebar name-edit scratch (scalar Str). The gallery's name
-/// [`ui::widget::TextInput`] writes the in-progress name here; the app
-/// reconciles it into the selected custom theme's `name`.
-pub const KEY_ED_NAME: &str = "ed_name";
-/// Id of the currently *applied* OS theme (distinct from the selected
-/// theme being edited). Seeded from the shared theme store on first run and
-/// updated by the Apply action; the sidebar highlights this row.
+pub const KEY_THEMES: &str = "themes";
+pub const KEY_THEME_TOMBSTONES: &str = "theme_tombstones";
 pub const KEY_ACTIVE: &str = "active";
-pub const KEY_EXPORT: &str = "export";
 
-/// Read a string scalar at `key`, or `None`.
+const MAX_CUSTOM_THEMES: usize = 256;
+const MAX_ID_LEN: usize = 128;
+const MAX_NAME_LEN: usize = 128;
+const MAX_FONT_LEN: usize = 64;
+
 pub fn get_str(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+    match doc.get(root, key).ok().flatten() {
+        Some((Value::Scalar(v), _)) => match v.as_ref() {
             ScalarValue::Str(s) => Some(s.to_string()),
             _ => None,
         },
         _ => None,
     }
 }
-
-/// Read the text of a `Text` object at `key`, or `None`.
 pub fn get_text(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).ok(),
+    match doc.get(root, key).ok().flatten() {
+        Some((Value::Object(ObjType::Text), id)) => doc.text(&id).ok(),
         _ => None,
     }
 }
-
 pub fn get_f64(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
-    match doc.get(root, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+    match doc.get(root, key).ok().flatten() {
+        Some((Value::Scalar(v), _)) => match v.as_ref() {
             ScalarValue::F64(f) => Some(*f),
             ScalarValue::Int(i) => Some(*i as f64),
             ScalarValue::Uint(u) => Some(*u as f64),
@@ -77,19 +43,14 @@ pub fn get_f64(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<f64> {
         _ => None,
     }
 }
-
 pub fn put_str(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
-    let _ = doc.put(root, key, val);
+    let _ = ui::doc::put_if_changed(doc, root, key, val);
 }
-
 pub fn put_f64(doc: &mut AutoCommit, root: &ObjId, key: &str, val: f64) {
-    let _ = doc.put(root, key, val);
+    if val.is_finite() {
+        let _ = ui::doc::put_if_changed(doc, root, key, val);
+    }
 }
-
-/// Replace the `Text` blob at `key` with `val`, creating it if needed. A
-/// silent no-op if the object can't be created — only possible if `root`
-/// itself no longer exists in the document, in which case there is nothing
-/// left to write into.
 pub fn put_text(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
     let id = match doc.get(root, key) {
         Ok(Some((Value::Object(ObjType::Text), id))) => id,
@@ -100,114 +61,343 @@ pub fn put_text(doc: &mut AutoCommit, root: &ObjId, key: &str, val: &str) {
     };
     ui::doc::splice_text_diffed(doc, &id, val);
 }
-
-/// Decode the catalog JSON blob into a `Vec<ThemeSpec>`.
-pub fn load_catalog(doc: &AutoCommit, root: &ObjId) -> Option<Vec<ThemeSpec>> {
-    let json = get_text(doc, root, KEY_CATALOG)?;
-    serde_json::from_str(&json).ok()
-}
-
-/// Encode and persist the whole catalog.
-pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
-    let json = serde_json::to_string(catalog).unwrap_or_else(|_| "[]".into());
-    put_text(doc, root, KEY_CATALOG, &json);
-}
-
-/// Read and clear the one-shot command bus. Returns the pending command
-/// (empty string means "none").
-pub fn take_command(doc: &mut AutoCommit, root: &ObjId) -> String {
-    let cmd = get_str(doc, root, KEY_COMMAND).unwrap_or_default();
-    if !cmd.is_empty() {
-        let _ = doc.put(root, KEY_COMMAND, "");
+fn map(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(root, key).ok().flatten() {
+        Some((Value::Object(ObjType::Map), id)) => Some(id),
+        _ => None,
     }
-    cmd
+}
+fn ensure_map(doc: &mut AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
+    map(doc, root, key).or_else(|| doc.put_object(root, key, ObjType::Map).ok())
+}
+/// Install the shared map containers during first-run seeding. This avoids two
+/// offline peers concurrently creating the same parent object before they add
+/// different keyed records.
+pub fn initialize_catalog(doc: &mut AutoCommit, root: &ObjId) {
+    let _ = ensure_map(doc, root, KEY_THEMES);
+    let _ = ensure_map(doc, root, KEY_THEME_TOMBSTONES);
+}
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+fn valid_name(s: &str) -> bool {
+    !s.trim().is_empty() && s.len() <= MAX_NAME_LEN
+}
+fn valid_font(s: &str) -> bool {
+    s.len() <= MAX_FONT_LEN && FONTS.contains(&s)
+}
+fn get_bool(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
+    match doc.get(root, key).ok().flatten() {
+        Some((Value::Scalar(v), _)) => match v.as_ref() {
+            ScalarValue::Boolean(x) => Some(*x),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+fn is_tombstoned(doc: &AutoCommit, root: &ObjId, id: &str) -> bool {
+    map(doc, root, KEY_THEME_TOMBSTONES)
+        .and_then(|m| get_bool(doc, &m, id))
+        .unwrap_or(false)
+}
+fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
+    if !valid_id(id) || is_tombstoned(doc, root, id) {
+        return None;
+    }
+    let themes = map(doc, root, KEY_THEMES)?;
+    match doc.get(&themes, id).ok().flatten() {
+        Some((Value::Object(ObjType::Map), r)) => Some(r),
+        _ => None,
+    }
+}
+fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
+    let name = get_str(doc, r, "name")?;
+    let font = get_str(doc, r, "font")?;
+    if !valid_id(id) || !valid_name(&name) || !valid_font(&font) {
+        return None;
+    }
+    let c = |t: TokenId| get_str(doc, r, t.key()).and_then(|x| parse_hex(&x));
+    let radius = get_f64(doc, r, "radius_norm")? as f32;
+    let spacing = get_f64(doc, r, "spacing_norm")? as f32;
+    if !radius.is_finite() || !spacing.is_finite() {
+        return None;
+    }
+    let order = get_f64(doc, r, "order")
+        .filter(|x| x.is_finite() && *x >= 0.0 && *x <= f64::from(u32::MAX))
+        .map_or(u32::MAX, |x| x as u32);
+    Some(ThemeSpec {
+        id: id.into(),
+        name,
+        builtin: false,
+        dark_base: get_bool(doc, r, "dark_base").unwrap_or(true),
+        accent: c(TokenId::Accent)?,
+        accent_hover: c(TokenId::AccentHover)?,
+        surface_base: c(TokenId::SurfaceBase)?,
+        surface_raised: c(TokenId::SurfaceRaised)?,
+        text_primary: c(TokenId::TextPrimary)?,
+        text_dim: c(TokenId::TextDim)?,
+        border: c(TokenId::Border)?,
+        success: c(TokenId::Success)?,
+        warning: c(TokenId::Warning)?,
+        danger: c(TokenId::Danger)?,
+        info: c(TokenId::Info)?,
+        radius_norm: radius.clamp(0.0, 1.0),
+        spacing_norm: spacing.clamp(0.0, 1.0),
+        font,
+        order,
+    })
+}
+fn put_record(doc: &mut AutoCommit, r: &ObjId, s: &ThemeSpec) {
+    put_str(doc, r, "name", &s.name);
+    let _ = ui::doc::put_if_changed(doc, r, "dark_base", s.dark_base);
+    for t in TokenId::ALL {
+        put_str(doc, r, t.key(), &hex(s.token(t)));
+    }
+    put_f64(
+        doc,
+        r,
+        "radius_norm",
+        f64::from(s.radius_norm.clamp(0.0, 1.0)),
+    );
+    put_f64(
+        doc,
+        r,
+        "spacing_norm",
+        f64::from(s.spacing_norm.clamp(0.0, 1.0)),
+    );
+    put_str(doc, r, "font", &s.font);
+    let _ = ui::doc::put_if_changed(doc, r, "order", u64::from(s.order));
 }
 
+/// Create a record exactly once. Existing records are never replaced by an old
+/// whole spec, which prevents stale UI payloads from clobbering remote fields.
+pub fn create_custom_theme(doc: &mut AutoCommit, root: &ObjId, s: &ThemeSpec) -> bool {
+    if s.builtin
+        || !valid_id(&s.id)
+        || !valid_name(&s.name)
+        || !valid_font(&s.font)
+        || presets().iter().any(|preset| preset.id == s.id)
+        || is_tombstoned(doc, root, &s.id)
+    {
+        return false;
+    }
+    let Some(themes) = ensure_map(doc, root, KEY_THEMES) else {
+        return false;
+    };
+    if doc.get(&themes, &s.id).ok().flatten().is_some()
+        || doc.keys(&themes).count() >= MAX_CUSTOM_THEMES
+    {
+        return false;
+    }
+    let Ok(r) = doc.put_object(&themes, &s.id, ObjType::Map) else {
+        return false;
+    };
+    put_record(doc, &r, s);
+    true
+}
+pub fn set_name(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
+    if !valid_name(value) {
+        return false;
+    }
+    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
+}
+pub fn set_token(
+    doc: &mut AutoCommit,
+    root: &ObjId,
+    id: &str,
+    token: TokenId,
+    value: [u8; 3],
+) -> bool {
+    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
+}
+pub fn set_radius(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
+    value.is_finite()
+        && record(doc, root, id).is_some_and(|r| {
+            ui::doc::put_if_changed(doc, &r, "radius_norm", f64::from(value.clamp(0.0, 1.0)))
+        })
+}
+pub fn set_spacing(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
+    value.is_finite()
+        && record(doc, root, id).is_some_and(|r| {
+            ui::doc::put_if_changed(doc, &r, "spacing_norm", f64::from(value.clamp(0.0, 1.0)))
+        })
+}
+pub fn set_font(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
+    valid_font(value)
+        && record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
+}
+pub fn delete_custom_theme(doc: &mut AutoCommit, root: &ObjId, id: &str) -> bool {
+    if record(doc, root, id).is_none() {
+        return false;
+    }
+    ensure_map(doc, root, KEY_THEME_TOMBSTONES)
+        .is_some_and(|m| ui::doc::put_if_changed(doc, &m, id, true))
+}
+
+fn legacy_customs(doc: &AutoCommit, root: &ObjId) -> Vec<ThemeSpec> {
+    get_text(doc, root, KEY_CATALOG)
+        .and_then(|x| serde_json::from_str::<Vec<ThemeSpec>>(&x).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| !s.builtin)
+        .take(MAX_CUSTOM_THEMES)
+        .collect()
+}
+/// Imports only missing legacy ids. Native edits win; legacy-only themes remain.
+pub fn migrate_legacy_catalog(doc: &mut AutoCommit, root: &ObjId) {
+    for s in legacy_customs(doc, root) {
+        let _ = create_custom_theme(doc, root, &s);
+    }
+}
+pub fn load_catalog(doc: &AutoCommit, root: &ObjId) -> Option<Vec<ThemeSpec>> {
+    let mut customs = Vec::new();
+    if let Some(themes) = map(doc, root, KEY_THEMES) {
+        for id in doc.keys(&themes).take(MAX_CUSTOM_THEMES) {
+            if !presets().iter().any(|preset| preset.id == id)
+                && !is_tombstoned(doc, root, &id)
+                && let Ok(Some((Value::Object(ObjType::Map), r))) = doc.get(&themes, &id)
+                && let Some(s) = read_record(doc, &id, &r)
+            {
+                customs.push(s);
+            }
+        }
+    }
+    for s in legacy_customs(doc, root) {
+        if !presets().iter().any(|preset| preset.id == s.id)
+            && !is_tombstoned(doc, root, &s.id)
+            && !customs.iter().any(|x: &ThemeSpec| x.id == s.id)
+            && valid_id(&s.id)
+            && valid_name(&s.name)
+            && valid_font(&s.font)
+        {
+            customs.push(s);
+        }
+    }
+    customs.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
+    customs.truncate(MAX_CUSTOM_THEMES);
+    let mut all = presets();
+    all.extend(customs);
+    Some(all)
+}
+/// Compatibility importer, not an authoritative whole-catalog replacement.
+pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
+    initialize_catalog(doc, root);
+    for s in catalog
+        .iter()
+        .filter(|s| !s.builtin)
+        .take(MAX_CUSTOM_THEMES)
+    {
+        let _ = create_custom_theme(doc, root, s);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{default_catalog, demo_catalog};
+    use crate::model::seed_custom;
     use automerge::ROOT;
-
     #[test]
-    fn put_text_append_one_char_is_bounded() {
-        // `put_text` backs the catalog blob; appending one char must splice
-        // only the new char, not rewrite the whole Text.
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        let long = "t".repeat(300);
-        put_text(&mut doc, &root, KEY_CATALOG, &long);
-        let before = doc.save().len();
-        let mut longer = long.clone();
-        longer.push('!');
-        put_text(&mut doc, &root, KEY_CATALOG, &longer);
-        let grew = doc.save().len() - before;
-        assert_eq!(
-            get_text(&doc, &root, KEY_CATALOG).as_deref(),
-            Some(longer.as_str()),
-            "value round-trips"
-        );
-        assert!(grew < 40, "one-char text edit grew doc by {grew} bytes");
-    }
-
-    #[test]
-    fn put_text_repeated_store_keeps_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        let long = "s".repeat(300);
-        put_text(&mut doc, &root, KEY_CATALOG, &long);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            put_text(&mut doc, &root, KEY_CATALOG, &long);
-        }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-storing the same text grew the document {a} -> {b}"
-        );
-    }
-
-    #[test]
-    fn catalog_round_trips_through_crdt() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        // Use the demo catalog so the round-trip exercises a mix of built-in
-        // presets and an editable custom theme.
-        let cat = demo_catalog();
-        save_catalog(&mut doc, &root, &cat);
-        let back = load_catalog(&doc, &root).unwrap();
-        assert_eq!(back.len(), cat.len());
-        assert_eq!(back[0].name, cat[0].name);
-        assert!(!back.last().unwrap().builtin);
-    }
-
-    #[test]
-    fn command_bus_consumes_once() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        put_str(&mut doc, &root, KEY_COMMAND, "save");
-        assert_eq!(take_command(&mut doc, &root), "save");
-        assert_eq!(take_command(&mut doc, &root), "");
-    }
-
-    #[test]
-    fn scalar_helpers_round_trip() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        put_f64(&mut doc, &root, KEY_ED_RADIUS, 0.42);
-        assert!((get_f64(&doc, &root, KEY_ED_RADIUS).unwrap() - 0.42).abs() < 1e-9);
-        put_str(&mut doc, &root, KEY_ED_FONT, "Inter");
-        assert_eq!(get_str(&doc, &root, KEY_ED_FONT).as_deref(), Some("Inter"));
-    }
-
-    #[test]
-    fn two_peers_converge_on_catalog_blob() {
+    fn fields_merge() {
         let mut a = AutoCommit::new();
-        save_catalog(&mut a, &ROOT, &default_catalog());
+        save_catalog(&mut a, &ROOT, &[seed_custom()]);
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        put_str(&mut b, &ROOT, KEY_SELECTED, "dracula");
-        let mut b2 = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b2).unwrap();
-        assert_eq!(get_str(&a, &ROOT, KEY_SELECTED).as_deref(), Some("dracula"));
+        assert!(set_name(&mut a, &ROOT, "sunset", "Dawn"));
+        assert!(set_token(
+            &mut b,
+            &ROOT,
+            "sunset",
+            TokenId::Accent,
+            [1, 2, 3]
+        ));
+        a.merge(&mut b).unwrap();
+        let s = load_catalog(&a, &ROOT)
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == "sunset")
+            .unwrap();
+        assert_eq!(s.name, "Dawn");
+        assert_eq!(s.accent, [1, 2, 3]);
+    }
+    #[test]
+    fn records_merge() {
+        let mut a = AutoCommit::new();
+        // The app creates the container during first-run seeding. Once this
+        // common parent exists, peer creation touches different stable keys.
+        save_catalog(&mut a, &ROOT, &[seed_custom()]);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let mut x = seed_custom();
+        x.id = "one".into();
+        let mut y = seed_custom();
+        y.id = "two".into();
+        assert!(create_custom_theme(&mut a, &ROOT, &x));
+        assert!(create_custom_theme(&mut b, &ROOT, &y));
+        a.merge(&mut b).unwrap();
+        let ids: Vec<_> = load_catalog(&a, &ROOT)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        assert!(ids.contains(&"one".into()) && ids.contains(&"two".into()));
+    }
+    #[test]
+    fn delete_wins() {
+        let mut a = AutoCommit::new();
+        save_catalog(&mut a, &ROOT, &[seed_custom()]);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        assert!(delete_custom_theme(&mut a, &ROOT, "sunset"));
+        assert!(set_name(&mut b, &ROOT, "sunset", "edit"));
+        a.merge(&mut b).unwrap();
+        assert!(
+            !load_catalog(&a, &ROOT)
+                .unwrap()
+                .iter()
+                .any(|x| x.id == "sunset")
+        );
+    }
+    #[test]
+    fn legacy_and_native_consolidate_idempotently() {
+        let mut a = AutoCommit::new();
+        put_text(
+            &mut a,
+            &ROOT,
+            KEY_CATALOG,
+            &serde_json::to_string(&[seed_custom()]).unwrap(),
+        );
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let mut other = seed_custom();
+        other.id = "other".into();
+        assert!(create_custom_theme(&mut b, &ROOT, &other));
+        migrate_legacy_catalog(&mut b, &ROOT);
+        b.merge(&mut a).unwrap();
+        migrate_legacy_catalog(&mut b, &ROOT);
+        let n = b.save().len();
+        migrate_legacy_catalog(&mut b, &ROOT);
+        assert_eq!(b.save().len(), n);
+        let ids: Vec<_> = load_catalog(&b, &ROOT)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        assert!(ids.contains(&"sunset".into()) && ids.contains(&"other".into()));
+    }
+
+    #[test]
+    fn rejects_untrusted_oversized_records_without_growing_the_catalog() {
+        let mut doc = AutoCommit::new();
+        let mut bad = seed_custom();
+        bad.id = "x".repeat(MAX_ID_LEN + 1);
+        assert!(!create_custom_theme(&mut doc, &ROOT, &bad));
+        bad.id = "safe".into();
+        bad.name = "x".repeat(MAX_NAME_LEN + 1);
+        assert!(!create_custom_theme(&mut doc, &ROOT, &bad));
+        assert!(
+            !load_catalog(&doc, &ROOT)
+                .unwrap()
+                .iter()
+                .any(|theme| theme.id == "safe")
+        );
     }
 }

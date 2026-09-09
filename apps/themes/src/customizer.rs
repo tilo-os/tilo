@@ -3,9 +3,8 @@
 //! Composes real `ui` toolkit widgets — a [`ColorPicker`], two
 //! [`Slider`]s and a [`Dropdown`] — with a custom token-chip grid. The
 //! chip grid selects *which* colour token the picker edits; the picker,
-//! sliders and dropdown feed their values back to
-//! [`crate::app::ThemesApp`] through dedicated CRDT scratch fields, which
-//! the app reconciles into the selected [`ThemeSpec`].
+//! sliders and dropdown retain their values in local typed state. The app
+//! dispatches a granular action only when a changed value is committed.
 //!
 //! The picker has no public colour setter, so when the bound token (or
 //! the selected theme) changes the app calls [`Customizer::load_picker`]
@@ -17,6 +16,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::LocalState;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -26,7 +26,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::doc::{KEY_ED_FONT, KEY_ED_RADIUS, KEY_ED_SPACING};
 use crate::draw;
 use crate::model::{self, FONTS, ThemeSpec, TokenId};
 
@@ -80,6 +79,12 @@ pub struct Customizer {
     spacing_slider: Slider,
     font_dropdown: Dropdown,
     buttons: Vec<Button>,
+    color_state: LocalState<Color>,
+    radius_state: LocalState<f64>,
+    spacing_state: LocalState<f64>,
+    font_state: LocalState<String>,
+    action_theme: Option<String>,
+    pending_edit_token: Option<TokenId>,
 
     // pushed-in view state
     spec: Option<ThemeSpec>,
@@ -110,33 +115,36 @@ impl Default for Customizer {
 
 impl Customizer {
     pub fn new() -> Self {
+        let color_state = LocalState::new(Color::from_rgb8(99, 102, 241));
+        let radius_state = LocalState::new(0.5);
+        let spacing_state = LocalState::new(0.5);
+        let font_state = LocalState::new(String::from("Inter"));
         Self {
-            color_picker: ColorPicker::new(Color::from_rgb8(99, 102, 241)),
-            radius_slider: Slider::new("radius_slider", KEY_ED_RADIUS)
+            color_picker: ColorPicker::from_state(&color_state),
+            radius_slider: Slider::from_state(&radius_state)
+                .with_id("radius_slider")
                 .with_accessible_name("Corner radius"),
-            spacing_slider: Slider::new("spacing_slider", KEY_ED_SPACING)
+            spacing_slider: Slider::from_state(&spacing_state)
+                .with_id("spacing_slider")
                 .with_accessible_name("Interface spacing"),
-            font_dropdown: Dropdown::new(
+            font_dropdown: Dropdown::from_state(
                 FONTS.iter().map(std::string::ToString::to_string).collect(),
-                KEY_ED_FONT,
+                &font_state,
             )
             .with_id("font_dropdown"),
             buttons: vec![
-                Button::new(
-                    "themes.duplicate",
-                    "Duplicate",
-                    Some(crate::doc::KEY_COMMAND),
-                )
-                .with_click_value("duplicate")
-                .fit_content(ACTIONS_H),
-                Button::new("themes.reset", "Reset", Some(crate::doc::KEY_COMMAND))
-                    .with_click_value("reset")
-                    .fit_content(ACTIONS_H),
-                Button::new("themes.delete", "Delete", Some(crate::doc::KEY_COMMAND))
-                    .with_click_value("delete")
+                Button::new("themes.duplicate", "Duplicate", None).fit_content(ACTIONS_H),
+                Button::new("themes.reset", "Reset", None).fit_content(ACTIONS_H),
+                Button::new("themes.delete", "Delete", None)
                     .fit_content(ACTIONS_H)
                     .danger(),
             ],
+            color_state,
+            radius_state,
+            spacing_state,
+            font_state,
+            action_theme: None,
+            pending_edit_token: None,
             spec: None,
             edit_token: TokenId::Accent,
             editable: true,
@@ -172,13 +180,68 @@ impl Customizer {
     /// Swap the colour picker so it shows `color`. Triggers a structural
     /// rebuild (new taffy node) on the next frame.
     pub fn load_picker(&mut self, color: model::Rgb) {
-        self.color_picker = ColorPicker::new(model::color(color));
-        self.structure_dirty = true;
+        self.color_state.set(model::color(color));
     }
 
     pub fn picker_color(&self) -> model::Rgb {
-        let c = self.color_picker.color();
+        let c = self.color_state.get();
         model::rgb_of(c)
+    }
+
+    pub fn radius(&self) -> f64 {
+        self.radius_state.get()
+    }
+    pub fn spacing(&self) -> f64 {
+        self.spacing_state.get()
+    }
+    pub fn font(&self) -> String {
+        self.font_state.get()
+    }
+    pub fn load_controls(&self, spec: &ThemeSpec) {
+        self.radius_state.set(f64::from(spec.radius_norm));
+        self.spacing_state.set(f64::from(spec.spacing_norm));
+        self.font_state.set(spec.font.clone());
+    }
+    pub fn bind_actions(
+        &mut self,
+        theme_id: &str,
+        duplicate: qos_actions::ActionBinding<()>,
+        reset: Option<qos_actions::ActionBinding<()>>,
+        delete: Option<qos_actions::ActionBinding<()>>,
+    ) {
+        if self.action_theme.as_deref() == Some(theme_id) {
+            return;
+        }
+        let mut buttons = vec![
+            Button::new("themes.duplicate", "Duplicate", None)
+                .on_action(duplicate)
+                .fit_content(ACTIONS_H),
+        ];
+        buttons.push(match reset {
+            Some(binding) => Button::new("themes.reset", "Reset", None)
+                .on_action(binding)
+                .fit_content(ACTIONS_H),
+            None => Button::new("themes.reset", "Reset", None)
+                .fit_content(ACTIONS_H)
+                .with_enabled(false),
+        });
+        buttons.push(match delete {
+            Some(binding) => Button::new("themes.delete", "Delete", None)
+                .on_action(binding)
+                .fit_content(ACTIONS_H)
+                .danger(),
+            None => Button::new("themes.delete", "Delete", None)
+                .fit_content(ACTIONS_H)
+                .danger()
+                .with_enabled(false),
+        });
+        self.buttons = buttons;
+        self.action_theme = Some(theme_id.to_string());
+        self.structure_dirty = true;
+    }
+
+    pub fn take_edit_token(&mut self) -> Option<TokenId> {
+        self.pending_edit_token.take()
     }
 }
 
@@ -722,10 +785,10 @@ impl Customizer {
     /// Colour-token chip selection (part of [`Widget::handle_event`],
     /// editable only). Returns `true` if a chip was clicked.
     fn handle_chip_selection(
-        &self,
+        &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
         handled: &mut bool,
     ) -> bool {
         if !self.editable {
@@ -744,12 +807,7 @@ impl Customizer {
         };
         for (tok, r) in &self.chip_rects {
             if r.contains(pt) {
-                crate::doc::put_str(
-                    state,
-                    path,
-                    crate::doc::KEY_COMMAND,
-                    &format!("edittoken:{}", tok.key()),
-                );
+                self.pending_edit_token = Some(*tok);
                 *handled = true;
                 return true;
             }
