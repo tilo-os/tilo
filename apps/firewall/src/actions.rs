@@ -3,10 +3,7 @@
 //!
 //! Every document-mutating operation the firewall performs on its shared ruleset
 //! is a [`FirewallAction`]: a small serializable value that deterministically
-//! mutates the CRDT. The whole [`FirewallConfig`] lives as one JSON blob in the
-//! shared document (see [`crate::doc`]), so each action loads that config,
-//! applies a pure transform, and stores the diff back — replicating and
-//! replaying for free. The exact same [`EncodedAction`] is what the on-screen
+//! mutates the CRDT at its stable native address. The exact same [`EncodedAction`] is what the on-screen
 //! affordances (the add-rule form, a rule's toggle/trash, the "set active zone"
 //! button) dispatch and what the Ctrl+K palette dispatches — one source of
 //! truth, one replay path.
@@ -53,24 +50,31 @@ pub const FIREWALL_ACTION_TYPE: &str = "firewall.action";
 
 /// Every collaborative operation the firewall exports on its shared ruleset.
 ///
-/// Each variant is a deterministic transform of the whole [`FirewallConfig`]:
-/// the executor loads the current config from the document, this transform is
-/// applied, and the diff is written back (see [`Action::apply`]). The rule CRUD
-/// carries a pre-minted [`Rule`] (id and all) so replay reproduces it exactly.
+/// Each variant changes only its named field or record. Rule ids are minted at
+/// authoring time, and deletion writes a tombstone so stale edits cannot revive
+/// a rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FirewallAction {
     /// Append a rule to a zone. The rule (including its id) is minted at
     /// authoring time and carried whole; a re-add of the same id is a no-op so
     /// a double-applied envelope can't duplicate it.
     AddRule { zone: ZoneKind, rule: Rule },
-    /// Replace a rule in place (matched by id), preserving its position. Used to
-    /// edit a rule's source / action / matcher.
-    EditRule { zone: ZoneKind, rule: Rule },
+    /// Update the rule source only. The app's editable rule field is carried as
+    /// a narrow patch, not a stale replacement of matcher/action/enabled.
+    EditRule {
+        zone: ZoneKind,
+        id: RuleId,
+        source: String,
+    },
     /// Remove a rule from a zone by id.
     DeleteRule { zone: ZoneKind, id: RuleId },
-    /// Flip a rule's `enabled` flag. Deterministic against the replay base: the
-    /// current value is read from the document and negated.
-    ToggleRule { zone: ZoneKind, id: RuleId },
+    /// Set, rather than toggle, a rule's enabled state. The target is resolved
+    /// by the affordance before dispatch, so remote replay never read-negates.
+    SetRuleEnabled {
+        zone: ZoneKind,
+        id: RuleId,
+        on: bool,
+    },
     /// Move a rule within its zone by `delta` positions (clamped to the ends).
     /// A move that would leave it in place is a no-op.
     ReorderRule {
@@ -98,18 +102,30 @@ pub enum FirewallAction {
 
 impl qos_actions::Action for FirewallAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // The whole configuration lives as one JSON blob; every action loads it,
-        // applies a pure transform, and stores the diff back. Without a stored
-        // config there is nothing to mutate — a no-op (so a bad replay can't
-        // wedge a peer). When the transform changes nothing (an out-of-range id,
-        // an already-satisfied toggle) we skip the store entirely, leaving the
-        // document untouched.
-        let Some(mut cfg) = FirewallDoc::load(doc) else {
-            return Ok(());
-        };
-        if apply_to_config(self, &mut cfg) {
-            cfg.validate().map_err(ActionError::Refused)?;
-            FirewallDoc::store(doc, &cfg);
+        // No action reads, transforms, then rewrites the whole configuration.
+        // The helpers address a single scalar/map/text object and enforce rule
+        // tombstones before accepting a stale write.
+        match self {
+            FirewallAction::AddRule { zone, rule } => FirewallDoc::add_rule(doc, *zone, rule),
+            FirewallAction::EditRule { zone, id, source } => {
+                FirewallDoc::set_rule_source(doc, *zone, *id, source);
+            }
+            FirewallAction::DeleteRule { zone, id } => FirewallDoc::delete_rule(doc, *zone, *id),
+            FirewallAction::SetRuleEnabled { zone, id, on } => {
+                FirewallDoc::set_rule_enabled(doc, *zone, *id, *on);
+            }
+            FirewallAction::ReorderRule { zone, id, delta } => {
+                FirewallDoc::reorder_rule(doc, *zone, *id, *delta);
+            }
+            FirewallAction::SetZoneTarget { zone, target } => {
+                FirewallDoc::set_zone_target(doc, *zone, *target);
+            }
+            FirewallAction::SetDefaultZone { zone } => FirewallDoc::set_default_zone(doc, *zone),
+            FirewallAction::SetService { zone, service, on } => {
+                FirewallDoc::set_service(doc, *zone, service, *on);
+            }
+            FirewallAction::SetPanic { on } => FirewallDoc::set_panic(doc, *on),
+            FirewallAction::SetEnabled { on } => FirewallDoc::set_enabled(doc, *on),
         }
         Ok(())
     }
@@ -117,144 +133,6 @@ impl qos_actions::Action for FirewallAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
-}
-
-/// The pure core of [`Action::apply`]: transform `cfg` in place and report
-/// whether anything actually changed. Kept separate so it is trivially
-/// unit-testable without a document, and so `apply` can skip the store on a
-/// no-op. Every branch that can't find its target zone/rule returns `false`.
-fn apply_to_config(action: &FirewallAction, cfg: &mut FirewallConfig) -> bool {
-    match action {
-        FirewallAction::AddRule { zone, rule } => apply_add_rule(cfg, *zone, rule),
-        FirewallAction::EditRule { zone, rule } => apply_edit_rule(cfg, *zone, rule),
-        FirewallAction::DeleteRule { zone, id } => apply_delete_rule(cfg, *zone, *id),
-        FirewallAction::ToggleRule { zone, id } => apply_toggle_rule(cfg, *zone, *id),
-        FirewallAction::ReorderRule { zone, id, delta } => {
-            apply_reorder_rule(cfg, *zone, *id, *delta)
-        }
-        FirewallAction::SetZoneTarget { zone, target } => {
-            apply_set_zone_target(cfg, *zone, *target)
-        }
-        FirewallAction::SetDefaultZone { zone } => apply_set_default_zone(cfg, *zone),
-        FirewallAction::SetService { zone, service, on } => {
-            apply_set_service(cfg, *zone, service, *on)
-        }
-        FirewallAction::SetPanic { on } => apply_set_panic(cfg, *on),
-        FirewallAction::SetEnabled { on } => apply_set_enabled(cfg, *on),
-    }
-}
-
-fn apply_add_rule(cfg: &mut FirewallConfig, zone: ZoneKind, rule: &Rule) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    if z.rules.iter().any(|r| r.id == rule.id) {
-        return false;
-    }
-    z.rules.push(rule.clone());
-    true
-}
-
-fn apply_edit_rule(cfg: &mut FirewallConfig, zone: ZoneKind, rule: &Rule) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    let Some(slot) = z.rules.iter_mut().find(|r| r.id == rule.id) else {
-        return false;
-    };
-    if *slot == *rule {
-        return false;
-    }
-    *slot = rule.clone();
-    true
-}
-
-fn apply_delete_rule(cfg: &mut FirewallConfig, zone: ZoneKind, id: RuleId) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    let before = z.rules.len();
-    z.rules.retain(|r| r.id != id);
-    z.rules.len() != before
-}
-
-fn apply_toggle_rule(cfg: &mut FirewallConfig, zone: ZoneKind, id: RuleId) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    let Some(r) = z.rules.iter_mut().find(|r| r.id == id) else {
-        return false;
-    };
-    r.enabled = !r.enabled;
-    true
-}
-
-fn apply_reorder_rule(cfg: &mut FirewallConfig, zone: ZoneKind, id: RuleId, delta: i32) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    let Some(idx) = z.rules.iter().position(|r| r.id == id) else {
-        return false;
-    };
-    let max = z.rules.len() as i32 - 1;
-    let target = (idx as i32 + delta).clamp(0, max) as usize;
-    if target == idx {
-        return false;
-    }
-    let r = z.rules.remove(idx);
-    z.rules.insert(target, r);
-    true
-}
-
-fn apply_set_zone_target(cfg: &mut FirewallConfig, zone: ZoneKind, target: Target) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    if z.target == target {
-        return false;
-    }
-    z.target = target;
-    true
-}
-
-fn apply_set_default_zone(cfg: &mut FirewallConfig, zone: ZoneKind) -> bool {
-    if cfg.zone(zone).is_none() || cfg.default_zone == zone {
-        return false;
-    }
-    cfg.default_zone = zone;
-    true
-}
-
-fn apply_set_service(cfg: &mut FirewallConfig, zone: ZoneKind, service: &str, on: bool) -> bool {
-    let Some(z) = cfg.zone_mut(zone) else {
-        return false;
-    };
-    let has = z.has_service(service);
-    if on && !has {
-        z.services.push(service.to_string());
-        true
-    } else if !on && has {
-        z.services.retain(|s| s != service);
-        true
-    } else {
-        false
-    }
-}
-
-fn apply_set_panic(cfg: &mut FirewallConfig, on: bool) -> bool {
-    if cfg.panic_mode == on {
-        return false;
-    }
-    cfg.panic_mode = on;
-    true
-}
-
-fn apply_set_enabled(cfg: &mut FirewallConfig, on: bool) -> bool {
-    if cfg.enabled == on {
-        return false;
-    }
-    cfg.enabled = on;
-    true
 }
 
 /// Register the firewall's action decoder for palette execution + remote replay.
@@ -289,15 +167,19 @@ pub fn add_rule_action(zone: ZoneKind, rule: Rule) -> FirewallAction {
 }
 
 pub fn edit_rule_action(zone: ZoneKind, rule: Rule) -> FirewallAction {
-    FirewallAction::EditRule { zone, rule }
+    FirewallAction::EditRule {
+        zone,
+        id: rule.id,
+        source: rule.source,
+    }
 }
 
 pub fn delete_rule_action(zone: ZoneKind, id: RuleId) -> FirewallAction {
     FirewallAction::DeleteRule { zone, id }
 }
 
-pub fn toggle_rule_action(zone: ZoneKind, id: RuleId) -> FirewallAction {
-    FirewallAction::ToggleRule { zone, id }
+pub fn set_rule_enabled_action(zone: ZoneKind, id: RuleId, on: bool) -> FirewallAction {
+    FirewallAction::SetRuleEnabled { zone, id, on }
 }
 
 pub fn reorder_rule_action(zone: ZoneKind, id: RuleId, delta: i32) -> FirewallAction {
@@ -557,6 +439,32 @@ fn zone_resource(config: &FirewallConfig, z: &Zone) -> Resource {
     for (idx, r) in z.rules.iter().enumerate() {
         zr = zr.with_child(rule_resource(kind, idx, n, r));
     }
+    // Services are first-class resources too, rather than controls hidden on
+    // their parent zone. This gives search, history and collaboration a stable
+    // address for each membership change.
+    for service in ServiceCatalog::ALL {
+        let on = z.has_service(service.id);
+        zr = zr.with_child(
+            Resource::new(
+                format!("firewall.service:{}:{}", kind.name(), service.id),
+                "firewall.service",
+                format!(
+                    "{} — {}",
+                    service.name,
+                    if on { "enabled" } else { "disabled" }
+                ),
+            )
+            .with_action(immediate_spec(
+                "set-enabled",
+                if on {
+                    "Disable service"
+                } else {
+                    "Enable service"
+                },
+                &set_service_action(kind, service.id, !on),
+            )),
+        );
+    }
     zr
 }
 
@@ -577,7 +485,7 @@ fn rule_resource(kind: ZoneKind, idx: usize, n: usize, r: &Rule) -> Resource {
     .with_action(immediate_spec(
         "toggle",
         toggle_label,
-        &toggle_rule_action(kind, id),
+        &set_rule_enabled_action(kind, id, !r.enabled),
     ))
     .with_action(
         immediate_spec("delete", "Delete rule", &delete_rule_action(kind, id)).with_contract(
@@ -751,6 +659,14 @@ mod tests {
         assert!(!r_actions.contains(&"move-up"), "{r_actions:?}");
         assert!(r_actions.contains(&"move-down"), "{r_actions:?}");
 
+        let ssh = public
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "firewall.service:public:ssh")
+            .expect("a service resource with a stable address");
+        assert_eq!(ssh.kind, "firewall.service");
+        assert!(ssh.actions.iter().any(|action| action.id == "set-enabled"));
+
         // A non-active zone offers make-active.
         let home = cfg
             .children
@@ -880,7 +796,7 @@ mod tests {
         let zone = cfg.default_zone;
         let rule_id = cfg.zone(zone).unwrap().rules[0].id;
         let was = cfg.zone(zone).unwrap().rules[0].enabled;
-        let action = toggle_rule_action(zone, rule_id);
+        let action = set_rule_enabled_action(zone, rule_id, !was);
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
