@@ -285,31 +285,15 @@ fn detail_section(
     bounded_detail_card(Box::new(column), compact, roomy_desktop)
 }
 
-/// The desktop detail view is one centred reading column: its hero and each
-/// evidence section use identical bounds. Narrow layouts retain full-width
-/// cards so text and controls never overflow the viewport.
+/// A page-level reading column owns desktop centring. Individual detail
+/// sections only provide the themed surface, so nested sections never widen
+/// back to the viewport and create broad, disconnected slabs.
 fn bounded_detail_card(
     child: Box<dyn Widget>,
-    compact: bool,
-    roomy_desktop: bool,
+    _compact: bool,
+    _roomy_desktop: bool,
 ) -> Box<dyn Widget> {
-    let inset: Box<dyn Widget> = Box::new(Container::new().with_child(child));
-    if compact || !roomy_desktop {
-        Box::new(Container::new().with_background().with_child(inset))
-    } else {
-        let surface: Box<dyn Widget> = Box::new(
-            Container::new()
-                .with_width(1_040.0)
-                .with_background()
-                .with_child(inset),
-        );
-        Box::new(
-            Row::new()
-                .push(Box::new(Spacer::new()))
-                .push(surface)
-                .push(Box::new(Spacer::new())),
-        )
-    }
+    Box::new(Container::new().with_background().with_child(child))
 }
 
 fn report_envelope(report: &ReportRecord, item: Option<&StoreItem>, note: &str) -> ReportEnvelope {
@@ -1134,6 +1118,10 @@ impl StoreApp {
 
     /// Compose the whole tree. Called from `build_layout`; also used
     /// by tests to inspect the composition graph directly.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root owns the catalogue-only masthead composition alongside the shared detail, remote, safety, and list routes"
+    )]
     fn compose(&self, theme: &Theme) -> Box<dyn Widget> {
         let header = self.build_header(theme);
         let content = if self.safety_open {
@@ -1196,24 +1184,50 @@ impl StoreApp {
                             .with_color(theme.text_tertiary),
                     ))
                     .push(self.build_category_row(theme));
+                let catalogue = Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(8.0)
+                    .push(Box::new(
+                        Text::new("CATALOGUE")
+                            .with_size(13.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_color(theme.text_tertiary),
+                    ))
+                    .push(Box::new(
+                        Text::new(&self.catalogue_source_summary())
+                            .with_size(13.0)
+                            .with_color(theme.text_dim),
+                    ));
                 // Keep desktop facets together as a compact browse toolbar.
-                // Stacking two full-width segmented bands created a vacant
-                // visual canyon before discovery and made the controls read
-                // as a separate settings screen.
+                // Their concise labels preserve the native pickers' explicit
+                // accessibility names, while catalogue provenance sits beside
+                // the choices instead of becoming a detached settings slab.
                 catalogue_controls = catalogue_controls.push(Box::new(
-                    Row::new()
-                        .no_wrap()
+                    Column::new()
+                        .with_intrinsic_height()
+                        .with_horizontal_padding(16.0, 16.0)
                         .push(Box::new(
-                            Container::new()
-                                .with_width(180.0)
-                                .with_no_padding()
-                                .with_child(Box::new(source)),
-                        ))
-                        .push(Box::new(
-                            Container::new()
-                                .with_width(216.0)
-                                .with_no_padding()
-                                .with_child(Box::new(categories)),
+                            Row::new()
+                                .no_wrap()
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_width(180.0)
+                                        .with_no_padding()
+                                        .with_child(Box::new(source)),
+                                ))
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_width(204.0)
+                                        .with_no_padding()
+                                        .with_child(Box::new(categories)),
+                                ))
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_flex_grow()
+                                        .with_child(Box::new(catalogue)),
+                                )),
                         )),
                 ));
             }
@@ -1269,6 +1283,63 @@ impl StoreApp {
             self.layout_width_hint
         };
         width >= 1_180.0
+    }
+
+    /// Idle browsing benefits from the explicit "ready" and "discover"
+    /// decision groups when the viewport can show a complete row. At the
+    /// medium desktop breakpoint those groups commonly contain an odd count,
+    /// leaving a conspicuous empty quadrant; one balanced catalogue grid is
+    /// clearer there. Search always preserves its relevance-ranked sequence.
+    fn group_catalogue_by_availability(&self) -> bool {
+        self.query.trim().is_empty() && (self.compact_layout() || self.roomy_desktop())
+    }
+
+    fn catalogue_source_summary(&self) -> String {
+        let source_count = self
+            .items
+            .iter()
+            .map(|item| match &item.source {
+                StoreSource::Qos { .. } => "qOS catalogue",
+                StoreSource::Flathub => "Flathub",
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        if self.items.is_empty() {
+            "No apps loaded from trusted sources yet".to_string()
+        } else {
+            format!(
+                "{} apps from {source_count} trusted source{}",
+                self.items.len(),
+                if source_count == 1 { "" } else { "s" }
+            )
+        }
+    }
+
+    /// Detail, remote-management, and moderation views have a much shorter
+    /// comfortable reading measure than a discovery grid. Keep their whole
+    /// editorial flow—not merely its individual cards—within that measure
+    /// from typical laptop widths upward.
+    fn bounded_page_content(&self, child: Box<dyn Widget>) -> Box<dyn Widget> {
+        let width = if self.rect.width() > 0.0 {
+            self.rect.width()
+        } else {
+            self.layout_width_hint
+        };
+        if self.compact_layout() || (width > 0.0 && width < 900.0) {
+            child
+        } else {
+            Box::new(
+                Row::new()
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(760.0)
+                            .with_no_padding()
+                            .with_child(child),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            )
+        }
     }
 
     #[allow(
@@ -1368,7 +1439,8 @@ impl StoreApp {
         };
         let back = Box::new(
             ui::widget::Button::new("store.detail.back", "Back to apps", Some(DETAIL_BACK_KEY))
-                .ghost()
+                .with_icon(Icon::ArrowLeft)
+                .fit_content(40.0)
                 .tooltip("Return to the catalogue"),
         );
         let artwork = Box::new(crate::widgets::Artwork::new(
@@ -1718,7 +1790,7 @@ impl StoreApp {
                 .with_child(Box::new(
                     Container::new()
                         .with_no_padding()
-                        .with_child(Box::new(column)),
+                        .with_child(self.bounded_page_content(Box::new(column))),
                 )),
         ))
     }
@@ -1732,7 +1804,8 @@ impl StoreApp {
             .with_intrinsic_height()
             .push(Box::new(
                 ui::widget::Button::new("store.safety.back", "Back", Some(SAFETY_BACK_KEY))
-                    .ghost()
+                    .with_icon(Icon::ArrowLeft)
+                    .fit_content(40.0)
                     .tooltip("Return to the previous Store view"),
             ))
             .push(Box::new(Text::new("Trust & moderation").with_size(24.0)))
@@ -1821,7 +1894,7 @@ impl StoreApp {
                         action_buttons.push(Box::new(submit));
                     }
                 }
-                let actions: Box<dyn Widget> = if self.layout_width_hint < 720.0 {
+                let actions: Box<dyn Widget> = if self.compact_layout() {
                     let mut column = Column::new().with_no_padding();
                     for button in action_buttons {
                         column = column.push(button);
@@ -1867,16 +1940,13 @@ impl StoreApp {
             .push(detail_section("Publishing guidelines", [
                 "Listings must accurately describe behavior, identify paid or remote-service dependencies, request only necessary permissions, preserve user data during updates, provide an accessible UI, and avoid impersonation, manipulation and undisclosed tracking.".into(),
             ], theme, self.compact_layout(), self.roomy_desktop()));
-        if self.roomy_desktop() {
-            column = column.with_horizontal_padding(190.0, 190.0);
-        }
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_child(Box::new(
                     Container::new()
                         .with_no_padding()
-                        .with_child(Box::new(column)),
+                        .with_child(self.bounded_page_content(Box::new(column))),
                 )),
         )
     }
@@ -1888,7 +1958,8 @@ impl StoreApp {
     fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
         let back = Box::new(
             ui::widget::Button::new("store.remotes.back", "Back to apps", Some(REMOTES_BACK_KEY))
-                .ghost()
+                .with_icon(Icon::ArrowLeft)
+                .fit_content(40.0)
                 .tooltip("Return to the app catalogue"),
         );
         let mut column = Column::new()
@@ -1938,39 +2009,35 @@ impl StoreApp {
                 )
             } else {
                 Box::new(
-                    Container::new().with_background().with_child(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .push(Box::new(
-                                Container::new()
-                                    .with_no_padding()
-                                    .with_flex_grow()
-                                    .with_child(Box::new(
-                                        Column::new()
-                                            .with_no_padding()
-                                            .with_intrinsic_height()
-                                            .with_gap(5.0)
-                                            .push(Box::new(
-                                                Text::new(&remote.title).with_size(16.0),
-                                            ))
-                                            .push(Box::new(
-                                                Text::new(&remote.url)
-                                                    .with_size(13.0)
-                                                    .with_color(theme.text_dim),
-                                            ))
-                                            .push(Box::new(
-                                                Text::new(if remote.disabled {
-                                                    "Disabled"
-                                                } else {
-                                                    "Enabled"
-                                                })
-                                                .with_size(12.0)
+                    Row::new()
+                        .no_wrap()
+                        .push(Box::new(
+                            Container::new()
+                                .with_no_padding()
+                                .with_flex_grow()
+                                .with_child(Box::new(
+                                    Column::new()
+                                        .with_no_padding()
+                                        .with_intrinsic_height()
+                                        .with_gap(5.0)
+                                        .push(Box::new(Text::new(&remote.title).with_size(16.0)))
+                                        .push(Box::new(
+                                            Text::new(&remote.url)
+                                                .with_size(13.0)
                                                 .with_color(theme.text_dim),
-                                            )),
-                                    )),
-                            ))
-                            .push(remove),
-                    )),
+                                        ))
+                                        .push(Box::new(
+                                            Text::new(if remote.disabled {
+                                                "Disabled"
+                                            } else {
+                                                "Enabled"
+                                            })
+                                            .with_size(12.0)
+                                            .with_color(theme.text_dim),
+                                        )),
+                                )),
+                        ))
+                        .push(remove),
                 )
             };
             remote_rows.push(remote_row);
@@ -2042,20 +2109,13 @@ impl StoreApp {
                 self.roomy_desktop(),
             ));
         }
-        // Align the remote page's introductory copy to the same desktop
-        // reading column as its bounded form and remote records.  Leaving
-        // the heading at the viewport edge made this otherwise scoped page
-        // read like two unrelated layouts.
-        if self.roomy_desktop() {
-            column = column.with_horizontal_padding(190.0, 190.0);
-        }
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_child(Box::new(
                     Container::new()
                         .with_no_padding()
-                        .with_child(Box::new(column)),
+                        .with_child(self.bounded_page_content(Box::new(column))),
                 )),
         )
     }
@@ -2148,6 +2208,11 @@ impl StoreApp {
                         .push(Box::new(safety_btn))
                         .push(Box::new(remotes_btn))
                         .push(Box::new(refresh_btn)),
+                ))
+                .push(Box::new(
+                    Text::new(&self.catalogue_source_summary())
+                        .with_size(13.0)
+                        .with_color(theme.text_tertiary),
                 ));
             if self.worker_busy {
                 header = header.push(Box::new(
@@ -2159,7 +2224,7 @@ impl StoreApp {
                         .with_size(13.0)
                         .with_color(theme.text_dim),
                 ));
-            } else if self.operation_error.is_some() {
+            } else if self.operation_error.is_some() && !self.items.is_empty() {
                 header = header.push(Box::new(
                     Text::new(operation_error_summary())
                         .with_size(13.0)
@@ -2214,36 +2279,13 @@ impl StoreApp {
         header = header.with_vertical_padding(32.0).with_gap(16.0);
         header = header.push(title_row);
         header = header.push(Box::new(search));
-        let source_count = self
-            .items
-            .iter()
-            .map(|item| match &item.source {
-                StoreSource::Qos { .. } => "qOS catalogue",
-                StoreSource::Flathub => "Flathub",
-            })
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        let source_summary = if self.items.is_empty() {
-            "No apps loaded from trusted sources yet".to_string()
-        } else {
-            format!(
-                "{} apps from {source_count} trusted source{}",
-                self.items.len(),
-                if source_count == 1 { "" } else { "s" }
-            )
-        };
-        header = header.push(Box::new(
-            Text::new(&source_summary)
-                .with_size(13.0)
-                .with_color(theme.text_tertiary),
-        ));
         if self.worker_busy {
             header = header.push(Box::new(
                 Text::new("Package operation in progress…")
                     .with_size(13.0)
                     .with_color(theme.text_dim),
             ));
-        } else if self.operation_error.is_some() {
+        } else if self.operation_error.is_some() && !self.items.is_empty() {
             header = header.push(Box::new(
                 Text::new(operation_error_summary())
                     .with_size(13.0)
@@ -2332,7 +2374,32 @@ impl StoreApp {
             } else {
                 ("No apps found", "Try a different search or category.")
             };
-            return Box::new(EmptyState::new(title).with_message(message));
+            let empty = EmptyState::new(title).with_message(message);
+            // An unavailable or genuinely empty catalogue is recoverable by
+            // refreshing. Route the visible CTA through the same one-shot
+            // canonical `store.refresh` resource action, so pointer, keyboard,
+            // assistive activation and agents all request the same serialized
+            // worker operation.
+            let empty: Box<dyn Widget> = if self.items.is_empty() && !self.worker_busy {
+                let empty = empty
+                    .with_action("Refresh catalog")
+                    .with_action_id("store.empty.refresh");
+                Box::new(match refresh_binding() {
+                    Some(binding) => empty.on_action(binding),
+                    None => empty.with_action_path(REFRESH_KEY),
+                })
+            } else {
+                Box::new(empty)
+            };
+            // Keep the centred empty state inside the same remaining-height
+            // scroll body as a populated catalogue. Without this wrapper its
+            // intrinsic height competes with the masthead and can push title
+            // and utility controls above the viewport when a CTA is present.
+            return Box::new(
+                Scrollable::new(ScrollAxis::Vertical)
+                    .fill_parent_height()
+                    .with_child(empty),
+            );
         }
         let page_count = visible.len().div_ceil(PAGE_SIZE).max(1);
         let visible_count = visible.len();
@@ -2364,7 +2431,7 @@ impl StoreApp {
         // A live search is relevance-ranked, so preserving a single result
         // sequence is more useful than interrupting it with availability
         // groups. Idle browsing gets the stronger installed/discover split.
-        let group_by_availability = self.query.trim().is_empty();
+        let group_by_availability = self.group_catalogue_by_availability();
         for item in visible.into_iter().skip(start).take(PAGE_SIZE) {
             let action = item.action_kind(self.flatpak_available);
             let click_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
@@ -2497,6 +2564,8 @@ impl StoreApp {
             if !remaining_cards.is_empty() {
                 let title = if group_by_availability {
                     format!("Discover more · {}", remaining_cards.len())
+                } else if self.query.trim().is_empty() {
+                    format!("All apps · {}", remaining_cards.len())
                 } else {
                     format!("Matches · {}", remaining_cards.len())
                 };
@@ -2504,6 +2573,8 @@ impl StoreApp {
                     &title,
                     if group_by_availability {
                         "Trusted catalogue entries ready to install when you choose."
+                    } else if self.query.trim().is_empty() {
+                        "Trusted apps, arranged to make the most of this window."
                     } else {
                         "Results stay in relevance order across names, publishers, descriptions, and categories."
                     },
@@ -4077,6 +4148,43 @@ mod tests {
         assert!(cats.iter().any(|c| c == "Productivity"));
         assert!(cats.iter().any(|c| c == "Games"));
         assert!(cats.iter().any(|c| c == "System"));
+    }
+
+    #[test]
+    fn availability_groups_avoid_an_odd_medium_desktop_grid() {
+        let mut app = seeded_app();
+        app.set_layout_width_hint(1_024.0);
+        assert!(
+            !app.group_catalogue_by_availability(),
+            "a medium desktop uses one balanced catalogue grid"
+        );
+
+        app.set_layout_width_hint(1_440.0);
+        assert!(app.group_catalogue_by_availability());
+
+        app.set_layout_width_hint(480.0);
+        assert!(app.group_catalogue_by_availability());
+
+        app.set_query("notes".into());
+        assert!(
+            !app.group_catalogue_by_availability(),
+            "search results remain a single relevance-ranked sequence"
+        );
+    }
+
+    #[test]
+    fn catalogue_source_summary_is_honest_about_loaded_sources() {
+        let app = seeded_app();
+        assert_eq!(
+            app.catalogue_source_summary(),
+            "3 apps from 2 trusted sources"
+        );
+
+        let empty = StoreApp::new();
+        assert_eq!(
+            empty.catalogue_source_summary(),
+            "No apps loaded from trusted sources yet"
+        );
     }
 
     #[test]
