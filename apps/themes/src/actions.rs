@@ -245,6 +245,36 @@ pub fn reset_custom_theme_action(id: impl Into<String>) -> ThemesAction {
     ThemesAction::ResetCustomTheme { id: id.into() }
 }
 
+/// Brokered default creation used by the visible New button. The app mints
+/// the stable id when this operation is invoked, then dispatches the same
+/// `CreateCustomTheme` action as the named palette flow.
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the unit payload always serializes"
+)]
+pub fn new_default_spec() -> ActionSpec {
+    ActionSpec::operation("new", "New theme", OperationKind::Effect, "themes.new", &())
+        .expect("unit payload serializes")
+        .with_contract(ActionContract {
+            discovery: DiscoveryScope::Launchable,
+            tags: vec!["appearance".into(), "theme".into(), "create".into()],
+            ..ActionContract::default()
+        })
+}
+
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the static resource has this nullary action"
+)]
+pub fn new_default_binding() -> qos_actions::ActionBinding<()> {
+    let resource =
+        Resource::new("themes.library", "themes.library", "Themes").with_action(new_default_spec());
+    qos_actions::ActionBinding::unit_for(&resource, "new")
+        .expect("the static New theme action accepts unit arguments")
+}
+
 /// Local brokered effect for exporting the selected theme. It has no document
 /// payload and never enters collaboration/history.
 #[allow(
@@ -440,6 +470,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let catalog = doc::load_catalog(doc, &ROOT).unwrap_or_default();
 
     let mut root = Resource::new("themes.library", "themes.library", "Themes")
+        .with_action(new_default_spec())
         .with_action(export_selected_spec())
         .with_action(apply_selected_spec());
 
