@@ -150,6 +150,25 @@ fn run_fs_authority_publication_queue() {
     }
 }
 
+#[cfg(test)]
+fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
+    let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
+        return false;
+    };
+    loop {
+        if fs_authority_publication_queue()
+            .lock()
+            .is_ok_and(|queue| !queue.running && queue.pending.is_none())
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Monotonic workspace identifier, newtype-wrapped over `u64`.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
@@ -223,6 +242,10 @@ mod identity_fs_tests {
         assert!(arguments.contains("publish-authority"));
         assert!(arguments.contains(cache.to_str().unwrap()));
         assert!(arguments.contains(acl.to_str().unwrap()));
+        assert!(
+            wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
+            "the publisher worker must retire before its fixture is removed"
+        );
 
         // SAFETY: guarded by the process_env serial group.
         unsafe {
@@ -292,6 +315,10 @@ mod identity_fs_tests {
                 .parse::<u8>()
                 .expect("numeric attempt count")
                 > 3
+        );
+        assert!(
+            wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
+            "the retry worker must retire before its fixture is removed"
         );
 
         // SAFETY: guarded by the process_env serial group.
