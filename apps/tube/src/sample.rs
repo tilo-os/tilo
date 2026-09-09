@@ -537,6 +537,9 @@ pub fn model() -> TubeModel {
         .into_iter()
         .filter(|id: &String| ["ch_lowlevel", "ch_kurz", "ch_blender"].contains(&id.as_str()))
         .collect(),
+        // The shared queue starts empty; screenshots should not imply a video
+        // was queued by a collaborator.
+        queue: Vec::new(),
         history: vec!["vid_black_holes".into(), "vid_donut".into()],
         settings,
         route: Route::Home,
@@ -544,6 +547,7 @@ pub fn model() -> TubeModel {
         playhead: 0.0,
         playing: false,
         liked: Vec::new(),
+        comment_likes: std::collections::BTreeMap::new(),
         // No pre-seeded notices: the toast stack fills from real activity
         // (auto-skips, share/like acknowledgements, worker status) so it never
         // shows events that didn't happen.
