@@ -5,9 +5,8 @@
 //! custom theme's name is edited inline with a [`ui::widget::TextInput`].
 //!
 //! All catalog + selection state is pushed in from [`crate::app::ThemesApp`]
-//! via [`Gallery::set_view`]; user intent leaves through the CRDT command
-//! bus (`select:` / `duplicate:` / `rename:` / `delete:` commands) and the
-//! `ed_name` scratch key (inline rename).
+//! via [`Gallery::set_view`]; user intent stays local until the app turns a
+//! committed operation into its canonical durable action.
 
 use std::collections::HashMap;
 
@@ -22,7 +21,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::doc;
 use crate::draw;
 use crate::model::ThemeSpec;
 use crate::widgets::ThemeRow;
@@ -68,6 +66,8 @@ pub struct Gallery {
     seeded_id: Option<String>,
     /// A `rename` command asked to focus the inline editor next frame.
     focus_pending: bool,
+    commands: Vec<String>,
+    edited_name: Option<String>,
 
     rect: Rect,
     node: Option<NodeId>,
@@ -98,6 +98,8 @@ impl Gallery {
             selected_custom: false,
             seeded_id: None,
             focus_pending: false,
+            commands: Vec::new(),
+            edited_name: None,
             rect: Rect::ZERO,
             node: None,
             name_input_node: None,
@@ -166,6 +168,20 @@ impl Gallery {
     /// A `rename` command: focus the inline editor on the next frame.
     pub fn request_name_focus(&mut self) {
         self.focus_pending = true;
+    }
+
+    pub fn take_command(&mut self) -> Option<String> {
+        (!self.commands.is_empty()).then(|| self.commands.remove(0))
+    }
+
+    pub fn take_edited_name(&mut self) -> Option<String> {
+        self.edited_name.take()
+    }
+
+    /// Stage a local inline-name edit. Used by the app's headless interaction
+    /// harness as well as the real `TextInput` event path.
+    pub fn stage_edited_name(&mut self, name: impl Into<String>) {
+        self.edited_name = Some(name.into());
     }
 
     /// Open the actions menu for the selected row — used by the `--shots`
@@ -388,7 +404,7 @@ impl Widget for Gallery {
             );
             if let Some(idx) = self.menu.take_selection() {
                 if let Some(cmd) = self.menu_cmds.get(idx) {
-                    doc::put_str(state, path, doc::KEY_COMMAND, cmd);
+                    self.commands.push(cmd.clone());
                 }
                 *handled = true;
             }
@@ -432,9 +448,9 @@ impl Widget for Gallery {
                 n,
                 taffy,
             );
-            // Mirror any edit into the scratch key the app reconciles.
+            // Keep name input local until the app commits its canonical action.
             if let Some(name) = self.name_input.take_dirty() {
-                doc::put_str(state, path, doc::KEY_ED_NAME, &name);
+                self.edited_name = Some(name);
             }
             if *handled {
                 return;
@@ -456,6 +472,9 @@ impl Widget for Gallery {
                     taffy,
                 );
                 if *handled {
+                    if row.take_select_request() {
+                        self.commands.push(format!("select:{}", row.id()));
+                    }
                     break;
                 }
             }

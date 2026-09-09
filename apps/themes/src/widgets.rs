@@ -1,8 +1,6 @@
-//! Small reusable custom widgets for the Themes app: a command-bus
-//! button and a gallery preset card. Both paint with the OS theme (they
-//! are app chrome, not previewed content) and emit user intent by writing
-//! a one-shot command string into the CRDT, which [`crate::app::ThemesApp`]
-//! drains and dispatches each frame.
+//! Small reusable custom widgets for the Themes app. They paint with the OS
+//! theme (they are app chrome, not previewed content) and report local user
+//! intent to [`crate::app::ThemesApp`] without touching the shared document.
 
 use std::collections::HashMap;
 
@@ -55,6 +53,7 @@ pub struct ThemeRow {
     /// row must not paint its own static name.
     suppress_name: bool,
     rect: Rect,
+    select_requested: bool,
 }
 
 /// Static per-theme properties mirrored from the [`ThemeSpec`] a
@@ -92,7 +91,12 @@ impl ThemeRow {
             },
             suppress_name: false,
             rect: Rect::ZERO,
+            select_requested: false,
         }
+    }
+
+    pub fn take_select_request(&mut self) -> bool {
+        std::mem::take(&mut self.select_requested)
     }
 
     fn swatch_of(spec: &ThemeSpec) -> [Rgb; 6] {
@@ -331,8 +335,8 @@ impl Widget for ThemeRow {
         event: &WindowEvent,
         scale: f64,
         _m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
@@ -352,12 +356,7 @@ impl Widget for ThemeRow {
                 button: MouseButton::Left,
                 ..
             } if self.view.hover => {
-                crate::doc::put_str(
-                    state,
-                    path,
-                    crate::doc::KEY_COMMAND,
-                    &format!("select:{}", self.id),
-                );
+                self.select_requested = true;
                 *focus_target = Some(node_id);
                 *handled = true;
             }
