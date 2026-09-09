@@ -1202,7 +1202,12 @@ impl StoreApp {
             );
         }
         column = column.push(content);
-        Box::new(Container::new().filling().with_child(Box::new(column)))
+        Box::new(
+            Container::new()
+                .filling()
+                .with_fill(theme.bg_app)
+                .with_child(Box::new(column)),
+        )
     }
 
     /// Keep desktop pages readable on large displays without imposing a
@@ -1267,10 +1272,10 @@ impl StoreApp {
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         if self.items.is_empty() {
-            "No apps loaded from trusted sources yet".to_string()
+            "No apps loaded from configured sources yet".to_string()
         } else {
             format!(
-                "{} apps from {source_count} trusted source{}",
+                "{} apps from {source_count} configured source{}",
                 self.items.len(),
                 if source_count == 1 { "" } else { "s" }
             )
@@ -2192,7 +2197,7 @@ impl StoreApp {
                     Container::new().with_no_padding().with_height(8.0),
                 ))
                 .push(Box::new(
-                    Text::new("A considered catalogue for the work in front of you.")
+                    Text::new("Useful software from sources you choose.")
                         .with_size(13.0)
                         .with_color(theme.text_dim),
                 ))
@@ -2258,7 +2263,7 @@ impl StoreApp {
                                     Container::new().with_no_padding().with_height(10.0),
                                 ))
                                 .push(Box::new(
-                                    Text::new("Trusted apps for this device, with the details to make an informed choice.")
+                                    Text::new("Useful software, with source and trust details before you act.")
                                         .with_size(14.0)
                                         .with_color(theme.text_dim),
                                 )),
@@ -2353,7 +2358,7 @@ impl StoreApp {
         if visible.is_empty() {
             let (title, message) = if self.items.is_empty() {
                 if self.worker_busy {
-                    ("Loading apps…", "Checking your trusted catalogues.")
+                    ("Loading apps…", "Checking your configured catalogues.")
                 } else if self.operation_error.is_some() {
                     (
                         "Catalogues unavailable",
@@ -2362,7 +2367,7 @@ impl StoreApp {
                 } else {
                     (
                         "No apps available",
-                        "Add or enable a trusted catalogue, then refresh.",
+                        "Add or enable a catalogue you trust, then refresh.",
                     )
                 }
             } else {
@@ -2469,7 +2474,7 @@ impl StoreApp {
                         .with_heading_level(2),
                     ))
                     .push(Box::new(
-                        Text::new(&format!("{visible_count} trusted apps"))
+                        Text::new(&format!("{visible_count} available apps"))
                             .with_size(12.0)
                             .with_color(theme.text_dim),
                     )),
@@ -2569,9 +2574,9 @@ impl StoreApp {
                 recommended = recommended.push(make_section(
                     &title,
                     if group_by_availability {
-                        "Trusted catalogue entries ready to install when you choose."
+                        "Catalogue entries ready to install when you choose."
                     } else if self.query.trim().is_empty() {
-                        "Trusted apps, arranged to make the most of this window."
+                        "Available apps, arranged to make the most of this window."
                     } else {
                         "Results stay in relevance order across names, publishers, descriptions, and categories."
                     },
@@ -4193,13 +4198,13 @@ mod tests {
         let app = seeded_app();
         assert_eq!(
             app.catalogue_source_summary(),
-            "3 apps from 2 trusted sources"
+            "3 apps from 2 configured sources"
         );
 
         let empty = StoreApp::new();
         assert_eq!(
             empty.catalogue_source_summary(),
-            "No apps loaded from trusted sources yet"
+            "No apps loaded from configured sources yet"
         );
     }
 
