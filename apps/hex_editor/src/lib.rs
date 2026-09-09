@@ -1,7 +1,9 @@
-//! Hex — a hex editor for qOS, built on the `ui` toolkit and CRDT-native.
+//! Hex — a device-local hex editor for qOS, built on the `ui` toolkit.
 //!
-//! The editable byte buffer lives in the shared Automerge document, so
-//! undo/redo and live collaboration work without any app-level plumbing.
+//! Raw file bytes, paths, edits, and undo history remain on this device. The
+//! app publishes canonical local resource operations so palette and agent
+//! clients can drive the same editor without putting sensitive file contents
+//! into Automerge or collaboration history.
 //! The UI is a classic hex view — offset gutter, hex byte columns, and an
 //! ASCII column with a cursor synced across both — plus a data inspector
 //! that interprets the bytes at the cursor as every common scalar type,
@@ -40,7 +42,6 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
 pub mod inspector;
 pub mod model;
 pub mod sample;
@@ -70,7 +71,11 @@ pub fn app_root() -> Box<dyn Widget> {
         // captures the floating cursor read-out chip (it otherwise appears on a
         // change / hover and fades, so a still frame would miss it).
         let mut v = app::sample_view();
-        v.arm_status_bubble_for_shots();
+        match std::env::var("QOS_HEX_DEMO").as_deref() {
+            Ok("search") => v.arm_search_for_shots(),
+            Ok("error") => v.arm_error_for_shots(),
+            _ => v.arm_status_bubble_for_shots(),
+        }
         v
     } else {
         HexView::empty()
