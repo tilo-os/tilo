@@ -2,9 +2,9 @@
 //!
 //! A firewalld/nftables front-end: a zone rail, a per-zone rules table, a
 //! toggleable services panel, a posture summary, and an add-rule form. The
-//! whole [`FirewallConfig`](model::FirewallConfig) lives in the shared
-//! Automerge document (see [`doc`]), so two instances pointed at one collab
-//! socket edit the same ruleset live. The live app reads/applies via
+//! configuration lives in a field-addressable shared Automerge document (see
+//! [`doc`]), so two instances pointed at one collab socket edit independent
+//! rules and services without clobbering each other. The live app reads/applies via
 //! `firewall-cmd` (gated, see [`backend`]); `--shots` bundles a realistic
 //! sample ruleset so the headless screenshot is fully populated offline.
 //!
