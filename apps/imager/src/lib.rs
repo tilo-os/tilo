@@ -90,6 +90,7 @@ pub fn app_root() -> Box<dyn Widget> {
 /// staged outside the collaborative document.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ImagerApp::new();
+    app.seed_local_shot_state(scenario);
     if scenario == "confirm" {
         app.seed_confirmation_for_shot("sdb");
     } else if scenario == "export" {
@@ -167,57 +168,20 @@ fn demo_iso_source() -> crate::model::Source {
 
 fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
     use crate::doc::ImagerDoc;
-    use crate::model::Step;
     ImagerDoc::seed(doc, &[]);
     ImagerDoc::set_source(doc, Some(&demo_iso_source()));
-    ImagerDoc::set_selected(doc, None);
-    ImagerDoc::set_step(doc, Step::Drive);
-    ImagerDoc::set_status(doc, "No removable drives detected");
 }
 
 fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
     use crate::doc::ImagerDoc;
-    use crate::model::Step;
     ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_step(doc, Step::Source);
 }
 
 fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
     use crate::doc::ImagerDoc;
-    use crate::model::{Step, TargetDrive, TargetKind, TargetPartition, sample_source};
-    let targets = vec![
-        crate::model::sample_targets().remove(0), // the USB stick
-        TargetDrive {
-            name: "nvme0n1".into(),
-            model: "Samsung SSD 990 PRO 1TB".into(),
-            stable_id: Some("demo-running-system".into()),
-            size: 1_000_204_886_016,
-            kind: TargetKind::Nvme,
-            tran: Some("nvme".into()),
-            removable: false,
-            is_system: true, // the running OS boots from this disk
-            partitions: vec![
-                TargetPartition {
-                    name: "nvme0n1p1".into(),
-                    size: 536_870_912,
-                    fstype: Some("vfat".into()),
-                    label: Some("EFI".into()),
-                },
-                TargetPartition {
-                    name: "nvme0n1p2".into(),
-                    size: 999_650_000_000,
-                    fstype: Some("btrfs".into()),
-                    label: Some("qos-root".into()),
-                },
-            ],
-        },
-    ];
-    ImagerDoc::seed(doc, &targets);
+    use crate::model::sample_source;
+    ImagerDoc::seed(doc, &[]);
     ImagerDoc::set_source(doc, Some(&sample_source()));
-    ImagerDoc::set_selected(doc, None);
-    ImagerDoc::set_show_internal(doc, true);
-    ImagerDoc::set_step(doc, Step::Drive);
-    ImagerDoc::set_status(doc, "1 removable, 2 total");
 }
 
 /// Pose the "drive", "customize", "confirm", "progress", "done" and
@@ -225,77 +189,7 @@ fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
 /// already-seeded demo document.
 fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
     use crate::doc::ImagerDoc;
-    use crate::model::{Action, JobPhase, Progress, Step};
-
-    match scenario {
-        "drive" => {
-            ImagerDoc::set_source(doc, Some(&demo_iso_source()));
-            ImagerDoc::set_selected(doc, Some(0)); // the USB stick
-            ImagerDoc::set_step(doc, Step::Drive);
-            ImagerDoc::set_status(doc, "1 removable, 2 total");
-        }
-        "customize" | "customize-timezone-open" | "export" => {
-            ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_action(doc, Action::Flash);
-            ImagerDoc::set_step(doc, Step::Customize);
-            ImagerDoc::set_status(doc, "Pre-configuring qOS 1.0");
-        }
-        "confirm" => {
-            ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_action(doc, Action::Flash);
-            ImagerDoc::set_step(doc, Step::Confirm);
-            ImagerDoc::set_status(doc, "Ready to write qOS 1.0 → /dev/sdb");
-        }
-        "progress" => {
-            ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_step(doc, Step::Write);
-            ImagerDoc::set_progress(
-                doc,
-                &Progress {
-                    phase: JobPhase::Writing,
-                    write_frac: 0.62,
-                    verify_frac: 0.0,
-                    rate_bps: 176_000_000,
-                    error: None,
-                },
-            );
-            ImagerDoc::set_status(doc, "Writing qOS 1.0 → /dev/sdb");
-        }
-        "done" => {
-            ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_step(doc, Step::Done);
-            ImagerDoc::set_progress(
-                doc,
-                &Progress {
-                    phase: JobPhase::Success,
-                    write_frac: 1.0,
-                    verify_frac: 1.0,
-                    rate_bps: 0,
-                    error: None,
-                },
-            );
-            ImagerDoc::set_status(doc, "Done — qOS 1.0 written and verified");
-        }
-        "done-failed" => {
-            ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_step(doc, Step::Done);
-            ImagerDoc::set_progress(
-                doc,
-                &Progress {
-                    phase: JobPhase::Failed,
-                    write_frac: 0.4,
-                    verify_frac: 0.0,
-                    rate_bps: 0,
-                    error: Some("The drive was disconnected while writing.".into()),
-                },
-            );
-            ImagerDoc::set_status(doc, "Write failed — device disappeared mid-write");
-        }
-        // "source" and any unknown name.
-        _ => {
-            ImagerDoc::set_selected(doc, None);
-            ImagerDoc::set_step(doc, Step::Source);
-            ImagerDoc::set_status(doc, "");
-        }
+    if scenario == "drive" {
+        ImagerDoc::set_source(doc, Some(&demo_iso_source()));
     }
 }
