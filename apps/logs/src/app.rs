@@ -4,8 +4,7 @@
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
 //! coloured rows, a detail pane, a filter bar — are bespoke, exactly
 //! the case the toolkit calls out for "draw into the Vello Scene
-//! yourself"). Shared view state (selection, filters, and search) lives in
-//! the Automerge document via [`LogsDoc`]. Live tail is a local effect that
+//! yourself"). Selection, filters, and search are local view state. Live tail is a local effect that
 //! controls this process's journal poller; journal entries themselves are an
 //! external render cache.
 //!
@@ -55,7 +54,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
-use crate::actions::{self, LogsAction};
+use crate::actions::{self, LogsOperation};
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::responsive::{Pane, PushNav};
@@ -138,8 +137,6 @@ struct DetailLayout {
               them and would touch every read/write site across this file"
 )]
 pub struct LogsApp {
-    /// Canonical history bridge for every durable collaborative view action.
-    actions: ui::ActionHost,
     /// Full journal — external read-only data, not CRDT state.
     entries: Vec<LogEntry>,
     /// Distinct units present, in first-seen order (for the dropdown).
@@ -153,8 +150,8 @@ pub struct LogsApp {
     filtered: Vec<usize>,
     /// Stored selection (absolute index into `entries`, or -1 = auto).
     sel_raw: i64,
-    /// Stable selected-entry resource id. This survives reordering and lets a
-    /// peer resolve the same journal record from its own cache.
+    /// Stable selected-entry resource id. This survives reordering within the
+    /// local journal cache without becoming a collaborator-visible cursor.
     selected_entry: Option<String>,
     live_tail: bool,
     /// A safe classification of the most recent local journal read failure.
@@ -181,15 +178,14 @@ pub struct LogsApp {
     hover_row: Option<usize>,
     popup: Option<Popup>,
     focused: bool,
-    /// Shared CRDT-bound field for the collaborative search query. The filter
-    /// bar keeps its app-specific layout; text editing is toolkit-owned.
+    /// Local search field. The filter bar keeps its app-specific layout while
+    /// text editing remains toolkit-owned.
     search_input: TextInput,
     /// Pointer/keyboard controls publish inert resource addresses; the host
     /// re-resolves current availability and permissions before effects run.
     pending_control_invocation: Option<ControlInvocation>,
-    /// One-shot deterministic view seeding used only by the offscreen shot
-    /// factory. Applying it through `LogsDoc` keeps the captured UI on the
-    /// same collaborative state path as a real filter.
+    /// One-shot deterministic local view seeding used only by the offscreen
+    /// shot factory.
     shot_filter: Option<Filter>,
     dirty: bool,
 
@@ -209,7 +205,6 @@ impl LogsApp {
     /// render.
     pub fn new(entries: Vec<LogEntry>, allow_live: bool) -> Self {
         let mut app = Self {
-            actions: ui::ActionHost::new(),
             entries,
             units: Vec::new(),
             boots: Vec::new(),
@@ -230,10 +225,9 @@ impl LogsApp {
             hover_row: None,
             popup: None,
             focused: true,
-            search_input: TextInput::new(Vec::new())
+            search_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("logs.search")
-                .on_action(actions::search_binding())
                 .with_placeholder("Search messages, units…")
                 .with_plain_chrome(),
             pending_control_invocation: None,
@@ -409,20 +403,38 @@ impl LogsApp {
         self.clamp_scroll();
     }
 
-    /// Apply a durable view decision through the registered action protocol so
-    /// toolbar, pointer, keyboard, accessibility, agents, and undo share one
-    /// replayable boundary.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "ActionHost encodes an owned immutable user decision into its history boundary."
-    )]
-    fn dispatch_view(&mut self, doc: &mut AutoCommit, action: LogsAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            actions::LOGS_ACTION_TYPE,
-            &action,
-            ui::qos_actions::ActionContext::for_action("org.qos.Logs", "Logs", &action),
-        );
+    /// Apply one local view operation. Filters and selection intentionally
+    /// never cross the Automerge boundary: they describe one person's current
+    /// investigation, not a collaborative journal annotation.
+    fn apply_view_operation(&mut self, operation: LogsOperation) {
+        match operation {
+            LogsOperation::SetPriority { value } => self.filter.min_priority = value.clamp(0, 7),
+            LogsOperation::SetUnit { value } => self.filter.unit = value,
+            LogsOperation::SetBoot { value } => self.filter.boot = value,
+            LogsOperation::SetSearch { value } => {
+                self.filter.search = value;
+                self.search_input.set_text(&self.filter.search);
+            }
+            LogsOperation::ClearFilters => {
+                self.filter = Filter::default();
+                self.search_input.set_text("");
+            }
+            LogsOperation::SelectEntry { entry_id } => {
+                self.selected_entry = Some(entry_id.clone());
+                self.sel_raw = self
+                    .entries
+                    .iter()
+                    .position(|entry| actions::entry_resource_id(entry) == entry_id)
+                    .and_then(|index| i64::try_from(index).ok())
+                    .unwrap_or(-1);
+            }
+            LogsOperation::Refresh
+            | LogsOperation::SetLiveTail { .. }
+            | LogsOperation::ExportFiltered => return,
+        }
+        self.recompute_filtered();
+        self.clamp_scroll();
+        self.dirty = true;
     }
 
     /// Local journal operations. They intentionally do not enter the shared
@@ -434,6 +446,12 @@ impl LogsApp {
     )]
     fn perform_effect(&mut self, operation: actions::LogsOperation) -> Result<(), String> {
         match operation {
+            operation @ (LogsOperation::SetPriority { .. }
+            | LogsOperation::SetUnit { .. }
+            | LogsOperation::SetBoot { .. }
+            | LogsOperation::SetSearch { .. }
+            | LogsOperation::ClearFilters
+            | LogsOperation::SelectEntry { .. }) => self.apply_view_operation(operation),
             actions::LogsOperation::Refresh => {
                 self.source_loading = false;
                 if self.allow_live {
@@ -534,8 +552,8 @@ impl LogsApp {
         self.dirty = true;
     }
 
-    /// Move the selection by `delta` filtered positions and persist it.
-    fn move_selection(&mut self, delta: isize, doc: &mut AutoCommit, _root: &ObjId) {
+    /// Move the local selection by `delta` filtered positions.
+    fn move_selection(&mut self, delta: isize) {
         if self.filtered.is_empty() {
             return;
         }
@@ -549,21 +567,17 @@ impl LogsApp {
             return;
         };
         let id = actions::entry_resource_id(entry);
-        self.sel_raw = abs as i64;
-        self.selected_entry = Some(id.clone());
-        self.dispatch_view(doc, LogsAction::SelectEntry { entry_id: id });
+        self.apply_view_operation(LogsOperation::SelectEntry { entry_id: id });
         self.scroll_into_view(new_pos);
         self.dirty = true;
     }
 
-    fn select_abs(&mut self, abs: usize, doc: &mut AutoCommit, _root: &ObjId) {
+    fn select_abs(&mut self, abs: usize) {
         let Some(entry) = self.entries.get(abs) else {
             return;
         };
         let id = actions::entry_resource_id(entry);
-        self.sel_raw = abs as i64;
-        self.selected_entry = Some(id.clone());
-        self.dispatch_view(doc, LogsAction::SelectEntry { entry_id: id });
+        self.apply_view_operation(LogsOperation::SelectEntry { entry_id: id });
         if let Some(pos) = self.filtered_pos(abs) {
             self.scroll_into_view(pos);
         }
@@ -2447,10 +2461,6 @@ impl Widget for LogsApp {
         &[actions::LOGS_OPERATION_TYPE]
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
         self.pending_control_invocation
             .take()
@@ -2469,27 +2479,37 @@ impl Widget for LogsApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View) {
             return Ok(false);
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        if !self.allow_live {
+        if kind == OperationKind::Effect && !self.allow_live {
             return Err("live journal access is disabled".into());
         }
+        // A resource-level entry selection is navigation, not merely a row
+        // highlight. Reveal the selected detail slab for an agent or palette
+        // invocation just as a pointer selection does on a narrow viewport.
+        let reveals_entry = matches!(operation, LogsOperation::SelectEntry { .. });
         self.perform_effect(operation)?;
+        if reveals_entry && PushNav::is_narrow(self.rect.width()) {
+            self.push.show_detail();
+            self.dirty = true;
+        }
         Ok(true)
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
-        LogsDoc::ensure_defaults(doc, root);
+        // Upgrade old shared documents by removing the transient keys written
+        // by previous Logs versions. Nothing below reads or writes view state
+        // in the document.
+        LogsDoc::prune_legacy_view_state(doc, root);
         self.drain_export_portal();
         if let Some(filter) = self.shot_filter.take() {
-            LogsDoc::set_min_priority(doc, root, filter.min_priority);
-            LogsDoc::set_unit(doc, root, &filter.unit);
-            LogsDoc::set_boot(doc, root, &filter.boot);
-            LogsDoc::search_set(doc, root, &filter.search);
+            self.filter = filter;
+            self.search_input.set_text(&self.filter.search);
+            self.recompute_filtered();
         }
         self.search_input.sync(doc, root);
 
@@ -2510,32 +2530,7 @@ impl Widget for LogsApp {
             }
         }
 
-        let new_filter = LogsDoc::filter(doc, root);
-        let new_selected_entry = LogsDoc::selected_entry(doc, root);
-        let new_sel = new_selected_entry
-            .as_deref()
-            .and_then(|id| {
-                self.entries
-                    .iter()
-                    .position(|entry| actions::entry_resource_id(entry) == id)
-            })
-            .map_or_else(|| LogsDoc::selected(doc, root), |index| index as i64);
-        let changed = new_filter.min_priority != self.filter.min_priority
-            || new_filter.unit != self.filter.unit
-            || new_filter.boot != self.filter.boot
-            || new_filter.search != self.filter.search
-            || new_sel != self.sel_raw
-            || new_selected_entry != self.selected_entry;
-        self.filter = new_filter;
-        self.sel_raw = new_sel;
-        self.selected_entry = new_selected_entry;
-        if self.search_input.value() != self.filter.search {
-            self.search_input.set_text(&self.filter.search);
-        }
         self.recompute_filtered();
-        if changed {
-            self.dirty = true;
-        }
         self.clamp_scroll();
     }
 
@@ -2601,7 +2596,12 @@ impl Widget for LogsApp {
         // animation tick for a self-rendering widget (the live loop keeps
         // redrawing while `needs_animation_frame` is true); ticking here
         // keeps the eased slide in step with the frame it's drawn into.
-        if self.push.tick() {
+        // The host deliberately stops animation pumping for a reduced-motion
+        // theme. Snap here as well so the first redraw after a navigation
+        // lands on its final pane rather than leaving a half-open slab.
+        if theme.reduce_motion {
+            self.push.snap(self.push.pane());
+        } else if self.push.tick() {
             self.dirty = true;
         }
 
@@ -2712,12 +2712,12 @@ impl Widget for LogsApp {
                 ..
             } => {
                 self.focused = true;
-                self.on_click(self.cursor, doc, root, handled);
+                self.on_click(self.cursor, handled);
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.on_key(key_event, *modifiers, doc, root, handled);
+                self.on_key(key_event, *modifiers, handled);
             }
             _ => {}
         }
@@ -2784,7 +2784,7 @@ impl Widget for LogsApp {
             return true;
         }
         if target == "logs.clear-filters" && activate {
-            self.dispatch_view(state, LogsAction::ClearFilters);
+            self.apply_view_operation(LogsOperation::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             return true;
@@ -2808,7 +2808,7 @@ impl Widget for LogsApp {
             && activate
             && let Ok(value) = value.parse::<i64>()
         {
-            self.dispatch_view(state, LogsAction::SetPriority { value });
+            self.apply_view_operation(LogsOperation::SetPriority { value });
             self.scroll = 0.0;
             self.dirty = true;
             return true;
@@ -2816,12 +2816,9 @@ impl Widget for LogsApp {
         if let Some(value) = target.strip_prefix("logs.unit-choice:")
             && activate
         {
-            self.dispatch_view(
-                state,
-                LogsAction::SetUnit {
-                    value: value.to_owned(),
-                },
-            );
+            self.apply_view_operation(LogsOperation::SetUnit {
+                value: value.to_owned(),
+            });
             self.popup = None;
             self.scroll = 0.0;
             self.dirty = true;
@@ -2830,12 +2827,9 @@ impl Widget for LogsApp {
         if let Some(value) = target.strip_prefix("logs.boot-choice:")
             && activate
         {
-            self.dispatch_view(
-                state,
-                LogsAction::SetBoot {
-                    value: value.to_owned(),
-                },
-            );
+            self.apply_view_operation(LogsOperation::SetBoot {
+                value: value.to_owned(),
+            });
             self.popup = None;
             self.scroll = 0.0;
             self.dirty = true;
@@ -2859,7 +2853,7 @@ impl Widget for LogsApp {
                 .iter()
                 .position(|entry| actions::entry_resource_id(entry) == id)
         {
-            self.select_abs(abs, state, path);
+            self.select_abs(abs);
             if PushNav::is_narrow(self.rect.width()) {
                 self.push.show_detail();
             }
@@ -2989,13 +2983,9 @@ impl LogsApp {
                         && matches!(key.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            self.dispatch_view(
-                doc,
-                LogsAction::SetSearch {
-                    value: String::new(),
-                },
-            );
-            self.search_input.set_text("");
+            self.apply_view_operation(LogsOperation::SetSearch {
+                value: String::new(),
+            });
             self.scroll = 0.0;
             self.dirty = true;
             *handled = true;
@@ -3019,6 +3009,8 @@ impl LogsApp {
                 taffy,
             );
             if self.search_input.take_dirty().is_some() {
+                self.filter.search = self.search_input.value().to_owned();
+                self.recompute_filtered();
                 self.scroll = 0.0;
                 self.dirty = true;
                 input_handled = true;
@@ -3154,7 +3146,7 @@ impl LogsApp {
         clippy::too_many_lines,
         reason = "one ordered hit-test preserves the popup-to-row interaction priority"
     )]
-    fn on_click(&mut self, pt: Point, doc: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+    fn on_click(&mut self, pt: Point, handled: &mut bool) {
         // 1. An open dropdown captures the click first.
         if self.popup.is_some() {
             let reg = self.regions();
@@ -3162,10 +3154,14 @@ impl LogsApp {
                 if irect.contains(pt) {
                     match self.popup {
                         Some(Popup::Unit) => {
-                            self.dispatch_view(doc, LogsAction::SetUnit { value: val.clone() });
+                            self.apply_view_operation(LogsOperation::SetUnit {
+                                value: val.clone(),
+                            });
                         }
                         Some(Popup::Boot) => {
-                            self.dispatch_view(doc, LogsAction::SetBoot { value: val.clone() });
+                            self.apply_view_operation(LogsOperation::SetBoot {
+                                value: val.clone(),
+                            });
                         }
                         Some(Popup::Actions) => self.request_journal_operation(val),
                         None => {}
@@ -3261,12 +3257,9 @@ impl LogsApp {
                 let Some(priority) = Priority::ALL.get(i) else {
                     continue;
                 };
-                self.dispatch_view(
-                    doc,
-                    LogsAction::SetPriority {
-                        value: priority.level(),
-                    },
-                );
+                self.apply_view_operation(LogsOperation::SetPriority {
+                    value: priority.level(),
+                });
                 self.scroll = 0.0;
                 self.dirty = true;
                 *handled = true;
@@ -3276,7 +3269,7 @@ impl LogsApp {
 
         // 6. Clear-filters button.
         if !self.filter.is_clear() && reg.clear_btn.contains(pt) {
-            self.dispatch_view(doc, LogsAction::ClearFilters);
+            self.apply_view_operation(LogsOperation::ClearFilters);
             self.scroll = 0.0;
             self.dirty = true;
             *handled = true;
@@ -3286,7 +3279,7 @@ impl LogsApp {
         // 7. List rows → select. On a narrow window this also pushes the
         // detail pane in (single-pane master-detail navigation).
         if let Some(abs) = self.row_at(&reg, pt) {
-            self.select_abs(abs, doc, root);
+            self.select_abs(abs);
             if reg.narrow {
                 self.push.show_detail();
             }
@@ -3298,34 +3291,32 @@ impl LogsApp {
         &mut self,
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        root: &ObjId,
         handled: &mut bool,
     ) {
         let ctrl = modifiers.state().control_key();
         match &key_event.logical_key {
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_selection(1, doc, root);
+                self.move_selection(1);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_selection(-1, doc, root);
+                self.move_selection(-1);
                 *handled = true;
             }
             Key::Named(NamedKey::PageDown) => {
-                self.move_selection(10, doc, root);
+                self.move_selection(10);
                 *handled = true;
             }
             Key::Named(NamedKey::PageUp) => {
-                self.move_selection(-10, doc, root);
+                self.move_selection(-10);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
-                self.move_selection(isize::MIN / 2, doc, root);
+                self.move_selection(isize::MIN / 2);
                 *handled = true;
             }
             Key::Named(NamedKey::End) => {
-                self.move_selection(isize::MAX / 2, doc, root);
+                self.move_selection(isize::MAX / 2);
                 *handled = true;
             }
             Key::Named(NamedKey::Escape) => {
@@ -3337,12 +3328,9 @@ impl LogsApp {
                     // Back out of the pushed detail pane to the list.
                     self.push.show_list();
                 } else if !self.filter.search.is_empty() {
-                    self.dispatch_view(
-                        doc,
-                        LogsAction::SetSearch {
-                            value: String::new(),
-                        },
-                    );
+                    self.apply_view_operation(LogsOperation::SetSearch {
+                        value: String::new(),
+                    });
                     self.scroll = 0.0;
                 }
                 self.dirty = true;
@@ -3356,7 +3344,7 @@ impl LogsApp {
                             *handled = true;
                         }
                         "r" | "R" => {
-                            self.dispatch_view(doc, LogsAction::ClearFilters);
+                            self.apply_view_operation(LogsOperation::ClearFilters);
                             self.scroll = 0.0;
                             *handled = true;
                         }
@@ -3374,7 +3362,7 @@ impl LogsApp {
 mod tests {
     use super::*;
     use crate::journal::sample_entries;
-    use automerge::ROOT;
+    use automerge::{ROOT, ReadDoc};
 
     fn synced_app() -> (LogsApp, AutoCommit) {
         let mut app = LogsApp::new(sample_entries(), false);
@@ -3401,10 +3389,11 @@ mod tests {
 
     #[test]
     fn priority_threshold_filters_entries() {
-        let (mut app, mut doc) = synced_app();
+        let (mut app, _doc) = synced_app();
         let total = app.filtered.len();
-        LogsDoc::set_min_priority(&mut doc, &ROOT, Priority::Err.level());
-        app.sync(&mut doc, &ROOT);
+        app.apply_view_operation(LogsOperation::SetPriority {
+            value: Priority::Err.level(),
+        });
         let errs = app.filtered.len();
         assert!(errs < total, "errors-only must show fewer than all");
         assert!(errs > 0);
@@ -3415,9 +3404,10 @@ mod tests {
 
     #[test]
     fn search_narrows_results() {
-        let (mut app, mut doc) = synced_app();
-        LogsDoc::search_set(&mut doc, &ROOT, "iroh");
-        app.sync(&mut doc, &ROOT);
+        let (mut app, _doc) = synced_app();
+        app.apply_view_operation(LogsOperation::SetSearch {
+            value: "iroh".to_string(),
+        });
         assert_eq!(app.search_input.value(), "iroh");
         assert!(!app.filtered.is_empty());
         for &i in &app.filtered {
@@ -3430,9 +3420,10 @@ mod tests {
 
     #[test]
     fn unit_filter_restricts_to_one_unit() {
-        let (mut app, mut doc) = synced_app();
-        LogsDoc::set_unit(&mut doc, &ROOT, "kernel");
-        app.sync(&mut doc, &ROOT);
+        let (mut app, _doc) = synced_app();
+        app.apply_view_operation(LogsOperation::SetUnit {
+            value: "kernel".to_string(),
+        });
         assert!(
             app.filtered
                 .iter()
@@ -3448,32 +3439,66 @@ mod tests {
     }
 
     #[test]
-    fn arrow_navigation_moves_and_persists_selection() {
-        let (mut app, mut doc) = synced_app();
+    fn arrow_navigation_moves_only_local_selection() {
+        let (mut app, doc) = synced_app();
         let before = app.effective_selected().unwrap();
-        app.move_selection(1, &mut doc, &ROOT);
+        app.move_selection(1);
         let after = app.effective_selected().unwrap();
         assert_ne!(before, after);
         assert_eq!(
-            LogsDoc::selected_entry(&doc, &ROOT).as_deref(),
+            app.selected_entry.as_deref(),
             app.entries
                 .get(after)
                 .map(actions::entry_resource_id)
                 .as_deref()
         );
         assert!(
-            app.take_committed_action().is_some(),
-            "keyboard selection must create one canonical undo boundary"
+            doc.keys(&ROOT).next().is_none(),
+            "selection must not touch the shared doc"
         );
     }
 
     #[test]
-    fn boot_filter_round_trips_through_doc() {
-        let (mut app, mut doc) = synced_app();
+    fn boot_filter_is_local() {
+        let (mut app, _doc) = synced_app();
         let boot = app.boots[1].0.clone();
-        LogsDoc::set_boot(&mut doc, &ROOT, &boot);
-        app.sync(&mut doc, &ROOT);
+        app.apply_view_operation(LogsOperation::SetBoot {
+            value: boot.clone(),
+        });
         assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
+    }
+
+    #[test]
+    fn agent_filter_view_operation_never_changes_the_shared_document() {
+        let (mut app, doc) = synced_app();
+        let encoded = qos_actions::EncodedAction::encode_operation(
+            actions::LOGS_OPERATION_TYPE,
+            &LogsOperation::SetUnit {
+                value: "kernel".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.filter.unit, "kernel");
+        assert!(
+            app.filtered
+                .iter()
+                .all(|&index| app.entries[index].unit == "kernel")
+        );
+        assert!(
+            doc.keys(&ROOT).next().is_none(),
+            "agent view actions must not write shared state"
+        );
     }
 
     #[test]
@@ -3608,8 +3633,9 @@ mod tests {
         assert_eq!(app.regions().clear_btn, Rect::ZERO);
 
         // Activate a filter (errors-or-worse threshold).
-        LogsDoc::set_min_priority(&mut doc, &ROOT, Priority::Err.level());
-        app.sync(&mut doc, &ROOT);
+        app.apply_view_operation(LogsOperation::SetPriority {
+            value: Priority::Err.level(),
+        });
         assert!(!app.filter.is_clear());
 
         // The Clear-filters control now sits in the header, just left of the
@@ -3626,7 +3652,7 @@ mod tests {
 
         // Clicking it clears the filter through the production on_click path.
         let mut handled = false;
-        app.on_click(reg.clear_btn.center(), &mut doc, &ROOT, &mut handled);
+        app.on_click(reg.clear_btn.center(), &mut handled);
         assert!(
             handled,
             "the header Clear-filters button must be hit-tested"
