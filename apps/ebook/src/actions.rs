@@ -12,6 +12,8 @@
 //! Presentation state (open book, live page, selection, overlay) stays out
 //! of the document and never becomes an action.
 
+#[cfg(test)]
+use automerge::ActorId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
@@ -211,9 +213,8 @@ pub enum EbookAction {
         color: String,
         text: String,
     },
-    /// Toggle a bookmark at `(chapter, block)`. Deterministic against the
-    /// document at the replay's base state: if a bookmark already sits there it
-    /// is removed, otherwise one is added carrying the pre-minted `id`.
+    /// Legacy receiver-dependent bookmark toggle. Kept only so old envelopes
+    /// decode; applying it is refused because it cannot replay deterministically.
     ToggleBookmark {
         book_id: String,
         id: String,
@@ -221,10 +222,21 @@ pub enum EbookAction {
         block: usize,
         excerpt: String,
     },
-    /// Highlight a text selection: first clear every `remove_groups` highlight
-    /// (so a colour never layers and a re-colour never leaves a stray band), then
-    /// write each of `pieces` as a highlight row sharing `group`. A pure toggle
-    /// off is `pieces` empty with `remove_groups` naming the highlight to drop.
+    /// Set one bookmark target to an absolute authored state. `present` and
+    /// every row to remove are decided before dispatch, never from a receiving
+    /// peer's document state.
+    SetBookmark {
+        book_id: String,
+        id: String,
+        chapter: usize,
+        block: usize,
+        excerpt: String,
+        present: bool,
+        remove_ids: Vec<String>,
+    },
+    /// Apply an absolute authored highlight change: clear exactly
+    /// `remove_groups`, then write exactly `pieces` sharing `group`. A pure
+    /// toggle-off carries no pieces and explicitly names the removed groups.
     HighlightSelection {
         book_id: String,
         group: String,
@@ -269,6 +281,50 @@ pub enum EbookAction {
 // Per-variant `apply` bodies, kept as inherent methods (not trait methods) so
 // `too_many_lines` can be satisfied without moving code out of this impl.
 impl EbookAction {
+    fn refused(message: impl Into<String>) -> ActionError {
+        ActionError::Refused(message.into())
+    }
+
+    fn parse_uuid(id: &str, target: &str) -> Result<Uuid, ActionError> {
+        id.parse()
+            .map_err(|_| Self::refused(format!("{target} id is invalid")))
+    }
+
+    fn require_live_annotation(doc: &Doc, id: &str) -> Result<Uuid, ActionError> {
+        let id = Self::parse_uuid(id, "annotation")?;
+        if BooksDoc::annotation_is_live(doc, id) {
+            Ok(id)
+        } else {
+            Err(Self::refused("annotation is no longer available"))
+        }
+    }
+
+    fn require_new_annotation_target(doc: &Doc, id: Uuid, group: Uuid) -> Result<(), ActionError> {
+        if BooksDoc::annotation_is_deleted(doc, id) {
+            return Err(Self::refused(
+                "annotation was deleted and cannot be recreated",
+            ));
+        }
+        if BooksDoc::group_is_deleted(doc, group) {
+            return Err(Self::refused("highlight is no longer available"));
+        }
+        Ok(())
+    }
+
+    fn require_live_highlight(doc: &Doc, group: Uuid) -> Result<(), ActionError> {
+        if BooksDoc::group_is_deleted(doc, group) {
+            return Err(Self::refused("highlight is no longer available"));
+        }
+        if BooksDoc::list_annotations(doc)
+            .iter()
+            .any(|annotation| annotation.kind == AnnoKind::Highlight && annotation.group == group)
+        {
+            Ok(())
+        } else {
+            Err(Self::refused("highlight is no longer available"))
+        }
+    }
+
     fn apply_set_progress(
         doc: &mut Doc,
         book_id: &str,
@@ -290,33 +346,38 @@ impl EbookAction {
     }
 
     fn apply_edit_note(doc: &mut Doc, id: &str, note: &str) -> Result<(), ActionError> {
-        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
-            && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
-        {
-            doc.put(&entry, "note", note)?;
-        }
+        Self::require_live_annotation(doc, id)?;
+        let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? else {
+            return Err(Self::refused("annotation is no longer available"));
+        };
+        let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)? else {
+            return Err(Self::refused("annotation is no longer available"));
+        };
+        doc.put(&entry, "note", note)?;
         Ok(())
     }
 
     fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
-        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")?
-            && let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)?
-        {
-            let created = i64::try_from(created).unwrap_or(i64::MAX);
-            doc.put(&entry, "created", created)?;
-        }
+        Self::require_live_annotation(doc, id)?;
+        let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? else {
+            return Err(Self::refused("annotation is no longer available"));
+        };
+        let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)? else {
+            return Err(Self::refused("annotation is no longer available"));
+        };
+        let created = i64::try_from(created).unwrap_or(i64::MAX);
+        doc.put(&entry, "created", created)?;
         Ok(())
     }
 
-    fn apply_delete_annotation(doc: &mut Doc, id: &str) -> Result<(), ActionError> {
-        if let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? {
-            doc.delete(&map, id)?;
+    fn apply_delete_annotation(doc: &mut Doc, id: &str) {
+        // Delete is intentionally idempotent: writing an existing tombstone
+        // again is a successful convergence operation, not a stale mutation.
+        if let Ok(uuid) = id.parse::<Uuid>() {
+            BooksDoc::remove_annotation(doc, uuid);
         }
-        Ok(())
     }
 
-    // A malformed id (never produced by our own builder) is a no-op rather
-    // than an error, so a replay can't wedge on bad input.
     #[allow(clippy::too_many_arguments)]
     fn apply_add_note(
         doc: &mut Doc,
@@ -329,44 +390,60 @@ impl EbookAction {
         excerpt: &str,
         color: &str,
         text: &str,
-    ) {
-        if let Ok(uuid) = id.parse::<Uuid>() {
-            let anno = Annotation {
-                id: uuid,
-                doc_id: book_id.to_string(),
-                kind: AnnoKind::Note,
-                chapter,
-                block,
-                start,
-                end,
-                excerpt: excerpt.to_string(),
-                note: text.to_string(),
-                color: HiColor::from_str(color),
-                // Deterministic: no wall-clock in `apply`.
-                created: 0,
-                group: uuid,
-            };
-            BooksDoc::upsert_annotation(doc, &anno);
-        }
+    ) -> Result<(), ActionError> {
+        let uuid = Self::parse_uuid(id, "annotation")?;
+        Self::require_new_annotation_target(doc, uuid, uuid)?;
+        let anno = Annotation {
+            id: uuid,
+            doc_id: book_id.to_string(),
+            kind: AnnoKind::Note,
+            chapter,
+            block,
+            start,
+            end,
+            excerpt: excerpt.to_string(),
+            note: text.to_string(),
+            color: HiColor::from_str(color),
+            // Deterministic: no wall-clock in `apply`.
+            created: 0,
+            group: uuid,
+        };
+        BooksDoc::upsert_annotation(doc, &anno);
+        Ok(())
     }
 
-    fn apply_toggle_bookmark(
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the serialized bookmark action is deliberately flat so every authored target and removal id is independently auditable"
+    )]
+    fn apply_set_bookmark(
         doc: &mut Doc,
         book_id: &str,
         id: &str,
         chapter: usize,
         block: usize,
         excerpt: &str,
-    ) {
-        // Deterministic against the document at the replay's base state.
-        let existing: Vec<Uuid> = BooksDoc::annotations_for(doc, book_id)
-            .into_iter()
-            .filter(|a| a.kind == AnnoKind::Bookmark && a.chapter == chapter && a.block == block)
-            .map(|a| a.id)
-            .collect();
-        if existing.is_empty() {
-            if let Ok(uuid) = id.parse::<Uuid>() {
-                let anno = Annotation {
+        present: bool,
+        remove_ids: &[String],
+    ) -> Result<(), ActionError> {
+        let removals = remove_ids
+            .iter()
+            .map(|id| Self::parse_uuid(id, "bookmark"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let add_id = if present {
+            let uuid = Self::parse_uuid(id, "bookmark")?;
+            Self::require_new_annotation_target(doc, uuid, uuid)?;
+            Some(uuid)
+        } else {
+            None
+        };
+        for id in removals {
+            BooksDoc::remove_annotation(doc, id);
+        }
+        if let Some(uuid) = add_id {
+            BooksDoc::upsert_annotation(
+                doc,
+                &Annotation {
                     id: uuid,
                     doc_id: book_id.to_string(),
                     kind: AnnoKind::Bookmark,
@@ -379,14 +456,10 @@ impl EbookAction {
                     color: HiColor::Yellow,
                     created: 0,
                     group: uuid,
-                };
-                BooksDoc::upsert_annotation(doc, &anno);
-            }
-        } else {
-            for id in existing {
-                BooksDoc::remove_annotation(doc, id);
-            }
+                },
+            );
         }
+        Ok(())
     }
 
     fn apply_highlight_selection(
@@ -397,13 +470,33 @@ impl EbookAction {
         color: &str,
         remove_groups: &[String],
         pieces: &[HiPiece],
-    ) {
-        for g in remove_groups {
-            if let Ok(uuid) = g.parse::<Uuid>() {
-                BooksDoc::remove_group(doc, uuid);
+    ) -> Result<(), ActionError> {
+        // Pure toggles only remove existing groups; an add must validate every
+        // authored id before it changes anything, avoiding a partial action.
+        let parsed_group = if pieces.is_empty() {
+            None
+        } else {
+            Some(Self::parse_uuid(group, "highlight")?)
+        };
+        if let Some(group_uuid) = parsed_group {
+            if BooksDoc::group_is_deleted(doc, group_uuid) {
+                return Err(Self::refused(
+                    "highlight was deleted and cannot be recreated",
+                ));
+            }
+            for piece in pieces {
+                let id = Self::parse_uuid(&piece.id, "highlight piece")?;
+                Self::require_new_annotation_target(doc, id, group_uuid)?;
             }
         }
-        if let Ok(group_uuid) = group.parse::<Uuid>() {
+        let remove_groups = remove_groups
+            .iter()
+            .map(|group| Self::parse_uuid(group, "highlight"))
+            .collect::<Result<Vec<_>, _>>()?;
+        for group in remove_groups {
+            BooksDoc::remove_group(doc, group);
+        }
+        if let Some(group_uuid) = parsed_group {
             let col = HiColor::from_str(color);
             for p in pieces {
                 let Ok(pid) = p.id.parse::<Uuid>() else {
@@ -426,23 +519,31 @@ impl EbookAction {
                 BooksDoc::upsert_annotation(doc, &anno);
             }
         }
+        Ok(())
     }
 
-    fn apply_change_highlight_color(doc: &mut Doc, group: &str, color: &str) {
-        if let Ok(group_uuid) = group.parse::<Uuid>() {
-            let col = HiColor::from_str(color);
-            let rows: Vec<Annotation> = BooksDoc::list_annotations(doc)
-                .into_iter()
-                .filter(|a| a.group == group_uuid)
-                .collect();
-            for mut a in rows {
-                a.color = col;
-                BooksDoc::upsert_annotation(doc, &a);
-            }
+    fn apply_change_highlight_color(
+        doc: &mut Doc,
+        group: &str,
+        color: &str,
+    ) -> Result<(), ActionError> {
+        let group_uuid = Self::parse_uuid(group, "highlight")?;
+        Self::require_live_highlight(doc, group_uuid)?;
+        let col = HiColor::from_str(color);
+        let rows: Vec<Annotation> = BooksDoc::list_annotations(doc)
+            .into_iter()
+            .filter(|a| a.group == group_uuid)
+            .collect();
+        for mut a in rows {
+            a.color = col;
+            BooksDoc::upsert_annotation(doc, &a);
         }
+        Ok(())
     }
 
     fn apply_delete_highlight(doc: &mut Doc, group: &str) {
+        // As with a single annotation delete, a repeated group tombstone is a
+        // successful idempotent convergence operation.
         if let Ok(group_uuid) = group.parse::<Uuid>() {
             BooksDoc::remove_group(doc, group_uuid);
         }
@@ -461,24 +562,27 @@ impl EbookAction {
         excerpt: &str,
         color: &str,
         text: &str,
-    ) {
-        if let (Ok(group_uuid), Ok(cid)) = (group.parse::<Uuid>(), id.parse::<Uuid>()) {
-            let anno = Annotation {
-                id: cid,
-                doc_id: book_id.to_string(),
-                kind: AnnoKind::Note,
-                chapter,
-                block,
-                start,
-                end,
-                excerpt: excerpt.to_string(),
-                note: text.to_string(),
-                color: HiColor::from_str(color),
-                created: 0,
-                group: group_uuid,
-            };
-            BooksDoc::upsert_annotation(doc, &anno);
-        }
+    ) -> Result<(), ActionError> {
+        let group_uuid = Self::parse_uuid(group, "highlight")?;
+        let cid = Self::parse_uuid(id, "comment")?;
+        Self::require_live_highlight(doc, group_uuid)?;
+        Self::require_new_annotation_target(doc, cid, group_uuid)?;
+        let anno = Annotation {
+            id: cid,
+            doc_id: book_id.to_string(),
+            kind: AnnoKind::Note,
+            chapter,
+            block,
+            start,
+            end,
+            excerpt: excerpt.to_string(),
+            note: text.to_string(),
+            color: HiColor::from_str(color),
+            created: 0,
+            group: group_uuid,
+        };
+        BooksDoc::upsert_annotation(doc, &anno);
+        Ok(())
     }
 
     fn apply_move_annotation(
@@ -489,25 +593,29 @@ impl EbookAction {
         start: usize,
         end: usize,
         excerpt: &str,
-    ) {
-        // Reposition exactly the one row; a missing id (never produced by
-        // our builder) is a no-op so a bad replay can't wedge a peer.
-        if let Ok(uuid) = id.parse::<Uuid>()
-            && let Some(mut a) = BooksDoc::list_annotations(doc)
-                .into_iter()
-                .find(|a| a.id == uuid)
-        {
-            a.chapter = chapter;
-            a.block = block;
-            a.start = start;
-            a.end = end;
-            a.excerpt = excerpt.to_string();
-            BooksDoc::upsert_annotation(doc, &a);
-        }
+    ) -> Result<(), ActionError> {
+        let uuid = Self::require_live_annotation(doc, id)?;
+        let Some(mut a) = BooksDoc::list_annotations(doc)
+            .into_iter()
+            .find(|a| a.id == uuid)
+        else {
+            return Err(Self::refused("annotation is no longer available"));
+        };
+        a.chapter = chapter;
+        a.block = block;
+        a.start = start;
+        a.end = end;
+        a.excerpt = excerpt.to_string();
+        BooksDoc::upsert_annotation(doc, &a);
+        Ok(())
     }
 }
 
 impl Action for EbookAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the action enum is the canonical replay boundary; keeping exhaustive dispatch adjacent to the per-variant helpers makes action coverage auditable"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             EbookAction::SetProgress {
@@ -524,7 +632,10 @@ impl Action for EbookAction {
             EbookAction::FinalizeAnnotation { id, created } => {
                 Self::apply_finalize_annotation(doc, id, *created)
             }
-            EbookAction::DeleteAnnotation { id } => Self::apply_delete_annotation(doc, id),
+            EbookAction::DeleteAnnotation { id } => {
+                Self::apply_delete_annotation(doc, id);
+                Ok(())
+            }
             EbookAction::AddNote {
                 book_id,
                 id,
@@ -535,22 +646,23 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => {
-                Self::apply_add_note(
-                    doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
-                );
-                Ok(())
-            }
-            EbookAction::ToggleBookmark {
+            } => Self::apply_add_note(
+                doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
+            ),
+            EbookAction::ToggleBookmark { .. } => Err(Self::refused(
+                "legacy bookmark toggles cannot replay deterministically",
+            )),
+            EbookAction::SetBookmark {
                 book_id,
                 id,
                 chapter,
                 block,
                 excerpt,
-            } => {
-                Self::apply_toggle_bookmark(doc, book_id, id, *chapter, *block, excerpt);
-                Ok(())
-            }
+                present,
+                remove_ids,
+            } => Self::apply_set_bookmark(
+                doc, book_id, id, *chapter, *block, excerpt, *present, remove_ids,
+            ),
             EbookAction::HighlightSelection {
                 book_id,
                 group,
@@ -558,21 +670,17 @@ impl Action for EbookAction {
                 color,
                 remove_groups,
                 pieces,
-            } => {
-                Self::apply_highlight_selection(
-                    doc,
-                    book_id,
-                    group,
-                    *chapter,
-                    color,
-                    remove_groups,
-                    pieces,
-                );
-                Ok(())
-            }
+            } => Self::apply_highlight_selection(
+                doc,
+                book_id,
+                group,
+                *chapter,
+                color,
+                remove_groups,
+                pieces,
+            ),
             EbookAction::ChangeHighlightColor { group, color } => {
-                Self::apply_change_highlight_color(doc, group, color);
-                Ok(())
+                Self::apply_change_highlight_color(doc, group, color)
             }
             EbookAction::DeleteHighlight { group } => {
                 Self::apply_delete_highlight(doc, group);
@@ -589,12 +697,9 @@ impl Action for EbookAction {
                 excerpt,
                 color,
                 text,
-            } => {
-                Self::apply_add_comment(
-                    doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
-                );
-                Ok(())
-            }
+            } => Self::apply_add_comment(
+                doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
+            ),
             EbookAction::MoveAnnotation {
                 id,
                 chapter,
@@ -602,10 +707,7 @@ impl Action for EbookAction {
                 start,
                 end,
                 excerpt,
-            } => {
-                Self::apply_move_annotation(doc, id, *chapter, *block, *start, *end, excerpt);
-                Ok(())
-            }
+            } => Self::apply_move_annotation(doc, id, *chapter, *block, *start, *end, excerpt),
         }
     }
 
@@ -718,6 +820,53 @@ pub fn toggle_bookmark_action(
     }
 }
 
+/// Build an absolute bookmark mutation. Callers resolve `present` and the
+/// exact old rows to remove from their authoring view before dispatch.
+pub fn set_bookmark_action(
+    book_id: &str,
+    id: Uuid,
+    chapter: usize,
+    block: usize,
+    excerpt: &str,
+    present: bool,
+    remove_ids: Vec<Uuid>,
+) -> EbookAction {
+    EbookAction::SetBookmark {
+        book_id: book_id.to_string(),
+        id: id.to_string(),
+        chapter,
+        block,
+        excerpt: excerpt.to_string(),
+        present,
+        remove_ids: remove_ids.into_iter().map(|id| id.to_string()).collect(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookmarkPlan {
+    pub book_id: String,
+    pub id: Uuid,
+    pub chapter: usize,
+    pub block: usize,
+    pub excerpt: String,
+    pub present: bool,
+    pub remove_ids: Vec<Uuid>,
+}
+
+impl BookmarkPlan {
+    pub fn into_action(self) -> EbookAction {
+        set_bookmark_action(
+            &self.book_id,
+            self.id,
+            self.chapter,
+            self.block,
+            &self.excerpt,
+            self.present,
+            self.remove_ids,
+        )
+    }
+}
+
 pub fn change_color_action(group: Uuid, color: HiColor) -> EbookAction {
     EbookAction::ChangeHighlightColor {
         group: group.to_string(),
@@ -815,6 +964,7 @@ pub struct BookResourceCtx {
     pub chapter: usize,
     pub bookmark_block: usize,
     pub bookmark_excerpt: String,
+    pub bookmark: BookmarkPlan,
     /// A pre-resolved plan for the current selection, present only while the
     /// reader has a non-empty selection. Drives the book-level "Highlight
     /// selection" action, identical to what the toolbar swatch would dispatch.
@@ -876,13 +1026,7 @@ fn book_level_actions(mut root: Resource, ctx: &BookResourceCtx) -> Resource {
     root = root.with_action(encode_spec(
         "toggle-bookmark",
         "Toggle bookmark",
-        &toggle_bookmark_action(
-            &ctx.book_id,
-            Uuid::new_v4(),
-            ctx.chapter,
-            ctx.bookmark_block,
-            &ctx.bookmark_excerpt,
-        ),
+        &ctx.bookmark.clone().into_action(),
     ));
 
     if let Some(plan) = &ctx.selection_highlight {
@@ -1439,6 +1583,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_annotation_edit_finalize_and_move_are_refused() {
+        let (_app, mut doc, book_id, _group) = open_with_annotations();
+        let id = BooksDoc::annotations_for(&doc, &book_id)
+            .into_iter()
+            .find(|annotation| annotation.kind == AnnoKind::Note)
+            .expect("standalone note")
+            .id;
+        BooksDoc::remove_annotation(&mut doc, id);
+
+        for action in [
+            edit_note_action(id, "late edit"),
+            finalize_annotation_action(id, 1_700_000_123_456),
+            move_annotation_action(id, 0, 9, 0, 5, "late move"),
+        ] {
+            assert!(
+                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                "a stale annotation mutation must report refusal"
+            );
+        }
+
+        // Repeating a delete is deliberately convergence-safe and succeeds.
+        assert!(delete_annotation_action(id).apply(&mut doc).is_ok());
+    }
+
+    #[test]
+    fn stale_highlight_group_mutations_are_refused() {
+        let (_app, mut doc, book_id, group) = open_with_annotations();
+        BooksDoc::remove_group(&mut doc, group);
+        let new_id = Uuid::from_u128(0xBADD_CAFE_0000_0000_0000_0000_0000_0001);
+
+        let actions = [
+            add_comment_action(
+                &book_id,
+                group,
+                new_id,
+                0,
+                3,
+                0,
+                12,
+                HiColor::Green,
+                "a passage",
+                "late comment",
+            ),
+            change_color_action(group, HiColor::Pink),
+            EbookAction::HighlightSelection {
+                book_id,
+                group: group.to_string(),
+                chapter: 0,
+                color: HiColor::Blue.as_str().into(),
+                remove_groups: Vec::new(),
+                pieces: vec![HiPiece {
+                    id: new_id.to_string(),
+                    block: 3,
+                    start: 0,
+                    end: 12,
+                    excerpt: "a passage".into(),
+                }],
+            },
+        ];
+        for action in actions {
+            assert!(
+                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                "a mutation against a deleted highlight group must report refusal"
+            );
+        }
+
+        assert!(delete_highlight_action(group).apply(&mut doc).is_ok());
+    }
+
     /// The full undo covenant on one action: dispatched through the executor it
     /// mutates the doc and records exactly one undo boundary, and Ctrl+Z
     /// (the host's `undo`) reverts precisely that action.
@@ -1452,12 +1666,14 @@ mod tests {
         let before_len = BooksDoc::annotations_for(&state.doc, &book_id).len();
 
         // Add a bookmark at a fresh block via the action + host undo recording.
-        let action = toggle_bookmark_action(
+        let action = set_bookmark_action(
             &book_id,
             Uuid::from_u128(0xDEAD_BEEF_0000_0000_0000_0000_0000_0001),
             0,
             9,
             "bm",
+            true,
+            Vec::new(),
         );
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
@@ -1528,6 +1744,80 @@ mod tests {
             BooksDoc::annotations_for(&a, &book_id).len(),
             BooksDoc::annotations_for(&b, &book_id).len(),
         );
+    }
+
+    #[test]
+    fn absolute_bookmark_actions_converge_after_divergent_peer_changes() {
+        let (_app, mut base, book_id, _group) = open_with_annotations();
+        let mut left = base.fork().with_actor(ActorId::random());
+        let mut right = base.fork().with_actor(ActorId::random());
+        let authored = Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0001);
+        let concurrent = Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0002);
+        let add = set_bookmark_action(&book_id, authored, 0, 9, "new bookmark", true, Vec::new());
+
+        // A second reader adds its own bookmark before it receives the exact
+        // authored add action. Both replicas execute an add, never an
+        // accidental receiver-state-dependent delete.
+        add.apply(&mut left).expect("author add applies");
+        let mut competing = Annotation::new(&book_id, AnnoKind::Bookmark, 0, 9);
+        competing.id = concurrent;
+        competing.group = concurrent;
+        BooksDoc::upsert_annotation(&mut right, &competing);
+        add.apply(&mut right).expect("peer replays authored add");
+        left.merge(&mut right).expect("replicas merge");
+        right.merge(&mut left).expect("replicas converge");
+
+        for doc in [&left, &right] {
+            let ids = BooksDoc::annotations_for(doc, &book_id)
+                .into_iter()
+                .filter(|annotation| annotation.kind == AnnoKind::Bookmark && annotation.block == 9)
+                .map(|annotation| annotation.id)
+                .collect::<Vec<_>>();
+            assert!(ids.contains(&authored));
+            assert!(ids.contains(&concurrent));
+        }
+
+        // The authored removal names exactly the bookmark it saw. It cannot
+        // delete the concurrent bookmark just because a receiver has one.
+        let remove = set_bookmark_action(
+            &book_id,
+            Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0003),
+            0,
+            9,
+            "new bookmark",
+            false,
+            vec![authored],
+        );
+        remove.apply(&mut left).expect("author remove applies");
+        remove
+            .apply(&mut right)
+            .expect("peer replays authored remove");
+        left.merge(&mut right).expect("replicas merge removal");
+        right.merge(&mut left).expect("replicas converge removal");
+        for doc in [&left, &right] {
+            let ids = BooksDoc::annotations_for(doc, &book_id)
+                .into_iter()
+                .filter(|annotation| annotation.kind == AnnoKind::Bookmark && annotation.block == 9)
+                .map(|annotation| annotation.id)
+                .collect::<Vec<_>>();
+            assert_eq!(ids, vec![concurrent]);
+        }
+    }
+
+    #[test]
+    fn legacy_bookmark_toggle_is_decoded_but_refused() {
+        let (_app, mut doc, book_id, _group) = open_with_annotations();
+        let legacy = toggle_bookmark_action(
+            &book_id,
+            Uuid::from_u128(0xB00C_0000_0000_0000_0000_0000_0000_0004),
+            0,
+            9,
+            "legacy",
+        );
+        assert!(matches!(
+            legacy.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
     }
 
     #[test]

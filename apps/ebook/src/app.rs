@@ -3152,6 +3152,7 @@ impl BooksApp {
             chapter: self.chapter,
             bookmark_block: block,
             bookmark_excerpt: self.block_excerpt(block),
+            bookmark: self.bookmark_plan(block),
             selection_highlight: self
                 .sel
                 .filter(|s| !s.is_empty())
@@ -3469,18 +3470,31 @@ impl BooksApp {
 
     fn toggle_bookmark(&mut self, doc: &mut AutoCommit) {
         let block = self.page_top_block;
-        let book_id = self.book_id();
-        let excerpt = self.block_excerpt(block);
-        // One action covers both add and remove: `apply` decides deterministically
-        // against the document. The minted id is used only on the add branch.
-        let action = crate::actions::toggle_bookmark_action(
-            &book_id,
-            Uuid::new_v4(),
-            self.chapter,
+        self.perform_action(doc, &self.bookmark_plan(block).into_action());
+    }
+
+    /// Resolve the bookmark's absolute post-action state at authoring time.
+    /// Applying the resulting action never branches on another peer's state.
+    fn bookmark_plan(&self, block: usize) -> crate::actions::BookmarkPlan {
+        let remove_ids = self
+            .annotations
+            .iter()
+            .filter(|annotation| {
+                annotation.kind == AnnoKind::Bookmark
+                    && annotation.chapter == self.chapter
+                    && annotation.block == block
+            })
+            .map(|annotation| annotation.id)
+            .collect::<Vec<_>>();
+        crate::actions::BookmarkPlan {
+            book_id: self.book_id(),
+            id: Uuid::new_v4(),
+            chapter: self.chapter,
             block,
-            &excerpt,
-        );
-        self.perform_action(doc, &action);
+            excerpt: self.block_excerpt(block),
+            present: remove_ids.is_empty(),
+            remove_ids,
+        }
     }
 
     fn set_composing_text(&mut self, doc: &mut AutoCommit, text: &str) -> bool {
