@@ -60,15 +60,16 @@ pub struct SettingsApp {
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
-    /// The live search query typed into the sidebar's search field (mirrored
-    /// from [`crate::sidebar::SEARCH_KEY`]). When non-empty the sidebar shows
-    /// a filtered results list instead of the sectioned category list.
+    /// The live, local-only search query typed into the sidebar's search
+    /// field. When non-empty the sidebar shows a filtered results list instead
+    /// of the sectioned category list.
     search_query: String,
-    /// A deterministic search fixture for headless acceptance captures. The
-    /// normal editor starts as an empty local text object, so retain this seed
-    /// until a real non-empty document edit arrives instead of immediately
-    /// replacing the requested filtered state with that empty buffer.
-    search_shot_seed: Option<String>,
+    /// Process-local navigation request written by a sidebar row. This keeps
+    /// current-pane selection out of collaboration, persistence and undo.
+    sidebar_selection: ui::LocalState<Option<Category>>,
+    /// Process-local backing state for the sidebar search field. Search is a
+    /// transient filter, never a durable setting or CRDT text object.
+    search_state: ui::LocalState<String>,
     /// Retained, revision-aware catalogue behind Ctrl+K. Cloning its provider
     /// for the host is O(1), so a palette continuation always talks to the
     /// same generation instead of rebuilding an index on every frame.
@@ -118,7 +119,8 @@ impl SettingsApp {
             narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
-            search_shot_seed: None,
+            sidebar_selection: ui::LocalState::new(None),
+            search_state: ui::LocalState::new(String::new()),
             search_provider: crate::search_provider::SettingsSearchProvider::new(),
             account_resources: accounts::AccountStore::load().all().to_vec(),
             account_commands: ui::LocalState::new(None),
@@ -263,22 +265,21 @@ impl SettingsApp {
     #[must_use]
     pub fn with_search_shot(mut self, query: &str) -> Self {
         self.search_query = query.to_string();
-        self.search_shot_seed = Some(query.to_string());
+        self.search_state.set(query.to_string());
         self
     }
 
-    /// Build the search field placed at the top of the shell's sidebar. Bound to
-    /// [`sidebar::SEARCH_KEY`]; its value is re-read from the document on every
-    /// `sync`, so the text survives the sidebar's filter rebuild. Because the
-    /// shell hosts it as a direct child in the App's tree, a click focuses it
-    /// and `autofocus_on_structure_change` restores focus + caret after the
+    /// Build the local search field placed at the top of the shell's sidebar.
+    /// The field shares typed local state with the app, so filtering survives a
+    /// structural rebuild without creating a document draft. Because the shell
+    /// hosts it as a direct child in the App's tree, a click focuses it and
+    /// `autofocus_on_structure_change` restores focus + caret after the
     /// filtered sidebar rebuilds.
-    fn build_search_field() -> Box<dyn Widget> {
+    fn build_search_field(&self) -> Box<dyn Widget> {
         Box::new(
-            TextInput::new(Vec::new())
+            TextInput::from_state(&self.search_state)
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("settings.search")
-                .with_on_change_path(sidebar::SEARCH_KEY)
                 .with_placeholder("Search settings")
                 .with_font_size(13.0),
         )
@@ -367,7 +368,7 @@ impl SettingsApp {
     /// Create the persistent [`AppShell`] with the current nav + content +
     /// search and the seeded shot state.
     fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build(self.selected, &self.search_query);
+        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
         let content = self.build_content();
         // A narrow (phone) layout keeps the selected category's CONTENT on
         // screen — the category list is one back-tap away, never the default a
@@ -375,7 +376,7 @@ impl SettingsApp {
         // screen; otherwise the shell collapses to the content.
         let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
-            .with_search(Self::build_search_field())
+            .with_search(self.build_search_field())
             .with_breakpoint(NAV_BREAKPOINT)
             .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
             .with_narrow_screen(narrow_screen);
@@ -389,7 +390,7 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build(self.selected, &self.search_query);
+        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
             shell.set_nav(nav);
@@ -549,58 +550,19 @@ impl Widget for SettingsApp {
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        use automerge::{ReadDoc, Value, transaction::Transactable};
-
-        // Category selection: each sidebar row writes the local
-        // `settings.select.<slug>.edit` presentation latch.
-        // = true on click. Reading it true here switches the active category
-        // (via `select`, which swaps the shell's nav + content and flags a
-        // rebuild). The first key seen wins; we clear it so the selection is a
-        // one-shot edge, not a sticky state.
-        for category in Category::ALL {
-            let key = format!("settings.select.{}.edit", category.slug());
-            let pressed = matches!(
-                state.get(path, key.as_str()),
-                Ok(Some((Value::Scalar(s), _)))
-                    if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-            );
-            if pressed {
-                let _ = state.put(path, key.as_str(), automerge::ScalarValue::Boolean(false));
-                self.select(*category);
-            }
+        // Sidebar selection and search are local presentation state. They do
+        // not create CRDT click flags, draft text, collaboration traffic or
+        // undo entries. The canonical resource `settings.section:<slug>/open`
+        // still reaches the same `select` method through its View operation.
+        if let Some(category) = self.sidebar_selection.with(|request| *request) {
+            self.sidebar_selection.set(None);
+            self.select(category);
         }
-
-        // The search field edits an Automerge `Text` object; ensure it exists
-        // so typed characters actually persist (a `TextInput` only writes
-        // through an existing Text object).
-        let search_obj = crate::ensure_text_object(state, path, sidebar::SEARCH_KEY);
-        // A shot state belongs to a throwaway offscreen document, so seed the
-        // actual editor as well as the filtered list. This keeps the visible
-        // query honest (rather than showing a blank field above Results) and
-        // never creates a replicated user change in a live session.
-        if let Some(seed) = self.search_shot_seed.as_deref()
-            && !seed.is_empty()
-            && read_search(state, path).is_some_and(|query| query.is_empty())
-        {
-            let _ = state.splice_text(&search_obj, 0, 0, seed);
-        }
-
-        // Search query: the header's search field writes `settings.search`.
-        // A changed value updates the filter and swaps the shell's (filtered)
-        // nav list, then flags a rebuild. The field re-reads the same key on
-        // its own `sync`, so the query text survives the rebuild.
-        if let Some(q) = read_search(state, path) {
-            // A headless capture has no input event to populate the search
-            // text object. Its first sync therefore observes the just-seeded
-            // empty object; that is not a user clearing the supplied fixture.
-            // A real typed value remains authoritative immediately.
-            let retain_shot_seed = self.search_shot_seed.is_some() && q.is_empty();
-            if !retain_shot_seed && q != self.search_query {
-                self.search_shot_seed = None;
-                self.search_query = q;
-                self.structure_dirty = true;
-                self.refresh_shell_children();
-            }
+        let query = self.search_state.with(Clone::clone);
+        if query != self.search_query {
+            self.search_query = query;
+            self.structure_dirty = true;
+            self.refresh_shell_children();
         }
 
         if let Some(shell) = &mut self.shell {
@@ -1162,20 +1124,6 @@ impl Widget for SettingsApp {
     }
 }
 
-/// Read the sidebar search query from the document. The field writes either a
-/// plain string scalar or an Automerge `Text` object, so handle both.
-fn read_search(state: &automerge::AutoCommit, path: &automerge::ObjId) -> Option<String> {
-    use automerge::{ReadDoc, Value};
-    match state.get(path, sidebar::SEARCH_KEY) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
-    }
-}
-
 impl AppWidget for SettingsApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Settings
@@ -1611,16 +1559,16 @@ mod tests {
     }
 
     #[test]
-    fn search_query_updates_from_document_and_flags_rebuild() {
-        use automerge::transaction::Transactable;
+    fn search_query_is_local_and_flags_rebuild() {
+        use automerge::ReadDoc;
+
         let mut app = SettingsApp::new();
         layout_at(&mut app, 1200.0, 760.0);
         assert_eq!(app.search_query(), "", "starts with no query");
 
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        // The sidebar search field writes SEARCH_KEY; sync adopts it.
-        let _ = doc.put(&root, sidebar::SEARCH_KEY, "night light");
+        app.search_state.set("night light".to_string());
         app.sync(&mut doc, &root);
         assert_eq!(app.search_query(), "night light");
         assert!(
@@ -1630,30 +1578,26 @@ mod tests {
         // Re-syncing the same query is a no-op (no spurious rebuild).
         app.sync(&mut doc, &root);
         assert!(!app.take_structure_dirty());
+        assert!(
+            doc.get(&root, "settings.search.edit").unwrap().is_none(),
+            "a local filter must not create a shared search draft"
+        );
     }
 
     #[test]
-    fn seeded_search_shot_query_reaches_the_field() {
-        use automerge::{ReadDoc, Value};
+    fn seeded_search_shot_query_reaches_the_local_field() {
         let mut app = SettingsApp::with_selected(Category::Displays).with_search_shot("light");
         assert_eq!(app.search_query(), "light");
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        assert!(
-            doc.get(&root, sidebar::SEARCH_KEY).unwrap().is_some(),
-            "the search field has an editable backing object"
-        );
         assert_eq!(
             app.search_query(),
             "light",
-            "the empty backing object must not erase the requested capture filter"
+            "the local field must retain the requested capture filter"
         );
-        let text = match doc.get(&root, sidebar::SEARCH_KEY).unwrap() {
-            Some((Value::Object(automerge::ObjType::Text), object)) => doc.text(&object).unwrap(),
-            _ => String::new(),
-        };
-        assert_eq!(text, "light", "the visible search field shows its filter");
+        assert_eq!(app.search_state.with(Clone::clone), "light");
+        assert!(doc.get_heads().is_empty());
         layout_at(&mut app, 1200.0, 760.0);
     }
 
