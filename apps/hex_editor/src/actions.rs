@@ -1,14 +1,10 @@
 //! The hex editor's exported **actions** and the **resource tree** it publishes
 //! to Ctrl+K.
 //!
-//! Every document-mutating operation the editor performs on its shared buffer is
-//! a [`HexEditorAction`]: a small serializable value that deterministically
-//! rewrites the `bytes` blob in the CRDT (see [`crate::doc`], where the whole
-//! buffer lives as one Automerge `Bytes` scalar). Because the buffer already
-//! lives in the shared document, an action replicates and replays for free. The
-//! exact same [`EncodedAction`] is what the keyboard affordances (typing a hex
-//! digit, an ASCII character, Backspace, Delete) dispatch and what the Ctrl+K
-//! palette dispatches — one source of truth, one replay path.
+//! Byte edits are exported as canonical **local effect operations**. Their
+//! offsets and literal bytes reach only this editor process; they are never
+//! applied to Automerge, replicated, or recorded as a collaborative commit.
+//! This preserves agent/palette driveability without leaking a local file.
 //!
 //! A byte buffer has no natural sub-items, so the resource tree is a single flat
 //! `hex_editor.document` root that exports the byte-edit actions positioned at
@@ -16,18 +12,12 @@
 //!
 //! Presentation — the cursor, the selection, the scroll position, the
 //! insert-vs-overwrite mode, the hex-vs-ASCII focus, go-to-offset navigation —
-//! stays out of the document and never becomes an action. Loading and saving the
-//! file bytes to disk is external I/O, not a collaborative edit, so it is not an
-//! action either.
+//! stays device-local. Loading and saving are local portal effects; direct paths
+//! are accepted for an explicit local agent invocation but never written into a
+//! document or action history.
 //!
-//! ## Determinism contract
-//!
-//! Each variant carries the exact byte offset and the literal bytes, so
-//! [`Action::apply`] is a pure function of the payload and the buffer it reads:
-//! it never touches the RNG or the wall-clock, and out-of-range offsets are
-//! clamped exactly as the model clamps them, so two replicas at the same heads
-//! land on the byte-identical blob. A missing buffer is a **no-op** rather than
-//! an error, so a bad replay can't wedge a peer.
+//! `HexEditorAction` remains decodable only to give stale callers a precise
+//! refusal; its document `apply` path never accepts raw content.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
@@ -38,7 +28,6 @@ use qos_actions::{
     ResourceProvider, ResultSpec, RetryPolicy,
 };
 
-use crate::doc::HexDoc;
 use crate::model::BufferEdit;
 
 /// Registry `type_id` for every hex-editor action.
@@ -47,12 +36,81 @@ pub const HEX_EDITOR_OPERATION_TYPE: &str = "hex_editor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HexOperation {
-    Open { path: Option<String> },
-    Save { path: Option<String> },
+    Open {
+        path: Option<String>,
+    },
+    Save {
+        path: Option<String>,
+    },
     Search,
     GotoOffset,
+    Undo,
+    Redo,
+    /// A device-local byte mutation. The payload is routed only to the open
+    /// editor process; it is never an Automerge action or collaboration event.
+    Edit {
+        edit: BufferEditWire,
+    },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BufferEditWire {
+    Insert { offset: usize, bytes: Vec<u8> },
+    Delete { offset: usize, len: usize },
+    Overwrite { offset: usize, bytes: Vec<u8> },
+}
+
+impl From<&HexEditorAction> for BufferEditWire {
+    fn from(action: &HexEditorAction) -> Self {
+        match action {
+            HexEditorAction::InsertBytes { offset, bytes } => Self::Insert {
+                offset: *offset,
+                bytes: bytes.clone(),
+            },
+            HexEditorAction::DeleteBytes { offset, len } => Self::Delete {
+                offset: *offset,
+                len: *len,
+            },
+            HexEditorAction::OverwriteBytes { offset, bytes } => Self::Overwrite {
+                offset: *offset,
+                bytes: bytes.clone(),
+            },
+        }
+    }
+}
+
+impl From<BufferEditWire> for BufferEdit {
+    fn from(edit: BufferEditWire) -> Self {
+        match edit {
+            BufferEditWire::Insert { offset, bytes } => Self::Insert { offset, bytes },
+            BufferEditWire::Delete { offset, len } => Self::Delete { offset, len },
+            BufferEditWire::Overwrite { offset, bytes } => Self::Overwrite { offset, bytes },
+        }
+    }
+}
+
+impl From<&BufferEdit> for BufferEditWire {
+    fn from(edit: &BufferEdit) -> Self {
+        match edit {
+            BufferEdit::Insert { offset, bytes } => Self::Insert {
+                offset: *offset,
+                bytes: bytes.clone(),
+            },
+            BufferEdit::Delete { offset, len } => Self::Delete {
+                offset: *offset,
+                len: *len,
+            },
+            BufferEdit::Overwrite { offset, bytes } => Self::Overwrite {
+                offset: *offset,
+                bytes: bytes.clone(),
+            },
+        }
+    }
+}
+
+/// # Errors
+///
+/// Returns the operation decoder's JSON error for an invalid local payload.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<HexOperation>, String> {
     if type_id != HEX_EDITOR_OPERATION_TYPE {
         return Ok(None);
@@ -62,7 +120,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<HexOpera
         .map_err(|error| error.to_string())
 }
 
-/// Every collaborative operation the hex editor exports on its byte buffer.
+/// Legacy byte intent shape, retained for local operation conversion only.
 ///
 /// The three primitives — insert, delete, overwrite — are the whole of a hex
 /// editor's document mutations; every keystroke that changes the bytes reduces
@@ -79,38 +137,10 @@ pub enum HexEditorAction {
 }
 
 impl Action for HexEditorAction {
-    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // No buffer seeded yet → nothing to edit. A no-op keeps replay from
-        // wedging on an out-of-order envelope.
-        let Some(mut buf) = HexDoc::read_bytes(doc) else {
-            return Ok(());
-        };
-        match self {
-            HexEditorAction::InsertBytes { offset, bytes } => {
-                // Clamp exactly as `HexModel::insert_byte` does, so the action
-                // reproduces the model's own result.
-                let at = (*offset).min(buf.len());
-                let tail = buf.split_off(at);
-                buf.extend_from_slice(bytes);
-                buf.extend_from_slice(&tail);
-            }
-            HexEditorAction::DeleteBytes { offset, len } => {
-                if *offset < buf.len() {
-                    let end = offset.saturating_add(*len).min(buf.len());
-                    buf.drain(*offset..end);
-                }
-            }
-            HexEditorAction::OverwriteBytes { offset, bytes } => {
-                for (i, b) in bytes.iter().enumerate() {
-                    let idx = offset.saturating_add(i);
-                    if let Some(slot) = buf.get_mut(idx) {
-                        *slot = *b;
-                    }
-                }
-            }
-        }
-        HexDoc::write_bytes(doc, &buf);
-        Ok(())
+    fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {
+        Err(ActionError::Refused(
+            "raw hex bytes are device-local; invoke the local resource operation".into(),
+        ))
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -118,15 +148,15 @@ impl Action for HexEditorAction {
     }
 }
 
-/// Register the hex editor's action decoder for palette execution + remote
-/// replay.
+/// Register the legacy decoder so stale envelopes fail with the action's
+/// explicit local-only refusal rather than being misinterpreted.
 pub fn register(registry: &mut ActionRegistry) {
     registry.register::<HexEditorAction>(HEX_EDITOR_ACTION_TYPE);
 }
 
-/// Encode any [`HexEditorAction`] into the wire form the palette and the
-/// keyboard affordances both dispatch. The single point that turns a buffer
-/// edit into a replayable envelope.
+/// Encode a legacy raw-byte action for compatibility-refusal regression tests.
+/// The resulting envelope is intentionally rejected by the collaboration
+/// executor; live palette and agent clients use [`HexOperation`] instead.
 ///
 /// # Panics
 ///
@@ -146,8 +176,7 @@ pub fn encode(action: &HexEditorAction) -> EncodedAction {
 }
 
 // ===========================================================================
-// Action builders — the single source of truth shared by the keyboard
-// affordances (see `crate::view`) and the Ctrl+K resource tree below.
+// Action builders for the local resource tree below.
 // ===========================================================================
 
 pub fn insert_bytes_action(offset: usize, bytes: Vec<u8>) -> HexEditorAction {
@@ -160,17 +189,6 @@ pub fn delete_bytes_action(offset: usize, len: usize) -> HexEditorAction {
 
 pub fn overwrite_bytes_action(offset: usize, bytes: Vec<u8>) -> HexEditorAction {
     HexEditorAction::OverwriteBytes { offset, bytes }
-}
-
-/// Map a model-journaled [`BufferEdit`] onto the action that reproduces it. This
-/// is the bridge that makes a keystroke and a palette row build the identical
-/// [`HexEditorAction`].
-pub fn edit_to_action(edit: &BufferEdit) -> HexEditorAction {
-    match edit {
-        BufferEdit::Insert { offset, bytes } => insert_bytes_action(*offset, bytes.clone()),
-        BufferEdit::Delete { offset, len } => delete_bytes_action(*offset, *len),
-        BufferEdit::Overwrite { offset, bytes } => overwrite_bytes_action(*offset, bytes.clone()),
-    }
 }
 
 // ===========================================================================
@@ -190,6 +208,8 @@ pub struct HexResourceCtx {
     /// The inclusive selection `(lo, hi)`, when one is active.
     pub selection: Option<(usize, usize)>,
     pub has_file: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
 }
 
 /// Parse a one-byte hex value out of a palette prompt: accepts `ff`, `0xFF`, or
@@ -208,9 +228,16 @@ fn parse_hex_byte(s: &str) -> Option<u8> {
     reason = "HexEditorAction always serializes (usize/Vec<u8> fields only); see encode()"
 )]
 fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec {
-    let spec = ActionSpec::immediate(id, label, HEX_EDITOR_ACTION_TYPE, action)
-        .expect("encode hex_editor action")
-        .reversible();
+    let spec = ActionSpec::operation(
+        id,
+        label,
+        OperationKind::Effect,
+        HEX_EDITOR_OPERATION_TYPE,
+        &HexOperation::Edit {
+            edit: action.into(),
+        },
+    )
+    .expect("encode hex editor local operation");
     if id.contains("delete") {
         spec.destructive()
     } else {
@@ -220,7 +247,14 @@ fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec
 
 /// Build the resource tree the editor currently has open: the buffer as one
 /// `hex_editor.document` root, exporting the byte-edit actions at the cursor /
-/// selection. Every action is the same one the matching keystroke dispatches.
+/// selection. Palette effects and local keyboard input use the same compact
+/// edit shape, but neither path replicates raw bytes.
+#[allow(
+    clippy::too_many_lines,
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the resource surface is one auditable declaration; serialization cannot fail for these serde-only values"
+)]
 pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     let mut root = Resource::new(
         "hex_editor.document",
@@ -288,6 +322,24 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     } else {
         save.unavailable("no_file", "Open a file first")
     });
+    for (id, label, value, available) in [
+        ("undo", "Undo local edit", HexOperation::Undo, ctx.can_undo),
+        ("redo", "Redo local edit", HexOperation::Redo, ctx.can_redo),
+    ] {
+        let spec = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::Effect,
+            HEX_EDITOR_OPERATION_TYPE,
+            &value,
+        )
+        .expect("HexOperation serializes");
+        root = root.with_action(if available {
+            spec
+        } else {
+            spec.unavailable("no_local_history", "No local edit available")
+        });
+    }
     for (id, label, value) in [
         ("search", "Search bytes", HexOperation::Search),
         ("goto-offset", "Go to offset", HexOperation::GotoOffset),
@@ -313,32 +365,46 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     // Insert a byte at the cursor — a prompted hex value. The offset is the
     // clamped cursor so it is valid even for an append cursor / empty buffer.
     let at = ctx.cursor.min(ctx.len);
-    root = root.with_action(ActionSpec::prompted(
+    root = root.with_action(ActionSpec::prompted_operation(
         "insert-byte",
         "Insert byte",
         "Byte (hex)",
         "e.g. ff",
-        ExecutionLocus::ClientLocal,
+        OperationKind::Effect,
+        HEX_EDITOR_OPERATION_TYPE,
         move |arg: &str| {
             // A malformed value inserts nothing (an empty splice, a no-op),
             // rather than fabricating a byte.
             let bytes = parse_hex_byte(arg).map(|b| vec![b]).unwrap_or_default();
-            encode(&insert_bytes_action(at, bytes))
+            EncodedAction::encode_operation(
+                HEX_EDITOR_OPERATION_TYPE,
+                &HexOperation::Edit {
+                    edit: (&insert_bytes_action(at, bytes)).into(),
+                },
+            )
+            .expect("local edit serializes")
         },
     ));
 
     // Overwrite the byte under the cursor — only when the cursor is on a byte.
     if ctx.cursor < ctx.len {
         let at = ctx.cursor;
-        root = root.with_action(ActionSpec::prompted(
+        root = root.with_action(ActionSpec::prompted_operation(
             "overwrite-byte",
             "Overwrite byte",
             "Byte (hex)",
             "e.g. ff",
-            ExecutionLocus::ClientLocal,
+            OperationKind::Effect,
+            HEX_EDITOR_OPERATION_TYPE,
             move |arg: &str| {
                 let bytes = parse_hex_byte(arg).map(|b| vec![b]).unwrap_or_default();
-                encode(&overwrite_bytes_action(at, bytes))
+                EncodedAction::encode_operation(
+                    HEX_EDITOR_OPERATION_TYPE,
+                    &HexOperation::Edit {
+                        edit: (&overwrite_bytes_action(at, bytes)).into(),
+                    },
+                )
+                .expect("local edit serializes")
             },
         ));
     }
@@ -388,6 +454,8 @@ mod tests {
             len: 1,
             selection: None,
             has_file: true,
+            can_undo: false,
+            can_redo: false,
         });
         for id in ["open", "save"] {
             let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
@@ -429,16 +497,8 @@ mod tests {
         }
     }
 
-    /// A document seeded with a known buffer, via the same `write_model` the
-    /// view uses to seed the shared doc.
-    fn seeded(bytes: &[u8]) -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        HexDoc::write_model(&mut doc, &crate::model::HexModel::new(bytes.to_vec()));
-        doc
-    }
-
-    /// A view with a real buffer open, synced onto its own document so the
-    /// resource hook reflects a live cursor.
+    /// A view with a real local buffer plus the framework document required by
+    /// the resource-provider trait. The bytes remain outside that document.
     fn open_view(bytes: &[u8]) -> (HexView, AutoCommit) {
         let mut view = HexView::new(bytes.to_vec(), "buf.bin");
         let mut doc = AutoCommit::new();
@@ -515,96 +575,43 @@ mod tests {
         );
     }
 
-    /// Dispatching an action mutates the buffer, records exactly one undo
-    /// boundary through the host, and Ctrl+Z reverts precisely that edit.
+    /// Legacy raw-byte envelopes are rejected by the collaboration executor.
     #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
+    fn raw_byte_actions_are_refused_by_the_collaboration_executor() {
         let mut state = ui::State::new();
-        state.doc = seeded(&[0x00, 0x11, 0x22, 0x33]);
-        let before_heads = state.doc.get_heads();
-
+        state.doc = AutoCommit::new();
         let action = overwrite_bytes_action(1, vec![0xAB]);
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            HexDoc::read_bytes(&state.doc).unwrap(),
-            vec![0x00, 0xAB, 0x22, 0x33],
-            "the action overwrote byte 1"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            HexDoc::read_bytes(&state.doc).unwrap(),
-            vec![0x00, 0x11, 0x22, 0x33],
-            "undo reverted the overwrite and nothing else"
-        );
+        assert!(qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).is_err());
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a
-    /// second independent replica (from the same base state) lands on the
-    /// byte-identical document — same head hashes, not merely the same values.
+    /// A raw-byte action cannot be replayed to another device.
     #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded(&[0xDE, 0xAD, 0xBE, 0xEF]);
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
+    fn raw_byte_action_cannot_replay_to_a_peer() {
+        let mut a = AutoCommit::new();
 
         // An insert in the middle — the growth path, not just an overwrite.
         let action = insert_bytes_action(2, vec![0xCA, 0xFE]);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            HexDoc::read_bytes(&a).unwrap(),
-            vec![0xDE, 0xAD, 0xCA, 0xFE, 0xBE, 0xEF],
-        );
-        assert_eq!(
-            HexDoc::read_bytes(&a).unwrap(),
-            HexDoc::read_bytes(&b).unwrap()
-        );
+        assert!(qos_actions::apply_local(&mut a, &action, encoded).is_err());
     }
 
-    /// A delete also converges byte-identically on a peer.
+    /// Deletes are likewise local-only operations.
     #[test]
-    fn delete_replays_byte_identical() {
-        let mut a = seeded(&(0u8..=9).collect::<Vec<_>>());
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
+    fn local_delete_action_is_not_replicable() {
+        let mut a = AutoCommit::new();
 
         let action = delete_bytes_action(3, 4); // drop 3,4,5,6
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads());
-        assert_eq!(HexDoc::read_bytes(&a).unwrap(), vec![0, 1, 2, 7, 8, 9]);
+        assert!(qos_actions::apply_local(&mut a, &action, encoded).is_err());
     }
 
-    /// Single source of truth: the palette's delete spec and the keystroke's
-    /// journaled edit encode byte-identically — one action, two triggers.
+    /// Palette effects and keyboard edits use the same local edit shape.
     #[test]
-    fn palette_and_keystroke_encode_identically() {
+    fn palette_and_keystroke_share_a_local_edit_shape() {
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(2, false);
 
@@ -617,18 +624,17 @@ mod tests {
             .expect("a delete-byte action");
         let from_spec = immediate_encode(spec);
 
-        // The keystroke path: Delete at the cursor journals a `BufferEdit`,
-        // which maps to the identical action.
+        // The keystroke path records a compact local redo edit.
         view.model_mut().delete_at_cursor();
-        let edits = view.model_mut().take_edits();
+        let edits = view.model_mut().take_local_history();
         assert_eq!(edits.len(), 1, "one delete journaled");
-        let from_keystroke = encode(&edit_to_action(&edits[0]));
-
-        assert_eq!(from_spec.type_id, from_keystroke.type_id);
-        assert_eq!(
-            from_spec.payload, from_keystroke.payload,
-            "one source of truth for delete"
-        );
+        let expected = HexOperation::Edit {
+            edit: (&edits[0].redo).into(),
+        };
+        assert!(matches!(
+            decode_operation(HEX_EDITOR_OPERATION_TYPE, &from_spec.payload).unwrap(),
+            Some(operation) if operation == expected
+        ));
     }
 
     /// The overwrite prompt builds the same action the hex-column keystroke
@@ -644,10 +650,12 @@ mod tests {
             .find(|a| a.id == "overwrite-byte")
             .expect("an overwrite-byte action");
         let from_spec = prompted_encode(spec, "ab");
-        let from_builder = encode(&overwrite_bytes_action(1, vec![0xAB]));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "overwrite is one source of truth"
-        );
+        let expected = HexOperation::Edit {
+            edit: (&overwrite_bytes_action(1, vec![0xAB])).into(),
+        };
+        assert!(matches!(
+            decode_operation(HEX_EDITOR_OPERATION_TYPE, &from_spec.payload).unwrap(),
+            Some(operation) if operation == expected
+        ));
     }
 }
