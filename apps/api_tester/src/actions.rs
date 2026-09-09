@@ -3,15 +3,12 @@
 //!
 //! Every document-mutating operation the API tester performs on its shared
 //! workspace is an [`ApiTesterAction`]: a small serializable value that
-//! deterministically mutates the CRDT. The workspace is persisted as JSON
-//! snapshots keyed in the document (see [`crate::doc`]) — the collection list,
-//! the environment list, and the selected environment — so an action's
-//! [`apply`](Action::apply) reads the relevant snapshot, mutates exactly the
-//! field(s) it owns, and writes it back: a change that replicates and replays
-//! for free. The exact same [`EncodedAction`] is what the on-screen affordances
-//! (today the environment picker; tomorrow a New / Rename / Delete control)
-//! dispatch and what the Ctrl+K palette dispatches — one source of truth, one
-//! replay path.
+//! deterministically mutates the CRDT. The workspace is persisted as keyed
+//! records (see [`crate::doc`]), so an action reads the current projection,
+//! mutates exactly the record(s) it owns, and writes the result back: a change
+//! that replicates and replays for free. The exact same [`EncodedAction`] is
+//! what the visible builder/rail affordances and the Ctrl+K palette dispatch —
+//! one source of truth, one replay path.
 //!
 //! ## What is (and is not) an action here
 //!
@@ -64,10 +61,41 @@ pub const API_TESTER_OPERATION_TYPE: &str = "api_tester.operation";
 /// replayed as document mutations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ApiTesterOperation {
+    /// Send the current builder buffer. This is a device-local network effect,
+    /// deliberately separate from saving a durable request resource.
+    SendActiveRequest,
     SendRequest {
         collection_id: String,
         request_id: String,
     },
+    /// Open a durable history record in this peer's request builder. This is
+    /// deliberately a View operation: it is navigation, not a fabricated
+    /// successful HTTP run and not a collaborative mutation.
+    ReplayHistory { history_id: String },
+}
+
+/// The builder's current request is an addressable local-effect resource so
+/// Send, empty-state recovery, and assistive activation share one operation.
+pub fn active_request_resource() -> Resource {
+    let mut resource = Resource::new(
+        "api_tester.active_request",
+        "api_tester.active_request",
+        "Current request",
+    );
+    if let Ok(action) = ActionSpec::operation(
+        "send",
+        "Send request",
+        OperationKind::Effect,
+        API_TESTER_OPERATION_TYPE,
+        &ApiTesterOperation::SendActiveRequest,
+    ) {
+        resource = resource.with_action(
+            action
+                .with_description("Send the current request using this device's active network")
+                .execution(ExecutionMode::Background { cancellable: false }),
+        );
+    }
+    resource
 }
 
 /// Build the external operation for sending one saved request.
@@ -96,11 +124,28 @@ pub fn send_request_operation(
     })
 }
 
-/// Every collaborative operation the API tester exports on its shared workspace.
+/// Build the device-local navigation operation for one durable history row.
 ///
-/// Each variant is a whole-record write on one of the persisted snapshots (the
-/// collection list, the environment list, or the selected-environment scalar),
-/// carrying enough payload to replay deterministically from a shared base state.
+/// # Errors
+///
+/// Returns an error only if the serializable operation payload cannot be
+/// encoded for the resource-action protocol.
+pub fn replay_history_operation(history_id: Uuid) -> Result<ActionSpec, ActionError> {
+    ActionSpec::operation(
+        "replay",
+        "Open request in builder",
+        OperationKind::View,
+        API_TESTER_OPERATION_TYPE,
+        &ApiTesterOperation::ReplayHistory {
+            history_id: history_id.to_string(),
+        },
+    )
+    .map(|spec| spec.with_description("Load this historical request without sending it"))
+}
+
+/// Every collaborative operation the API tester exports on its shared workspace.
+/// Each variant names only its durable target and is replayed against the
+/// document's keyed projection; it never serializes presentation state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ApiTesterAction {
     // --- Collections ---------------------------------------------------------
@@ -154,42 +199,18 @@ pub enum ApiTesterAction {
     /// existing key has its value replaced in place, a new key is appended.
     SetVariable {
         env_id: String,
+        /// Stable row identity. A rename changes `key`, never this address.
+        variable_id: String,
         key: String,
         value: String,
     },
     /// Delete a variable by key from an environment.
-    DeleteVariable { env_id: String, key: String },
-}
-
-/// Which persisted snapshot an action mutates — so [`Action::apply`] reads,
-/// mutates, and writes back exactly one, never churning the others.
-enum Target {
-    Collections,
-    Environments,
-    ActiveEnv,
+    DeleteVariable { env_id: String, variable_id: String },
 }
 
 impl ApiTesterAction {
-    fn target(&self) -> Target {
-        match self {
-            ApiTesterAction::CreateCollection { .. }
-            | ApiTesterAction::RenameCollection { .. }
-            | ApiTesterAction::DeleteCollection { .. }
-            | ApiTesterAction::SaveRequest { .. }
-            | ApiTesterAction::RenameRequest { .. }
-            | ApiTesterAction::DeleteRequest { .. } => Target::Collections,
-            ApiTesterAction::CreateEnvironment { .. }
-            | ApiTesterAction::RenameEnvironment { .. }
-            | ApiTesterAction::DeleteEnvironment { .. }
-            | ApiTesterAction::SetVariable { .. }
-            | ApiTesterAction::DeleteVariable { .. } => Target::Environments,
-            ApiTesterAction::SetActiveEnvironment { .. } => Target::ActiveEnv,
-        }
-    }
-
-    /// The pure mutation on the collection list — the single implementation the
-    /// action runs against the document. Deterministic w.r.t. `(self, cols)`: no
-    /// RNG, no wall-clock, stable iteration.
+    /// Compatibility-only pure projection helper used by import tests. Normal
+    /// action execution writes the addressed native record directly.
     pub fn apply_to_collections(&self, cols: &mut Vec<Collection>) {
         match self {
             ApiTesterAction::CreateCollection { id, name } => {
@@ -269,18 +290,29 @@ impl ApiTesterAction {
             ApiTesterAction::DeleteEnvironment { id } => {
                 envs.retain(|e| e.id.to_string() != *id);
             }
-            ApiTesterAction::SetVariable { env_id, key, value } => {
+            ApiTesterAction::SetVariable {
+                env_id,
+                variable_id,
+                key,
+                value,
+            } => {
                 if let Some(e) = find_environment_mut(envs, env_id) {
-                    if let Some(v) = e.variables.iter_mut().find(|v| v.key == *key) {
-                        v.value.clone_from(value); // update in place
+                    if let Some(v) = e.variables.iter_mut().find(|v| v.id == *variable_id) {
+                        v.key.clone_from(key);
+                        v.value.clone_from(value);
                     } else {
-                        e.variables.push(KeyValue::new(key.clone(), value.clone()));
+                        let mut variable = KeyValue::new(key.clone(), value.clone());
+                        variable.id.clone_from(variable_id);
+                        e.variables.push(variable);
                     }
                 }
             }
-            ApiTesterAction::DeleteVariable { env_id, key } => {
+            ApiTesterAction::DeleteVariable {
+                env_id,
+                variable_id,
+            } => {
                 if let Some(e) = find_environment_mut(envs, env_id) {
-                    e.variables.retain(|v| v.key != *key);
+                    e.variables.retain(|v| v.id != *variable_id);
                 }
             }
             _ => {}
@@ -297,26 +329,104 @@ fn find_environment_mut<'a>(envs: &'a mut [Environment], id: &str) -> Option<&'a
 }
 
 impl Action for ApiTesterAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive stable-action dispatch keeps every durable write auditable in one place"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let root: ObjId = ROOT;
-        match self.target() {
-            Target::Collections => {
-                let mut cols = ApiDoc::collections(doc, &root);
-                self.apply_to_collections(&mut cols);
-                ApiDoc::set_collections(doc, &root, &cols);
+        match self {
+            ApiTesterAction::CreateCollection { id, name } => {
+                ApiDoc::create_collection(doc, &root, id, name);
+                Ok(())
             }
-            Target::Environments => {
-                let mut envs = ApiDoc::environments(doc, &root);
-                self.apply_to_environments(&mut envs);
-                ApiDoc::set_environments(doc, &root, &envs);
+            ApiTesterAction::RenameCollection { id, name } => {
+                ApiDoc::rename_collection(doc, &root, id, name);
+                Ok(())
             }
-            Target::ActiveEnv => {
-                if let ApiTesterAction::SetActiveEnvironment { id } = self {
-                    ApiDoc::set_active_env(doc, &root, id.as_deref());
-                }
+            ApiTesterAction::DeleteCollection { id } => {
+                ApiDoc::delete_collection(doc, &root, id);
+                Ok(())
+            }
+            ApiTesterAction::CreateEnvironment { id, name } => {
+                ApiDoc::create_environment(doc, &root, id, name);
+                Ok(())
+            }
+            ApiTesterAction::RenameEnvironment { id, name } => {
+                ApiDoc::rename_environment(doc, &root, id, name);
+                Ok(())
+            }
+            ApiTesterAction::DeleteEnvironment { id } => {
+                ApiDoc::delete_environment(doc, &root, id);
+                Ok(())
+            }
+            ApiTesterAction::SaveRequest {
+                collection_id,
+                request,
+            } => {
+                let before = ApiDoc::collections(doc, &root)
+                    .iter()
+                    .find(|collection| collection.id.to_string() == *collection_id)
+                    .and_then(|collection| {
+                        collection
+                            .requests
+                            .iter()
+                            .find(|item| item.id == request.id)
+                    })
+                    .cloned();
+                ApiDoc::save_request(doc, &root, collection_id, before.as_ref(), request);
+                Ok(())
+            }
+            ApiTesterAction::RenameRequest {
+                collection_id,
+                request_id,
+                name,
+            } => {
+                let Ok(request_id) = request_id.parse::<Uuid>() else {
+                    return Ok(());
+                };
+                let Some(mut request) = ApiDoc::collections(doc, &root)
+                    .iter()
+                    .find(|collection| collection.id.to_string() == *collection_id)
+                    .and_then(|collection| {
+                        collection
+                            .requests
+                            .iter()
+                            .find(|item| item.id == request_id)
+                    })
+                    .cloned()
+                else {
+                    return Ok(());
+                };
+                request.name.clone_from(name);
+                ApiDoc::save_request(doc, &root, collection_id, None, &request);
+                Ok(())
+            }
+            ApiTesterAction::DeleteRequest { request_id, .. } => {
+                ApiDoc::delete_request(doc, &root, request_id);
+                Ok(())
+            }
+            ApiTesterAction::SetVariable {
+                env_id,
+                variable_id,
+                key,
+                value,
+            } => {
+                ApiDoc::set_variable(doc, &root, env_id, variable_id, key, value);
+                Ok(())
+            }
+            ApiTesterAction::DeleteVariable {
+                env_id,
+                variable_id,
+            } => {
+                ApiDoc::delete_variable(doc, &root, env_id, variable_id);
+                Ok(())
+            }
+            ApiTesterAction::SetActiveEnvironment { id } => {
+                ApiDoc::set_active_env(doc, &root, id.as_deref());
+                Ok(())
             }
         }
-        Ok(())
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -414,18 +524,24 @@ pub fn delete_environment_action(id: Uuid) -> ApiTesterAction {
     ApiTesterAction::DeleteEnvironment { id: id.to_string() }
 }
 
-pub fn set_variable_action(env_id: Uuid, key: &str, value: &str) -> ApiTesterAction {
+pub fn set_variable_action(
+    env_id: Uuid,
+    variable_id: impl Into<String>,
+    key: &str,
+    value: &str,
+) -> ApiTesterAction {
     ApiTesterAction::SetVariable {
         env_id: env_id.to_string(),
+        variable_id: variable_id.into(),
         key: key.to_string(),
         value: value.to_string(),
     }
 }
 
-pub fn delete_variable_action(env_id: Uuid, key: &str) -> ApiTesterAction {
+pub fn delete_variable_action(env_id: Uuid, variable_id: impl Into<String>) -> ApiTesterAction {
     ApiTesterAction::DeleteVariable {
         env_id: env_id.to_string(),
-        key: key.to_string(),
+        variable_id: variable_id.into(),
     }
 }
 
@@ -480,12 +596,14 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let environments = ApiDoc::environments(doc, &root_obj);
     let active_env = ApiDoc::active_env(doc, &root_obj);
     let active_request = ApiDoc::request(doc, &root_obj);
+    let history = ApiDoc::history(doc, &root_obj);
 
     let mut root = Resource::new(
         "api_tester.workspace",
         "api_tester.workspace",
         "API workspace",
     );
+    root = root.with_child(active_request_resource());
 
     // Workspace-level: create a collection / environment (prompted for a name;
     // the id is minted once when the argument is committed, then baked into the
@@ -509,8 +627,37 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 
     root = add_collection_children(root, &collections, active_request.as_ref());
     root = add_environment_children(root, &environments, active_env.as_deref());
+    root = add_history_children(root, &history);
 
     vec![root]
+}
+
+/// History rows are durable, addressable records. Opening one is explicitly
+/// local navigation; it never claims to resend the request or to reproduce the
+/// old response.
+fn add_history_children(mut root: Resource, history: &[crate::model::HistoryEntry]) -> Resource {
+    if history.is_empty() {
+        return root;
+    }
+    let mut history_root = Resource::new(
+        "api_tester.history",
+        "api_tester.history",
+        "Request history",
+    );
+    for entry in history {
+        let label = format!("{} {} · {}", entry.method.as_str(), entry.url, entry.status);
+        let mut node = Resource::new(
+            format!("api_tester.history:{}", entry.id),
+            "api_tester.history_entry",
+            label,
+        );
+        if let Ok(replay) = replay_history_operation(entry.id) {
+            node = node.with_action(replay);
+        }
+        history_root = history_root.with_child(node);
+    }
+    root = root.with_child(history_root);
+    root
 }
 
 /// Collections → a resource each, owning its saved requests. Split out of
@@ -650,12 +797,16 @@ fn add_environment_children(
             ExecutionLocus::ClientLocal,
             move |arg: &str| {
                 let (k, v) = split_kv(arg);
-                encode(&set_variable_action(eid, &k, &v))
+                encode(&set_variable_action(
+                    eid,
+                    Uuid::new_v4().to_string(),
+                    &k,
+                    &v,
+                ))
             },
         ));
 
         for v in &e.variables {
-            let key = v.key.clone();
             let child = Resource::new(
                 format!("api_tester.variable:{eid}:{}", v.key),
                 "api_tester.variable",
@@ -664,7 +815,7 @@ fn add_environment_children(
             .with_action(immediate(
                 "delete",
                 "Delete variable",
-                &delete_variable_action(eid, &key),
+                &delete_variable_action(eid, &v.id),
             ));
             node = node.with_child(child);
         }
@@ -825,8 +976,9 @@ mod tests {
     }
 
     /// An empty document still publishes the workspace root with the create
-    /// actions (so the first collection can be made from Ctrl+K), but no
-    /// collection / environment children and no environments node.
+    /// actions (so the first collection can be made from Ctrl+K), plus the
+    /// device-local current-request effect resource, but no collection /
+    /// environment children and no environments node.
     #[test]
     fn empty_doc_publishes_workspace_with_create_actions_only() {
         let doc = AutoCommit::new();
@@ -836,10 +988,45 @@ mod tests {
         assert_eq!(root.kind, "api_tester.workspace");
         assert!(root.actions.iter().any(|a| a.id == "new-collection"));
         assert!(root.actions.iter().any(|a| a.id == "new-environment"));
-        assert!(
-            root.children.is_empty(),
-            "no fabricated collections or environments"
-        );
+        assert_eq!(root.children.len(), 1, "only the current-request effect");
+        assert_eq!(root.children[0].kind, "api_tester.active_request");
+    }
+
+    #[test]
+    fn history_records_are_addressable_with_an_honest_view_operation() {
+        let root: ObjId = ROOT;
+        let mut doc = AutoCommit::new();
+        let entry = crate::model::HistoryEntry {
+            id: Uuid::new_v4(),
+            method: HttpMethod::Get,
+            url: "https://api.example.test/users".into(),
+            status: 200,
+            duration_ms: 18,
+            when: "just now".into(),
+        };
+        ApiDoc::set_history(&mut doc, &root, std::slice::from_ref(&entry));
+
+        let resources = provide_resources(&doc);
+        let history_root = resources[0]
+            .children
+            .iter()
+            .find(|node| node.kind == "api_tester.history")
+            .expect("history has its own addressable resource root");
+        let row = history_root
+            .children
+            .iter()
+            .find(|node| node.id.0 == format!("api_tester.history:{}", entry.id))
+            .expect("durable history row is searchable/addressable");
+        let replay = row
+            .actions
+            .iter()
+            .find(|action| action.id == "replay")
+            .expect("history offers local navigation, not a fake resend");
+        assert_eq!(replay.kind, OperationKind::View);
+        assert!(matches!(
+            serde_json::from_slice::<ApiTesterOperation>(&immediate_encode(replay).payload).unwrap(),
+            ApiTesterOperation::ReplayHistory { history_id } if history_id == entry.id.to_string()
+        ));
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
