@@ -25,7 +25,8 @@
 //! account shows an empty state. The bundled sample corpus is used only by the
 //! hermetic `--shots` / test constructors.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
@@ -67,11 +68,6 @@ const OVERVIEW_W: f64 = 340.0;
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
 /// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
-/// Maximum number of resource-originated opens awaiting the next mutable
-/// document boundary.  A palette/agent can submit hostile input faster than a
-/// frame can render it; bounding this queue keeps that from turning into an
-/// unbounded batch of otherwise-valid mark-read actions.
-const MAX_PENDING_REVEAL_READS: usize = 64;
 /// How long a status toast ("Synced N messages", "Account saved", …) stays on
 /// screen before it fades out on its own, like any normal transient toast.
 const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
@@ -128,12 +124,13 @@ struct PendingSend {
 /// `you@hooli.example`, `new@host.example` appearing pre-configured in the live
 /// app — was exactly this: a test that drove the save path wrote the bundled
 /// sample store to the real config root.
+#[derive(Clone)]
 enum AccountsPersist {
     /// The real per-user config root — live app only.
     Real,
     /// A throwaway directory, removed when the app is dropped. The `TempDir`
     /// guard owns the directory's lifetime.
-    Sandbox(tempfile::TempDir),
+    Sandbox(Arc<tempfile::TempDir>),
     /// No writable sandbox could be created — persistence is a silent no-op.
     /// A safe fallback that still never touches the real store.
     Disabled,
@@ -149,7 +146,7 @@ impl AccountsPersist {
             .prefix("qos-mail-sample-")
             .tempdir()
         {
-            Ok(dir) => AccountsPersist::Sandbox(dir),
+            Ok(dir) => AccountsPersist::Sandbox(Arc::new(dir)),
             Err(_) => AccountsPersist::Disabled,
         }
     }
@@ -162,6 +159,51 @@ impl AccountsPersist {
             AccountsPersist::Disabled => Ok(()),
         }
     }
+
+    /// The device-local preference lives beside the account store, but outside
+    /// its shared account schema. It is never a collaborative document field.
+    fn load_compose_format(&self) -> ComposeFormat {
+        let Some(path) = self.local_preferences_path() else {
+            return ComposeFormat::Html;
+        };
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<LocalPreferences>(&bytes).ok())
+            .map_or(ComposeFormat::Html, |prefs| {
+                ComposeFormat::from_key(&prefs.compose_format)
+            })
+    }
+
+    fn persist_compose_format(&self, format: ComposeFormat) -> std::io::Result<()> {
+        let Some(path) = self.local_preferences_path() else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec(&LocalPreferences {
+            compose_format: format.as_key().to_string(),
+        })
+        .map_err(std::io::Error::other)?;
+        std::fs::write(path, bytes)
+    }
+
+    fn local_preferences_path(&self) -> Option<std::path::PathBuf> {
+        let root = match self {
+            AccountsPersist::Real => accounts::config_root(),
+            AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
+            AccountsPersist::Disabled => None,
+        }?;
+        Some(root.join("mail-local.json"))
+    }
+}
+
+/// Device-local Mail preferences. Kept deliberately small and separate from
+/// the shared account payload: a peer must never adopt another window's
+/// composer mode just because it received mailbox changes.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct LocalPreferences {
+    compose_format: String,
 }
 
 #[allow(
@@ -210,6 +252,9 @@ pub struct MailApp {
     /// so observing the id here gives every selection path one persistence
     /// boundary without leaking that preference into Automerge.
     persisted_active_account: Option<String>,
+    /// Last format persisted to this device-local preference store. This lets
+    /// format toggles save immediately without rewriting disk at every close.
+    persisted_compose_format: ComposeFormat,
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
@@ -224,11 +269,6 @@ pub struct MailApp {
     /// update, so a subsequent refresh cannot overwrite an unobserved result.
     resource_refresh_invocation: Option<(EngineRequestId, qos_actions::InvocationId)>,
     resource_refresh_result: Option<qos_actions::InvocationUpdate>,
-    /// Normal resource/action opens first change the local view through the
-    /// view-operation door, then the next mutable sync records the same read
-    /// action as a direct row open. The separate explicit inspection operation
-    /// intentionally never fills this bounded queue.
-    pending_reveal_reads: VecDeque<MessageId>,
     /// Wall-clock minute of the last automatic inbox refresh, so periodic sync
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
@@ -308,6 +348,7 @@ impl MailApp {
                     .map(|account| account.id.clone()),
             )
         };
+        let compose_format = accounts_persist.load_compose_format();
         Self {
             shared,
             mail_search_provider,
@@ -318,7 +359,7 @@ impl MailApp {
                 .with_action("Add account")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
-            compose: ComposeWindow::new(ComposeFormat::Html),
+            compose: ComposeWindow::new(compose_format),
             editing_draft: None,
             context_menu: None,
             setup_open: false,
@@ -334,12 +375,12 @@ impl MailApp {
             pending_send: None,
             accounts_persist,
             persisted_active_account,
+            persisted_compose_format: compose_format,
             connect_requested: false,
             awaiting_engine: false,
             pending_engine_requests: HashMap::new(),
             resource_refresh_invocation: None,
             resource_refresh_result: None,
-            pending_reveal_reads: VecDeque::new(),
             last_auto_refresh_min: 0,
             toast_text: None,
             toast_deadline: None,
@@ -377,7 +418,7 @@ impl MailApp {
             .into_iter()
             .find_map(|message| (!message.read).then_some(message.id));
         if let Some(id) = id {
-            self.shared.borrow_mut().reveal_message(id, true);
+            self.shared.borrow_mut().preview_message(id);
             self.process_intents();
         }
         self.dirty = true;
@@ -716,6 +757,7 @@ impl MailApp {
     }
 
     fn send_compose(&mut self, _doc: &mut AutoCommit) {
+        self.persist_compose_format_if_changed();
         if self.pending_send.is_some() {
             self.shared.borrow_mut().status = Some("Message is still sending…".into());
             return;
@@ -787,7 +829,7 @@ impl MailApp {
         self.editing_draft = Some(id);
         self.shared.borrow_mut().status = Some("Draft saved to Drafts".into());
         self.compose.close();
-        self.persist_compose_format(doc);
+        self.persist_compose_format_if_changed();
         self.dirty = true;
     }
 
@@ -828,13 +870,12 @@ impl MailApp {
         {
             let mut st = self.shared.borrow_mut();
             st.mailbox.insert(msg);
-            st.persist_flags(doc, id);
+            // The durable draft action already carries the user-authored
+            // content. This is only a local Drafts projection, so register its
+            // target without manufacturing flag writes outside an action.
+            MailDoc::register_message(doc, &id.to_string());
         }
         id
-    }
-
-    fn persist_compose_format(&self, doc: &mut AutoCommit) {
-        MailDoc::set_compose_format(doc, self.compose.format().as_key());
     }
 
     // ---- account-setup sheet ---------------------------------------------
@@ -1499,9 +1540,8 @@ impl MailApp {
                     } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
                         let count = messages.len();
                         for m in messages {
-                            let id = m.id;
+                            MailDoc::ingest_message_flags(doc, &m);
                             st.mailbox.insert(m);
-                            st.persist_flags(doc, id);
                         }
                         if st.folder == folder && st.selected.is_none() {
                             st.selected = st
@@ -1542,7 +1582,6 @@ impl MailApp {
                             .is_some_and(|pending| pending.request_id == request_id)
                             && let Some(pending) = self.pending_send.take()
                         {
-                            let id = pending.message.id;
                             // A message joins Sent only after SMTP has
                             // accepted its bytes. If this was an edited draft,
                             // remove that draft at the same point; failures
@@ -1553,11 +1592,10 @@ impl MailApp {
                                     .order
                                     .retain(|message_id| *message_id != draft_id);
                             }
+                            MailDoc::ingest_message_flags(doc, &pending.message);
                             st.mailbox.insert(pending.message);
-                            st.persist_flags(doc, id);
                             self.editing_draft = None;
                             self.compose.close();
-                            self.persist_compose_format(doc);
                             st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
                         }
                     }
@@ -1650,19 +1688,16 @@ impl MailApp {
         self.awaiting_engine = !self.pending_engine_requests.is_empty();
     }
 
-    fn seed_doc(&self, doc: &mut AutoCommit) {
+    /// Register the locally hydrated corpus before actions target it. This is
+    /// external ingestion, not a user mutation: it never writes flags from a
+    /// presentation cache into the collaborative document.
+    fn register_hydrated_messages(&self, doc: &mut AutoCommit) {
         let st = self.shared.borrow();
         let ids: Vec<_> = st.mailbox.messages.keys().copied().collect();
         for id in ids {
-            if let Some(m) = st.mailbox.get(id) {
-                MailDoc::store_flags(doc, &m.clone());
+            if let Some(message) = st.mailbox.get(id) {
+                MailDoc::ingest_message_flags(doc, message);
             }
-        }
-        MailDoc::set_folder(doc, st.folder);
-        MailDoc::set_mode(doc, "mailbox");
-        MailDoc::set_compose_format(doc, self.compose.format().as_key());
-        if let Some(sel) = st.selected {
-            MailDoc::set_selected(doc, Some(&sel.to_string()));
         }
     }
 
@@ -1694,30 +1729,33 @@ impl MailApp {
         }
     }
 
-    /// Restore the collaborative session persisted in an already-seeded
-    /// document: folder, compose format, per-message flags, current selection,
-    /// and any in-progress draft. Accounts are device-local and deliberately
-    /// never adopted from peer state. Complements [`Self::seed_doc`].
-    fn restore_session(&mut self, doc: &mut AutoCommit) {
-        // Compose body format preference.
-        if let Some(fmt) = MailDoc::get_compose_format(doc) {
-            self.compose.set_format(ComposeFormat::from_key(&fmt));
+    /// Persist the compose mode on this device only. The caller invokes this
+    /// at every format-changing or composer lifecycle boundary; the retained
+    /// value makes unchanged close/save/send paths a no-op.
+    fn persist_compose_format_if_changed(&mut self) {
+        let format = self.compose.format();
+        if format == self.persisted_compose_format {
+            return;
         }
-        // Folder + flags + selection.
+        match self.accounts_persist.persist_compose_format(format) {
+            Ok(()) => self.persisted_compose_format = format,
+            Err(error) => {
+                self.shared.borrow_mut().status = Some(format!(
+                    "Compose format changed, but could not save that preference: {error}"
+                ));
+            }
+        }
+    }
+
+    /// Apply collaborative domain state to the local hydrated corpus. Folder,
+    /// selection, search, and composer format remain local to this window.
+    fn hydrate_domain_state(&self, doc: &mut AutoCommit) {
         {
             let mut st = self.shared.borrow_mut();
-            st.folder = MailDoc::get_folder(doc);
             MailDoc::apply_flags(doc, &mut st.mailbox);
-            let restored = MailDoc::get_selected(doc)
-                .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-                .filter(|id| st.mailbox.get(*id).is_some());
-            st.selected = restored.or_else(|| {
-                st.current_threads()
-                    .first()
-                    .and_then(|t| t.message_ids.last().copied())
-            });
         }
-        // An in-progress persisted draft becomes a visible Drafts message.
+        // A persisted draft becomes a local Drafts projection, but does not
+        // force another collaborator's composer open.
         let draft = MailDoc::load_draft(doc);
         if !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty() {
             self.upsert_draft_message(doc, &draft);
@@ -2668,17 +2706,21 @@ impl MailApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) -> bool {
+        let format_before = self.compose.format();
         let (consumed, action) =
             self.compose
                 .handle_event(event, scale_factor, &modifiers, state, path, node_id, taffy);
+        let lifecycle_boundary = !matches!(&action, ComposeAction::None);
         match action {
             ComposeAction::Send => self.send_compose(state),
             ComposeAction::SaveDraft => self.save_compose_draft(state),
             ComposeAction::Close => {
-                self.persist_compose_format(state);
                 self.dirty = true;
             }
             ComposeAction::None => {}
+        }
+        if lifecycle_boundary || self.compose.format() != format_before {
+            self.persist_compose_format_if_changed();
         }
         consumed
     }
@@ -2725,18 +2767,10 @@ impl Widget for MailApp {
 
         let mem_seeded = self.shared.borrow().seeded;
         if mem_seeded {
-            let mut st = self.shared.borrow_mut();
-            MailDoc::apply_flags(state, &mut st.mailbox);
+            self.hydrate_domain_state(state);
         } else {
-            if MailDoc::is_seeded(state) {
-                // Reopening an already-persisted document: restore the saved
-                // session (folder / selection / active account / compose format /
-                // in-progress draft) instead of overwriting it from defaults.
-                self.restore_session(state);
-            } else {
-                self.seed_doc(state);
-                MailDoc::set_seeded(state);
-            }
+            self.register_hydrated_messages(state);
+            self.hydrate_domain_state(state);
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
             if self.engine.is_some() && has_accounts && !self.connect_requested {
@@ -2749,18 +2783,6 @@ impl Widget for MailApp {
                 self.connect_requested = true;
             }
             self.shared.borrow_mut().seeded = true;
-        }
-        while let Some(id) = self.pending_reveal_reads.pop_front() {
-            let unread = self
-                .shared
-                .borrow()
-                .mailbox
-                .get(id)
-                .is_some_and(|message| !message.read);
-            if unread {
-                self.shared.borrow_mut().set_read(state, id, true);
-                self.process_intents();
-            }
         }
         // Live app: advance the wall clock (relative timestamps + the periodic
         // refresh cadence read it) and fire a periodic refresh when due. The
@@ -2860,23 +2882,9 @@ impl Widget for MailApp {
             }
             (
                 qos_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealMessage { id },
+                crate::actions::MailOperation::RevealMessage { id: _ },
             ) => {
-                let id = id
-                    .parse::<crate::model::MessageId>()
-                    .map_err(|_| "invalid message id")?;
-                if !self.pending_reveal_reads.contains(&id)
-                    && self.pending_reveal_reads.len() >= MAX_PENDING_REVEAL_READS
-                {
-                    return Err("too many message opens are awaiting read settlement".into());
-                }
-                if !self.shared.borrow_mut().reveal_message(id, false) {
-                    return Err("message is no longer loaded".into());
-                }
-                if !self.pending_reveal_reads.contains(&id) {
-                    self.pending_reveal_reads.push_back(id);
-                }
-                self.process_intents();
+                return Err("Open message must use the admitted mutable operation path".into());
             }
             (
                 qos_actions::OperationKind::View,
@@ -2885,7 +2893,7 @@ impl Widget for MailApp {
                 let id = id
                     .parse::<crate::model::MessageId>()
                     .map_err(|_| "invalid message id")?;
-                if !self.shared.borrow_mut().reveal_message(id, true) {
+                if !self.shared.borrow_mut().preview_message(id) {
                     return Err("message is no longer loaded".into());
                 }
                 self.shared.borrow_mut().status =
@@ -2976,6 +2984,36 @@ impl Widget for MailApp {
             return Err("mail refresh could not be queued".into());
         }
         Ok(None)
+    }
+
+    /// Admit the compound normal-open operation at the one framework boundary
+    /// allowed to mutate the document.  The view transition and its canonical
+    /// `SetRead` action are therefore one explicit Open interaction, never a
+    /// deferred consequence of rendering or navigation.  Preview deliberately
+    /// stays on the read-only operation route above.
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let operation = crate::actions::decode_operation(type_id, payload)?;
+        if kind == qos_actions::OperationKind::View
+            && let Some(crate::actions::MailOperation::RevealMessage { id }) = operation
+        {
+            let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
+            if !self.shared.borrow_mut().open_message(doc, id) {
+                return Err("message is no longer loaded".into());
+            }
+            self.process_intents();
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput::default(),
+            )));
+        }
+        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
     }
 
     fn poll_resource_operation(
@@ -3638,15 +3676,20 @@ impl Widget for MailApp {
             if !self.compose.open {
                 return false;
             }
-            match self.compose.perform_semantic_action(control, action) {
+            let format_before = self.compose.format();
+            let compose_action = self.compose.perform_semantic_action(control, action);
+            let lifecycle_boundary = !matches!(&compose_action, Some(ComposeAction::None));
+            match compose_action {
                 Some(ComposeAction::Send) => self.send_compose(state),
                 Some(ComposeAction::SaveDraft) => self.save_compose_draft(state),
                 Some(ComposeAction::Close) => {
-                    self.persist_compose_format(state);
                     self.dirty = true;
                 }
                 Some(ComposeAction::None) => {}
                 None => return false,
+            }
+            if lifecycle_boundary || self.compose.format() != format_before {
+                self.persist_compose_format_if_changed();
             }
             return true;
         }
@@ -4538,24 +4581,41 @@ mod tests {
             id: id.to_string(),
         })
         .unwrap();
-        assert!(
-            app.invoke_resource_operation(
+        assert!(matches!(
+            app.start_resource_operation_with_document(
+                qos_actions::InvocationId::default(),
                 qos_actions::OperationKind::View,
                 crate::actions::MAIL_OPERATION_TYPE,
                 &payload,
-                &doc,
+                &mut doc,
                 &automerge::ROOT,
             )
-            .unwrap()
-        );
-        assert!(
-            !app.shared.borrow().mailbox.get(id).unwrap().read,
-            "the immutable view-operation boundary does not forge a document edit"
-        );
-        app.sync(&mut doc, &automerge::ROOT);
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert!(
             app.shared.borrow().mailbox.get(id).unwrap().read,
-            "the next mutable sync applies normal read semantics"
+            "Open immediately dispatches the canonical mark-read action"
+        );
+        let dispatched = app
+            .shared
+            .borrow()
+            .actions
+            .last_dispatched()
+            .cloned()
+            .expect("Open emitted an action");
+        let expected =
+            crate::actions::encode(&crate::actions::set_read_action(vec![id.to_string()], true));
+        assert_eq!(dispatched.type_id, expected.type_id);
+        assert_eq!(
+            dispatched.payload, expected.payload,
+            "resource Open and every on-screen mark-read control use the same action payload"
+        );
+        assert!(
+            doc.get(&automerge::ROOT, "ui")
+                .expect("document remains readable")
+                .is_none(),
+            "Open records no selection, folder, search, mode, or compose presentation state"
         );
         assert!(
             app.take_committed_action().is_some(),
@@ -4583,19 +4643,20 @@ mod tests {
                 id: id.to_string(),
             })
             .unwrap();
-            assert!(
-                app.invoke_resource_operation(
+            assert!(matches!(
+                app.start_resource_operation_with_document(
+                    qos_actions::InvocationId::default(),
                     qos_actions::OperationKind::View,
                     crate::actions::MAIL_OPERATION_TYPE,
                     &payload,
-                    &doc,
+                    &mut doc,
                     &automerge::ROOT,
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
         }
 
-        app.sync(&mut doc, &automerge::ROOT);
         assert!(ids.iter().all(|id| {
             app.shared
                 .borrow()
@@ -4606,7 +4667,7 @@ mod tests {
     }
 
     #[test]
-    fn full_pending_open_queue_refuses_without_changing_presentation_or_document() {
+    fn legacy_read_only_open_route_refuses_without_changing_presentation_or_document() {
         let (mut app, mut doc) = app();
         let target = app
             .shared
@@ -4616,10 +4677,6 @@ mod tests {
             .first()
             .map(|message| message.id)
             .expect("sample contains an inbox message");
-        app.pending_reveal_reads = (0..MAX_PENDING_REVEAL_READS)
-            .map(|_| uuid::Uuid::new_v4())
-            .collect();
-        let queued_before = app.pending_reveal_reads.clone();
         let (folder_before, selected_before, inspection_before, search_before, status_before) = {
             let state = app.shared.borrow();
             (
@@ -4650,10 +4707,9 @@ mod tests {
                 &doc,
                 &automerge::ROOT,
             )
-            .expect_err("a full queue must reject the next distinct open");
+            .expect_err("the read-only route cannot defer an Open mutation");
 
-        assert!(error.contains("awaiting read settlement"));
-        assert_eq!(app.pending_reveal_reads, queued_before);
+        assert!(error.contains("admitted mutable operation"));
         assert_eq!(doc.get_heads(), heads_before);
         let state = app.shared.borrow();
         assert_eq!(state.folder, folder_before);
@@ -5169,22 +5225,27 @@ mod tests {
     }
 
     #[test]
-    fn session_state_restores_from_persisted_document() {
+    fn presentation_state_is_local_and_never_restored_from_a_peer_document() {
         let mut doc = AutoCommit::new();
         {
             let mut app = MailApp::new_sample();
-            app.sync(&mut doc, &automerge::ROOT); // seeds the document
+            app.sync(&mut doc, &automerge::ROOT);
             app.shared
                 .borrow_mut()
                 .select_folder(&mut doc, Folder::Sent);
             app.shared.borrow_mut().set_active_account(1);
+            app.shared.borrow_mut().search = "private query".into();
             app.compose.set_format(ComposeFormat::Text);
-            app.persist_compose_format(&mut doc);
         }
-        // A second app opening the same document must restore, not overwrite.
+        // A second app sharing the document receives only domain state.
         let mut app2 = MailApp::new_sample();
         app2.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app2.shared.borrow().folder, Folder::Sent, "folder restored");
+        assert_eq!(
+            app2.shared.borrow().folder,
+            Folder::Inbox,
+            "folder is local"
+        );
+        assert!(app2.shared.borrow().search.is_empty(), "search is local");
         assert_eq!(
             app2.shared.borrow().accounts.active,
             0,
@@ -5192,15 +5253,57 @@ mod tests {
         );
         assert_eq!(
             app2.compose.format(),
-            ComposeFormat::Text,
-            "compose format restored"
+            ComposeFormat::Html,
+            "compose format is local"
         );
         assert!(
-            doc.get(&automerge::ROOT, "account")
+            doc.get(&automerge::ROOT, "ui")
                 .expect("document remains readable")
                 .is_none(),
-            "account connection settings never enter collaborative state"
+            "window presentation never enters collaborative state"
         );
+    }
+
+    #[test]
+    fn compose_format_restores_per_device_without_entering_the_shared_document() {
+        let persistence = AccountsPersist::sandbox();
+        let preference_path = persistence
+            .local_preferences_path()
+            .expect("sandbox has a local preference path");
+        let first_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
+        let mut first = MailApp::assemble(first_state, None, persistence.clone());
+        first.compose.set_format(ComposeFormat::Text);
+        first.persist_compose_format_if_changed();
+        assert!(preference_path.is_file(), "format is persisted locally");
+
+        let second_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
+        let second = MailApp::assemble(second_state, None, persistence);
+        assert_eq!(
+            second.compose.format(),
+            ComposeFormat::Text,
+            "a later window on this device restores its local preference"
+        );
+
+        let mut doc = AutoCommit::new();
+        first.sync(&mut doc, &automerge::ROOT);
+        let mut peer = MailApp::new_sample();
+        peer.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            peer.compose.format(),
+            ComposeFormat::Html,
+            "a peer with a different local store never receives this preference"
+        );
+        assert!(doc.get(&automerge::ROOT, "ui").unwrap().is_none());
+    }
+
+    #[test]
+    fn sample_compose_format_preference_never_uses_the_real_config_root() {
+        let mut app = MailApp::new_sample();
+        let sandbox = app.accounts_persist_root().expect("sample sandbox");
+        app.compose.set_format(ComposeFormat::Text);
+        app.persist_compose_format_if_changed();
+        assert!(sandbox.join("mail-local.json").is_file());
+        assert_ne!(Some(sandbox), accounts::config_root());
     }
 
     #[test]

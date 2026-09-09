@@ -107,9 +107,11 @@ pub enum MailOperation {
         /// added, removed, or reordered.
         id: String,
     },
-    /// Reveal an already-loaded message. The app records normal mark-read
-    /// semantics through its document action at the next mutable sync boundary.
-    /// This is the operation behind the plainly named **Open message** action.
+    /// Reveal an already-loaded message. The admitted Open operation
+    /// synchronously dispatches the canonical document `SetRead` action before
+    /// it completes, so history, sync, notifications, and unread counters all
+    /// observe the same state transition. This is the operation behind the
+    /// plainly named **Open message** action.
     RevealMessage {
         id: String,
     },
@@ -1179,6 +1181,31 @@ mod tests {
             "replay reproduced the identical change"
         );
         assert_eq!(MailDoc::get_starred(&b, "m"), Some(true));
+    }
+
+    #[test]
+    fn concurrent_same_message_flag_edits_merge_without_losing_either_field() {
+        let mut base = AutoCommit::new();
+        MailDoc::register_message(&mut base, "m");
+        base.commit();
+        let bytes = base.save();
+        let mut read_replica = AutoCommit::load(&bytes).unwrap();
+        let mut star_replica = AutoCommit::load(&bytes).unwrap();
+        read_replica.set_actor(automerge::ActorId::from(vec![1]));
+        star_replica.set_actor(automerge::ActorId::from(vec![2]));
+
+        set_read_action(vec!["m".into()], true)
+            .apply(&mut read_replica)
+            .unwrap();
+        read_replica.commit();
+        set_starred_action(vec!["m".into()], true)
+            .apply(&mut star_replica)
+            .unwrap();
+        star_replica.commit();
+
+        read_replica.merge(&mut star_replica).unwrap();
+        assert_eq!(MailDoc::get_read(&read_replica, "m"), Some(true));
+        assert_eq!(MailDoc::get_starred(&read_replica, "m"), Some(true));
     }
 
     /// A batched multi-message move is one change and replays byte-identically on
