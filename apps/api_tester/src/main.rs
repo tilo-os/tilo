@@ -33,9 +33,22 @@ use ui::widget::Widget;
     reason = "must match ui::launch's ShotFactory = fn(&LaunchArgs) -> Result<..>"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let mut app = api_tester::ApiTesterApp::new_demo();
+    let mut app = if args.has("--empty") {
+        api_tester::ApiTesterApp::new()
+    } else {
+        api_tester::ApiTesterApp::new_demo()
+    };
     if args.has("--rail-open") {
         app.snap_rail(true);
+    }
+    if args.has("--error") {
+        app.shot_error();
+    }
+    if args.has("--focus-url") {
+        app.shot_focus_url();
+    }
+    if let Some(form) = args.value("--form") {
+        app.shot_form(form);
     }
     Ok(Box::new(app))
 }
@@ -47,7 +60,8 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.qos.api-tester", api_tester::app_root)
             .shot_root(shot_root)
-            .allowed_flags(&["--rail-open"])
+            .allowed_flags(&["--rail-open", "--empty", "--error", "--focus-url"])
+            .allowed_options(&["--form"])
             .configure_app(|app| api_tester::actions::register(app.action_registry_mut())),
     );
 }
