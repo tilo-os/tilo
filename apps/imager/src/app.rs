@@ -22,10 +22,10 @@
 //! host authentication for a short-lived privileged writer. The wizard itself
 //! stays unprivileged; tests and shots cannot start the helper.
 //!
-//! All persistent state (selected source/target, the live profile, the typed
-//! confirmation, the current step, job progress) lives in the Automerge
-//! document so it is undoable and replicates to collaborators. The transient
-//! job/portal channels are the only non-CRDT state.
+//! Reviewed sources and non-secret install preferences are collaborative
+//! Automerge resources. Drive selection, typed confirmation, progress and
+//! worker channels are local capabilities: another peer can inspect a plan,
+//! but never select/arm/write this machine's device.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -107,18 +107,19 @@ struct Layout {
     reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
 pub struct ImagerApp {
-    // ---- CRDT-backed (cached each `sync`) ----
+    // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
     recent: Vec<Source>,
+    profile: InstallProfile,
+    // ---- local machine/window state ----
     targets: Vec<TargetDrive>,
-    /// qOS releases offered on the Source step. Like the drive list this is
-    /// read from the document and never invented: an offered release is a
+    /// qOS releases offered on the Source step are a bounded local catalogue;
+    /// they are never collaborative state. An offered release is a
     /// write source for a job that erases the target, so one that does not
     /// exist on this machine must not be clickable.
     releases: Vec<QosRelease>,
     selected: Option<usize>,
     action: Action,
-    profile: InstallProfile,
     progress: Progress,
     /// Peer-local destructive-write arming field. This must never replicate:
     /// a collaborator may review the plan, but cannot type consent for us.
@@ -140,9 +141,6 @@ pub struct ImagerApp {
     /// False until the first live sync has reconciled any persisted active
     /// phase with this process's necessarily empty worker channels.
     startup_write_state_reconciled: bool,
-    /// The previous process lost supervision of an active write. The recovery
-    /// action must rescan and return to drive selection, not jump to Confirm.
-    orphaned_write_recovery: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
@@ -200,7 +198,6 @@ impl ImagerApp {
             export_after_sync: false,
             shot_confirmation_ready: false,
             startup_write_state_reconciled: false,
-            orphaned_write_recovery: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
@@ -290,20 +287,17 @@ impl ImagerApp {
         self.source.as_ref().is_some_and(|s| s.installable)
     }
 
-    /// The label for the customization resource Ctrl+K publishes, or `None` when
-    /// the current source has no profile to configure (a plain ISO, or nothing
-    /// selected) so the palette shows nothing to act on. Used by the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    pub(crate) fn customization_source_label(&self) -> Option<String> {
-        if !self.customizable() {
-            return None;
-        }
-        Some(
-            self.source
-                .as_ref()
-                .map_or_else(|| "qOS image".into(), |s| s.name.clone()),
-        )
+    /// Read-only projections used to build the searchable resource hierarchy.
+    /// The target list and job state describe this machine, so publishing them
+    /// does not turn them into shared authority.
+    pub(crate) fn resource_source(&self) -> Option<&Source> {
+        self.source.as_ref()
+    }
+    pub(crate) fn resource_targets(&self) -> &[TargetDrive] {
+        &self.targets
+    }
+    pub(crate) fn resource_progress(&self) -> &Progress {
+        &self.progress
     }
 
     /// The last profile [`EncodedAction`](qos_actions::EncodedAction) an
@@ -325,6 +319,81 @@ impl ImagerApp {
     /// its overlay placement is part of visual review.
     pub fn shot_open_customize_timezone(&mut self) {
         self.customize.open_timezone_for_shot();
+    }
+
+    /// Prime local-only state for deterministic offscreen review. None of this
+    /// device/job presentation data is written into the collaborative doc.
+    pub fn seed_local_shot_state(&mut self, scenario: &str) {
+        self.targets = if scenario == "drive-empty" || scenario == "source-empty" {
+            Vec::new()
+        } else {
+            crate::model::sample_targets()
+        };
+        self.releases = crate::model::sample_releases();
+        match scenario {
+            "drive" => {
+                self.selected = Some(0);
+                self.step = Step::Drive;
+                self.status = "1 removable, 2 total".into();
+            }
+            "customize" | "customize-timezone-open" | "export" => {
+                self.selected = Some(0);
+                self.step = Step::Customize;
+                self.status = "Pre-configuring qOS 1.0".into();
+            }
+            "confirm" => {
+                self.selected = Some(0);
+                self.step = Step::Confirm;
+                self.status = "Ready to write qOS 1.0 → /dev/sdb".into();
+            }
+            "progress" => {
+                self.selected = Some(0);
+                self.step = Step::Write;
+                self.progress = Progress {
+                    phase: JobPhase::Writing,
+                    write_frac: 0.62,
+                    verify_frac: 0.0,
+                    rate_bps: 176_000_000,
+                    error: None,
+                };
+                self.status = "Writing qOS 1.0 → /dev/sdb".into();
+            }
+            "done" => {
+                self.selected = Some(0);
+                self.step = Step::Done;
+                self.progress = Progress {
+                    phase: JobPhase::Success,
+                    write_frac: 1.0,
+                    verify_frac: 1.0,
+                    rate_bps: 0,
+                    error: None,
+                };
+                self.status = "Done — qOS 1.0 written and verified".into();
+            }
+            "done-failed" => {
+                self.selected = Some(0);
+                self.step = Step::Done;
+                self.progress = Progress {
+                    phase: JobPhase::Failed,
+                    write_frac: 0.36,
+                    verify_frac: 0.0,
+                    rate_bps: 0,
+                    error: Some("Write failed — device disappeared mid-write".into()),
+                };
+                self.status = "Write failed — device disappeared mid-write".into();
+            }
+            "drive-empty" => {
+                self.step = Step::Drive;
+                self.status = "No removable drives detected".into();
+            }
+            _ => {}
+        }
+    }
+
+    /// Local demo inventory/catalogue used by `--demo`; the collaborative
+    /// document still carries only the reviewed source/profile records.
+    pub fn seed_local_demo_state(&mut self) {
+        self.seed_local_shot_state("source");
     }
 
     fn confirm_matches(&self) -> bool {
@@ -3378,26 +3447,33 @@ impl ImagerApp {
 // =========================================================================
 impl ImagerApp {
     fn select_source(&mut self, state: &mut AutoCommit, src: &Source) {
-        if let Some(prev) = &self.source
-            && !prev.path.is_empty()
-            && !self.recent.iter().any(|s| s.path == prev.path)
-        {
-            self.recent.insert(0, prev.clone());
-            self.recent.truncate(6);
-            ImagerDoc::set_recent(state, &self.recent);
-        }
+        let previous = self
+            .source
+            .as_ref()
+            .filter(|previous| !previous.path.is_empty())
+            .cloned()
+            .map(Box::new);
         // A non-installable source cannot carry a pre-config profile.
         if !src.installable {
             self.action = Action::Flash;
-            ImagerDoc::set_action(state, Action::Flash);
         }
+        let action = crate::actions::ImagerAction::SelectSource {
+            source: Box::new(src.clone()),
+            previous,
+            recent_rank: ImagerDoc::next_recent_rank(state),
+        };
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::IMAGER_ACTION_TYPE,
+            &action,
+            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", &action),
+        );
         self.source = Some(src.clone());
-        ImagerDoc::set_source(state, Some(src));
         self.set_status(state, &format!("Selected {}", src.name));
         self.dirty = true;
     }
 
-    fn open_file_picker(&mut self, state: &mut AutoCommit) {
+    fn open_file_picker(&mut self, state: &AutoCommit) {
         #[cfg(target_os = "linux")]
         {
             self.portal_rx = Some(
@@ -3446,7 +3522,7 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn download_release(&mut self, state: &mut AutoCommit, release: QosRelease) {
+    fn download_release(&mut self, state: &AutoCommit, release: QosRelease) {
         if self.release_rx.is_some() {
             self.set_status(state, "A qOS installer download is already in progress.");
             return;
@@ -3478,7 +3554,6 @@ impl ImagerApp {
                 {
                     release.local_path.clone_from(&source.path);
                 }
-                ImagerDoc::set_releases(state, &self.releases);
                 self.select_source(state, &source);
                 self.set_status(
                     state,
@@ -3490,7 +3565,7 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn select_target(&mut self, state: &mut AutoCommit, idx: usize) {
+    fn select_target(&mut self, state: &AutoCommit, idx: usize) {
         let Some(drive) = self.targets.get(idx) else {
             return;
         };
@@ -3506,21 +3581,18 @@ impl ImagerApp {
             return;
         }
         self.selected = Some(idx);
-        ImagerDoc::set_selected(state, Some(idx));
         self.confirm_input.set_text("");
         self.dirty = true;
     }
 
-    fn set_status(&mut self, state: &mut AutoCommit, s: &str) {
+    fn set_status(&mut self, _state: &AutoCommit, s: &str) {
         self.status = s.to_string();
-        ImagerDoc::set_status(state, s);
     }
 
-    fn goto(&mut self, state: &mut AutoCommit, s: Step) {
+    fn goto(&mut self, _state: &mut AutoCommit, s: Step) {
         self.step = s;
         self.scroll_y = 0.0;
         self.keyboard_hit = None;
-        ImagerDoc::set_step(state, s);
         self.confirm_input.set_focus(false);
         self.customize.clear_focus();
         self.dirty = true;
@@ -3531,7 +3603,6 @@ impl ImagerApp {
             Step::Source if self.can_advance(Step::Source) => self.goto(state, Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
                 self.action = Action::Flash;
-                ImagerDoc::set_action(state, Action::Flash);
                 if self.customizable() {
                     self.goto(state, Step::Customize);
                 } else {
@@ -3651,7 +3722,6 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                ImagerDoc::set_progress(state, &self.progress);
                 self.set_status(
                     state,
                     &format!(
@@ -3710,7 +3780,6 @@ impl ImagerApp {
                             "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
                                 .into(),
                         );
-                        ImagerDoc::set_progress(state, &self.progress);
                         self.set_status(
                             state,
                             "The writer stopped unexpectedly. Reconnect the drive, then review and retry.",
@@ -3742,7 +3811,6 @@ impl ImagerApp {
             }
             let terminal_phase = p.phase;
             let terminal_error = p.error.clone();
-            ImagerDoc::set_progress(state, &p);
             self.progress = p;
             self.dirty = true;
             if matches!(terminal_phase, JobPhase::Success | JobPhase::Failed) {
@@ -3771,35 +3839,11 @@ impl ImagerApp {
     }
 
     fn write_another(&mut self, state: &mut AutoCommit) {
-        if self.orphaned_write_recovery {
-            self.orphaned_write_recovery = false;
-            self.progress = Progress::default();
-            ImagerDoc::set_progress(state, &self.progress);
-            self.selected = None;
-            ImagerDoc::set_selected(state, None);
-            self.confirm_input.set_text("");
-            let refreshed = !live_probe_enabled() || self.do_rescan(state);
-            if !refreshed {
-                // A stale persisted inventory is not a fresh safety review.
-                // Hide it until a later rescan succeeds.
-                self.targets.clear();
-                ImagerDoc::write_targets(state, &self.targets);
-            }
-            self.goto(state, Step::Drive);
-            let message = if refreshed {
-                "Select the target drive again, review its current contents, and type its name to retry."
-            } else {
-                "The drive list could not be refreshed. Reconnect the target and rescan before reviewing and retrying."
-            };
-            self.set_status(state, message);
-            return;
-        }
         if self.progress.phase == JobPhase::Failed {
             // Preserve the reviewed source, target, and customized setup. A
             // retry still requires a fresh peer-local destructive confirmation
             // and passes every target/source validation again in the helper.
             self.progress = Progress::default();
-            ImagerDoc::set_progress(state, &self.progress);
             self.confirm_input.set_text("");
             self.goto(state, Step::Confirm);
             self.set_status(
@@ -3809,7 +3853,6 @@ impl ImagerApp {
             return;
         }
         self.progress = Progress::default();
-        ImagerDoc::set_progress(state, &self.progress);
         self.confirm_input.set_text("");
         self.goto(state, Step::Source);
         self.set_status(state, "");
@@ -3827,7 +3870,7 @@ impl ImagerApp {
         self.export_after_sync = true;
     }
 
-    fn do_rescan(&mut self, state: &mut AutoCommit) -> bool {
+    fn do_rescan(&mut self, state: &AutoCommit) -> bool {
         if live_probe_enabled() {
             // Re-read the live block-device inventory. `probe()` returns `None`
             // only when `lsblk` is unavailable — a transient failure — so in
@@ -3844,7 +3887,6 @@ impl ImagerApp {
                 return false;
             };
             self.targets.clone_from(&t);
-            ImagerDoc::write_targets(state, &t);
             // Keep the same physical drive selected across a rescan by name,
             // not by index (indices shift as drives come and go).
             self.selected =
@@ -3859,7 +3901,6 @@ impl ImagerApp {
             self.set_status(state, "Rescanned drives");
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
-        ImagerDoc::set_selected(state, self.selected);
         self.dirty = true;
         true
     }
@@ -3905,56 +3946,10 @@ impl ImagerApp {
         }
     }
 
-    /// Reconcile a durable write station with this process's local-only worker
-    /// channels. Active/idle progress has no authenticated terminal outcome;
-    /// an already-persisted terminal event is retained and shown on Done.
-    fn reconcile_persisted_write_state(&mut self, state: &mut AutoCommit) {
-        // A fully supervised in-process job is not an orphan. New app
-        // instances start with both fields empty; spelling this out keeps a
-        // future warm-restore path from rewriting a live operation.
-        if self.job_rx.is_some() && self.job_control.is_some() {
-            self.startup_write_state_reconciled = true;
-            return;
-        }
-        let restored_step = ImagerDoc::step(state);
-        let mut progress = ImagerDoc::progress(state);
-        let idle_write_was_orphaned =
-            restored_step == Step::Write && progress.phase == JobPhase::Idle;
-        if idle_write_was_orphaned {
-            // The step may have persisted immediately before the initial
-            // Writing event. There is no evidence that the device was untouched.
-            progress.mark_supervision_lost();
-        }
-        let transitioned = progress.fail_if_supervision_lost();
-        let supervision_was_lost = idle_write_was_orphaned
-            || transitioned
-            || (progress.phase == JobPhase::Failed
-                && progress.error.as_deref() == Some(crate::model::WRITE_SUPERVISION_LOST));
-        if supervision_was_lost {
-            let message = crate::model::WRITE_SUPERVISION_LOST;
-            ImagerDoc::set_progress(state, &progress);
-            ImagerDoc::set_selected(state, None);
-            ImagerDoc::set_step(state, Step::Done);
-            ImagerDoc::set_status(state, message);
-            self.confirm_input.set_text("");
-            self.orphaned_write_recovery = true;
-        } else if restored_step == Step::Write
-            && matches!(progress.phase, JobPhase::Success | JobPhase::Failed)
-        {
-            // The terminal event persisted before the UI advanced its station.
-            // Preserve that authoritative outcome, but never leave the wizard
-            // stranded on an in-progress screen without a worker.
-            ImagerDoc::set_step(state, Step::Done);
-            let message = if progress.phase == JobPhase::Success {
-                "The previous image write completed and verified."
-            } else {
-                progress
-                    .error
-                    .as_deref()
-                    .unwrap_or("The previous image write failed. Review the drive before retrying.")
-            };
-            ImagerDoc::set_status(state, message);
-        }
+    /// Jobs are supervised only by this process. A restart cannot make a
+    /// remote/persisted progress claim look trustworthy, so every fresh window
+    /// begins with an idle local job surface and requires a new review.
+    fn reconcile_persisted_write_state(&mut self, _state: &mut AutoCommit) {
         self.startup_write_state_reconciled = true;
     }
 }
@@ -3976,12 +3971,10 @@ impl Widget for ImagerApp {
                 // "insert a drive" state — the imager never invents drives.
                 // Sample content is opt-in (`--demo` / `--shots`), which seeds
                 // the document *before* the first sync so this branch is skipped.
-                let targets = if live_probe_enabled() {
-                    crate::probe::probe().unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                ImagerDoc::seed(state, &targets);
+                ImagerDoc::seed(state, &[]);
+            }
+            if live_probe_enabled() {
+                self.targets = crate::probe::probe().unwrap_or_default();
             }
             if live_probe_enabled() {
                 self.reconcile_persisted_write_state(state);
@@ -3994,10 +3987,10 @@ impl Widget for ImagerApp {
             self.seeded = true;
         }
 
-        if live_probe_enabled() && ImagerDoc::releases(state).is_empty() {
+        if live_probe_enabled() && self.releases.is_empty() {
             match crate::release::bundled_releases() {
-                Ok(releases) => ImagerDoc::set_releases(state, &releases),
-                Err(error) => ImagerDoc::set_status(state, &error),
+                Ok(releases) => self.releases = releases,
+                Err(error) => self.status = error,
             }
         }
 
@@ -4006,26 +3999,15 @@ impl Widget for ImagerApp {
         self.drain_release(state);
         self.drain_job(state);
 
-        self.targets = ImagerDoc::targets(state);
         self.source = ImagerDoc::source(state);
         self.recent = ImagerDoc::recent(state);
-        self.releases = ImagerDoc::releases(state);
         self.profile = ImagerDoc::profile(state);
-        self.progress = ImagerDoc::progress(state);
         self.action = Action::Flash;
-        if ImagerDoc::action(state) != Action::Flash {
-            ImagerDoc::set_action(state, Action::Flash);
-        }
-        self.status = ImagerDoc::status(state);
-        self.step = ImagerDoc::step(state);
-        self.selected = ImagerDoc::selected(state).filter(|i| {
+        self.selected = self.selected.filter(|i| {
             self.targets
                 .get(*i)
                 .is_some_and(TargetDrive::is_media_target)
         });
-        if self.selected != ImagerDoc::selected(state) {
-            ImagerDoc::set_selected(state, self.selected);
-        }
 
         // Refresh the shared customization panel's fields from the profile
         // (each unfocused field mirrors the stored value; a focused one stays
@@ -4806,11 +4788,41 @@ mod tests {
         // Tests drive the wizard against the demo document (sample drives + a
         // qOS image + recent history) — the same content `--shots`/`--demo` use.
         let mut app = ImagerApp::new();
+        app.targets = crate::model::sample_targets();
+        app.releases = crate::model::sample_releases();
         let mut doc = AutoCommit::new();
         ImagerDoc::seed_demo(&mut doc);
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    #[test]
+    fn local_wizard_state_never_leaks_through_the_collaborative_document() {
+        let (mut app, mut doc) = seeded_app();
+        let before = doc.save();
+        app.selected = Some(0);
+        app.goto(&mut doc, Step::Confirm);
+        app.progress = Progress {
+            phase: JobPhase::Writing,
+            write_frac: 0.5,
+            verify_frac: 0.0,
+            rate_bps: 1,
+            error: None,
+        };
+        app.set_status(&doc, "local writer status");
+        assert_eq!(
+            doc.save(),
+            before,
+            "selection, station, status, and job progress are local"
+        );
+        let mut peer = AutoCommit::load(&before).unwrap();
+        let mut peer_app = ImagerApp::new();
+        peer_app.sync(&mut peer, &automerge::ROOT);
+        assert_eq!(peer_app.step, Step::Source);
+        assert_eq!(peer_app.selected, None);
+        assert_eq!(peer_app.progress.phase, JobPhase::Idle);
+        assert!(peer_app.status.is_empty());
     }
 
     // ---- synthetic winit events for driving the real event path -----------
@@ -4986,7 +4998,7 @@ mod tests {
 
         let (mut app, mut doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.goto(&mut doc, Step::Customize);
 
         let tree = app.accessibility_tree();
@@ -5051,7 +5063,7 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
-        assert!(ImagerDoc::status(&doc).contains("Choose a listed Time zone"));
+        assert!(app.status.contains("Choose a listed Time zone"));
 
         app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
         app.scroll_y = 0.0;
@@ -5147,128 +5159,33 @@ mod tests {
     }
 
     #[test]
-    fn restored_write_and_verify_phases_fail_closed_and_require_fresh_drive_review() {
-        for phase in [JobPhase::Writing, JobPhase::Verifying] {
-            let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
-            ImagerDoc::seed_demo(&mut doc);
-            ImagerDoc::set_selected(&mut doc, Some(0));
-            ImagerDoc::set_step(&mut doc, Step::Write);
-            ImagerDoc::set_progress(
-                &mut doc,
-                &Progress {
-                    phase,
-                    write_frac: 0.8,
-                    verify_frac: 0.3,
-                    rate_bps: 64_000_000,
-                    error: None,
-                },
-            );
-
-            // This is the live startup transition, called before any resource
-            // operation can be offered. Tests invoke it directly so screenshot
-            // fixtures may continue posing an intentional progress frame.
-            app.reconcile_persisted_write_state(&mut doc);
-            app.sync(&mut doc, &automerge::ROOT);
-
-            assert!(app.startup_write_state_reconciled);
-            assert!(app.orphaned_write_recovery);
-            assert_eq!(app.step, Step::Done);
-            assert_eq!(app.progress.phase, JobPhase::Failed);
-            assert_ne!(app.progress.phase, JobPhase::Success);
-            assert!(app.selected.is_none(), "old target consent is invalidated");
-            assert!(app.confirm_input.value().is_empty());
-            assert!(app.status.contains("outcome is unknown"));
-            assert!(app.status.contains("rescan and review"));
-            let tree = app.accessibility_tree();
-            let result = accessible_named(&tree, "Write failure details")
-                .expect("unknown outcome is exposed as an assertive failure");
-            assert!(
-                result
-                    .value
-                    .as_deref()
-                    .is_some_and(|value| value.contains("drive may be incomplete"))
-            );
-
-            // Closing again before choosing recovery must not turn the durable
-            // Failed marker into an ordinary retry that skips the rescan.
-            let mut restarted_again = ImagerApp::new();
-            restarted_again.reconcile_persisted_write_state(&mut doc);
-            restarted_again.sync(&mut doc, &automerge::ROOT);
-            assert!(restarted_again.orphaned_write_recovery);
-            assert_eq!(restarted_again.step, Step::Done);
-            app = restarted_again;
-
-            app.write_another(&mut doc);
-            assert_eq!(app.step, Step::Drive);
-            assert_eq!(app.progress.phase, JobPhase::Idle);
-            assert!(app.selected.is_none());
-            assert!(app.confirm_input.value().is_empty());
-            assert!(app.status.contains("Select the target drive again"));
-            assert!(!app.can_advance_with_writer(Step::Drive, true));
-            assert_eq!(ImagerDoc::step(&doc), Step::Drive);
-            assert_eq!(ImagerDoc::progress(&doc).phase, JobPhase::Idle);
-            assert!(ImagerDoc::selected(&doc).is_none());
-        }
-    }
-
-    #[test]
-    fn restored_write_step_normalises_idle_and_terminal_phases_without_a_worker() {
-        for (phase, error) in [
-            (JobPhase::Idle, None),
-            (JobPhase::Failed, Some("device write failed".to_string())),
-            (JobPhase::Success, None),
-        ] {
-            let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
-            ImagerDoc::seed_demo(&mut doc);
-            ImagerDoc::set_selected(&mut doc, Some(0));
-            ImagerDoc::set_step(&mut doc, Step::Write);
-            ImagerDoc::set_progress(
-                &mut doc,
-                &Progress {
-                    phase,
-                    write_frac: 1.0,
-                    verify_frac: 1.0,
-                    rate_bps: 0,
-                    error,
-                },
-            );
-            assert!(app.job_rx.is_none());
-            assert!(app.job_control.is_none());
-
-            app.reconcile_persisted_write_state(&mut doc);
-            app.sync(&mut doc, &automerge::ROOT);
-
-            assert_eq!(app.step, Step::Done);
-            assert_eq!(ImagerDoc::step(&doc), Step::Done);
-            match phase {
-                JobPhase::Idle => {
-                    assert_eq!(app.progress.phase, JobPhase::Failed);
-                    assert!(app.orphaned_write_recovery);
-                    assert!(app.selected.is_none());
-                    assert!(app.status.contains("outcome is unknown"));
-                }
-                JobPhase::Failed => {
-                    assert_eq!(app.progress.phase, JobPhase::Failed);
-                    assert!(!app.orphaned_write_recovery);
-                    assert_eq!(app.progress.error.as_deref(), Some("device write failed"));
-                    assert_eq!(app.status, "device write failed");
-                }
-                JobPhase::Success => {
-                    assert_eq!(app.progress.phase, JobPhase::Success);
-                    assert!(!app.orphaned_write_recovery);
-                    assert!(app.status.contains("completed and verified"));
-                }
-                JobPhase::Writing | JobPhase::Verifying => unreachable!(),
-            }
-        }
+    fn restart_drops_unsupervised_local_write_state_and_requires_new_review() {
+        let (mut app, mut doc) = seeded_app();
+        app.select_target(&doc, 0);
+        app.step = Step::Write;
+        app.progress = Progress {
+            phase: JobPhase::Writing,
+            write_frac: 0.8,
+            verify_frac: 0.0,
+            rate_bps: 64_000_000,
+            error: None,
+        };
+        app.status = "Writing locally".into();
+        let saved = doc.save();
+        let mut restarted = ImagerApp::new();
+        let mut restored_doc = AutoCommit::load(&saved).unwrap();
+        restarted.sync(&mut restored_doc, &automerge::ROOT);
+        assert_eq!(restarted.step, Step::Source);
+        assert_eq!(restarted.progress.phase, JobPhase::Idle);
+        assert!(restarted.selected.is_none());
+        assert!(restarted.status.is_empty());
+        assert!(!restarted.can_advance_with_writer(Step::Drive, true));
     }
 
     #[test]
     fn write_operations_are_blocked_until_startup_state_is_reconciled() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.startup_write_state_reconciled = false;
         app.confirm_input.set_text("sdb");
 
@@ -5373,7 +5290,7 @@ mod tests {
     fn compact_step_targets_use_the_same_on_screen_rects_as_the_rail() {
         let (mut app, mut doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.goto(&mut doc, Step::Confirm);
         let lay = app.compute_layout();
 
@@ -5485,7 +5402,7 @@ mod tests {
         // No target selected yet → stays on Drive.
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Drive);
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.advance(&mut doc);
         // Seeded source is an installable qOS image → goes through Customize.
         assert_eq!(app.step, Step::Customize);
@@ -5496,7 +5413,7 @@ mod tests {
     #[test]
     fn privileged_helper_capability_enables_confirm_but_disabled_backend_does_not() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.goto(&mut doc, Step::Confirm);
         app.confirm_input.set_text("sdb");
 
@@ -5527,13 +5444,13 @@ mod tests {
     #[test]
     fn invalid_media_profile_blocks_confirm_and_direct_write() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.profile.hostname = "bad host".into();
         app.goto(&mut doc, Step::Customize);
 
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Customize);
-        assert!(ImagerDoc::status(&doc).contains("Hostname"));
+        assert!(app.status.contains("Hostname"));
 
         // A direct operation dispatch must repeat the gate rather than relying
         // only on wizard navigation.
@@ -5542,7 +5459,7 @@ mod tests {
         app.start_write(&mut doc);
         assert_eq!(app.step, Step::Confirm);
         assert!(app.job_rx.is_none());
-        assert!(ImagerDoc::status(&doc).contains("Hostname"));
+        assert!(app.status.contains("Hostname"));
     }
 
     /// The primary interaction, proven end to end by clicking the real
@@ -5620,7 +5537,7 @@ mod tests {
             .unwrap();
         app.select_source(&mut doc, &iso);
         app.advance(&mut doc); // → Drive
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.advance(&mut doc); // installable == false → straight to Confirm
         assert_eq!(app.step, Step::Confirm);
         assert!(!app.customizable());
@@ -5629,14 +5546,14 @@ mod tests {
     #[test]
     fn write_refused_without_matching_confirmation() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0); // sdb
+        app.select_target(&doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
         app.confirm_input.set_text("wrong");
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
         assert!(app.job_rx.is_none());
         assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
-        assert!(ImagerDoc::status(&doc).to_lowercase().contains("confirm"));
+        assert!(app.status.to_lowercase().contains("confirm"));
     }
 
     #[test]
@@ -5646,14 +5563,14 @@ mod tests {
             return;
         }
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0); // sdb
+        app.select_target(&doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
         app.confirm_input.set_text("sdb");
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Idle);
         assert_eq!(app.step, Step::Confirm);
         assert!(app.job_rx.is_none());
-        assert!(ImagerDoc::status(&doc).contains("disabled"));
+        assert!(app.status.contains("disabled"));
     }
 
     #[test]
@@ -5685,17 +5602,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         let mut targets = crate::model::sample_targets();
         targets[1].is_system = true; // the internal NVMe is the system disk
+        app.targets = targets.clone();
         ImagerDoc::seed(&mut doc, &targets);
         ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
         app.sync(&mut doc, &automerge::ROOT);
 
         app.dispatch_hit(&mut doc, Hit::Target(1));
         assert_eq!(app.selected, None, "the system disk is never selectable");
-        assert!(
-            ImagerDoc::status(&doc)
-                .to_lowercase()
-                .contains("system disk")
-        );
+        assert!(app.status.to_lowercase().contains("system disk"));
     }
 
     /// Set the Customize step up with one field cleared and focused, ready for
@@ -5709,7 +5623,7 @@ mod tests {
             p.hostname.clear();
         }
         ImagerDoc::set_profile(&mut doc, &p);
-        ImagerDoc::set_step(&mut doc, Step::Customize);
+        app.step = Step::Customize;
         app.sync(&mut doc, &automerge::ROOT); // reads the profile + step back
         assert_eq!(
             app.step,
@@ -5762,7 +5676,7 @@ mod tests {
     #[test]
     fn preview_shows_the_embedded_profile() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 1);
+        app.select_target(&doc, 1);
         app.export_config(&mut doc);
         let text = app.export_dialog.text();
         assert!(text.contains("\"schema\": 1"));
@@ -5774,7 +5688,7 @@ mod tests {
     #[test]
     fn write_another_resets_to_source() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.progress = Progress {
             phase: JobPhase::Success,
             write_frac: 1.0,
@@ -5790,7 +5704,7 @@ mod tests {
     #[test]
     fn failed_write_keeps_its_cause_and_returns_to_a_fresh_review() {
         let (mut app, mut doc) = seeded_app();
-        app.select_target(&mut doc, 0);
+        app.select_target(&doc, 0);
         app.goto(&mut doc, Step::Write);
         app.progress = Progress {
             phase: JobPhase::Writing,
@@ -5814,7 +5728,7 @@ mod tests {
         assert_eq!(app.step, Step::Done);
         assert_eq!(app.progress.phase, JobPhase::Failed);
         assert!(
-            ImagerDoc::status(&doc).contains("disconnected"),
+            app.status.contains("disconnected"),
             "the privileged writer's actionable cause reaches the UI"
         );
         let tree = app.accessibility_tree();
@@ -5850,7 +5764,7 @@ mod tests {
             .unwrap();
 
         assert!(control.is_cancelled());
-        assert!(ImagerDoc::status(&doc).contains("Keep the drive connected"));
+        assert!(app.status.contains("Keep the drive connected"));
         let footer = app.a11y_footer_controls(&app.compute_layout());
         let cancel = footer
             .iter()

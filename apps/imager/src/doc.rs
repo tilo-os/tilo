@@ -1,32 +1,25 @@
 //! Automerge document layer for the Install Media app.
 //!
-//! Shared plan and job state lives in the CRDT so the selected source/target,
-//! install options, and live progress are undoable and replicate to
-//! collaborators. Destructive confirmation is deliberately peer-local: a
-//! collaborator cannot arm a write on this machine. Machine-derived blobs (the
-//! probed target list, recent sources, the active install
-//! profile) are serialised as JSON string scalars — they are not edited
-//! character-by-character, so a plain scalar is the right granularity.
+//! Only reviewed, user-authored configuration lives in the CRDT. In
+//! particular, a source and every non-secret profile field are ordinary maps,
+//! not JSON snapshots: two collaborators changing the hostname and keyboard
+//! must not win/lose a whole profile race. Device inventory, a selected drive,
+//! destructive confirmation, progress and worker handles are machine/window
+//! local facts. The legacy scalar fields remain readable as a one-way migration
+//! source, but no new writer emits them.
 //!
 //! ```text
 //! root
-//! ├── "targets"      (Str)   # serde_json of Vec<TargetDrive>
-//! ├── "releases"     (Str)   # serde_json of Vec<QosRelease>
-//! ├── "source"       (Str)   # serde_json of Option<Source>
-//! ├── "recent"       (Str)   # serde_json of Vec<Source>
-//! ├── "profile"      (Str)   # serde_json of InstallProfile (the live edits)
-//! ├── "progress"     (Str)   # serde_json of Progress
-//! ├── "selected"     (Int)   # index into targets (or -1)
-//! ├── "action"       (Str)   # flash | install
-//! └── "status"       (Str)   # last status-line message
+//! ├── "source_v2"    (Map) # stable reviewed source or tombstone
+//! ├── "recent_v2"    (Map) # keyed reviewed sources, rank + tombstone
+//! └── "profile_v2"   (Map) # non-secret, field-granular installer profile
 //! ```
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::model::{
-    Action, InstallProfile, Progress, QosRelease, Source, Step, TargetDrive, sample_recent_sources,
-    sample_releases, sample_source, sample_targets,
+    InstallMode, InstallProfile, Source, TargetDrive, sample_recent_sources, sample_source,
 };
 
 pub struct ImagerDoc;
@@ -34,165 +27,404 @@ pub struct ImagerDoc;
 impl ImagerDoc {
     /// True when the document has never been seeded.
     pub fn is_empty(doc: &AutoCommit) -> bool {
-        !matches!(doc.get(&ROOT, "targets"), Ok(Some((Value::Scalar(_), _))))
+        !matches!(
+            doc.get(&ROOT, "imager_schema"),
+            Ok(Some((Value::Scalar(_), _)))
+        )
     }
 
-    /// Seed the document with **empty** collections + default UI state — no
-    /// fabricated image, no fake recent history, no invented drives. The live
-    /// app starts genuinely blank and fills `targets` from a real `lsblk`
-    /// probe; sample/demo content is opt-in via [`Self::seed_demo`].
+    /// Seed the document with empty collaborative records — no fabricated
+    /// image or history. The local app owns device discovery and job state.
     /// Idempotent: only writes fields that are missing.
-    pub fn seed(doc: &mut AutoCommit, targets: &[TargetDrive]) {
-        if Self::get_str(doc, "targets").is_none() {
-            Self::write_targets(doc, targets);
-        }
-        if Self::get_str(doc, "releases").is_none() {
-            Self::write_json(doc, "releases", &Vec::<QosRelease>::new());
-        }
-        if Self::get_str(doc, "source").is_none() {
+    pub fn seed(doc: &mut AutoCommit, _targets: &[TargetDrive]) {
+        let _ = doc.put(&ROOT, "imager_schema", 2i64);
+        Self::migrate_legacy(doc);
+        if Self::source_map_read(doc).is_none() {
             Self::set_source(doc, None);
         }
-        if Self::get_str(doc, "recent").is_none() {
-            Self::write_json(doc, "recent", &Vec::<Source>::new());
+        if Self::map_read(doc, &ROOT, "recent_v2").is_none() {
+            Self::set_recent(doc, &[]);
         }
-        if Self::get_str(doc, "profile").is_none() {
-            Self::write_json(doc, "profile", &InstallProfile::default());
-        }
-        if Self::get_str(doc, "progress").is_none() {
-            Self::write_json(doc, "progress", &Progress::default());
-        }
-        if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
-            // Start with NO drive selected: the wizard's Drive step must gate
-            // on a deliberate user choice before it will advance.
-            let _ = doc.put(&ROOT, "selected", -1i64);
-        }
-        if Self::get_str(doc, "action").is_none() {
-            let _ = doc.put(&ROOT, "action", "flash");
-        }
-        if Self::get_str(doc, "step").is_none() {
-            let _ = doc.put(&ROOT, "step", Step::Source.key());
-        }
-        if Self::get_str(doc, "status").is_none() {
-            let _ = doc.put(&ROOT, "status", "");
+        if Self::profile_map_read(doc).is_none() {
+            Self::set_profile(doc, &InstallProfile::default());
         }
     }
 
-    /// Seed a fully-populated **demo** document: the sample drives, the sample
-    /// qOS releases, a pre-selected qOS image, and a short recent-sources
-    /// history. This is the single home of the imager's sample content — used
+    /// Seed a fully-populated **demo** document: a pre-selected qOS image and
+    /// short recent-sources history. Device/release fixtures live in the local
+    /// app, never in this collaborative document. This is the single home of
+    /// the imager's sample content — used
     /// only by `--shots`, the `--demo` flag, and tests, never by the live app
     /// (which stays blank per [`Self::seed`]).
     pub fn seed_demo(doc: &mut AutoCommit) {
-        Self::seed(doc, &sample_targets());
-        Self::write_json(doc, "releases", &sample_releases());
+        Self::seed(doc, &[]);
         Self::set_source(doc, Some(&sample_source()));
-        Self::write_json(doc, "recent", &sample_recent_sources());
-    }
-
-    // ---- targets ----------------------------------------------------------
-    pub fn write_targets(doc: &mut AutoCommit, targets: &[TargetDrive]) {
-        Self::write_json(doc, "targets", &targets.to_vec());
-    }
-    /// The probed drive list. A missing or unreadable blob yields **nothing** —
-    /// the imager offers a drive to erase only when it has actually seen one.
-    pub fn targets(doc: &AutoCommit) -> Vec<TargetDrive> {
-        Self::read_json(doc, "targets").unwrap_or_default()
-    }
-
-    // ---- qOS releases -------------------------------------------------------
-    /// Releases offered as a write source. Empty unless something actually put
-    /// one here: there is no built-in list to fall back on, because a release
-    /// row is a write source for a drive-erasing job.
-    pub fn releases(doc: &AutoCommit) -> Vec<QosRelease> {
-        Self::read_json(doc, "releases").unwrap_or_default()
-    }
-    pub fn set_releases(doc: &mut AutoCommit, releases: &[QosRelease]) {
-        Self::write_json(doc, "releases", &releases.to_vec());
+        Self::set_recent(doc, &sample_recent_sources());
     }
 
     // ---- source -----------------------------------------------------------
     pub fn set_source(doc: &mut AutoCommit, source: Option<&Source>) {
-        let json = serde_json::to_string(&source.cloned()).unwrap_or_else(|_| "null".into());
-        let _ = doc.put(&ROOT, "source", json);
+        let Some(map) = Self::source_map(doc) else {
+            return;
+        };
+        match source {
+            Some(source) => {
+                ui::doc::put_if_changed(doc, &map, "deleted", false);
+                ui::doc::put_if_changed(doc, &map, "id", Self::source_id(source));
+                Self::write_source_fields(doc, &map, source);
+            }
+            None => {
+                ui::doc::put_if_changed(doc, &map, "deleted", true);
+            }
+        }
     }
     pub fn source(doc: &AutoCommit) -> Option<Source> {
-        Self::read_json::<Option<Source>>(doc, "source").flatten()
+        Self::source_map_read(doc)
+            .and_then(|map| (!Self::read_bool(doc, &map, "deleted")).then_some(map))
+            .and_then(|map| Self::read_source_fields(doc, &map))
+            .or_else(|| Self::read_json::<Option<Source>>(doc, "source").flatten())
+    }
+
+    /// Stable resource identity for a reviewed source. Prefer immutable digest,
+    /// then platform identity, then the canonical path/name fallback.
+    pub fn source_id(source: &Source) -> String {
+        let material = source
+            .expected_sha256
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map_or_else(
+                || {
+                    source.identity.map_or_else(
+                        || {
+                            format!(
+                                "{}\u{1f}{}\u{1f}{}",
+                                source.kind.tag(),
+                                source.path,
+                                source.name
+                            )
+                        },
+                        |identity| {
+                            format!(
+                                "{}\u{1f}{}:{}",
+                                source.kind.tag(),
+                                identity.volume,
+                                identity.file
+                            )
+                        },
+                    )
+                },
+                |digest| format!("{}\u{1f}{digest}", source.kind.tag()),
+            );
+        // FNV-1a is a stable identifier, not a security boundary. The writer
+        // independently rechecks identity/digest at the privileged boundary.
+        let hash = material
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
+                (acc ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        format!("imager.source:{hash:016x}")
     }
 
     // ---- recent sources ---------------------------------------------------
     pub fn recent(doc: &AutoCommit) -> Vec<Source> {
-        Self::read_json(doc, "recent").unwrap_or_default()
+        let Some(recent) = Self::map_read(doc, &ROOT, "recent_v2") else {
+            return Self::read_json(doc, "recent").unwrap_or_default();
+        };
+        let mut rows: Vec<(i64, String, Source)> = doc
+            .keys(&recent)
+            .filter_map(|id| {
+                let (value, row) = doc.get(&recent, &id).ok().flatten()?;
+                let Value::Object(ObjType::Map) = value else {
+                    return None;
+                };
+                (!Self::read_bool(doc, &row, "deleted"))
+                    .then(|| {
+                        Self::read_source_fields(doc, &row)
+                            .map(|source| (Self::read_i64(doc, &row, "rank"), id, source))
+                    })
+                    .flatten()
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        rows.into_iter().map(|(_, _, source)| source).collect()
     }
     pub fn set_recent(doc: &mut AutoCommit, recent: &[Source]) {
-        Self::write_json(doc, "recent", &recent.to_vec());
+        let Some(records) = Self::map(doc, &ROOT, "recent_v2") else {
+            return;
+        };
+        #[allow(
+            clippy::needless_collect,
+            reason = "the immutable Automerge key iterator must end before tombstoning rows"
+        )]
+        let keys = doc.keys(&records).collect::<Vec<_>>();
+        for key in keys {
+            if let Some((Value::Object(ObjType::Map), row)) = doc.get(&records, &key).ok().flatten()
+            {
+                ui::doc::put_if_changed(doc, &row, "deleted", true);
+            }
+        }
+        for (rank, source) in recent.iter().enumerate() {
+            let id = Self::source_id(source);
+            let row = Self::map(doc, &records, &id);
+            let Some(row) = row else { continue };
+            ui::doc::put_if_changed(doc, &row, "deleted", false);
+            ui::doc::put_if_changed(doc, &row, "rank", rank as i64);
+            Self::write_source_fields(doc, &row, source);
+        }
+    }
+
+    /// Add one reviewed source to history without rewriting or tombstoning the
+    /// rest of the keyed collection. Concurrent selections therefore retain
+    /// both records; the deterministic id breaks an equal-rank tie.
+    pub fn remember_recent_source(doc: &mut AutoCommit, source: &Source, rank: i64) {
+        let Some(records) = Self::map(doc, &ROOT, "recent_v2") else {
+            return;
+        };
+        let id = Self::source_id(source);
+        let Some(row) = Self::map(doc, &records, &id) else {
+            return;
+        };
+        ui::doc::put_if_changed(doc, &row, "deleted", false);
+        ui::doc::put_if_changed(doc, &row, "rank", rank);
+        Self::write_source_fields(doc, &row, source);
+    }
+
+    /// Capture the next MRU order at action-authoring time. Equal concurrent
+    /// ranks are intentionally resolved by stable source id on read.
+    pub fn next_recent_rank(doc: &AutoCommit) -> i64 {
+        Self::map_read(doc, &ROOT, "recent_v2").map_or(0, |records| {
+            doc.keys(&records)
+                .filter_map(|key| doc.get(&records, &key).ok().flatten())
+                .filter_map(|(value, row)| {
+                    matches!(value, Value::Object(ObjType::Map)).then_some(row)
+                })
+                .filter(|row| !Self::read_bool(doc, row, "deleted"))
+                .map(|row| Self::read_i64(doc, &row, "rank"))
+                .min()
+                .unwrap_or(0)
+                .saturating_sub(1)
+        })
     }
 
     // ---- live install profile --------------------------------------------
     pub fn profile(doc: &AutoCommit) -> InstallProfile {
-        Self::read_json(doc, "profile").unwrap_or_default()
+        Self::profile_map_read(doc).map_or_else(
+            || Self::read_json(doc, "profile").unwrap_or_default(),
+            |map| Self::read_profile_fields(doc, &map),
+        )
     }
     pub fn set_profile(doc: &mut AutoCommit, profile: &InstallProfile) {
-        Self::write_json(doc, "profile", profile);
+        let Some(map) = Self::profile_map(doc) else {
+            return;
+        };
+        Self::write_profile_fields(doc, &map, profile);
     }
 
-    // ---- progress ---------------------------------------------------------
-    pub fn progress(doc: &AutoCommit) -> Progress {
-        Self::read_json(doc, "progress").unwrap_or_default()
+    /// Write exactly one non-secret profile field. These are the action
+    /// application primitives: they never re-store a stale compound profile.
+    pub fn set_profile_mode(doc: &mut AutoCommit, mode: InstallMode) {
+        if let Some(map) = Self::profile_map(doc) {
+            ui::doc::put_if_changed(doc, &map, "mode", mode.key());
+        }
     }
-    pub fn set_progress(doc: &mut AutoCommit, p: &Progress) {
-        Self::write_json(doc, "progress", p);
+    pub fn set_profile_encrypt(doc: &mut AutoCommit, on: bool) {
+        if let Some(map) = Self::profile_map(doc) {
+            ui::doc::put_if_changed(doc, &map, "encrypt", on);
+        }
     }
-
-    // ---- scalar UI fields -------------------------------------------------
-    pub fn selected(doc: &AutoCommit) -> Option<usize> {
-        match doc.get(&ROOT, "selected") {
-            Ok(Some((Value::Scalar(v), _))) => {
-                let i = v.to_i64().unwrap_or(-1);
-                if i < 0 { None } else { Some(i as usize) }
+    pub fn set_profile_autologin(doc: &mut AutoCommit, on: bool) {
+        if let Some(map) = Self::profile_map(doc)
+            && let Some(user) = Self::map(doc, &map, "user")
+        {
+            ui::doc::put_if_changed(doc, &user, "autologin", on);
+        }
+    }
+    pub fn set_profile_text(doc: &mut AutoCommit, key: &str, value: &str) {
+        let Some(map) = Self::profile_map(doc) else {
+            return;
+        };
+        match key {
+            "hostname" | "locale" | "timezone" | "keyboard" => {
+                ui::doc::put_if_changed(doc, &map, key, value);
             }
-            _ => None,
+            "full_name" | "username" => {
+                if let Some(user) = Self::map(doc, &map, "user") {
+                    ui::doc::put_if_changed(doc, &user, key, value);
+                }
+            }
+            _ => {}
         }
-    }
-    pub fn set_selected(doc: &mut AutoCommit, idx: Option<usize>) {
-        let v = idx.map_or(-1, |i| i as i64);
-        let _ = doc.put(&ROOT, "selected", v);
-    }
-
-    pub fn action(doc: &AutoCommit) -> Action {
-        Action::from_key(&Self::get_str(doc, "action").unwrap_or_default())
-    }
-    pub fn set_action(doc: &mut AutoCommit, a: Action) {
-        let _ = doc.put(&ROOT, "action", a.key());
-    }
-
-    pub fn step(doc: &AutoCommit) -> Step {
-        Step::from_key(&Self::get_str(doc, "step").unwrap_or_default())
-    }
-    pub fn set_step(doc: &mut AutoCommit, s: Step) {
-        let _ = doc.put(&ROOT, "step", s.key());
-    }
-
-    pub fn status(doc: &AutoCommit) -> String {
-        Self::get_str(doc, "status").unwrap_or_default()
-    }
-    pub fn set_status(doc: &mut AutoCommit, s: &str) {
-        let _ = doc.put(&ROOT, "status", s);
-    }
-
-    /// Whether internal/fixed disks are revealed on the Drive step. Presentation
-    /// state (like `selected`/`step`), persisted for instant-on. Defaults off so
-    /// a fresh document only ever shows removable drives.
-    pub fn show_internal(doc: &AutoCommit) -> bool {
-        match doc.get(&ROOT, "show_internal") {
-            Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
-            _ => false,
-        }
-    }
-    pub fn set_show_internal(doc: &mut AutoCommit, on: bool) {
-        let _ = doc.put(&ROOT, "show_internal", on);
     }
 
     // ---- helpers ----------------------------------------------------------
+    fn map_read(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+        let (value, id) = doc.get(parent, key).ok().flatten()?;
+        matches!(value, Value::Object(ObjType::Map)).then_some(id)
+    }
+
+    fn map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+        Self::map_read(doc, parent, key).or_else(|| doc.put_object(parent, key, ObjType::Map).ok())
+    }
+
+    fn source_map_read(doc: &AutoCommit) -> Option<ObjId> {
+        Self::map_read(doc, &ROOT, "source_v2")
+    }
+
+    fn source_map(doc: &mut AutoCommit) -> Option<ObjId> {
+        Self::map(doc, &ROOT, "source_v2")
+    }
+
+    fn profile_map_read(doc: &AutoCommit) -> Option<ObjId> {
+        Self::map_read(doc, &ROOT, "profile_v2")
+    }
+
+    fn profile_map(doc: &mut AutoCommit) -> Option<ObjId> {
+        Self::map(doc, &ROOT, "profile_v2")
+    }
+
+    fn read_bool(doc: &AutoCommit, parent: &ObjId, key: &str) -> bool {
+        matches!(doc.get(parent, key), Ok(Some((Value::Scalar(value), _))) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
+    }
+
+    fn read_i64(doc: &AutoCommit, parent: &ObjId, key: &str) -> i64 {
+        match doc.get(parent, key) {
+            Ok(Some((Value::Scalar(value), _))) => value.to_i64().unwrap_or_default(),
+            _ => 0,
+        }
+    }
+
+    fn map_str(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
+        Self::get_str_at(doc, parent, key).unwrap_or_default()
+    }
+
+    fn write_source_fields(doc: &mut AutoCommit, map: &ObjId, source: &Source) {
+        ui::doc::put_if_changed(doc, map, "kind", source.kind.tag());
+        ui::doc::put_if_changed(doc, map, "path", source.path.as_str());
+        ui::doc::put_if_changed(doc, map, "name", source.name.as_str());
+        ui::doc::put_if_changed(doc, map, "size", source.size as i64);
+        ui::doc::put_if_changed(doc, map, "label", source.label.as_str());
+        ui::doc::put_if_changed(doc, map, "installable", source.installable);
+        ui::doc::put_if_changed(
+            doc,
+            map,
+            "identity_volume",
+            source
+                .identity
+                .map_or(-1, |identity| identity.volume as i64),
+        );
+        ui::doc::put_if_changed(
+            doc,
+            map,
+            "identity_file",
+            source.identity.map_or(-1, |identity| identity.file as i64),
+        );
+        ui::doc::put_if_changed(
+            doc,
+            map,
+            "expected_sha256",
+            source.expected_sha256.as_deref().unwrap_or_default(),
+        );
+    }
+
+    fn read_source_fields(doc: &AutoCommit, map: &ObjId) -> Option<Source> {
+        let name = Self::map_str(doc, map, "name");
+        // A tombstoned or half-created row is not a usable write source.
+        if name.is_empty() {
+            return None;
+        }
+        let volume = Self::read_i64(doc, map, "identity_volume");
+        let file = Self::read_i64(doc, map, "identity_file");
+        let digest = Self::map_str(doc, map, "expected_sha256");
+        Some(Source {
+            kind: match Self::map_str(doc, map, "kind").as_str() {
+                "qOS" => crate::model::SourceKind::QosImage,
+                _ => crate::model::SourceKind::IsoFile,
+            },
+            path: Self::map_str(doc, map, "path"),
+            name,
+            size: Self::read_i64(doc, map, "size").max(0) as u64,
+            label: Self::map_str(doc, map, "label"),
+            installable: Self::read_bool(doc, map, "installable"),
+            identity: (volume >= 0 && file >= 0).then_some(crate::model::SourceIdentity {
+                volume: volume as u64,
+                file: file as u64,
+            }),
+            expected_sha256: (!digest.is_empty()).then_some(digest),
+        })
+    }
+
+    fn write_profile_fields(doc: &mut AutoCommit, map: &ObjId, profile: &InstallProfile) {
+        ui::doc::put_if_changed(doc, map, "mode", profile.mode.key());
+        ui::doc::put_if_changed(doc, map, "hostname", profile.hostname.as_str());
+        ui::doc::put_if_changed(doc, map, "locale", profile.locale.as_str());
+        ui::doc::put_if_changed(doc, map, "keyboard", profile.keyboard.as_str());
+        ui::doc::put_if_changed(doc, map, "timezone", profile.timezone.as_str());
+        ui::doc::put_if_changed(doc, map, "layout", profile.layout.key());
+        ui::doc::put_if_changed(doc, map, "encrypt", profile.encrypt);
+        ui::doc::put_if_changed(doc, map, "persist_mb", profile.persist_mb as i64);
+        let Some(user) = Self::map(doc, map, "user") else {
+            return;
+        };
+        ui::doc::put_if_changed(doc, &user, "full_name", profile.user.full_name.as_str());
+        ui::doc::put_if_changed(doc, &user, "username", profile.user.username.as_str());
+        ui::doc::put_if_changed(doc, &user, "is_admin", profile.user.is_admin);
+        ui::doc::put_if_changed(doc, &user, "autologin", profile.user.autologin);
+        // Passwords and encryption passphrases deliberately never enter a
+        // collaborative document. The installer asks locally on the target.
+    }
+
+    fn read_profile_fields(doc: &AutoCommit, map: &ObjId) -> InstallProfile {
+        let mut profile = InstallProfile {
+            mode: InstallMode::from_key(&Self::map_str(doc, map, "mode")),
+            ..InstallProfile::default()
+        };
+        if let Some(hostname) = Self::get_str_at(doc, map, "hostname") {
+            profile.hostname = hostname;
+        }
+        if let Some(locale) = Self::get_str_at(doc, map, "locale") {
+            profile.locale = locale;
+        }
+        if let Some(keyboard) = Self::get_str_at(doc, map, "keyboard") {
+            profile.keyboard = keyboard;
+        }
+        if let Some(timezone) = Self::get_str_at(doc, map, "timezone") {
+            profile.timezone = timezone;
+        }
+        profile.layout = crate::model::DiskLayout::from_key(&Self::map_str(doc, map, "layout"));
+        profile.encrypt = Self::read_bool(doc, map, "encrypt");
+        profile.persist_mb = Self::read_i64(doc, map, "persist_mb").max(0) as u64;
+        if let Some(user) = Self::map_read(doc, map, "user") {
+            if let Some(full_name) = Self::get_str_at(doc, &user, "full_name") {
+                profile.user.full_name = full_name;
+            }
+            if let Some(username) = Self::get_str_at(doc, &user, "username") {
+                profile.user.username = username;
+            }
+            profile.user.is_admin = Self::read_bool(doc, &user, "is_admin");
+            profile.user.autologin = Self::read_bool(doc, &user, "autologin");
+        }
+        profile
+    }
+
+    fn migrate_legacy(doc: &mut AutoCommit) {
+        if Self::profile_map_read(doc).is_none()
+            && let Some(profile) = Self::read_json::<InstallProfile>(doc, "profile")
+        {
+            Self::set_profile(doc, &profile);
+        }
+        if Self::source_map_read(doc).is_none()
+            && let Some(source) = Self::read_json::<Option<Source>>(doc, "source").flatten()
+        {
+            Self::set_source(doc, Some(&source));
+        }
+        if Self::map_read(doc, &ROOT, "recent_v2").is_none()
+            && let Some(recent) = Self::read_json::<Vec<Source>>(doc, "recent")
+        {
+            Self::set_recent(doc, &recent);
+        }
+    }
+
+    #[cfg(test)]
     fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, val: &T) {
         let json = serde_json::to_string(val).unwrap_or_else(|_| "null".into());
         let _ = doc.put(&ROOT, key, json);
@@ -202,7 +434,10 @@ impl ImagerDoc {
         serde_json::from_str(&raw).ok()
     }
     fn get_str(doc: &AutoCommit, key: &str) -> Option<String> {
-        match doc.get(&ROOT, key) {
+        Self::get_str_at(doc, &ROOT, key)
+    }
+    fn get_str_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
+        match doc.get(parent, key) {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
                 ScalarValue::Str(s) => Some(s.to_string()),
                 _ => None,
@@ -215,7 +450,7 @@ impl ImagerDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{InstallMode, SourceKind};
+    use crate::model::{InstallMode, SourceKind, sample_targets};
 
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -230,20 +465,12 @@ mod tests {
         // there is no fabricated image or recent history.
         let doc = seeded();
         assert!(!ImagerDoc::is_empty(&doc));
-        assert_eq!(
-            ImagerDoc::targets(&doc).len(),
-            2,
-            "the caller's drives, verbatim"
-        );
+        assert!(doc.get(&ROOT, "targets").unwrap().is_none());
         assert!(ImagerDoc::source(&doc).is_none(), "no fabricated image");
         assert!(
             ImagerDoc::recent(&doc).is_empty(),
             "no fabricated recent history"
         );
-        assert_eq!(ImagerDoc::action(&doc), Action::Flash);
-        // A fresh document starts with no drive chosen — the Drive step gates on
-        // a deliberate selection.
-        assert_eq!(ImagerDoc::selected(&doc), None);
     }
 
     #[test]
@@ -251,33 +478,23 @@ mod tests {
         // The opt-in demo seed is the only place sample content comes from.
         let mut doc = AutoCommit::new();
         ImagerDoc::seed_demo(&mut doc);
-        assert_eq!(ImagerDoc::targets(&doc).len(), 2);
         assert!(ImagerDoc::source(&doc).is_some());
         assert!(!ImagerDoc::recent(&doc).is_empty());
-        assert_eq!(ImagerDoc::releases(&doc).len(), 2);
     }
 
-    /// Reading a document that holds no inventory must not conjure one. Both of
-    /// these lists name something the user can point a drive-erasing write at,
-    /// so a "helpful" fallback is a fabricated destination and a fabricated
-    /// source — the two halves of the one destructive operation.
+    /// The collaborative document contains no device/release inventory.
     #[test]
     fn an_unseeded_document_names_no_drive_and_no_release() {
         let doc = AutoCommit::new();
         assert!(ImagerDoc::is_empty(&doc));
-        assert!(ImagerDoc::targets(&doc).is_empty(), "no fabricated drives");
-        assert!(
-            ImagerDoc::releases(&doc).is_empty(),
-            "no fabricated releases"
-        );
+        assert!(doc.get(&ROOT, "targets").unwrap().is_none());
+        assert!(doc.get(&ROOT, "releases").unwrap().is_none());
     }
 
     #[test]
-    fn plain_seed_offers_no_release() {
-        // The live path seeds with a real (possibly empty) probe result and
-        // nothing else: releases stay empty until something actually finds one.
+    fn plain_seed_offers_no_machine_catalogue() {
         let doc = seeded();
-        assert!(ImagerDoc::releases(&doc).is_empty());
+        assert!(doc.get(&ROOT, "releases").unwrap().is_none());
     }
 
     #[test]
@@ -304,31 +521,44 @@ mod tests {
         assert_eq!(back.hostname, "edited-host");
         assert_eq!(back.mode, InstallMode::Persistent);
         assert!(back.encrypt);
+        assert!(matches!(
+            doc.get(&ROOT, "profile_v2").unwrap(),
+            Some((Value::Object(ObjType::Map), _))
+        ));
+        assert!(
+            doc.get(&ROOT, "profile").unwrap().is_none(),
+            "fresh profile writes never emit an opaque JSON scalar"
+        );
     }
 
     #[test]
-    fn seed_is_idempotent() {
+    fn legacy_json_migrates_without_replicating_secrets() {
+        let mut doc = AutoCommit::new();
+        let legacy = InstallProfile {
+            hostname: "migrated".into(),
+            user: crate::model::UserAccount {
+                password: "do-not-share".into(),
+                ..crate::model::UserAccount::default()
+            },
+            ..InstallProfile::default()
+        };
+        ImagerDoc::write_json(&mut doc, "profile", &legacy);
+        ImagerDoc::seed(&mut doc, &[]);
+        let migrated = ImagerDoc::profile(&doc);
+        assert_eq!(migrated.hostname, "migrated");
+        assert!(migrated.user.password.is_empty());
+        assert!(matches!(
+            doc.get(&ROOT, "profile_v2").unwrap(),
+            Some((Value::Object(ObjType::Map), _))
+        ));
+    }
+
+    #[test]
+    fn seed_is_idempotent_for_collaborative_state() {
         let mut doc = seeded();
-        ImagerDoc::set_selected(&mut doc, Some(1));
-        ImagerDoc::set_action(&mut doc, Action::Install);
+        let source = sample_source();
+        ImagerDoc::set_source(&mut doc, Some(&source));
         ImagerDoc::seed(&mut doc, &sample_targets()); // re-seed must not clobber
-        assert_eq!(ImagerDoc::selected(&doc), Some(1));
-        assert_eq!(ImagerDoc::action(&doc), Action::Install);
-    }
-
-    #[test]
-    fn status_round_trips_without_a_replicated_confirmation() {
-        let mut doc = seeded();
-        ImagerDoc::set_status(&mut doc, "ready");
-        assert_eq!(ImagerDoc::status(&doc), "ready");
-        assert!(doc.get(&ROOT, "confirm").unwrap().is_none());
-    }
-
-    #[test]
-    fn step_defaults_to_source_and_round_trips() {
-        let mut doc = seeded();
-        assert_eq!(ImagerDoc::step(&doc), Step::Source);
-        ImagerDoc::set_step(&mut doc, Step::Write);
-        assert_eq!(ImagerDoc::step(&doc), Step::Write);
+        assert_eq!(ImagerDoc::source(&doc).unwrap().name, source.name);
     }
 }
