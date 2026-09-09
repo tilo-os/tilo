@@ -34,6 +34,7 @@ use ui::widget::{TextInput, TextInputKind, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
+use crate::compact_swatch_palette::{CompactSwatchPalette, PaletteChoice, PaletteKind};
 use crate::find_bar::{FindBar, FindEffect, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
@@ -104,6 +105,8 @@ enum CtxAction {
     /// A lower-frequency command chosen from the compact toolbar's accessible
     /// More menu. It deliberately reuses the exact toolbar action path.
     Tool(ToolAction),
+    /// Opens the compact shared swatch grid for direct character formatting.
+    CompactPalette(PaletteKind),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -715,10 +718,6 @@ const TOOLBAR_SEP: f64 = 14.0;
 /// Right margin reserved when packing rows (room for the colour-swatch strip /
 /// breathing space at the toolbar's right edge).
 const TOOLBAR_RIGHT_PAD: f64 = 18.0;
-/// Below this width, the bottom chrome shows only document counts. The layout
-/// hint stays available through its two explicit chips, but would compete with
-/// the status otherwise.
-const COMPACT_LAYOUT_BAR_BREAKPOINT: f64 = 760.0;
 /// Below this width the toolbar becomes a single focused writing row. Less
 /// frequent structure/review/view controls move into the labeled More menu.
 const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
@@ -1779,6 +1778,9 @@ pub struct WordProcessorWidget {
     /// Per-row action parallel to `context_menu`'s items (separators map to
     /// `None`). A left-click on a row dispatches by index through this list.
     context_actions: Vec<Option<CtxAction>>,
+    /// The compact toolbar's labeled, keyboard/semantic shared swatch grid.
+    /// It is local view state; selecting a colour routes through `ToolAction`.
+    compact_swatch_palette: CompactSwatchPalette,
     /// Comment/tracked-change visibility, materialized items, card drawing, and
     /// frame-local action hit targets. Document mutation remains editor policy.
     review: ReviewOverlay,
@@ -1912,6 +1914,7 @@ impl WordProcessorWidget {
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
+            compact_swatch_palette: CompactSwatchPalette::default(),
             review: ReviewOverlay::default(),
             thread_comment: None,
             thread_snapshot: None,
@@ -3782,20 +3785,30 @@ impl WordProcessorWidget {
             }
             LayoutMode::None => t("layout-none-hint"),
         };
-        if bar.width() >= COMPACT_LAYOUT_BAR_BREAKPOINT {
+        // Whether the hint fits depends on the localized text, the current
+        // document count, and the actual chip widths — a fixed pixel breakpoint
+        // lets long translations paint through the status label. Keep status
+        // persistent, but omit the redundant hint when those two would collide.
+        let status = self.status_count_label();
+        let status_rect = Self::layout_bar_status_rect(bar, x + 12.0, &status);
+        let readout_x = x + 12.0;
+        let readout_width = num::f64_of_usize(readout.chars().count()) * 7.0;
+        if status_rect
+            .as_ref()
+            .is_none_or(|rect| readout_x + readout_width + 12.0 <= rect.x0)
+        {
             tr.draw_text(
                 scene,
                 &readout,
                 12.5,
                 cc.text_dim,
-                transform * Affine::translate((x + 12.0, cy - 8.0)),
+                transform * Affine::translate((readout_x, cy - 8.0)),
                 None,
             );
         }
         // Document status is always docked in chrome. A floating surface can
         // overlap the paper at any zoom, not merely in narrow tiles.
-        let status = self.status_count_label();
-        if let Some(status_rect) = Self::layout_bar_status_rect(bar, x + 12.0, &status) {
+        if let Some(status_rect) = status_rect {
             tr.draw_text(
                 scene,
                 &status,
@@ -5193,6 +5206,9 @@ impl WordProcessorWidget {
         }
         if let Some(image_placement) = self.image_placement_access_node() {
             children.push(image_placement);
+        }
+        if let Some(palette) = self.compact_swatch_palette.accessibility() {
+            children.push(A11yTreeNode::leaf(palette));
         }
 
         A11yTreeNode {
@@ -8927,6 +8943,9 @@ impl Widget for WordProcessorWidget {
     ) {
         let shift = modifiers.state().shift_key();
         let ctrl = modifiers.state().control_key();
+        if self.pump_compact_swatch_palette(event, scale_factor, *modifiers, state, path, handled) {
+            return;
+        }
         // While the colour-picker popover is open it captures input (modal-ish):
         // route drags to it, apply committed colours, and let an outside-click /
         // Escape dismiss it before any page/panel hit-testing.
@@ -9056,6 +9075,8 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
+        self.compact_swatch_palette
+            .draw(scene, transform, text_renderer, theme, presence);
         self.template_picker
             .draw(scene, transform, text_renderer, theme, presence);
         self.style_menu
@@ -9143,9 +9164,24 @@ impl Widget for WordProcessorWidget {
         action: &ui::a11y::Action,
         key_path: &[u64],
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Focus) {
+            if let Some(target) = key_path.last().copied() {
+                let palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
+                    Some("compact-swatch:clear".to_string())
+                } else {
+                    (0..STYLE_PALETTE.len().max(HIGHLIGHT_PALETTE.len()))
+                        .map(|index| format!("swatch:{index}"))
+                        .find(|id| ui::a11y::hash_key(id) == target)
+                };
+                if let Some(id) = palette_target
+                    && self.compact_swatch_palette.focus_target(&id, state, path)
+                {
+                    self.dirty = true;
+                    return true;
+                }
+            }
             self.set_focus(true);
             return true;
         }
@@ -9158,6 +9194,21 @@ impl Widget for WordProcessorWidget {
         let Some(target) = key_path.last().copied() else {
             return false;
         };
+        let compact_palette_target = if ui::a11y::hash_key(&"compact-swatch:clear") == target {
+            Some("compact-swatch:clear".to_string())
+        } else {
+            (0..STYLE_PALETTE.len().max(HIGHLIGHT_PALETTE.len()))
+                .map(|index| format!("swatch:{index}"))
+                .find(|id| ui::a11y::hash_key(id) == target)
+        };
+        if let Some(id) = compact_palette_target
+            && let Some((kind, choice)) = self
+                .compact_swatch_palette
+                .semantic_choice(&id, action, state, path)
+        {
+            self.apply_compact_palette_choice(state, kind, choice);
+            return true;
+        }
         if let Some(review_action) = self.review.hits().iter().find_map(|(_, review_action)| {
             (ui::a11y::hash_key(&review_action_target(review_action)) == target)
                 .then(|| review_action.clone())
@@ -9814,6 +9865,13 @@ impl WordProcessorWidget {
             menu.push(MenuItem::action(tool_action_a11y_label(action), || {}));
             actions.push(Some(CtxAction::Tool(action)));
         }
+        // The desktop swatch strips are compacted into two labelled entries,
+        // each opening the shared, visual swatch grid. This keeps More scannable
+        // without making direct colour/highlight formatting desktop-only.
+        menu.push(MenuItem::action(t("toolbar-text-color"), || {}));
+        actions.push(Some(CtxAction::CompactPalette(PaletteKind::Text)));
+        menu.push(MenuItem::action(t("toolbar-highlight"), || {}));
+        actions.push(Some(CtxAction::CompactPalette(PaletteKind::Highlight)));
         menu.open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
         self.context_menu = menu;
         self.context_actions = actions;
@@ -10167,6 +10225,111 @@ impl WordProcessorWidget {
             *handled = true;
         }
         result.consumed
+    }
+
+    /// Open the compact toolbar's shared swatch grid. The labels describe the
+    /// *formatting effect* rather than forcing assistive technology users to
+    /// infer it from a hexadecimal value alone.
+    fn open_compact_swatch_palette(&mut self, kind: PaletteKind) {
+        let (palette, labels, title, clear_label): (&[[u8; 3]], Vec<String>, String, String) =
+            match kind {
+                PaletteKind::Text => (
+                    &STYLE_PALETTE,
+                    [
+                        "color-black",
+                        "color-gray",
+                        "color-red",
+                        "color-blue",
+                        "color-green",
+                        "color-amber",
+                        "color-purple",
+                    ]
+                    .into_iter()
+                    .map(|key| t_args("a11y-text-colour-name", &[arg("colour", t(key))]))
+                    .collect(),
+                    t("picker-text-color"),
+                    t("a11y-text-color-default"),
+                ),
+                PaletteKind::Highlight => (
+                    &HIGHLIGHT_PALETTE,
+                    [
+                        "color-yellow",
+                        "color-green",
+                        "color-cyan",
+                        "color-pink",
+                        "color-orange",
+                    ]
+                    .into_iter()
+                    .map(|key| t_args("a11y-highlight-name", &[arg("colour", t(key))]))
+                    .collect(),
+                    t("picker-highlight"),
+                    t("a11y-highlight-clear"),
+                ),
+            };
+        let anchor = Point::new(self.pointer.x, self.pointer.y);
+        self.compact_swatch_palette.open(
+            kind,
+            palette,
+            labels,
+            title,
+            clear_label,
+            anchor,
+            self.rect,
+        );
+        self.dirty = true;
+    }
+
+    /// Route compact swatch-grid input ahead of the page. A picked colour still
+    /// uses the exact `ToolAction` path as the desktop toolbar, preserving one
+    /// mutation/action implementation and one collaboration boundary.
+    fn pump_compact_swatch_palette(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.compact_swatch_palette.is_open() {
+            return false;
+        }
+        let choice = self
+            .compact_swatch_palette
+            .handle_event(event, scale, modifiers, state, root);
+        if let Some((kind, choice)) = choice {
+            self.apply_compact_palette_choice(state, kind, choice);
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale, position.y / scale);
+        }
+        self.dirty = true;
+        *handled = true;
+        true
+    }
+
+    /// Commit any compact-palette route through the same canonical formatting
+    /// actions as its pointer, keyboard, and assistive-technology callers.
+    fn apply_compact_palette_choice(
+        &mut self,
+        state: &mut AutoCommit,
+        kind: PaletteKind,
+        choice: PaletteChoice,
+    ) {
+        let action = match (kind, choice) {
+            (PaletteKind::Text, PaletteChoice::Color(color)) => ToolAction::TextColor(Some(color)),
+            (PaletteKind::Text, PaletteChoice::Clear) => ToolAction::TextColor(None),
+            (PaletteKind::Highlight, PaletteChoice::Color(color)) => {
+                ToolAction::Highlight(Some(color))
+            }
+            (PaletteKind::Highlight, PaletteChoice::Clear) => ToolAction::Highlight(None),
+        };
+        self.apply_tool(state, action);
+        self.refresh_blocks(state);
+        self.needs_commit = true;
+        self.modified = true;
+        self.note_edit_for_autosave(state);
+        self.dirty = true;
     }
 
     /// The next/previous cell id within the caret cell's table, if any.
@@ -10525,6 +10688,7 @@ impl WordProcessorWidget {
                 self.needs_commit = true;
             }
             CtxAction::Review(action) => self.dispatch_review_action(action, state),
+            CtxAction::CompactPalette(kind) => self.open_compact_swatch_palette(kind),
             CtxAction::Tool(tool) => {
                 self.apply_tool(state, tool);
                 self.refresh_blocks(state);
@@ -11060,10 +11224,18 @@ impl WordProcessorWidget {
         // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
         // not as chrome buttons) as a trailing phantom item so no button row
         // extends under them; `toolbar_height` mirrors this exactly.
-        if !compact {
-            widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
-            starts.push(true);
-        }
+        // Zoom is a fundamental view control, not an overflow command. It stays
+        // in the toolbar at every width; only the two dense swatch strips move
+        // into More on a compact surface.
+        widths.push(
+            ZoomControl::WIDTH
+                + if compact {
+                    0.0
+                } else {
+                    swatch_reserve_width() + ZOOM_SWATCH_GAP
+                },
+        );
+        starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
 
@@ -11119,9 +11291,9 @@ impl WordProcessorWidget {
         // Zoom stepper: right-aligned on the last toolbar row (its width reserved
         // as part of the trailing packer phantom below, so buttons never run under
         // it). The colour/highlight swatch strips pack to its left.
+        let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
+        self.draw_zoom_control(scene, transform, tr, last_row);
         if !compact {
-            let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
-            self.draw_zoom_control(scene, transform, tr, last_row);
             let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
             let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
             let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
@@ -11159,10 +11331,15 @@ impl WordProcessorWidget {
         let specs = self.toolbar_button_specs(compact);
         let mut widths: Vec<f64> = specs.iter().map(|(_, item)| item.width).collect();
         let mut starts: Vec<bool> = specs.iter().map(|(_, item)| item.group_start).collect();
-        if !compact {
-            widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
-            starts.push(true);
-        }
+        widths.push(
+            ZoomControl::WIDTH
+                + if compact {
+                    0.0
+                } else {
+                    swatch_reserve_width() + ZOOM_SWATCH_GAP
+                },
+        );
+        starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, width);
         num::f64_of_usize(rows.len()) * TOOLBAR_H
     }
@@ -12069,7 +12246,10 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        // Use a desktop width at which the complete command set is genuinely
+        // visible. At medium widths the compact toolbar intentionally moves
+        // lower-frequency commands into More (covered below).
+        pipeline_draw(&mut wp, &mut state, 1800, 760);
 
         let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(a, _)| *a).collect();
         // Character formatting + the direct font-size nudges are present.
@@ -12131,6 +12311,7 @@ mod tests {
                     | ToolAction::ToggleHistory
                     | ToolAction::InsertToc
                     | ToolAction::NewMenu
+                    | ToolAction::More
             )
         };
         for a in &actions {
@@ -12139,6 +12320,160 @@ mod tests {
                 "unexpected paragraph-level control on the toolbar: {a:?}"
             );
         }
+    }
+
+    /// Compact mode keeps More concise: two labelled entries open the shared
+    /// visual swatch grid, whose selections still use canonical actions.
+    #[test]
+    fn compact_toolbar_overflow_keeps_every_direct_colour_action() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "colour me");
+        pipeline_draw(&mut wp, &mut state, 1280, 760);
+        assert!(wp.use_compact_toolbar(1280.0));
+
+        wp.apply_tool(&mut state.doc, ToolAction::More);
+        assert!(
+            wp.context_actions
+                .iter()
+                .any(|action| { *action == Some(CtxAction::CompactPalette(PaletteKind::Text)) })
+        );
+        assert!(
+            wp.context_actions.iter().any(|action| {
+                *action == Some(CtxAction::CompactPalette(PaletteKind::Highlight))
+            })
+        );
+
+        wp.open_compact_swatch_palette(PaletteKind::Text);
+        assert!(wp.compact_swatch_palette.rect().width() > 0.0);
+        let swatch = wp
+            .compact_swatch_palette
+            .swatch_rect(3)
+            .expect("shared picker lays out each swatch")
+            .center();
+        left_click(&mut wp, &mut state, swatch);
+        wp.refresh_blocks(&mut state.doc);
+        assert_eq!(wp.current_text_color(), Some(STYLE_PALETTE[3]));
+    }
+
+    fn assert_compact_clear_footer(
+        wp: &WordProcessorWidget,
+        title: &str,
+        expected_bounds: Rect,
+        focused: bool,
+    ) {
+        let tree = wp.accessibility_tree();
+        let palette = tree
+            .children
+            .iter()
+            .find(|child| child.node.name.as_deref() == Some(title))
+            .expect("open palette is a named accessibility group");
+        let clear = palette
+            .node
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some("compact-swatch:clear"))
+            .expect("localized clear footer is exported");
+        assert_eq!(clear.role, ui::a11y::Role::Button);
+        assert_eq!(clear.bounds, Some(expected_bounds.into()));
+        assert_eq!(clear.state.focused, focused);
+    }
+
+    /// The compact palette's clear footer is a real, localized semantic button
+    /// with the same typed action route for pointer, keyboard, and AT input.
+    #[test]
+    fn compact_palette_clear_is_pointer_keyboard_and_at_equivalent() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "colour me");
+        pipeline_draw(&mut wp, &mut state, 760, 800);
+
+        // Pointer clear for text colour.
+        wp.apply_tool(
+            &mut state.doc,
+            ToolAction::TextColor(Some(STYLE_PALETTE[2])),
+        );
+        wp.open_compact_swatch_palette(PaletteKind::Text);
+        let pointer_clear = wp.compact_swatch_palette.clear_rect().center();
+        left_click(&mut wp, &mut state, pointer_clear);
+        assert_eq!(wp.current_text_color(), None);
+
+        // Keyboard clear for text colour. Tab moves focus from the shared
+        // picker to the visible footer, then Space activates the exact action.
+        wp.apply_tool(
+            &mut state.doc,
+            ToolAction::TextColor(Some(STYLE_PALETTE[3])),
+        );
+        wp.open_compact_swatch_palette(PaletteKind::Text);
+        let expected_clear_bounds = wp.compact_swatch_palette.clear_rect();
+        press_named(&mut wp, &mut state, NamedKey::Tab);
+        assert_compact_clear_footer(&wp, &t("picker-text-color"), expected_clear_bounds, true);
+        press_named(&mut wp, &mut state, NamedKey::Space);
+        assert_eq!(wp.current_text_color(), None);
+
+        // AT clear for text colour routes through the same ToolAction helper.
+        wp.apply_tool(
+            &mut state.doc,
+            ToolAction::TextColor(Some(STYLE_PALETTE[4])),
+        );
+        wp.open_compact_swatch_palette(PaletteKind::Text);
+        assert!(Widget::perform_action_at(
+            &mut wp,
+            &ui::a11y::Action::Focus,
+            &[ui::a11y::hash_key(&"compact-swatch:clear")],
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_compact_clear_footer(
+            &wp,
+            &t("picker-text-color"),
+            wp.compact_swatch_palette.clear_rect(),
+            true,
+        );
+        assert!(Widget::perform_action_at(
+            &mut wp,
+            &ui::a11y::Action::Activate,
+            &[ui::a11y::hash_key(&"compact-swatch:clear")],
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(wp.current_text_color(), None);
+
+        // Repeat the three modalities for highlight, whose clear action is a
+        // distinct document mutation but shares the same palette plumbing.
+        wp.apply_tool(
+            &mut state.doc,
+            ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[2])),
+        );
+        wp.open_compact_swatch_palette(PaletteKind::Highlight);
+        let highlight_pointer_clear = wp.compact_swatch_palette.clear_rect().center();
+        left_click(&mut wp, &mut state, highlight_pointer_clear);
+        assert_eq!(wp.current_highlight_color(), None);
+
+        wp.apply_tool(
+            &mut state.doc,
+            ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[3])),
+        );
+        wp.open_compact_swatch_palette(PaletteKind::Highlight);
+        press_named(&mut wp, &mut state, NamedKey::Tab);
+        press_named(&mut wp, &mut state, NamedKey::Enter);
+        assert_eq!(wp.current_highlight_color(), None);
+
+        wp.apply_tool(
+            &mut state.doc,
+            ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[4])),
+        );
+        wp.open_compact_swatch_palette(PaletteKind::Highlight);
+        assert!(Widget::perform_action_at(
+            &mut wp,
+            &ui::a11y::Action::Activate,
+            &[ui::a11y::hash_key(&"compact-swatch:clear")],
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(wp.current_highlight_color(), None);
     }
 
     /// Alignment now applies to the current paragraph through the side panel's
@@ -13561,26 +13896,31 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hi");
-        // The full inline-formatting toolbar is wide; on a 760px window it must
-        // wrap, and the reserved canvas-top height grows by whole rows.
+        // At narrow sizes we deliberately use the focused single-row toolbar
+        // plus an explicit More menu rather than a wrapped ribbon. This keeps
+        // the writing canvas stable and prevents orphaned controls.
         let narrow = wp.toolbar_height(760.0);
-        let wide = wp.toolbar_height(1600.0);
+        let wide = wp.toolbar_height(1800.0);
         assert!(
-            narrow > wide,
-            "a narrow window reserves a taller (wrapped) toolbar"
+            wp.use_compact_toolbar(760.0),
+            "760px selects the compact toolbar rather than wrapping a ribbon"
+        );
+        assert!(
+            !wp.use_compact_toolbar(1800.0),
+            "a wide window exposes the complete desktop toolbar"
+        );
+        assert_eq!(
+            narrow, TOOLBAR_H,
+            "the compact toolbar reserves exactly one writing row"
         );
         assert!(
             (wide - TOOLBAR_H).abs() < 1e-9,
-            "a wide window keeps a single-row toolbar"
+            "the complete desktop toolbar still fits a single row when shown"
         );
-        assert_eq!(
-            narrow % TOOLBAR_H,
-            0.0,
-            "the toolbar height is a whole number of rows"
-        );
+        pipeline_draw(&mut wp, &mut state, 760, 700);
         assert!(
-            narrow >= 2.0 * TOOLBAR_H,
-            "760px wraps to at least two rows"
+            wp.page_rect.y0 >= narrow + PAGE_TOP,
+            "the page is laid below the single-row compact toolbar"
         );
     }
 
@@ -13647,9 +13987,10 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hi");
-        // 1200px: buttons alone fit one row, so the naive layout would right-align
-        // the swatches straight over the trailing buttons.
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        // At a full desktop width, buttons and swatches share one row. The
+        // compact toolbar intentionally moves swatches into More, so testing
+        // this at 1200px would exercise the wrong responsive mode.
+        pipeline_draw(&mut wp, &mut state, 1800, 760);
 
         let rect_of =
             |a: fn(&ToolAction) -> bool| wp.toolbar.iter().find(|(x, _)| a(x)).map(|(_, r)| *r);
@@ -14649,6 +14990,10 @@ mod tests {
             "a Resolve affordance for the comment"
         );
         assert!(
+            has(&|a| matches!(a, ReviewAction::OpenCommentThread(id) if id == &cid)),
+            "a Reply affordance opens the durable comment thread"
+        );
+        assert!(
             has(&|a| matches!(a, ReviewAction::AcceptChange(id) if id == &ins_id)),
             "an Accept ✓ affordance for the change"
         );
@@ -14666,7 +15011,11 @@ mod tests {
                     && child.node.name.as_deref() == Some(t("a11y-group-review").as_str())
             })
             .expect("painted review controls are exported as one semantic group");
-        assert_eq!(review.children.len(), 3);
+        assert_eq!(
+            review.children.len(),
+            4,
+            "comment cards expose Reply and Resolve; change cards expose Accept and Reject"
+        );
         assert!(review.children.iter().all(|child| {
             child.node.role == ui::a11y::Role::Button
                 && child.node.bounds.is_some()
@@ -16826,16 +17175,17 @@ mod tests {
         );
     }
 
-    // ---- font size lives in exactly one place -----------------------------
+    // ---- style size and direct character size stay distinct ----------------
 
-    /// Font size has a single home: the side inspector's "Size" field. The
-    /// toolbar carries no size control (its old A−/value/A+ stepper was removed).
+    /// The inspector owns the paragraph style's default size, while A−/A+ are
+    /// selection-scoped character formatting. Keeping those two scopes distinct
+    /// avoids a duplicated *style* control without hiding direct formatting.
     #[test]
     fn font_size_lives_in_exactly_one_place() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Body text");
         wp.styles_panel_open = true;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        pipeline_draw(&mut wp, &mut state, 1800, 700);
 
         let panel_size_fields = wp
             .panel_hits
@@ -16844,18 +17194,23 @@ mod tests {
             .count();
         assert_eq!(
             panel_size_fields, 1,
-            "the inspector is the single home for font size"
+            "the inspector is the single home for the style default"
         );
 
-        // The toolbar is a flat action list; none of its entries is a size control.
+        // The desktop toolbar exposes selection-scoped A−/A+ controls; the
+        // dedicated direct-formatting test above proves they do not edit Style.
         assert!(
             wp.toolbar
                 .iter()
-                .any(|(a, _)| matches!(a, ToolAction::InsertImage)),
-            "the toolbar was drawn (has the Image button)"
+                .any(|(a, _)| matches!(a, ToolAction::FontSizeDec)),
+            "A− remains available for direct character formatting"
         );
-        // (Size variants were removed from ToolAction entirely, so the toolbar
-        // *cannot* carry a font-size control — this is the structural guarantee.)
+        assert!(
+            wp.toolbar
+                .iter()
+                .any(|(a, _)| matches!(a, ToolAction::FontSizeInc)),
+            "A+ remains available for direct character formatting"
+        );
     }
 
     // ---- table-of-contents feedback ---------------------------------------
@@ -17150,6 +17505,86 @@ mod tests {
             state.doc.commit();
             render_review_png(&mut wp, &mut state, w, h, &dir, "review-overlay");
         }
+    }
+
+    /// Responsive visual-review surfaces. Kept behind the same opt-in output
+    /// directory as the broader review gallery so CI remains deterministic and
+    /// headless; reviewers can inspect the normal desktop, full-toolbar, narrow
+    /// compact, and compact-overflow states from one rendering pass.
+    #[test]
+    fn render_responsive_review_shots() {
+        let Some(dir) = std::env::var_os("QOS_WP_REVIEW_SHOTS") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(
+            &mut state.doc,
+            "A responsive Writer document with direct formatting, comments, and accessible controls.",
+        );
+        wp.model_mut().enter(&mut state.doc);
+        wp.model_mut().insert_str(
+            &mut state.doc,
+            "The compact toolbar keeps writing primary and moves secondary commands into More.",
+        );
+        wp.set_focus(true);
+
+        render_review_png(
+            &mut wp,
+            &mut state,
+            1280,
+            800,
+            &dir,
+            "responsive-1280-focus",
+        );
+        render_review_png(&mut wp, &mut state, 1800, 900, &dir, "responsive-1800-full");
+        render_review_png(&mut wp, &mut state, 760, 800, &dir, "responsive-760-narrow");
+
+        // The menu is opened through the same toolbar action as a pointer or
+        // screen-reader activation, proving compact colour/highlight commands
+        // remain discoverable rather than merely existing in code.
+        render_review_png(
+            &mut wp,
+            &mut state,
+            1280,
+            800,
+            &dir,
+            "responsive-1280-before-more",
+        );
+        wp.apply_tool(&mut state.doc, ToolAction::More);
+        render_review_png(&mut wp, &mut state, 1280, 800, &dir, "responsive-1280-more");
+        wp.context_menu.close();
+        wp.pointer = Point::new(410.0, TOOLBAR_H);
+        wp.open_compact_swatch_palette(PaletteKind::Text);
+        render_review_png(
+            &mut wp,
+            &mut state,
+            1280,
+            800,
+            &dir,
+            "responsive-1280-text-palette",
+        );
+        wp.compact_swatch_palette.close();
+        render_review_png(
+            &mut wp,
+            &mut state,
+            760,
+            800,
+            &dir,
+            "responsive-760-before-palette",
+        );
+        wp.pointer = Point::new(400.0, TOOLBAR_H);
+        wp.open_compact_swatch_palette(PaletteKind::Highlight);
+        render_review_png(
+            &mut wp,
+            &mut state,
+            760,
+            800,
+            &dir,
+            "responsive-760-highlight-palette",
+        );
     }
 }
 
