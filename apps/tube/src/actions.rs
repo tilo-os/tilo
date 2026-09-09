@@ -9,9 +9,9 @@
 //! ```text
 //! root["tube"]
 //! ├── "likes"           (Map)  video_id            -> bool
-//! ├── "queue"           (List) video_id, …
-//! ├── "comment_likes"   (Map)  "<video_id>#<idx>"  -> bool
-//! └── "comment_replies" (Map)  "<video_id>#<idx>"  -> (List) reply text, …
+//! ├── "queue"           (Map)  video_id -> bool (membership/tombstone)
+//! ├── "comment_likes"   (Map)  comment_id -> bool (membership/tombstone)
+//! └── "comment_replies" (Map)  comment_id -> (Map reply_id -> reply record)
 //! ```
 //!
 //! Liking a video / comment is [`ExecutionLocus::ClientLocal`]; adding to the
@@ -49,15 +49,36 @@ pub const TUBE_OPERATION_TYPE: &str = "tube.operation";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TubeOperation {
     TogglePlayback,
-    Share { video_id: String },
-    Navigate { route: Route },
-    OpenVideo { video_id: String },
-    OpenChannel { channel_id: String },
-    OpenPlaylist { playlist_id: String },
-    PairDevice { invite: String },
+    Share {
+        video_id: String,
+    },
+    Navigate {
+        route: Route,
+    },
+    OpenVideo {
+        video_id: String,
+    },
+    OpenChannel {
+        channel_id: String,
+    },
+    OpenPlaylist {
+        playlist_id: String,
+    },
+    /// Persisting media requires a host storage/download capability, which the
+    /// current Tube backend intentionally does not claim to provide.
+    Download {
+        video_id: String,
+    },
+    PairDevice {
+        invite: String,
+    },
     SyncDevices,
-    ApproveDevice { peer_id: String },
-    RevokeDevice { peer_id: String },
+    ApproveDevice {
+        peer_id: String,
+    },
+    RevokeDevice {
+        peer_id: String,
+    },
 }
 
 pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
@@ -66,7 +87,8 @@ pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
         | TubeOperation::PairDevice { .. }
         | TubeOperation::SyncDevices
         | TubeOperation::ApproveDevice { .. }
-        | TubeOperation::RevokeDevice { .. } => OperationKind::Effect,
+        | TubeOperation::RevokeDevice { .. }
+        | TubeOperation::Download { .. } => OperationKind::Effect,
         TubeOperation::TogglePlayback
         | TubeOperation::Navigate { .. }
         | TubeOperation::OpenVideo { .. }
@@ -240,11 +262,26 @@ fn comment_key(video_id: &str, comment: &crate::model::Comment) -> String {
     format!("{video_id}#{hash:016x}")
 }
 
+/// Deterministic reply entity identity. Equal text is intentionally idempotent
+/// for one comment, which gives a retried prompted action the same address
+/// rather than accidentally posting a duplicate. The reply action carries the
+/// whole key, so replay never re-hashes under a changed implementation.
+fn reply_key(comment_id: &str, text: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in comment_id.bytes().chain([0xff]).chain(text.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("reply-{hash:016x}")
+}
+
 /// Every collaborative operation Tube exports. One serializable enum so a single
 /// registry `type_id` covers the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TubeAction {
-    /// Set the local "liked" flag for a video.
+    /// Legacy receiver-dependent video-like toggle. Kept only so old
+    /// envelopes decode; applying it is refused because it cannot replay
+    /// deterministically.
     LikeVideo {
         video_id: String,
     },
@@ -258,6 +295,15 @@ pub enum TubeAction {
     AddToQueue {
         video_id: String,
     },
+    /// Set one queue membership explicitly. Unlike the legacy append-shaped
+    /// [`Self::AddToQueue`] envelope this is safe to replay, retry and merge:
+    /// `false` is a tombstone, never a list deletion whose index can drift.
+    SetQueueMembership {
+        video_id: String,
+        queued: bool,
+    },
+    /// Legacy receiver-dependent subscription toggle. Kept only for decoding;
+    /// new authors must use [`Self::SetSubscription`].
     ToggleSubscription {
         channel_id: String,
     },
@@ -271,10 +317,13 @@ pub enum TubeAction {
         setting: SettingFlag,
         enabled: bool,
     },
-    /// Advance the preferred playback quality through Tube's visible quality
-    /// selector. Keeping this as one document action means the settings row,
-    /// Ctrl+K and an agent all use the same deterministic transition.
+    /// Legacy receiver-dependent quality cycle. Kept only for decoding;
+    /// applying it is refused because a peer may start at another quality.
     CyclePreferredQuality,
+    /// Set the allowed preferred quality chosen by the authoring surface.
+    SetPreferredQuality {
+        quality: String,
+    },
     /// Set one `SponsorBlock` category's handling mode. The target mode is
     /// embedded instead of inferred from the document so the visible control,
     /// a replay and an agent all make the same transition (including Filler,
@@ -290,12 +339,27 @@ pub enum TubeAction {
         #[serde(default)]
         comment_id: String,
     },
+    /// Absolute comment-like membership. `liked: false` is retained as a
+    /// tombstone rather than deleting an address that a concurrent client may
+    /// still be updating.
+    SetCommentLiked {
+        comment_id: String,
+        liked: bool,
+    },
     ReplyToComment {
         video_id: String,
         index: usize,
         #[serde(default)]
         comment_id: String,
         text: String,
+    },
+    /// Set one deterministic reply entity. Reply mutations are host-mediated
+    /// because a host may apply moderation before making the value visible.
+    SetCommentReply {
+        comment_id: String,
+        reply_id: String,
+        text: String,
+        active: bool,
     },
 }
 
@@ -314,49 +378,55 @@ fn child_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionEr
     }
 }
 
-fn child_list(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
-    match doc.get(parent, key)? {
-        Some((Value::Object(ObjType::List), id)) => Ok(id),
-        _ => Ok(doc.put_object(parent, key, ObjType::List)?),
-    }
-}
-
 impl Action for TubeAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one explicit storage transition per durable Tube action keeps action replay auditable"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        // These envelopes were emitted by older Tube versions. A receiver's
+        // document state must never decide an authored transition, so retain
+        // decoder compatibility but refuse them before even creating `tube`.
+        match self {
+            TubeAction::LikeVideo { .. }
+            | TubeAction::ToggleSubscription { .. }
+            | TubeAction::CyclePreferredQuality => {
+                return Err(ActionError::Refused(
+                    "legacy Tube toggle/cycle actions cannot replay deterministically".into(),
+                ));
+            }
+            TubeAction::SetPreferredQuality { quality }
+                if !QUALITY_OPTIONS.contains(&quality.as_str()) =>
+            {
+                return Err(ActionError::Refused(format!(
+                    "unsupported preferred quality: {quality}"
+                )));
+            }
+            _ => {}
+        }
         let tube = tube_map(doc)?;
         match self {
-            TubeAction::LikeVideo { video_id } => {
-                let likes_map = child_map(doc, &tube, "likes")?;
-                let is_liked = doc
-                    .get(&likes_map, video_id.as_str())?
-                    .and_then(|(value, _)| value.to_bool())
-                    .unwrap_or(false);
-                doc.put(
-                    &likes_map,
-                    video_id.as_str(),
-                    ScalarValue::Boolean(!is_liked),
-                )?;
+            TubeAction::LikeVideo { .. }
+            | TubeAction::ToggleSubscription { .. }
+            | TubeAction::CyclePreferredQuality => {
+                return Err(ActionError::Refused(
+                    "legacy Tube toggle/cycle actions cannot replay deterministically".into(),
+                ));
             }
             TubeAction::SetVideoLiked { video_id, liked } => {
                 let likes_map = child_map(doc, &tube, "likes")?;
                 doc.put(&likes_map, video_id.as_str(), ScalarValue::Boolean(*liked))?;
             }
             TubeAction::AddToQueue { video_id } => {
-                let queue = child_list(doc, &tube, "queue")?;
-                let len = doc.length(&queue);
-                doc.insert(&queue, len, ScalarValue::Str(video_id.as_str().into()))?;
+                // Preserve the public legacy action name while migrating its
+                // storage to keyed absolute membership.  Old envelopes remain
+                // meaningful, while new callers use SetQueueMembership.
+                let queue = child_map(doc, &tube, "queue")?;
+                doc.put(&queue, video_id.as_str(), ScalarValue::Boolean(true))?;
             }
-            TubeAction::ToggleSubscription { channel_id } => {
-                let subscriptions = child_map(doc, &tube, "subscriptions")?;
-                let subscribed = doc
-                    .get(&subscriptions, channel_id.as_str())?
-                    .and_then(|(value, _)| value.to_bool())
-                    .unwrap_or(false);
-                doc.put(
-                    &subscriptions,
-                    channel_id.as_str(),
-                    ScalarValue::Boolean(!subscribed),
-                )?;
+            TubeAction::SetQueueMembership { video_id, queued } => {
+                let queue = child_map(doc, &tube, "queue")?;
+                doc.put(&queue, video_id.as_str(), ScalarValue::Boolean(*queued))?;
             }
             TubeAction::SetSubscription {
                 channel_id,
@@ -382,7 +452,14 @@ impl Action for TubeAction {
                 };
                 doc.put(&settings, key, ScalarValue::Boolean(*enabled))?;
             }
-            TubeAction::CyclePreferredQuality => apply_cycle_preferred_quality(doc, &tube)?,
+            TubeAction::SetPreferredQuality { quality } => {
+                let settings = child_map(doc, &tube, "settings")?;
+                doc.put(
+                    &settings,
+                    "preferred_quality",
+                    ScalarValue::Str(quality.as_str().into()),
+                )?;
+            }
             TubeAction::SetSponsorCategory { category, mode } => {
                 apply_sponsor_category(doc, &tube, *category, *mode)?;
             }
@@ -399,6 +476,10 @@ impl Action for TubeAction {
                 };
                 doc.put(&likes, key, ScalarValue::Boolean(true))?;
             }
+            TubeAction::SetCommentLiked { comment_id, liked } => {
+                let likes = child_map(doc, &tube, "comment_likes")?;
+                doc.put(&likes, comment_id, ScalarValue::Boolean(*liked))?;
+            }
             TubeAction::ReplyToComment {
                 video_id,
                 index,
@@ -411,9 +492,27 @@ impl Action for TubeAction {
                 } else {
                     comment_id.clone()
                 };
-                let list = child_list(doc, &replies_map, &key)?;
-                let len = doc.length(&list);
-                doc.insert(&list, len, ScalarValue::Str(text.as_str().into()))?;
+                let replies = child_map(doc, &replies_map, &key)?;
+                doc.put(
+                    &replies,
+                    reply_key(&key, text),
+                    ScalarValue::Str(text.as_str().into()),
+                )?;
+            }
+            TubeAction::SetCommentReply {
+                comment_id,
+                reply_id,
+                text,
+                active,
+            } => {
+                let replies_map = child_map(doc, &tube, "comment_replies")?;
+                let replies = child_map(doc, &replies_map, comment_id)?;
+                // The value is a small record rather than a list item. Keeping
+                // `active` beside the immutable text means a removal is an
+                // addressable tombstone and concurrent reply entities merge.
+                let reply = child_map(doc, &replies, reply_id)?;
+                doc.put(&reply, "text", ScalarValue::Str(text.as_str().into()))?;
+                doc.put(&reply, "active", ScalarValue::Boolean(*active))?;
             }
         }
         Ok(())
@@ -422,42 +521,23 @@ impl Action for TubeAction {
     fn locus(&self) -> ExecutionLocus {
         match self {
             // Shared, host-serialized state.
-            TubeAction::AddToQueue { .. } | TubeAction::ReplyToComment { .. } => {
-                ExecutionLocus::ServerPreferred
-            }
+            TubeAction::AddToQueue { .. }
+            | TubeAction::SetQueueMembership { .. }
+            | TubeAction::ReplyToComment { .. }
+            | TubeAction::SetCommentReply { .. } => ExecutionLocus::ServerPreferred,
             // Personal, replicable state.
             TubeAction::LikeVideo { .. }
             | TubeAction::SetVideoLiked { .. }
             | TubeAction::LikeComment { .. }
+            | TubeAction::SetCommentLiked { .. }
             | TubeAction::ToggleSubscription { .. }
             | TubeAction::SetSubscription { .. }
             | TubeAction::SetSetting { .. }
             | TubeAction::CyclePreferredQuality
+            | TubeAction::SetPreferredQuality { .. }
             | TubeAction::SetSponsorCategory { .. } => ExecutionLocus::ClientLocal,
         }
     }
-}
-
-fn apply_cycle_preferred_quality(doc: &mut Doc, tube: &ObjId) -> Result<(), ActionError> {
-    let settings = child_map(doc, tube, "settings")?;
-    let current = doc
-        .get(&settings, "preferred_quality")?
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
-        .unwrap_or_else(|| "1080p".to_string());
-    let index = QUALITY_OPTIONS
-        .iter()
-        .position(|quality| *quality == current)
-        .unwrap_or(0);
-    let next = QUALITY_OPTIONS
-        .get((index + 1) % QUALITY_OPTIONS.len())
-        .copied()
-        .unwrap_or("1080p");
-    doc.put(
-        &settings,
-        "preferred_quality",
-        ScalarValue::Str(next.into()),
-    )?;
-    Ok(())
 }
 
 fn apply_sponsor_category(
@@ -507,6 +587,18 @@ fn immediate_spec(id: &str, label: &str, action: &TubeAction) -> ActionSpec {
     let spec = ActionSpec::immediate(id, label, TUBE_ACTION_TYPE, action)
         .expect("TubeAction always serializes");
     spec
+}
+
+fn next_quality(current: &str) -> String {
+    let index = QUALITY_OPTIONS
+        .iter()
+        .position(|quality| *quality == current)
+        .unwrap_or(0);
+    QUALITY_OPTIONS
+        .get((index + 1) % QUALITY_OPTIONS.len())
+        .copied()
+        .unwrap_or("1080p")
+        .to_string()
 }
 
 /// One-line comment preview for the palette label.
@@ -584,12 +676,17 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
         .with_action(
             immediate_spec(
                 "queue",
-                "Add to queue",
-                &TubeAction::AddToQueue {
+                if model.is_queued(video_id) {
+                    "Remove from queue"
+                } else {
+                    "Add to queue"
+                },
+                &TubeAction::SetQueueMembership {
                     video_id: video_id.to_string(),
+                    queued: !model.is_queued(video_id),
                 },
             )
-            .with_description("Append to the shared watch queue")
+            .with_description("Set membership in the shared watch queue")
             .with_contract(ActionContract {
                 retry: RetryPolicy::AtMostOnce,
                 execution: ExecutionMode::Immediate,
@@ -597,6 +694,21 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
             })
             .reversible(),
         );
+    if let Some(download) = view_spec(
+        "download",
+        "Download video",
+        &TubeOperation::Download {
+            video_id: video_id.to_string(),
+        },
+    ) {
+        // Deliberately publish the blocked action instead of a decorative
+        // download button. Search and automation can discover the stable
+        // address and receive the concrete capability reason.
+        resource = resource.with_action(download.unavailable(
+            "download_storage_unavailable",
+            "Tube has no host-granted download storage capability",
+        ));
+    }
     if let Some(share) = view_spec(
         "share",
         "Copy share link",
@@ -611,27 +723,36 @@ fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> 
         }));
     }
     if include_comments {
-        resource = add_comment_resources(resource, video_id, &video.comments);
+        resource = add_comment_resources(resource, model, video_id, &video.comments);
     }
     Some(resource)
 }
 
 fn add_comment_resources(
     mut parent: Resource,
+    model: &TubeModel,
     video_id: &str,
     comments: &[crate::model::Comment],
 ) -> Resource {
     for (index, comment) in comments.iter().take(MAX_RESOURCE_COMMENTS).enumerate() {
-        parent = parent.with_child(comment_resource(video_id, index, comment));
+        parent = parent.with_child(comment_resource(model, video_id, index, comment));
     }
     parent
 }
 
-fn comment_resource(video_id: &str, index: usize, comment: &crate::model::Comment) -> Resource {
+fn comment_resource(
+    model: &TubeModel,
+    video_id: &str,
+    _index: usize,
+    comment: &crate::model::Comment,
+) -> Resource {
     let comment_id = comment_key(video_id, comment);
     let reply_comment_id = comment_id.clone();
-    let like_video_id = video_id.to_string();
-    let reply_video_id = like_video_id.clone();
+    let liked = model
+        .comment_likes
+        .get(&comment_id)
+        .copied()
+        .unwrap_or(false);
     Resource::new(
         format!("tube.comment:{comment_id}"),
         "tube.comment",
@@ -640,11 +761,14 @@ fn comment_resource(video_id: &str, index: usize, comment: &crate::model::Commen
     .with_action(
         immediate_spec(
             "like",
-            "Like comment",
-            &TubeAction::LikeComment {
-                video_id: like_video_id,
-                index,
+            if liked {
+                "Unlike comment"
+            } else {
+                "Like comment"
+            },
+            &TubeAction::SetCommentLiked {
                 comment_id,
+                liked: !liked,
             },
         )
         .reversible(),
@@ -656,11 +780,12 @@ fn comment_resource(video_id: &str, index: usize, comment: &crate::model::Commen
         "your reply…",
         ExecutionLocus::ServerPreferred,
         move |text: &str| {
-            encode(&TubeAction::ReplyToComment {
-                video_id: reply_video_id.clone(),
-                index,
+            let reply_id = reply_key(&reply_comment_id, text);
+            encode(&TubeAction::SetCommentReply {
                 comment_id: reply_comment_id.clone(),
+                reply_id,
                 text: text.to_string(),
+                active: true,
             })
         },
     ))
@@ -778,6 +903,7 @@ fn library_resource(model: &TubeModel) -> Resource {
         .with_child(creators)
         .with_child(playlists)
         .with_child(subscriptions_resource(model))
+        .with_child(queue_resource(model))
         .with_child(history_resource(model))
         .with_child(search_results_resource(model))
         // Downloads are a first-class, canonical collection even when it is
@@ -790,6 +916,44 @@ fn library_resource(model: &TubeModel) -> Resource {
             "Downloads (none available)",
         ));
     library
+}
+
+/// The shared queue is a set of stable video entities, not an ordered CRDT
+/// list. A queue entry therefore has a deterministic address and a reversible
+/// tombstone action even when concurrent clients add/remove it at once.
+fn queue_resource(model: &TubeModel) -> Resource {
+    let mut queue = Resource::new("tube.queue", "tube.collection", "Shared watch queue");
+    for video_id in model.queue.iter().take(MAX_RESOURCE_ENTITIES) {
+        let label = model.video(video_id).map_or_else(
+            || resource_label(&format!("Queued video {video_id}")),
+            |video| resource_label(&video.title),
+        );
+        let mut entry = Resource::new(format!("tube.queue:{video_id}"), "tube.queue-entry", label)
+            .with_action(
+                immediate_spec(
+                    "remove",
+                    "Remove from queue",
+                    &TubeAction::SetQueueMembership {
+                        video_id: video_id.clone(),
+                        queued: false,
+                    },
+                )
+                .reversible(),
+            );
+        if model.video(video_id).is_some()
+            && let Some(open) = view_spec(
+                "open",
+                "Open video",
+                &TubeOperation::OpenVideo {
+                    video_id: video_id.clone(),
+                },
+            )
+        {
+            entry = entry.with_action(open);
+        }
+        queue = queue.with_child(entry);
+    }
+    queue
 }
 
 /// The user's durable subscriptions, projected separately from the discovered
@@ -1001,7 +1165,9 @@ fn settings_resource(model: &TubeModel) -> Resource {
         immediate_spec(
             "cycle",
             "Cycle preferred quality",
-            &TubeAction::CyclePreferredQuality,
+            &TubeAction::SetPreferredQuality {
+                quality: next_quality(&model.settings.preferred_quality),
+            },
         )
         .reversible(),
     );
@@ -1140,6 +1306,7 @@ mod tests {
         let video = model.videos[0].id.clone();
         let channel = model.videos[0].channel_id.clone();
         model.subscriptions = vec![channel];
+        model.queue = vec![video.clone()];
         model.history = vec![video.clone()];
         model.search_hits_query = "rust".into();
         model.search_hits = vec![video.clone()];
@@ -1183,6 +1350,166 @@ mod tests {
                 .iter()
                 .any(|resource| resource.id.0 == "tube.downloads")
         );
+        let queue = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.queue")
+            .expect("shared queue collection");
+        assert_eq!(queue.children[0].id.0, format!("tube.queue:{video}"));
+        assert!(
+            queue.children[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "remove")
+        );
+    }
+
+    #[test]
+    fn queue_membership_is_an_absolute_keyed_tombstone() {
+        let mut doc = AutoCommit::new();
+        qos_actions::Action::apply(
+            &TubeAction::SetQueueMembership {
+                video_id: "video-1".into(),
+                queued: true,
+            },
+            &mut doc,
+        )
+        .expect("queue add applies");
+        qos_actions::Action::apply(
+            &TubeAction::SetQueueMembership {
+                video_id: "video-1".into(),
+                queued: false,
+            },
+            &mut doc,
+        )
+        .expect("queue tombstone applies");
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
+            panic!("tube root exists");
+        };
+        let (Value::Object(ObjType::Map), queue) = doc.get(&tube, "queue").unwrap().unwrap() else {
+            panic!("queue is a keyed map");
+        };
+        assert_eq!(
+            doc.get(&queue, "video-1").unwrap().unwrap().0.to_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn comment_mutations_use_keyed_absolute_records() {
+        let mut doc = AutoCommit::new();
+        let comment_id = "video-1#comment".to_string();
+        let reply_id = reply_key(&comment_id, "Useful explanation");
+        qos_actions::Action::apply(
+            &TubeAction::SetCommentLiked {
+                comment_id: comment_id.clone(),
+                liked: false,
+            },
+            &mut doc,
+        )
+        .expect("comment-like tombstone applies");
+        qos_actions::Action::apply(
+            &TubeAction::SetCommentReply {
+                comment_id: comment_id.clone(),
+                reply_id: reply_id.clone(),
+                text: "Useful explanation".into(),
+                active: false,
+            },
+            &mut doc,
+        )
+        .expect("reply tombstone applies");
+        let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
+            panic!("tube root exists");
+        };
+        let (Value::Object(ObjType::Map), likes) =
+            doc.get(&tube, "comment_likes").unwrap().unwrap()
+        else {
+            panic!("comment likes is a keyed map");
+        };
+        assert_eq!(
+            doc.get(&likes, &comment_id).unwrap().unwrap().0.to_bool(),
+            Some(false)
+        );
+        let (Value::Object(ObjType::Map), all_replies) =
+            doc.get(&tube, "comment_replies").unwrap().unwrap()
+        else {
+            panic!("comment replies is a keyed map");
+        };
+        let (Value::Object(ObjType::Map), replies) =
+            doc.get(&all_replies, &comment_id).unwrap().unwrap()
+        else {
+            panic!("per-comment replies is a keyed map");
+        };
+        let (Value::Object(ObjType::Map), reply) = doc.get(&replies, &reply_id).unwrap().unwrap()
+        else {
+            panic!("reply is a keyed record");
+        };
+        assert_eq!(
+            doc.get(&reply, "active").unwrap().unwrap().0.to_bool(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn legacy_receiver_dependent_actions_are_decoded_but_refused() {
+        let mut doc = AutoCommit::new();
+        for action in [
+            TubeAction::LikeVideo {
+                video_id: "video-1".into(),
+            },
+            TubeAction::ToggleSubscription {
+                channel_id: "channel-1".into(),
+            },
+            TubeAction::CyclePreferredQuality,
+        ] {
+            assert!(matches!(
+                qos_actions::Action::apply(&action, &mut doc),
+                Err(ActionError::Refused(_))
+            ));
+        }
+        assert!(doc.get(&ROOT, "tube").unwrap().is_none());
+    }
+
+    #[test]
+    fn absolute_quality_replays_identically_on_divergent_replicas() {
+        let mut left = AutoCommit::new();
+        let mut right = AutoCommit::new();
+        for (doc, initial) in [(&mut left, "1080p"), (&mut right, "480p")] {
+            let tube = doc.put_object(&ROOT, "tube", ObjType::Map).unwrap();
+            let settings = doc.put_object(&tube, "settings", ObjType::Map).unwrap();
+            doc.put(&settings, "preferred_quality", initial).unwrap();
+        }
+        let action = TubeAction::SetPreferredQuality {
+            quality: "720p".into(),
+        };
+        action.apply(&mut left).expect("left replay applies");
+        action.apply(&mut right).expect("right replay applies");
+        for doc in [&left, &right] {
+            let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap()
+            else {
+                panic!("tube root");
+            };
+            let (Value::Object(ObjType::Map), settings) =
+                doc.get(&tube, "settings").unwrap().unwrap()
+            else {
+                panic!("settings");
+            };
+            assert_eq!(
+                doc.get(&settings, "preferred_quality")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some("720p")
+            );
+        }
+        assert!(matches!(
+            TubeAction::SetPreferredQuality {
+                quality: "4K magic".into()
+            }
+            .apply(&mut left),
+            Err(ActionError::Refused(_))
+        ));
     }
 
     #[test]

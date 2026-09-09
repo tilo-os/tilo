@@ -792,6 +792,25 @@ impl Widget for NavSplit {
         ) else {
             return;
         };
+        if self.layout_mode() == SplitLayout::Overlay && self.is_sidebar_open() {
+            // An open flap is a real modal drawer, not merely a painted layer:
+            // keeping the detail pane from receiving keyboard/pointer events
+            // prevents a focused search field or underlying card from acting
+            // through the scrim. Esc and scrim clicks were handled above;
+            // remaining events belong exclusively to the drawer.
+            self.sidebar.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                s_node,
+                taffy,
+            );
+            return;
+        }
         let order = if route_sidebar_first {
             [(true, s_node), (false, c_node)]
         } else {
@@ -874,6 +893,7 @@ mod tests {
     /// [`pure_reposition_reuses_the_inner_layout_instead_of_re_solving`].
     struct Spy {
         builds: Rc<Cell<usize>>,
+        events: Rc<Cell<usize>>,
         rect: Rect,
     }
     impl Widget for Spy {
@@ -925,6 +945,7 @@ mod tests {
             _n: NodeId,
             _t: &TaffyTree<()>,
         ) {
+            self.events.set(self.events.get().saturating_add(1));
         }
         fn is_layout_dirty(&self) -> bool {
             self.rect == Rect::ZERO
@@ -1050,6 +1071,32 @@ mod tests {
         dispatch(&mut ns, &left_press(), &mut handled);
         assert!(handled, "scrim click is consumed");
         assert!(!ns.is_sidebar_open(), "scrim click closes the overlay flap");
+    }
+
+    #[test]
+    fn open_overlay_does_not_route_events_to_obscured_content() {
+        let builds = Rc::new(Cell::new(0));
+        let events = Rc::new(Cell::new(0));
+        let mut ns = NavSplit::new(
+            Box::new(Text::new("sidebar")),
+            Box::new(Spy {
+                builds,
+                events: events.clone(),
+                rect: Rect::ZERO,
+            }),
+        )
+        .with_mode(SplitMode::Adaptive);
+        lay_out(&mut ns, 600.0, 600.0);
+        ns.open_sidebar();
+        ns.snap_open(true);
+        ns.recompute_rects();
+        let mut handled = false;
+        dispatch(&mut ns, &cursor_at(Point::new(580.0, 300.0)), &mut handled);
+        assert_eq!(
+            events.get(),
+            0,
+            "an open overlay is modal; obscured detail content receives no input"
+        );
     }
 
     #[test]
@@ -1309,10 +1356,12 @@ mod tests {
     #[test]
     fn pure_reposition_reuses_the_inner_layout_instead_of_re_solving() {
         let builds = Rc::new(Cell::new(0usize));
+        let events = Rc::new(Cell::new(0usize));
         let mut ns = NavSplit::new(
             Box::new(Text::new("sidebar")),
             Box::new(Spy {
                 builds: builds.clone(),
+                events,
                 rect: Rect::ZERO,
             }),
         )
