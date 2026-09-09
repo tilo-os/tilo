@@ -84,6 +84,19 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     }
     trap cleanup_container EXIT
 
+    docker_health_log=$log_dir/docker-health.log
+    set +e
+    docker info >"$docker_health_log" 2>&1
+    docker_status=$?
+    set -e
+    if (( docker_status != 0 )); then
+        {
+            printf 'stage=docker-health status=%s\n' "$docker_status"
+            tail -n 8 "$docker_health_log"
+        } > "$output/CI_FAILURE"
+        exit "$docker_status"
+    fi
+
     inner_command='
         set -eu
         PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
