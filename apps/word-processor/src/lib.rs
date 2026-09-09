@@ -38,6 +38,7 @@
 )]
 
 pub mod actions;
+mod compact_swatch_palette;
 mod find_bar;
 pub mod history_panel;
 pub mod i18n;
