@@ -277,6 +277,14 @@ impl TubeApp {
                         .push_notice("That playlist is no longer available");
                 }
             }
+            crate::actions::TubeOperation::Download { video_id } => {
+                // The resource action is published as unavailable, so a
+                // conforming host never reaches this arm. Keep the fallback
+                // honest if a stale/non-conforming caller invokes it anyway.
+                self.model.push_notice(format!(
+                    "Downloads are unavailable for {video_id}: no storage capability"
+                ));
+            }
             crate::actions::TubeOperation::PairDevice { invite } => {
                 #[cfg(feature = "grayjay-sync")]
                 if !self.device_sync.pair(invite) {
@@ -1348,11 +1356,9 @@ impl TubeApp {
                     SettingFlag::ShowComments => s.show_comments = !s.show_comments,
                 }
             }
-            Action::SetQuality(_) => {
-                let cur = self.model.settings.preferred_quality.clone();
-                let idx = QUALITIES.iter().position(|q| *q == cur).unwrap_or(0);
-                if let Some(next) = QUALITIES.get((idx + 1) % QUALITIES.len()) {
-                    self.model.settings.preferred_quality = (*next).to_string();
+            Action::SetQuality(quality) => {
+                if QUALITIES.contains(&quality.as_str()) {
+                    self.model.settings.preferred_quality = quality;
                 }
             }
             Action::SubmitSearch => {
@@ -1794,25 +1800,63 @@ impl TubeApp {
                 changed = true;
             }
         }
+        if let Ok(Some((Value::Object(ObjType::Map), likes))) = state.get(&tube, "comment_likes") {
+            let comment_likes = state
+                .keys(&likes)
+                .filter_map(|comment_id| {
+                    state
+                        .get(&likes, comment_id.as_str())
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.to_bool())
+                        .map(|liked| (comment_id, liked))
+                })
+                .collect();
+            if comment_likes != self.model.comment_likes {
+                self.model.comment_likes = comment_likes;
+                changed = true;
+            }
+        }
         if let Ok(Some((Value::Object(ObjType::Map), subscriptions))) =
             state.get(&tube, "subscriptions")
         {
-            let subscribed = self
-                .model
-                .channels
-                .iter()
-                .filter(|channel| {
+            // Iterate the document itself rather than the cached channel
+            // catalogue. A subscription is durable even if a refresh evicted
+            // its metadata; dropping it here would make an unrelated feed
+            // update erase an otherwise valid resource/action target.
+            let subscribed = state
+                .keys(&subscriptions)
+                .filter(|channel_id| {
                     state
-                        .get(&subscriptions, channel.id.as_str())
+                        .get(&subscriptions, channel_id.as_str())
                         .ok()
                         .flatten()
                         .and_then(|(value, _)| value.to_bool())
                         .unwrap_or(false)
                 })
-                .map(|channel| channel.id.clone())
                 .collect::<Vec<_>>();
             if subscribed != self.model.subscriptions {
                 self.model.subscriptions = subscribed;
+                changed = true;
+            }
+        }
+        if let Ok(Some((Value::Object(ObjType::Map), queue))) = state.get(&tube, "queue") {
+            // Map keys are stable entity ids; retaining a false value as a
+            // tombstone lets concurrent remove/add writes converge through
+            // Automerge without an index-sensitive list operation.
+            let queued = state
+                .keys(&queue)
+                .filter(|video_id| {
+                    state
+                        .get(&queue, video_id.as_str())
+                        .ok()
+                        .flatten()
+                        .and_then(|(value, _)| value.to_bool())
+                        .unwrap_or(false)
+                })
+                .collect::<Vec<_>>();
+            if queued != self.model.queue {
+                self.model.queue = queued;
                 changed = true;
             }
         }
@@ -2323,7 +2367,11 @@ impl Widget for TubeApp {
                         enabled,
                     })
                 }
-                Action::SetQuality(_) => Some(crate::actions::TubeAction::CyclePreferredQuality),
+                Action::SetQuality(quality) if QUALITIES.contains(&quality.as_str()) => {
+                    Some(crate::actions::TubeAction::SetPreferredQuality {
+                        quality: quality.clone(),
+                    })
+                }
                 Action::ToggleCategory(category) => {
                     Some(crate::actions::TubeAction::SetSponsorCategory {
                         category: *category,
@@ -2667,11 +2715,12 @@ mod tests {
     }
 
     #[test]
-    fn externally_applied_subscription_action_updates_visible_model() {
+    fn externally_applied_absolute_subscription_action_updates_visible_model() {
         let (mut app, mut doc) = fresh();
         qos_actions::Action::apply(
-            &crate::actions::TubeAction::ToggleSubscription {
+            &crate::actions::TubeAction::SetSubscription {
                 channel_id: "ch_synth".into(),
+                subscribed: true,
             },
             &mut doc,
         )
@@ -2680,6 +2729,61 @@ mod tests {
         assert!(
             app.model.is_subscribed("ch_synth"),
             "agent/replay actions must update the rendered subscription state"
+        );
+    }
+
+    #[test]
+    fn subscription_and_queue_entities_survive_without_cached_metadata() {
+        let (mut app, mut doc) = fresh();
+        let unknown_channel = "channel-not-in-catalogue";
+        let unknown_video = "video-not-in-catalogue";
+        qos_actions::Action::apply(
+            &crate::actions::TubeAction::SetSubscription {
+                channel_id: unknown_channel.into(),
+                subscribed: true,
+            },
+            &mut doc,
+        )
+        .expect("subscription applies");
+        qos_actions::Action::apply(
+            &crate::actions::TubeAction::SetQueueMembership {
+                video_id: unknown_video.into(),
+                queued: true,
+            },
+            &mut doc,
+        )
+        .expect("queue membership applies");
+        Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        assert!(app.model.is_subscribed(unknown_channel));
+        assert!(app.model.is_queued(unknown_video));
+
+        let resources = Widget::resources(&app, &doc);
+        let library = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.library")
+            .expect("library resource");
+        let subscriptions = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.subscriptions")
+            .expect("subscriptions resource");
+        assert!(
+            subscriptions
+                .children
+                .iter()
+                .any(|resource| resource.id.0 == format!("tube.subscription:{unknown_channel}"))
+        );
+        let queue = library
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == "tube.queue")
+            .expect("queue resource");
+        assert!(
+            queue
+                .children
+                .iter()
+                .any(|resource| resource.id.0 == format!("tube.queue:{unknown_video}"))
         );
     }
 
@@ -3007,8 +3111,9 @@ mod tests {
         let (mut app, doc) = fresh();
         let r = automerge::ROOT;
         let q0 = app.model.settings.preferred_quality.clone();
-        app.apply(Action::SetQuality(q0.clone()), &doc, &r);
+        app.apply(Action::SetQuality("720p".into()), &doc, &r);
         assert_ne!(q0, app.model.settings.preferred_quality);
+        assert_eq!(app.model.settings.preferred_quality, "720p");
     }
 
     // --- responsive navigation rail ---
