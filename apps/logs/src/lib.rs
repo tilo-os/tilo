@@ -5,11 +5,10 @@
 //! scrollable, severity-coloured entry list; a detail pane that surfaces
 //! every field of the selected record; and a filter bar (free-text
 //! search, unit, boot, and a syslog-priority threshold) plus a
-//! live-tail toggle. Selection, filters, and search live in the Automerge
-//! document (see [`doc::LogsDoc`]) so they sync across collaborators and
-//! participate in undo/redo for free. Live tail is a deliberately local
-//! effect because it starts the local process's journal poller; journal
-//! entries themselves are an external render cache. The resource catalogue
+//! live-tail toggle. Selection, filters, and search are deliberately local:
+//! they describe one person's investigation and must not yank a collaborator's
+//! view. Live tail is also local because it starts this process's journal
+//! poller; journal entries themselves are an external render cache. The resource catalogue
 //! also exposes refresh, follow/pause, and an explicit-path JSON Lines export;
 //! it publishes metadata and stable entry identities, never raw log payloads.
 //!
