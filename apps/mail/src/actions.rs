@@ -426,6 +426,9 @@ pub(crate) const OPEN_MESSAGE_LIMIT: usize = 100;
 #[derive(Debug, Clone)]
 pub struct MessageRow {
     pub id: String,
+    /// Stable conversation anchor from [`crate::model::Thread::id`]. This is
+    /// separate from the subject: display text is neither unique nor durable.
+    pub thread_id: String,
     pub subject: String,
     pub thread_subject: String,
     pub folder: Folder,
@@ -449,6 +452,10 @@ pub struct AttachmentRow {
 pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
     MessageRow {
         id: message.id.to_string(),
+        // A caller that materialises a folder tree replaces this with the
+        // thread projection's anchor. Keeping the message id here makes
+        // on-demand message/search rows safe and self-contained.
+        thread_id: message.id.to_string(),
         subject: message.subject.clone(),
         thread_subject: message.thread_subject(),
         folder: message.folder,
@@ -719,30 +726,28 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
     );
 
     // Every searchable system folder and loaded message gets a stable address.
-    // A message is nested under its physical folder only; Starred is virtual,
-    // and duplicating resources there would make canonical ids ambiguous.
+    // The supplied rows are already the current folder's projection (including
+    // virtual Starred), so they must not be filtered again by physical folder.
     for folder in Folder::ALL {
         let mut folder_node = system_folder_resource(folder, ctx.has_draft);
         if folder == ctx.current_folder {
-            let mut threads: Vec<(String, Vec<&MessageRow>)> = Vec::new();
-            for message in ctx
-                .messages
-                .iter()
-                .rev()
-                .filter(|message| message.folder == folder)
-                .take(OPEN_MESSAGE_LIMIT)
-            {
-                if let Some((_, messages)) = threads
+            let mut threads: Vec<(String, String, Vec<&MessageRow>)> = Vec::new();
+            for message in ctx.messages.iter().rev().take(OPEN_MESSAGE_LIMIT) {
+                if let Some((_, _, messages)) = threads
                     .iter_mut()
-                    .find(|(subject, _)| subject == &message.thread_subject)
+                    .find(|(id, _, _)| id == &message.thread_id)
                 {
                     messages.push(message);
                 } else {
-                    threads.push((message.thread_subject.clone(), vec![message]));
+                    threads.push((
+                        message.thread_id.clone(),
+                        message.thread_subject.clone(),
+                        vec![message],
+                    ));
                 }
             }
-            for (thread_subject, messages) in threads {
-                let stable = thread_resource_key(&thread_subject);
+            for (thread_id, thread_subject, messages) in threads {
+                let stable = thread_resource_key(folder, &thread_id);
                 folder_node = folder_node.with_child(
                     Resource::new(
                         format!("mail.thread:{stable}"),
@@ -822,15 +827,12 @@ pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resourc
     folder_node
 }
 
-pub(crate) fn thread_resource_key(subject: &str) -> String {
-    // Stable FNV-1a rather than process-random HashMap hashing: agents and
-    // history may hold this address across frames.
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in subject.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    format!("{hash:016x}")
+pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
+    // The RFC References root (or the model's documented legacy fallback) is
+    // a stable domain identity. Scoping it to the folder prevents virtual
+    // Starred and a physical folder from claiming the same resource address,
+    // while avoiding lossy subject-derived hashes.
+    format!("{}:{thread_id}", folder.as_key())
 }
 
 impl ResourceProvider for crate::app::MailApp {
@@ -1068,6 +1070,7 @@ mod tests {
         };
         ctx.messages.extend((0..10_000).map(|id| MessageRow {
             id: id.to_string(),
+            thread_id: id.to_string(),
             subject: format!("Message {id}"),
             thread_subject: format!("Message {id}"),
             folder: Folder::Inbox,
@@ -1090,6 +1093,60 @@ mod tests {
                 .all(|thread| { thread.kind == "mail.thread" && thread.children.len() == 1 })
         );
         assert!(message_resource(&ctx.messages[9_999]).actions.len() >= 5);
+    }
+
+    #[test]
+    fn same_subject_threads_keep_distinct_stable_resource_addresses() {
+        let ctx = MailResourceCtx {
+            mailbox_label: "Mailbox".into(),
+            current_folder: Folder::Inbox,
+            accounts: Vec::new(),
+            messages: vec![
+                MessageRow {
+                    id: "newer".into(),
+                    thread_id: "thread-b".into(),
+                    subject: "Status update".into(),
+                    thread_subject: "Status update".into(),
+                    folder: Folder::Inbox,
+                    read: false,
+                    starred: false,
+                    labels: Vec::new(),
+                    attachments: Vec::new(),
+                },
+                MessageRow {
+                    id: "older".into(),
+                    thread_id: "thread-a".into(),
+                    subject: "Status update".into(),
+                    thread_subject: "Status update".into(),
+                    folder: Folder::Inbox,
+                    read: false,
+                    starred: false,
+                    labels: Vec::new(),
+                    attachments: Vec::new(),
+                },
+            ],
+            custom_folders: Vec::new(),
+            has_draft: false,
+            can_sync: false,
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        let inbox = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "mail.folder:inbox")
+            .expect("inbox resource");
+        assert_eq!(
+            inbox.children.len(),
+            2,
+            "same display text must not merge threads"
+        );
+        let ids: Vec<_> = inbox
+            .children
+            .iter()
+            .map(|thread| thread.id.as_str())
+            .collect();
+        assert!(ids.contains(&"mail.thread:inbox:thread-a"));
+        assert!(ids.contains(&"mail.thread:inbox:thread-b"));
     }
 
     #[test]
@@ -1451,6 +1508,7 @@ mod tests {
     fn trash_resource_uses_the_same_purge_action_as_the_delete_affordance() {
         let row = MessageRow {
             id: "m".into(),
+            thread_id: "m".into(),
             subject: "Already trashed".into(),
             thread_subject: "Already trashed".into(),
             folder: Folder::Trash,
