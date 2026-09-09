@@ -133,7 +133,7 @@ fn inv_lerp(min: f32, max: f32, v: f32) -> f32 {
 
 /// One of the editable colour slots in a [`ThemeSpec`]. The customizer
 /// shows a row per token; the active token drives the colour picker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokenId {
     Accent,
     AccentHover,
