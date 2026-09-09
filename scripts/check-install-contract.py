@@ -113,6 +113,9 @@ assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session
 assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
 assert "package / ${{ matrix.distro }} / ${{ matrix.arch }}" in session_workflow
 assert "${{ matrix.distro }}-${{ matrix.arch }}" in session_workflow
+assert "group: desktop-package-native-builder" in session_workflow
+assert "cancel-in-progress: false" in session_workflow
+assert "max-parallel:" not in session_workflow
 assert "QOS_BLAKE3_PREFER_INTRINSICS=1" in rpm_job
 assert 'CARGO_FEATURE_PREFER_INTRINSICS="$QOS_BLAKE3_PREFER_INTRINSICS"' in rpm_job
 for distro in ["arch", "nix", "ubuntu-24.04", "debian-13", "fedora-44"]:
