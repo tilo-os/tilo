@@ -1699,6 +1699,15 @@ pub fn watch(
 }
 
 fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let current = model.settings.preferred_quality.as_str();
+    let index = crate::app::QUALITIES
+        .iter()
+        .position(|quality| *quality == current)
+        .unwrap_or(0);
+    let next = crate::app::QUALITIES
+        .get((index + 1) % crate::app::QUALITIES.len())
+        .copied()
+        .unwrap_or("1080p");
     Flex::row()
         .gap(6.0)
         .pad_xy(10.0, 6.0)
@@ -1708,10 +1717,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, theme.border_standard)),
         })
-        .on_click(
-            bus,
-            Action::SetQuality(model.settings.preferred_quality.clone()),
-        )
+        .on_click(bus, Action::SetQuality(next.to_string()))
         .accessible_name(format!(
             "Playback quality, currently {}",
             model.settings.preferred_quality
