@@ -24,8 +24,7 @@
 
 use std::path::{Path, PathBuf};
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -48,6 +47,46 @@ pub struct SettingsActionBindings {
     pub search_engine: Option<qos_actions::ActionBinding<String>>,
     pub clear_history: Option<qos_actions::ActionBinding<()>>,
     pub clear_site_data: Option<qos_actions::ActionBinding<()>>,
+    /// Close is presentation-only, but it is still a canonical Browser view
+    /// action.  Keeping it here means keyboard and assistive-tech activation
+    /// have the same route as the Library's Done button.
+    pub close: Option<qos_actions::ActionBinding<()>>,
+}
+
+/// Process-local mirrors used only to present the action-applied settings.
+/// They are not a persistence or collaboration channel.
+#[derive(Clone)]
+pub struct SettingsPresentation {
+    pub adblock: ui::LocalState<bool>,
+    pub clear_on_exit: ui::LocalState<bool>,
+    pub homepage: ui::LocalState<String>,
+    pub search_engine: ui::LocalState<String>,
+}
+
+impl SettingsPresentation {
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            adblock: ui::LocalState::new(settings.adblock_enabled),
+            clear_on_exit: ui::LocalState::new(settings.clear_on_exit),
+            homepage: ui::LocalState::new(settings.homepage.clone()),
+            search_engine: ui::LocalState::new(settings.search_engine.clone()),
+        }
+    }
+
+    pub fn reflect(&self, settings: &Settings) {
+        if self.adblock.with(|value| *value) != settings.adblock_enabled {
+            self.adblock.set(settings.adblock_enabled);
+        }
+        if self.clear_on_exit.with(|value| *value) != settings.clear_on_exit {
+            self.clear_on_exit.set(settings.clear_on_exit);
+        }
+        if self.homepage.with(Clone::clone) != settings.homepage {
+            self.homepage.set(settings.homepage.clone());
+        }
+        if self.search_engine.with(Clone::clone) != settings.search_engine {
+            self.search_engine.set(settings.search_engine.clone());
+        }
+    }
 }
 
 /// Boxed-widget currency the `ui` tree speaks.
@@ -62,16 +101,10 @@ type El = Box<dyn Widget>;
 pub const ADBLOCK_PATH: &str = "settings.adblock";
 /// Boolean toggle: clear history & cookies when the browser exits.
 pub const CLEAR_ON_EXIT_PATH: &str = "settings.clear_on_exit";
-/// Click-flag raised by the "Clear history now" button. Reset on read.
-pub const CLEAR_HISTORY_FLAG: &str = "settings.clear_history_clicked";
-/// Click-flag raised by the "Request local site-data clear" button.
-pub const CLEAR_COOKIES_FLAG: &str = "settings.clear_cookies_clicked";
 /// Automerge `Text` object holding the search-engine query template.
 pub const SEARCH_ENGINE_PATH: &str = "settings.search_engine";
 /// Automerge `Text` object holding the homepage URL.
 pub const HOMEPAGE_PATH: &str = "settings.homepage";
-/// Click-flag raised by the "Done" button to close the settings pane.
-pub const CLOSE_FLAG: &str = "settings.close_clicked";
 
 /// Default search-engine query template. The `?q=` suffix lets the
 /// chrome build a search URL by appending typed terms.
@@ -212,81 +245,16 @@ impl Settings {
     }
 }
 
-// === Intent API ======================================================
-
-/// One frame's worth of settings intents, produced by
-/// [`SettingsPane::take_pending`] for the chrome to act on.
-///
-/// The two `clear_*` fields are edge-triggered one-shots: they are
-/// `true` only on the frame the corresponding button was clicked, and
-/// [`SettingsPane::take_pending`] resets the underlying CRDT flag as it
-/// reads it. The two toggle fields are level values: `Some(state)`
-/// reflects the current toggle position (or `None` before the pane has
-/// seeded the document), so the chrome idempotently mirrors them into
-/// its [`Settings`] and the engine.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SettingsIntents {
-    /// The "Clear history now" button was pressed this frame.
-    pub clear_history: bool,
-    /// The local-engine site-data clear request was pressed this frame.
-    pub clear_cookies: bool,
-    /// Current ad-block toggle state, or `None` before bootstrap.
-    pub adblock_enabled: Option<bool>,
-    /// Current clear-on-exit toggle state, or `None` before bootstrap.
-    pub clear_on_exit: Option<bool>,
-    /// Current search-engine query template.
-    pub search_engine: Option<String>,
-    /// Current homepage URL.
-    pub homepage: Option<String>,
-    /// The "Done" button was pressed this frame — close the pane.
-    pub close: bool,
-}
-
-/// Read a boolean scalar at `path`, returning `None` when the path is
-/// absent or holds a non-boolean value.
-fn read_bool(state: &AutoCommit, root: &ObjId, path: &str) -> Option<bool> {
-    match state.get(root, path) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn read_text(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
-    let (value, object) = state.get(root, path).ok()??;
-    matches!(value, Value::Object(automerge::ObjType::Text))
-        .then(|| state.text(&object).ok())
-        .flatten()
-}
-
-/// Read a click-flag and reset it to `false` if it was raised, returning
-/// whether it had been raised. Mirrors the read-and-reset the browser's
-/// `sync` does inline for its `browser.*_clicked` flags, but factored so
-/// the chrome can poll it without owning the widget.
-fn take_flag(state: &mut AutoCommit, root: &ObjId, path: &str) -> bool {
-    let raised = matches!(read_bool(state, root, path), Some(true));
-    if raised {
-        let _ = state.put(root, path, false);
-    }
-    raised
-}
-
 // === Widget ==========================================================
 
 /// The browser's settings surface: a scrollable column of preference
-/// controls. Holds only render/layout caches — every editable value
-/// lives in the CRDT under the `settings.*` paths above.
+/// controls. Typed actions mutate durable settings; local mirrors only
+/// present the action-applied result in this window.
 pub struct SettingsPane {
     rect: Rect,
-    /// Initial values seeded into the CRDT on first `sync`. After
-    /// bootstrap the CRDT is authoritative; this is only the seed.
-    initial: Settings,
+    presentation: SettingsPresentation,
     /// Composed child tree, rebuilt on every `build_layout`.
     composed: Option<Box<dyn Widget>>,
-    /// True once the `settings.*` paths have been seeded into the CRDT.
-    bootstrap_done: bool,
     actions: SettingsActionBindings,
     /// A device-local persistence failure supplied by Browser after a clear
     /// action. It is deliberately not a CRDT value: other collaborators
@@ -297,18 +265,15 @@ pub struct SettingsPane {
 impl SettingsPane {
     /// Construct a pane seeded from [`Settings::default`].
     pub fn new() -> Self {
-        Self::with_settings(Settings::default())
+        Self::with_settings(&Settings::default())
     }
 
-    /// Construct a pane whose CRDT is seeded from `settings` on first
-    /// `sync`. The chrome passes the on-disk [`Settings`] here so the
-    /// toggles/fields open reflecting the persisted state.
-    pub fn with_settings(settings: Settings) -> Self {
+    /// Construct a pane with a process-local projection of `settings`.
+    pub fn with_settings(settings: &Settings) -> Self {
         Self {
             rect: Rect::ZERO,
-            initial: settings,
+            presentation: SettingsPresentation::from_settings(settings),
             composed: None,
-            bootstrap_done: false,
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
         }
@@ -321,45 +286,19 @@ impl SettingsPane {
         self
     }
 
+    /// Reuse Browser's retained presentation values across composition
+    /// rebuilds. This avoids turning field drafts or focus into CRDT state.
+    #[must_use]
+    pub fn with_presentation(mut self, presentation: SettingsPresentation) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
     /// Surface an honest local failure next to the control that initiated it.
     #[must_use]
     pub fn with_history_clear_error(mut self, error: Option<String>) -> Self {
         self.history_clear_error = error;
         self
-    }
-
-    /// Poll the pending settings intents for this frame and reset the
-    /// one-shot click-flags. Called by the chrome once per frame with
-    /// the same `state`/`root` handles the widget tree is driven with.
-    ///
-    /// The `clear_*` fields are edge-triggered (true only on the click
-    /// frame; the flag is reset here). The toggle fields are level
-    /// values read straight from the CRDT.
-    pub fn take_pending(state: &mut AutoCommit, root: &ObjId) -> SettingsIntents {
-        SettingsIntents {
-            clear_history: take_flag(state, root, CLEAR_HISTORY_FLAG),
-            clear_cookies: take_flag(state, root, CLEAR_COOKIES_FLAG),
-            adblock_enabled: read_bool(state, root, ADBLOCK_PATH),
-            clear_on_exit: read_bool(state, root, CLEAR_ON_EXIT_PATH),
-            search_engine: read_text(state, root, SEARCH_ENGINE_PATH),
-            homepage: read_text(state, root, HOMEPAGE_PATH),
-            close: take_flag(state, root, CLOSE_FLAG),
-        }
-    }
-
-    /// Seed the `settings.*` paths from `self.initial`. Idempotent: each
-    /// path is only written when absent, so a document already carrying
-    /// settings (e.g. restored from collab) is left untouched.
-    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
-        put_bool_if_absent(state, root, ADBLOCK_PATH, self.initial.adblock_enabled);
-        put_bool_if_absent(state, root, CLEAR_ON_EXIT_PATH, self.initial.clear_on_exit);
-        // Click-flags start false so a false→true edge fires only on a
-        // real button press.
-        put_bool_if_absent(state, root, CLEAR_HISTORY_FLAG, false);
-        put_bool_if_absent(state, root, CLEAR_COOKIES_FLAG, false);
-        put_bool_if_absent(state, root, CLOSE_FLAG, false);
-        put_text_if_absent(state, root, SEARCH_ENGINE_PATH, &self.initial.search_engine);
-        put_text_if_absent(state, root, HOMEPAGE_PATH, &self.initial.homepage);
     }
 
     /// Build the composed widget tree from the CRDT-backed controls.
@@ -373,23 +312,24 @@ impl SettingsPane {
         let header = Row::new()
             .push(Box::new(Text::new("Settings").with_size(24.0)))
             .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Button::new("settings.close", "Done", Some(CLOSE_FLAG)).with_size(96.0, 36.0),
-            ));
+            .push(Box::new(button_with_action(
+                Button::new("settings.close", "Done", None).with_size(96.0, 36.0),
+                self.actions.close.clone(),
+            )));
 
         let general = card(
             "General",
             rows(vec![
                 field_block(
                     "Homepage",
-                    HOMEPAGE_PATH,
+                    &self.presentation.homepage,
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
                     self.actions.homepage.clone(),
                 ),
                 field_block(
                     "Search engine",
-                    SEARCH_ENGINE_PATH,
+                    &self.presentation.search_engine,
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
                     self.actions.search_engine.clone(),
@@ -402,7 +342,7 @@ impl SettingsPane {
                 "Block ads & trackers",
                 "Blocks ads, trackers, and YouTube video ads.",
                 Box::new(toggle_with_action(
-                    Toggle::new("settings.adblock", ADBLOCK_PATH)
+                    Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.adblock.clone(),
@@ -412,7 +352,7 @@ impl SettingsPane {
                 "Clear data when the browser closes",
                 "Wipe history and cookies on exit.",
                 Box::new(toggle_with_action(
-                    Toggle::new("settings.clear_on_exit", CLEAR_ON_EXIT_PATH)
+                    Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.clear_on_exit.clone(),
@@ -424,21 +364,13 @@ impl SettingsPane {
                 Box::new(
                     Row::new()
                         .push(Box::new(button_with_action(
-                            Button::new(
-                                "settings.clear_history",
-                                "Clear history",
-                                Some(CLEAR_HISTORY_FLAG),
-                            )
-                            .with_size(140.0, 36.0),
+                            Button::new("settings.clear_history", "Clear history", None)
+                                .with_size(140.0, 36.0),
                             self.actions.clear_history.clone(),
                         )))
                         .push(Box::new(button_with_action(
-                            Button::new(
-                                "settings.clear_cookies",
-                                "Request site-data clear",
-                                Some(CLEAR_COOKIES_FLAG),
-                            )
-                            .with_size(200.0, 36.0),
+                            Button::new("settings.clear_cookies", "Request site-data clear", None)
+                                .with_size(200.0, 36.0),
                             self.actions.clear_site_data.clone(),
                         ))),
                 ),
@@ -546,14 +478,13 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
 /// bound to the CRDT `Text` object at `path`.
 fn field_block(
     label: &str,
-    path: &str,
+    state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
     action: Option<qos_actions::ActionBinding<String>>,
 ) -> El {
-    let input = TextInput::new(vec![])
+    let input = TextInput::from_state(state)
         .with_id(id)
-        .with_on_change_path(path)
         .with_placeholder(placeholder);
     let input = match action {
         Some(binding) => input.on_action(binding),
@@ -583,28 +514,8 @@ fn button_with_action(button: Button, action: Option<qos_actions::ActionBinding<
     }
 }
 
-/// Write `value` at `path` only when the path is currently absent.
-fn put_bool_if_absent(state: &mut AutoCommit, root: &ObjId, path: &str, value: bool) {
-    if state.get(root, path).ok().flatten().is_none() {
-        let _ = state.put(root, path, value);
-    }
-}
-
-/// Seed an Automerge `Text` object at `path` with `value` when absent.
-fn put_text_if_absent(state: &mut AutoCommit, root: &ObjId, path: &str, value: &str) {
-    if state.get(root, path).ok().flatten().is_none()
-        && let Ok(obj_id) = state.put_object(root, path, ObjType::Text)
-    {
-        let _ = state.splice_text(&obj_id, 0, 0, value);
-    }
-}
-
 impl Widget for SettingsPane {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if !self.bootstrap_done {
-            self.bootstrap_crdt(state, path);
-            self.bootstrap_done = true;
-        }
         if let Some(c) = &mut self.composed {
             c.sync(state, path);
         }
@@ -733,6 +644,7 @@ impl Widget for SettingsPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use std::collections::HashMap;
 
     #[test]
@@ -783,119 +695,64 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_seeds_all_crdt_paths() {
-        let mut pane = SettingsPane::with_settings(Settings {
+    fn presentation_seeds_local_values_without_document_writes() {
+        let settings = Settings {
             adblock_enabled: true,
             clear_on_exit: true,
             search_engine: "https://s.example/?q=".to_string(),
             homepage: "https://home.example".to_string(),
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        // First sync bootstraps the document.
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(read_bool(&doc, &root, ADBLOCK_PATH), Some(true));
-        assert_eq!(read_bool(&doc, &root, CLEAR_ON_EXIT_PATH), Some(true));
-        assert_eq!(
-            read_bool(&doc, &root, CLEAR_HISTORY_FLAG),
-            Some(false),
-            "click-flags seed to false"
-        );
-        assert_eq!(read_bool(&doc, &root, CLEAR_COOKIES_FLAG), Some(false));
-
-        // Text objects carry the seeded values.
-        let (val, obj) = doc.get(&root, SEARCH_ENGINE_PATH).unwrap().unwrap();
-        assert!(matches!(val, Value::Object(ObjType::Text)));
-        assert_eq!(doc.text(&obj).unwrap(), "https://s.example/?q=");
-        let (_, home_obj) = doc.get(&root, HOMEPAGE_PATH).unwrap().unwrap();
-        assert_eq!(doc.text(&home_obj).unwrap(), "https://home.example");
-
-        let intents = SettingsPane::take_pending(&mut doc, &root);
-        assert_eq!(
-            intents.search_engine.as_deref(),
-            Some("https://s.example/?q=")
-        );
-        assert_eq!(intents.homepage.as_deref(), Some("https://home.example"));
-    }
-
-    #[test]
-    fn clear_history_flag_becomes_intent_and_resets() {
-        let mut pane = SettingsPane::new();
+        };
+        let mut pane = SettingsPane::with_settings(&settings);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-
-        // Simulate the button's CRDT write (Button raises the flag to true).
-        doc.put(&root, CLEAR_HISTORY_FLAG, true).unwrap();
-
-        let first = SettingsPane::take_pending(&mut doc, &root);
-        assert!(first.clear_history, "raised flag surfaces as an intent");
-
-        let second = SettingsPane::take_pending(&mut doc, &root);
-        assert!(
-            !second.clear_history,
-            "the flag is reset after being taken (one-shot)"
-        );
+        assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
+        assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
+        let presentation = SettingsPresentation::from_settings(&settings);
+        assert_eq!(presentation.homepage.with(Clone::clone), settings.homepage);
         assert_eq!(
-            read_bool(&doc, &root, CLEAR_HISTORY_FLAG),
-            Some(false),
-            "take_pending reset the CRDT flag"
+            presentation.search_engine.with(Clone::clone),
+            settings.search_engine
         );
     }
 
     #[test]
-    fn clear_cookies_flag_is_independent() {
-        let mut pane = SettingsPane::new();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        doc.put(&root, CLEAR_COOKIES_FLAG, true).unwrap();
-        let intents = SettingsPane::take_pending(&mut doc, &root);
-        assert!(intents.clear_cookies);
-        assert!(
-            !intents.clear_history,
-            "clearing cookies must not report a history clear"
-        );
-    }
-
-    #[test]
-    fn toggle_states_surface_as_level_intents() {
-        let mut pane = SettingsPane::with_settings(Settings {
-            adblock_enabled: true,
-            clear_on_exit: false,
+    fn presentation_reflects_action_applied_values() {
+        let presentation = SettingsPresentation::from_settings(&Settings::default());
+        let settings = Settings {
+            adblock_enabled: false,
             ..Settings::default()
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        let intents = SettingsPane::take_pending(&mut doc, &root);
-        assert_eq!(intents.adblock_enabled, Some(true));
-        assert_eq!(intents.clear_on_exit, Some(false));
-
-        // Flip the ad-block bool as the Toggle would on click.
-        doc.put(&root, ADBLOCK_PATH, false).unwrap();
-        let after = SettingsPane::take_pending(&mut doc, &root);
-        assert_eq!(after.adblock_enabled, Some(false), "toggle change surfaces");
+        };
+        presentation.reflect(&settings);
+        assert!(!presentation.adblock.with(|value| *value));
     }
 
     #[test]
-    fn take_pending_before_bootstrap_reports_none() {
-        // A fresh document the pane hasn't seeded yet: toggle values are
-        // absent, so the level intents are None and no clear fires.
+    fn destructive_controls_have_no_document_fallback_paths() {
+        let mut pane = SettingsPane::new();
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let intents = SettingsPane::take_pending(&mut doc, &root);
-        assert_eq!(intents.adblock_enabled, None);
-        assert_eq!(intents.clear_on_exit, None);
-        assert!(!intents.clear_history);
-        assert!(!intents.clear_cookies);
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            pane.control_action_bindings()
+                .iter()
+                .all(|binding| !matches!(
+                    binding.kind,
+                    ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                ))
+        );
     }
 
     #[test]
-    fn pane_lays_out_and_toggle_flip_writes_crdt_path() {
+    fn presentation_is_per_instance() {
+        let first = SettingsPresentation::from_settings(&Settings::default());
+        let second = SettingsPresentation::from_settings(&Settings::default());
+        first.adblock.set(false);
+        assert!(!first.adblock.with(|value| *value));
+        assert!(second.adblock.with(|value| *value));
+    }
+
+    #[test]
+    fn pane_lays_out_and_toggle_has_a_canonical_action_binding() {
         // Drive the real five-pass path: build_layout → compute_layout →
         // apply_layout, then flip the ad-block toggle through the live
         // widget tree and assert the CRDT bool changed.
@@ -918,8 +775,6 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        // Ad-block seeded on by default.
-        assert_eq!(read_bool(&doc, &root, ADBLOCK_PATH), Some(true));
 
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -935,7 +790,7 @@ mod tests {
             )
             .unwrap();
         pane.apply_layout(&taffy, node, Point::ZERO);
-        // Re-sync so the toggle's cached `is_checked` reflects the CRDT.
+        // Re-sync so the toggle adopts its retained presentation state.
         pane.sync(&mut doc, &root);
 
         let rect = find_toggle_rect(&pane, "settings.adblock")
@@ -975,13 +830,13 @@ mod tests {
             },
         );
 
-        // The toggle flipped the ad-block bool off through the real path.
-        assert_eq!(
-            read_bool(&doc, &root, ADBLOCK_PATH),
-            Some(false),
-            "clicking the ad-block toggle writes the CRDT path"
+        assert!(
+            pane.control_action_bindings()
+                .iter()
+                .all(|binding| !matches!(
+                    binding.kind,
+                    ui::widget::ControlBindingKind::CollaborativeDocument(_)
+                ))
         );
-        let intents = SettingsPane::take_pending(&mut doc, &root);
-        assert_eq!(intents.adblock_enabled, Some(false));
     }
 }
