@@ -89,17 +89,18 @@ grep -Fq 'with_browser=0' "$os" \
 if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 2 ] \
   && [ "$(grep -Fc '      - "apps/file-explorer/tests/atspi_smoke.sh"' "$os")" -eq 2 ] \
+  && [ "$(grep -Fc '      - "tools/check_atspi_endpoint_contract.py"' "$os")" -eq 2 ] \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'wait_for_names "New folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
+  && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile"; then
-  ok 'OS release VM proves real AT-SPI actions, focus, text values, and its session bus provider'
+  ok 'OS release VM and shared-app contract prove AT-SPI actions, focus, text values, and its session bus provider'
 else
-  bad 'AT-SPI release gate can ship an unreadable, actionless, or non-editable desktop'
+  bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
 fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \

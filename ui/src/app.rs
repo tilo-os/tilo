@@ -4550,6 +4550,12 @@ impl App {
             if matches!(action, Action::Focus) {
                 self.set_focused_node(Some(taffy_id));
             }
+            // `Widget::perform_action` is deliberately the same path as a
+            // keyboard or pointer activation.  Action-bound controls queue a
+            // control intent there; drain it before publishing the next
+            // AccessKit update so an AT-SPI DoAction never reports success
+            // while leaving the visible state unchanged.
+            self.dispatch_control_invocations();
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -7605,6 +7611,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// `RenderSurface<'static>` references it, and wgpu may panic if the
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
+        // before the native views and window disappear, so external clients
+        // receive the provider's normal unregister/teardown rather than being
+        // left with object paths whose backing Wayland surface is already
+        // gone.  This also makes the ordering explicit instead of relying on
+        // AppHandler field-drop order.
+        self.a11y_adapter = None;
         self.app.autosave_flush();
         self.app.root_widget.unmount_native_views();
         self.close_audience_presentation();
@@ -11145,6 +11158,27 @@ mod semantic_tree_app_tests {
             app.control_action_coverage()[0].status,
             ControlBindingStatus::Resolved
         );
+    }
+
+    #[test]
+    fn a11y_activation_drains_an_action_bound_control_before_returning() {
+        let mut app = app();
+        let button = app.focusable_order[0];
+        // Retained widget ids have the same stable AccessKit mapping used by
+        // the native provider. This exercises the public AT-SPI action path,
+        // rather than manually draining the widget's queued intent.
+        let accesskit_button = accesskit::NodeId(u64::from(button) + 1);
+
+        assert_eq!(
+            app.dispatch_a11y_action(accesskit_button, &crate::a11y::Action::Activate),
+            None
+        );
+        assert_eq!(
+            counter(&app),
+            1,
+            "AT-SPI activation must apply the bound action before success is returned"
+        );
+        assert!(app.state.peek_last_undo().is_some());
     }
 
     #[test]
