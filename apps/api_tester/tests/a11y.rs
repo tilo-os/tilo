@@ -111,6 +111,106 @@ fn every_control_is_a_focusable_accessible_node() {
         Some(true),
         "an expanded collection reports it"
     );
+
+    for name in [
+        "New collection",
+        "Save request",
+        "Rename collection",
+        "Rename request",
+        "Delete request",
+        "New environment",
+        "Rename environment",
+        "Delete environment",
+        "Add variable",
+        "Delete variable",
+    ] {
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.role == Role::Button && node.name.as_deref() == Some(name)),
+            "visible workspace-management control {name:?} is an accessible button"
+        );
+    }
+    assert!(
+        !nodes.iter().any(|node| node.role == Role::TextInput
+            && matches!(
+                node.name.as_deref(),
+                Some("Collection or environment name" | "Environment variable as key=value")
+            )),
+        "idle UI has no ambiguous generic management fields"
+    );
+}
+
+#[test]
+fn empty_and_error_response_surfaces_expose_recovery_actions() {
+    let empty = Driver::new(State::new(), Box::new(ApiTesterApp::new()), (1280, 800));
+    assert!(
+        empty.focus_access_nodes().iter().any(|node| {
+            node.role == Role::Group
+                && node.name.as_deref() == Some("No response yet")
+                && node.children.iter().any(|child| {
+                    child.role == Role::Button && child.name.as_deref() == Some("Send request")
+                })
+        }),
+        "the empty response state exposes its primary Send action"
+    );
+
+    let mut app = ApiTesterApp::new();
+    app.shot_error();
+    let error = Driver::new(State::new(), Box::new(app), (390, 844));
+    assert!(
+        error.focus_access_nodes().iter().any(|node| {
+            node.role == Role::Group
+                && node.name.as_deref() == Some("Request failed")
+                && node.children.iter().any(|child| {
+                    child.role == Role::Button && child.name.as_deref() == Some("Retry request")
+                })
+        }),
+        "the error response state exposes a retry action"
+    );
+}
+
+#[test]
+fn narrow_workspace_menu_is_keyboard_accessible() {
+    let d = Driver::new(State::new(), Box::new(ApiTesterApp::new()), (390, 844));
+    assert!(
+        d.focus_access_nodes().iter().any(|node| {
+            node.role == Role::Button && node.name.as_deref() == Some("Open workspace")
+        }),
+        "the overlay rail has a retained menu button instead of painted-only chrome"
+    );
+}
+
+#[test]
+fn contextual_forms_expose_only_their_named_fields() {
+    let mut variable = ApiTesterApp::new_demo();
+    variable.shot_form("new-variable");
+    variable.snap_rail(true);
+    let variable = Driver::new(State::new(), Box::new(variable), (390, 844));
+    let nodes = variable.focus_access_nodes();
+    for name in ["Variable key", "Variable value", "Cancel", "Confirm"] {
+        assert!(
+            nodes.iter().any(|node| node.name.as_deref() == Some(name)),
+            "{name}"
+        );
+    }
+    assert!(
+        !nodes
+            .iter()
+            .any(|node| node.role == Role::TextInput && node.name.as_deref() == Some("Name")),
+        "variable form has distinct Key and Value fields, not an irrelevant Name input"
+    );
+
+    let mut rename = ApiTesterApp::new_demo();
+    rename.shot_form("rename-request");
+    let rename = Driver::new(State::new(), Box::new(rename), (1280, 800));
+    assert!(
+        rename
+            .focus_access_nodes()
+            .iter()
+            .any(|node| node.role == Role::TextInput && node.name.as_deref() == Some("Name")),
+        "rename form has its single named field"
+    );
 }
 
 /// Tab / Shift+Tab move keyboard focus between the real controls in tree
