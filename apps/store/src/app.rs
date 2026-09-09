@@ -77,15 +77,6 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 /// can hold them without colliding with sibling widgets when the
 /// app is hosted inside a tiled shell.
 const REFRESH_KEY: &str = "store.refresh_pressed";
-/// CRDT `Text` object the header search box binds to. `sync` seeds
-/// the object (the toolkit's `TextInput` binds to an existing `Text`
-/// but never lazily creates one) and reads the typed query back out.
-const SEARCH_QUERY_KEY: &str = crate::doc_actions::SEARCH_QUERY_KEY;
-/// Shared, replayable catalogue-view preferences. A collaborator reopening
-/// this Store document sees the same scoped result set, rather than a stale
-/// private toggle selection.
-const SOURCE_FILTER_KEY: &str = crate::doc_actions::SOURCE_FILTER_KEY;
-const CATEGORY_FILTER_KEY: &str = crate::doc_actions::CATEGORY_FILTER_KEY;
 const ACTION_CLICK_KEY_PREFIX: &str = "store.action_click.";
 /// Secondary "mark installed" (pin) toggle, one per item id.
 const PIN_CLICK_KEY_PREFIX: &str = "store.pin_click.";
@@ -98,8 +89,6 @@ const REMOTES_BACK_KEY: &str = "store.remotes_back";
 const REMOTES_REFRESH_KEY: &str = "store.remotes_refresh";
 const REMOTES_ADD_KEY: &str = "store.remotes_add";
 const REMOTES_REMOVE_KEY_PREFIX: &str = "store.remotes_remove.";
-const REMOTE_NAME_KEY: &str = "store.remote_name";
-const REMOTE_URL_KEY: &str = "store.remote_url";
 const SAFETY_OPEN_KEY: &str = "store.safety_open";
 const SAFETY_BACK_KEY: &str = "store.safety_back";
 const REPORT_DRAFT_KEY_PREFIX: &str = "store.report_draft.";
@@ -648,13 +637,22 @@ pub struct StoreApp {
     /// Retained global-search projection. It is rebuilt only after a changed
     /// worker snapshot and resolves palette addresses against live rows.
     search_index: crate::search_provider::StoreSearchIndex,
-    /// Active source-side filter (`All | qOS | Flatpak | Installed`).
+    /// Active source-side filter (`All | qOS | Flatpak | Installed`). Kept
+    /// locally: browsing one catalogue must not navigate collaborators.
     active_filter: SourceFilter,
     /// Active category or `None` for "all categories".
     active_category: Option<String>,
-    /// Current search query, persisted through the header's bound
-    /// [`TextInput`] and applied to the merged catalogue.
+    /// Current search query, applied to the merged catalogue. Search is
+    /// intentionally window-local; resources remain globally searchable via
+    /// `search_index` without making a colleague's catalogue jump around.
     query: String,
+    query_state: ui::LocalState<String>,
+    source_filter_state: ui::LocalState<String>,
+    category_filter_state: ui::LocalState<String>,
+    /// An unsubmitted remote form is device-local. Only the canonical Add
+    /// remote effect crosses into machine-scoped package configuration.
+    remote_name_state: ui::LocalState<String>,
+    remote_url_state: ui::LocalState<String>,
     /// Rolling status line the worker overwrites while an action
     /// runs. Surfaced transiently in the floating status bubble (see
     /// [`draw_status_bubble`](Self::draw_status_bubble)); the catalog
@@ -746,6 +744,11 @@ impl StoreApp {
             active_filter: SourceFilter::All,
             active_category: None,
             query: String::new(),
+            query_state: ui::LocalState::new(String::new()),
+            source_filter_state: ui::LocalState::new("All".into()),
+            category_filter_state: ui::LocalState::new("All".into()),
+            remote_name_state: ui::LocalState::new(String::new()),
+            remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
             worker_busy: false,
             operation_error: None,
@@ -1008,13 +1011,14 @@ impl StoreApp {
     pub fn set_active_filter(&mut self, f: SourceFilter) {
         if self.active_filter != f {
             self.active_filter = f;
+            self.source_filter_state.set(f.label().into());
             self.catalog_page = 0;
             self.scroll_offset.set((0.0, 0.0));
             self.structure_dirty = true;
         }
     }
 
-    fn set_active_filter_from_document(&mut self, value: &str) {
+    fn set_active_filter_from_local(&mut self, value: &str) {
         if let Some(filter) = SourceFilter::ALL
             .iter()
             .copied()
@@ -1031,6 +1035,8 @@ impl StoreApp {
     pub fn set_active_category(&mut self, c: Option<String>) {
         if self.active_category != c {
             self.active_category = c;
+            self.category_filter_state
+                .set(self.active_category.clone().unwrap_or_else(|| "All".into()));
             self.catalog_page = 0;
             self.scroll_offset.set((0.0, 0.0));
             self.structure_dirty = true;
@@ -1044,6 +1050,7 @@ impl StoreApp {
     pub fn set_query(&mut self, q: String) {
         if self.query != q {
             self.query = q;
+            self.query_state.set(self.query.clone());
             self.catalog_page = 0;
             self.scroll_offset.set((0.0, 0.0));
             self.pending_search = Some(self.query.clone());
@@ -1145,10 +1152,9 @@ impl StoreApp {
             .with_horizontal_padding(0.0, 0.0)
             .with_gap(0.0);
         if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
-            // The catalogue chrome is deliberately a single aligned editorial
-            // masthead, not a floating settings slab. Captions make the two
-            // independent "All" values unambiguous before users reach the
-            // result grid.
+            // One compact browse bar keeps the filters close to the results.
+            // The old labelled band spent a third of a laptop viewport before
+            // users saw a single app.
             let mut catalogue_controls = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
@@ -1162,47 +1168,9 @@ impl StoreApp {
                         .push(self.build_category_row(theme)),
                 ));
             } else {
-                let source = Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(8.0)
-                    .push(Box::new(
-                        Text::new("SOURCE")
-                            .with_size(13.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_color(theme.text_tertiary),
-                    ))
-                    .push(self.build_filter_row(theme));
-                let categories = Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(8.0)
-                    .push(Box::new(
-                        Text::new("CATEGORIES")
-                            .with_size(13.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_color(theme.text_tertiary),
-                    ))
-                    .push(self.build_category_row(theme));
-                let catalogue = Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(8.0)
-                    .push(Box::new(
-                        Text::new("CATALOGUE")
-                            .with_size(13.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_color(theme.text_tertiary),
-                    ))
-                    .push(Box::new(
-                        Text::new(&self.catalogue_source_summary())
-                            .with_size(13.0)
-                            .with_color(theme.text_dim),
-                    ));
-                // Keep desktop facets together as a compact browse toolbar.
-                // Their concise labels preserve the native pickers' explicit
-                // accessibility names, while catalogue provenance sits beside
-                // the choices instead of becoming a detached settings slab.
+                // The native picker names remain explicit for assistive
+                // technology; their visible values carry the context in this
+                // compact, scan-friendly row.
                 catalogue_controls = catalogue_controls.push(Box::new(
                     Column::new()
                         .with_intrinsic_height()
@@ -1210,23 +1178,17 @@ impl StoreApp {
                         .push(Box::new(
                             Row::new()
                                 .no_wrap()
-                                .push(Box::new(
-                                    Container::new()
-                                        .with_width(180.0)
-                                        .with_no_padding()
-                                        .with_child(Box::new(source)),
-                                ))
-                                .push(Box::new(
-                                    Container::new()
-                                        .with_width(204.0)
-                                        .with_no_padding()
-                                        .with_child(Box::new(categories)),
-                                ))
+                                .push(self.build_filter_row(theme))
+                                .push(self.build_category_row(theme))
                                 .push(Box::new(
                                     Container::new()
                                         .with_no_padding()
                                         .with_flex_grow()
-                                        .with_child(Box::new(catalogue)),
+                                        .with_child(Box::new(
+                                            Text::new(&self.catalogue_source_summary())
+                                                .with_size(13.0)
+                                                .with_color(theme.text_dim),
+                                        )),
                                 )),
                         )),
                 ));
@@ -1801,14 +1763,22 @@ impl StoreApp {
     )]
     fn build_safety_center(&self, theme: &Theme) -> Box<dyn Widget> {
         let mut column = Column::new()
+            .with_no_padding()
             .with_intrinsic_height()
+            .with_gap(10.0)
             .push(Box::new(
                 ui::widget::Button::new("store.safety.back", "Back", Some(SAFETY_BACK_KEY))
                     .with_icon(Icon::ArrowLeft)
                     .fit_content(40.0)
                     .tooltip("Return to the previous Store view"),
             ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(6.0),
+            ))
             .push(Box::new(Text::new("Trust & moderation").with_size(24.0)))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(6.0),
+            ))
             .push(Box::new(
                 Text::new("Signed reports, accountable decisions and publisher appeals")
                     .with_size(14.0)
@@ -1821,13 +1791,22 @@ impl StoreApp {
             ));
         } else {
             column = column
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(6.0),
+                ))
                 .push(Box::new(Text::new("Describe the concern").with_size(15.0)))
                 .push(Box::new(TextInput::new(vec![])
                     .with_id("store.report.note")
                     .with_on_change_path(REPORT_NOTE_KEY)
                     .with_placeholder("What happened, and what evidence can verify it?")))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(6.0),
+                ))
                 .push(Box::new(Text::new("Saved collaboratively in this Store document. Submit sends the bounded note digest and summary to the app's registry; Export keeps a local evidence copy.")
-                    .with_size(11.0).with_color(theme.text_dim)));
+                    .with_size(11.0).with_color(theme.text_dim)))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(6.0),
+                ));
             for report in &self.reports {
                 let item = self.items.iter().find(|item| item.id == report.app_id);
                 let mut export = ui::widget::Button::new(
@@ -1965,13 +1944,22 @@ impl StoreApp {
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(14.0)
+            .with_gap(0.0)
             .push(back)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(8.0),
+            ))
             .push(Box::new(Text::new("Flatpak remotes").with_size(26.0)))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(8.0),
+            ))
             .push(Box::new(
                 Text::new("Repositories are machine-scoped and every change runs through the package worker.")
                     .with_size(13.0)
                     .with_color(theme.text_dim),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(12.0),
             ));
         let mut remote_rows: Vec<Box<dyn Widget>> = Vec::new();
         for remote in &self.remotes {
@@ -2043,15 +2031,15 @@ impl StoreApp {
             remote_rows.push(remote_row);
         }
         let remote_name: Box<dyn Widget> = Box::new(
-            TextInput::new(vec![])
+            TextInput::from_state(&self.remote_name_state)
                 .with_id("store.remote.name")
-                .with_on_change_path(REMOTE_NAME_KEY)
+                .with_kind(ui::widget::TextInputKind::Name)
                 .with_placeholder("Remote name"),
         );
         let remote_url: Box<dyn Widget> = Box::new(
-            TextInput::new(vec![])
+            TextInput::from_state(&self.remote_url_state)
                 .with_id("store.remote.url")
-                .with_on_change_path(REMOTE_URL_KEY)
+                .with_kind(ui::widget::TextInputKind::Url)
                 .with_placeholder("Repository URL"),
         );
         let add: Box<dyn Widget> = Box::new(
@@ -2098,6 +2086,9 @@ impl StoreApp {
             self.roomy_desktop(),
         ));
         column = column.push(Box::new(
+            Container::new().with_no_padding().with_height(12.0),
+        ));
+        column = column.push(Box::new(
             Text::new("Configured remotes")
                 .with_size(18.0)
                 .with_heading_level(2),
@@ -2135,14 +2126,15 @@ impl StoreApp {
         // The catalogue itself can still retain its desktop grid at this
         // intermediate width.
         let compact_header = self.compact_layout() || (0.0 < header_width && header_width < 980.0);
-        // Live search box: a real `TextInput` bound to a CRDT `Text`
-        // object at `SEARCH_QUERY_KEY`. `sync` seeds the object and
-        // reads the typed value back into `self.query`, which drives
-        // `visible_items`' fuzzy filter.
-        let search = TextInput::new(vec![])
+        // Search state belongs to this window. Agents still discover every
+        // stable app through the Store search provider; typing never changes
+        // a collaborator's view or document history.
+        let search = TextInput::from_state(&self.query_state)
             .with_id("store.search")
-            .with_on_change_path(SEARCH_QUERY_KEY)
-            .on_action(crate::doc_actions::search_binding(&self.category_labels()))
+            .with_kind(ui::widget::TextInputKind::Search)
+            .on_action(crate::browse_actions::search_binding(
+                &self.category_labels(),
+            ))
             .with_placeholder("Search apps, publishers, or categories…");
         // Refresh button writes REFRESH_KEY; the outer host drives
         // the real refetch when it sees the bit go high.
@@ -2197,6 +2189,9 @@ impl StoreApp {
                         .with_heading_level(1),
                 ))
                 .push(Box::new(
+                    Container::new().with_no_padding().with_height(8.0),
+                ))
+                .push(Box::new(
                     Text::new("A considered catalogue for the work in front of you.")
                         .with_size(13.0)
                         .with_color(theme.text_dim),
@@ -2226,9 +2221,11 @@ impl StoreApp {
                 ));
             } else if self.operation_error.is_some() && !self.items.is_empty() {
                 header = header.push(Box::new(
-                    Text::new(operation_error_summary())
-                        .with_size(13.0)
-                        .with_color(theme.text_dim),
+                    Container::new().with_background().with_child(Box::new(
+                        Text::new(operation_error_summary())
+                            .with_size(13.0)
+                            .with_color(theme.text_dim),
+                    )),
                 ));
             }
             return Box::new(header);
@@ -2250,15 +2247,18 @@ impl StoreApp {
                             Column::new()
                                 .with_no_padding()
                                 .with_intrinsic_height()
-                                .with_gap(9.0)
+                                .with_gap(0.0)
                                 .push(Box::new(
-                                    Text::new("Apps for the way you work")
-                                        .with_size(30.0)
+                                    Text::new("App Store")
+                                        .with_size(29.0)
                                         .with_weight(TextWeight::Semibold)
                                         .with_heading_level(1),
                                 ))
                                 .push(Box::new(
-                                    Text::new("Discover verified essentials, open familiar tools, and keep your workspace moving.")
+                                    Container::new().with_no_padding().with_height(10.0),
+                                ))
+                                .push(Box::new(
+                                    Text::new("Trusted apps for this device, with the details to make an informed choice.")
                                         .with_size(14.0)
                                         .with_color(theme.text_dim),
                                 )),
@@ -2276,7 +2276,7 @@ impl StoreApp {
             .with_intrinsic_height()
             .with_horizontal_padding(16.0, 16.0)
             .with_gap(12.0);
-        header = header.with_vertical_padding(32.0).with_gap(16.0);
+        header = header.with_vertical_padding(24.0).with_gap(14.0);
         header = header.push(title_row);
         header = header.push(Box::new(search));
         if self.worker_busy {
@@ -2287,9 +2287,11 @@ impl StoreApp {
             ));
         } else if self.operation_error.is_some() && !self.items.is_empty() {
             header = header.push(Box::new(
-                Text::new(operation_error_summary())
-                    .with_size(13.0)
-                    .with_color(theme.text_dim),
+                Container::new().with_background().with_child(Box::new(
+                    Text::new(operation_error_summary())
+                        .with_size(13.0)
+                        .with_color(theme.text_dim),
+                )),
             ));
         }
         Box::new(header)
@@ -2299,18 +2301,14 @@ impl StoreApp {
         let values = SourceFilter::ALL
             .iter()
             .map(|filter| {
-                let display = if self.compact_layout() {
-                    format!("Source · {}", filter.label())
-                } else {
-                    filter.label().to_owned()
-                };
+                let display = format!("Source · {}", filter.label());
                 (filter.label().to_owned(), display)
             })
             .collect();
-        let mut dropdown = Dropdown::new(Vec::new(), "")
+        let mut dropdown = Dropdown::from_state(Vec::new(), &self.source_filter_state)
             .with_id("store.source-filter")
             .with_accessible_name("App source")
-            .on_action(crate::doc_actions::source_filter_value_binding(
+            .on_action(crate::browse_actions::source_binding(
                 &self.category_labels(),
             ));
         dropdown.set_value_options(values);
@@ -2318,7 +2316,7 @@ impl StoreApp {
         Box::new(
             Container::new()
                 .with_no_padding()
-                .with_width(168.0)
+                .with_width(176.0)
                 .with_child(Box::new(dropdown)),
         )
     }
@@ -2328,24 +2326,20 @@ impl StoreApp {
         let values = labels
             .iter()
             .map(|label| {
-                let display = if self.compact_layout() {
-                    format!("Category · {label}")
-                } else {
-                    label.clone()
-                };
+                let display = format!("Category · {label}");
                 (label.clone(), display)
             })
             .collect();
-        let mut dropdown = Dropdown::new(Vec::new(), "")
+        let mut dropdown = Dropdown::from_state(Vec::new(), &self.category_filter_state)
             .with_id("store.category-filter")
             .with_accessible_name("App category")
-            .on_action(crate::doc_actions::category_filter_value_binding(&labels));
+            .on_action(crate::browse_actions::category_binding(&labels));
         dropdown.set_value_options(values);
         dropdown.set_selected(self.active_category.as_deref().unwrap_or("All"));
         Box::new(
             Container::new()
                 .with_no_padding()
-                .with_width(204.0)
+                .with_width(214.0)
                 .with_child(Box::new(dropdown)),
         )
     }
@@ -2405,6 +2399,9 @@ impl StoreApp {
         let visible_count = visible.len();
         let page = self.catalog_page.min(page_count.saturating_sub(1));
         let start = page.saturating_mul(PAGE_SIZE);
+        // Scroll content owns a modest, intentional inset. `Column`'s
+        // default double gutter made the first result look detached from the
+        // filters and hid half the next row on ordinary laptop windows.
         let mut column = Column::new().with_intrinsic_height().with_gap(8.0);
         if page_count > 1 {
             column = column.push(Box::new(
@@ -3004,8 +3001,8 @@ impl StoreApp {
             }
         }
         if take_bool_edge(state, path, REMOTES_ADD_KEY) {
-            let name = text_at(state, path, REMOTE_NAME_KEY);
-            let url = text_at(state, path, REMOTE_URL_KEY);
+            let name = self.remote_name_state.with(Clone::clone);
+            let url = self.remote_url_state.with(Clone::clone);
             if validate_remote_name(&name).is_ok() && validate_remote_url(&url).is_ok() {
                 self.pending_control_invocation = Some(ControlInvocation {
                     address: ActionAddress::new("store:remotes", "add"),
@@ -3080,16 +3077,6 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Read a scalar string owned by this Store document. Invalid values are
-/// ignored: a malformed peer write cannot become an implicit filter choice.
-fn scalar_string_at(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    state
-        .get(root, key)
-        .ok()
-        .flatten()
-        .and_then(|(value, _)| value.to_str().map(str::to_owned))
-}
-
 /// Read a `path`.`key` boolean and clear it in one shot. `true`
 /// return means the key was true; the CRDT is left with the key
 /// false so the next frame sees a fresh edge.
@@ -3108,6 +3095,7 @@ fn take_bool_edge(state: &mut AutoCommit, path: &ObjId, key: &str) -> bool {
 impl Widget for StoreApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
+            crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
             "store.refresh",
             "store.app",
             "store.remote",
@@ -3127,6 +3115,8 @@ impl Widget for StoreApp {
     )]
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("store", "store.catalog", "App Store");
+        root.children
+            .push(crate::browse_actions::resource(&self.category_labels()));
         if let Ok(refresh) = ActionSpec::operation(
             "refresh",
             "Refresh catalog",
@@ -3170,9 +3160,6 @@ impl Widget for StoreApp {
         let mut publisher_resources = publishers.into_values().collect::<Vec<_>>();
         publisher_resources.sort_by(|a, b| a.label.cmp(&b.label));
         root.children.extend(publisher_resources);
-        root.children.push(crate::doc_actions::preferences_resource(
-            &self.category_labels(),
-        ));
         if self.items.len() > RESOURCE_SNAPSHOT_LIMIT {
             root.children.push(Resource::new(
                 "store:catalogue-snapshot",
@@ -3421,6 +3408,40 @@ impl Widget for StoreApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        if kind == OperationKind::View
+            && let Some(operation) = crate::browse_actions::decode(type_id, payload)?
+        {
+            match operation {
+                crate::browse_actions::BrowseOperation::SetSearch { query } => {
+                    if query.chars().count() > 512 {
+                        return Err("search query is too long".into());
+                    }
+                    self.set_query(query);
+                }
+                crate::browse_actions::BrowseOperation::SetSource { source } => {
+                    self.set_active_filter_from_local(&source);
+                    if self.active_filter.label() != source {
+                        return Err("unknown Store source filter".into());
+                    }
+                }
+                crate::browse_actions::BrowseOperation::SetCategory { category } => {
+                    let category = (category != "All").then_some(category);
+                    if category.as_ref().is_some_and(|value| {
+                        value.chars().count() > 128
+                            || !self.category_labels().iter().any(|known| known == value)
+                    }) {
+                        return Err("unknown Store category".into());
+                    }
+                    self.set_active_category(category);
+                }
+                crate::browse_actions::BrowseOperation::Clear => {
+                    self.set_query(String::new());
+                    self.set_active_filter(SourceFilter::All);
+                    self.set_active_category(None);
+                }
+            }
+            return Ok(true);
+        }
         if kind == OperationKind::View && type_id == "store.view-remotes" {
             let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             self.remotes_open = true;
@@ -3691,40 +3712,27 @@ impl Widget for StoreApp {
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_report_export();
-        // Catalogue preferences are replayable document actions. Adopting
-        // their CRDT state here keeps pointer, keyboard, assistive technology,
-        // search, agents, history, undo, and collaborators on one path.
-        if let Some(filter) = scalar_string_at(state, path, SOURCE_FILTER_KEY) {
-            self.set_active_filter_from_document(&filter);
-        }
-        if let Some(category) = scalar_string_at(state, path, CATEGORY_FILTER_KEY) {
-            let category = (!category.is_empty()).then_some(category);
-            let valid = category.as_ref().is_none_or(|candidate| {
-                self.category_labels()
-                    .iter()
-                    .any(|label| label == candidate)
-            });
-            // A stale category after a catalog refresh fails safely to All
-            // instead of trapping collaborators in an empty result view.
-            self.set_active_category(if valid { category } else { None });
-        }
-        // Seed the search box's backing `Text` object *before* the
-        // children sync so the `TextInput` resolves a real object to
-        // splice keystrokes into (it binds to an existing `Text` but
-        // never creates one).
-        let search_obj = ensure_text_obj(state, path, SEARCH_QUERY_KEY);
-        let _ = ensure_text_obj(state, path, REMOTE_NAME_KEY);
-        let _ = ensure_text_obj(state, path, REMOTE_URL_KEY);
         let _ = ensure_text_obj(state, path, REPORT_NOTE_KEY);
         let _ = self.drain_click_keys(state, path);
         self.sync_report_resources(state, path);
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
         }
-        // Pull the typed query back out and re-filter if it changed.
-        if let Ok(text) = state.text(&search_obj) {
-            self.set_query(text);
-        }
+        // The catalogue chrome is process-local presentation state. Reconcile
+        // the local widget bindings after children have handled input; a
+        // remote document can never overwrite another person's search, view,
+        // or facet selection.
+        let source = self.source_filter_state.with(Clone::clone);
+        self.set_active_filter_from_local(&source);
+        let category = self.category_filter_state.with(Clone::clone);
+        let category = (category != "All").then_some(category);
+        let valid = category.as_ref().is_none_or(|candidate| {
+            self.category_labels()
+                .iter()
+                .any(|label| label == candidate)
+        });
+        self.set_active_category(if valid { category } else { None });
+        self.set_query(self.query_state.with(Clone::clone));
         self.report_note = text_at(state, path, REPORT_NOTE_KEY);
     }
 
@@ -3929,7 +3937,6 @@ impl Widget for StoreApp {
 mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
-    use qos_actions::Action;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
@@ -4046,7 +4053,7 @@ mod tests {
 
         for id in [
             "store",
-            "store:filters",
+            crate::browse_actions::BROWSE_RESOURCE_ID,
             "store:remotes",
             "remote:flathub",
             "store:moderation",
@@ -4058,11 +4065,20 @@ mod tests {
         }
         let remote = Widget::resource(&app, &doc, "remote:flathub").unwrap();
         assert!(remote.actions.iter().any(|action| action.id == "remove"));
-        let filters = Widget::resource(&app, &doc, "store:filters").unwrap();
-        assert_eq!(filters.actions.len(), 3);
-        assert!(filters.actions.iter().all(|action| {
-            action.kind == OperationKind::Document && action.contract.reversible
-        }));
+        let browse =
+            Widget::resource(&app, &doc, crate::browse_actions::BROWSE_RESOURCE_ID).unwrap();
+        assert!(
+            browse
+                .actions
+                .iter()
+                .all(|action| action.kind == OperationKind::View)
+        );
+        assert!(
+            browse
+                .actions
+                .iter()
+                .any(|action| action.id == "set-search")
+        );
     }
 
     #[test]
@@ -4201,19 +4217,13 @@ mod tests {
     }
 
     #[test]
-    fn typed_search_query_filters_through_sync() {
-        use automerge::transaction::Transactable;
-        // Prove the wired search box: a query spliced into the bound
-        // CRDT `Text` object is read back by `sync` and narrows the
-        // visible list.
+    fn typed_search_query_filters_through_local_sync() {
+        // The field is window-local, yet still updates the catalogue on the
+        // normal widget synchronization path.
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        // First sync seeds the Text object.
-        app.sync(&mut doc, &root);
-        let obj = ensure_text_obj(&mut doc, &root, SEARCH_QUERY_KEY);
-        doc.splice_text(&obj, 0, 0, "Term").unwrap();
-        app.sync(&mut doc, &root);
+        app.query_state.set("Term".into());
+        app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.query(), "Term");
         assert_eq!(app.take_search_requested().as_deref(), Some("Term"));
         assert!(app.take_search_requested().is_none());
@@ -4226,18 +4236,11 @@ mod tests {
     }
 
     #[test]
-    fn filter_chip_click_flips_active_filter_through_sync() {
-        // The same replayable action emitted by the segmented control is
-        // adopted through sync and re-filters the catalogue.
+    fn source_filter_is_local_and_re_filters_the_catalogue() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        crate::doc_actions::StoreDocumentAction::SetSourceFilter {
-            value: "qOS".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        app.sync(&mut doc, &root);
+        app.source_filter_state.set("qOS".into());
+        app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.active_filter(), SourceFilter::Qos);
         let names: Vec<&str> = app
             .visible_items()
@@ -4253,11 +4256,7 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         app.scroll_offset.set((0.0, 240.0));
-        crate::doc_actions::StoreDocumentAction::SetCategoryFilter {
-            value: "Games".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
+        app.category_filter_state.set("Games".into());
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.active_category(), Some("Games"));
         assert_eq!(app.scroll_offset.get(), (0.0, 0.0));
@@ -4265,40 +4264,72 @@ mod tests {
     }
 
     #[test]
-    fn filter_selections_are_persisted_and_adopted_from_the_store_document() {
-        use automerge::transaction::Transactable;
+    fn one_window_cannot_navigate_another_with_document_filters() {
+        let mut first = seeded_app();
+        let mut second = seeded_app();
+        let mut doc = AutoCommit::new();
+        first.source_filter_state.set("qOS".into());
+        first.category_filter_state.set("Games".into());
+        first.sync(&mut doc, &automerge::ROOT);
+        second.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(first.active_filter(), SourceFilter::Qos);
+        assert_eq!(first.active_category(), Some("Games"));
+        assert_eq!(second.active_filter(), SourceFilter::All);
+        assert_eq!(second.active_category(), None);
+        assert!(
+            doc.keys(&automerge::ROOT)
+                .all(|key| !key.starts_with("store.search")
+                    && !key.starts_with("store.source_filter")
+                    && !key.starts_with("store.category_filter"))
+        );
+    }
 
+    #[test]
+    fn agent_browse_operations_match_local_controls_without_document_mutation() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        crate::doc_actions::StoreDocumentAction::SetSourceFilter {
-            value: "qOS".into(),
-        }
-        .apply(&mut doc)
+        let heads = doc.get_heads();
+        let encoded = qos_actions::EncodedAction::encode_operation(
+            crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
+            &crate::browse_actions::BrowseOperation::SetSource {
+                source: "qOS".into(),
+            },
+        )
         .unwrap();
-        crate::doc_actions::StoreDocumentAction::SetCategoryFilter {
-            value: "Games".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            scalar_string_at(&doc, &automerge::ROOT, SOURCE_FILTER_KEY).as_deref(),
-            Some("qOS")
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.active_filter(), SourceFilter::Qos);
+        assert!(
+            app.visible_items()
+                .iter()
+                .all(|item| matches!(item.source, StoreSource::Qos { .. }))
         );
         assert_eq!(
-            scalar_string_at(&doc, &automerge::ROOT, CATEGORY_FILTER_KEY).as_deref(),
-            Some("Games")
+            doc.get_heads(),
+            heads,
+            "local browse must not change document heads"
         );
+    }
 
-        // A peer's next room-scoped selection wins through the same CRDT
-        // values, without relying on a private widget cell.
-        doc.put(automerge::ROOT, SOURCE_FILTER_KEY, "Flatpak")
-            .unwrap();
-        doc.put(automerge::ROOT, CATEGORY_FILTER_KEY, "Games")
-            .unwrap();
+    #[test]
+    fn unsubmitted_remote_draft_stays_on_its_device() {
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        app.remote_name_state.set("studio-tools".into());
+        app.remote_url_state
+            .set("https://packages.example.invalid/repo".into());
         app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.active_filter(), SourceFilter::Flatpak);
-        assert_eq!(app.active_category(), Some("Games"));
+        assert!(doc.keys(&automerge::ROOT).all(|key| {
+            !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
+        }));
     }
 
     #[test]
