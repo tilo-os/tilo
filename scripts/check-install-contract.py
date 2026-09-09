@@ -105,14 +105,18 @@ assert "Select native release lanes" in session_workflow
 assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
 assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert '{arch:"amd64",runner:"runner",targets:$targets}' in session_workflow
-assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
+assert '$targets.include[] + {arch:"amd64",runner:"runner"}' in session_workflow
+assert '$targets.include[] + {arch:"arm64",runner:"runner-arm64"}' in session_workflow
 assert "release_arches=amd64,arm64" in session_workflow
 assert "release_arches: ${{ steps.lanes.outputs.release_arches }}" in session_workflow
 assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session_workflow
 assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
-assert "QOS_LANE_TARGETS" in session_workflow
-assert "while IFS='|' read -r distro image revision" in session_workflow
+assert "package / ${{ matrix.distro }} / ${{ matrix.arch }}" in session_workflow
+assert "${{ matrix.distro }}-${{ matrix.arch }}" in session_workflow
+assert "QOS_BLAKE3_PREFER_INTRINSICS=1" in rpm_job
+assert 'CARGO_FEATURE_PREFER_INTRINSICS="$QOS_BLAKE3_PREFER_INTRINSICS"' in rpm_job
+for distro in ["arch", "nix", "ubuntu-24.04", "debian-13", "fedora-44"]:
+    assert f'{{distro:"{distro}",' in session_workflow
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]
