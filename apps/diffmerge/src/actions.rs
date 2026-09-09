@@ -21,11 +21,13 @@ use qos_actions::{
 };
 
 use crate::doc::MergeDoc;
-use crate::model::{MergeHunk, MergeModel, Resolution};
+use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Resolution};
 
 /// Registry `type_id` for every Diff action.
 pub const DIFFMERGE_ACTION_TYPE: &str = "diffmerge.action";
 pub const DIFFMERGE_OPERATION_TYPE: &str = "diffmerge.operation";
+/// Keep global search/contextual expansion bounded even for enormous diffs.
+pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffmergeOperation {
@@ -33,6 +35,13 @@ pub enum DiffmergeOperation {
     ShowMerge,
     PreviousChange,
     NextChange,
+    ShowDiffBlock {
+        block: u64,
+        /// Snapshot fingerprint of the exact aligned rows this address named.
+        /// The index is only a fast lookup hint; this prevents a stale palette
+        /// result from selecting a newly recomputed, different block.
+        fingerprint: String,
+    },
     OpenFiles {
         left: Option<String>,
         right: Option<String>,
@@ -40,6 +49,9 @@ pub enum DiffmergeOperation {
     LoadSample,
 }
 
+/// # Errors
+///
+/// Returns an error when `payload` is not valid JSON for this operation type.
 pub fn decode_operation(
     type_id: &str,
     payload: &[u8],
@@ -52,6 +64,11 @@ pub fn decode_operation(
         .map_err(|error| error.to_string())
 }
 
+#[allow(
+    clippy::expect_used,
+    clippy::needless_pass_by_value,
+    reason = "the operation is both serialized into the descriptor and inspected for its lifecycle contract; its serde shape is infallible"
+)]
 fn operation(id: &str, label: &str, kind: OperationKind, value: DiffmergeOperation) -> ActionSpec {
     let spec = ActionSpec::operation(id, label, kind, DIFFMERGE_OPERATION_TYPE, &value)
         .expect("DiffmergeOperation is always serializable");
@@ -59,12 +76,18 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: DiffmergeOperati
         DiffmergeOperation::ShowDiff | DiffmergeOperation::ShowMerge => {
             spec.retry_policy(RetryPolicy::Idempotent)
         }
-        DiffmergeOperation::PreviousChange | DiffmergeOperation::NextChange => spec,
-        DiffmergeOperation::OpenFiles { .. } => spec,
-        DiffmergeOperation::LoadSample => spec.destructive(),
+        DiffmergeOperation::PreviousChange
+        | DiffmergeOperation::NextChange
+        | DiffmergeOperation::ShowDiffBlock { .. }
+        | DiffmergeOperation::OpenFiles { .. }
+        | DiffmergeOperation::LoadSample => spec,
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "the typed local operation has an infallible serde shape"
+)]
 fn workspace_operations() -> Resource {
     let mut root = Resource::new("diffmerge.workspace", "diffmerge.workspace", "Diff & Merge");
     root = root.with_action(
@@ -342,6 +365,123 @@ pub struct MergeResourceCtx {
     pub model: MergeModel,
 }
 
+/// Presentation-only context for the currently open two-way comparison. The
+/// input bytes and their absolute paths stay device-local; the published
+/// resource identifiers derive only from displayed labels and block contents.
+#[derive(Clone)]
+pub struct DiffResourceCtx {
+    pub left_label: String,
+    pub right_label: String,
+    pub model: DiffModel,
+}
+
+/// Stable digest of the exact aligned rows addressed by a change block.
+///
+/// This is deliberately derived from semantic row content, not its first/last
+/// visual line number: recomputing after a source edit can shift an unrelated
+/// block into the same index and range. The operation still carries its index
+/// as an efficient lookup hint, but the receiver must compare this digest
+/// before navigating.
+pub fn diff_block_fingerprint(model: &DiffModel, index: usize) -> Option<String> {
+    let block = model.blocks.get(index)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"qos.diffmerge.diff-block.v1\0");
+    hasher.update(&[match block.kind {
+        BlockKind::Added => 1,
+        BlockKind::Removed => 2,
+        BlockKind::Modified => 3,
+    }]);
+    let rows = model.rows.get(block.first_row..=block.last_row)?;
+    for row in rows {
+        hasher.update(&[match row.kind {
+            crate::model::RowKind::Equal => 0,
+            crate::model::RowKind::Insert => 1,
+            crate::model::RowKind::Delete => 2,
+            crate::model::RowKind::Modify => 3,
+        }]);
+        for text in [&row.left, &row.right] {
+            match text {
+                Some(text) => {
+                    hasher.update(&[1]);
+                    hasher.update(&(text.len() as u64).to_le_bytes());
+                    hasher.update(text.as_bytes());
+                }
+                None => {
+                    hasher.update(&[0]);
+                }
+            }
+        }
+    }
+    Some(hasher.finalize().to_hex().to_string())
+}
+
+fn diff_block_resource_id(block: &ChangeBlock, fingerprint: &str, occurrence: usize) -> String {
+    let kind = match block.kind {
+        BlockKind::Added => "added",
+        BlockKind::Removed => "removed",
+        BlockKind::Modified => "modified",
+    };
+    format!("diffmerge.diff-block:{kind}:{fingerprint}:{occurrence}")
+}
+
+/// Bounded, canonical children for navigable two-way change blocks. The
+/// source files are local input, while a block address is a view target only;
+/// it neither synchronizes nor exposes a filesystem path.
+pub fn provide_diff_resources(ctx: &DiffResourceCtx) -> Vec<Resource> {
+    let title = if ctx.left_label.is_empty() && ctx.right_label.is_empty() {
+        "Local comparison".into()
+    } else {
+        format!("{} ↔ {}", ctx.left_label, ctx.right_label)
+    };
+    let mut root = workspace_operations();
+    root.label = title;
+    root.kind = "diffmerge.local-comparison".into();
+    let mut fingerprint_occurrences = std::collections::HashMap::<String, usize>::new();
+    for (index, block) in ctx
+        .model
+        .blocks
+        .iter()
+        .take(CONTEXTUAL_CHILD_LIMIT)
+        .enumerate()
+    {
+        let kind = match block.kind {
+            BlockKind::Added => "Added",
+            BlockKind::Removed => "Removed",
+            BlockKind::Modified => "Modified",
+        };
+        let label = format!(
+            "{kind} lines {}–{}",
+            block.first_row.saturating_add(1),
+            block.last_row.saturating_add(1)
+        );
+        let Some(fingerprint) = diff_block_fingerprint(&ctx.model, index) else {
+            continue;
+        };
+        let occurrence = fingerprint_occurrences
+            .entry(fingerprint.clone())
+            .and_modify(|count| *count += 1)
+            .or_insert(0);
+        let action = DiffmergeOperation::ShowDiffBlock {
+            block: u64::try_from(index).unwrap_or(u64::MAX),
+            fingerprint: fingerprint.clone(),
+        };
+        root = root.with_child(
+            Resource::new(
+                diff_block_resource_id(block, &fingerprint, *occurrence),
+                "diffmerge.diff-block",
+                label,
+            )
+            .with_action(operation(
+                "show",
+                "Show change",
+                OperationKind::View,
+                action,
+            )),
+        );
+    }
+    vec![root]
+}
+
 /// Same non-fallible-in-practice contract as [`encode`]: `provide_resources`
 /// returns a plain `Vec<Resource>` (the [`qos_actions::ResourceProvider`]
 /// trait shape), so there is no `Result` to propagate an encode failure into.
@@ -531,7 +671,10 @@ impl ResourceProvider for crate::app::DiffMergeApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         match self.merge_resource_ctx() {
             Some(ctx) => provide_resources(&ctx, doc),
-            None => vec![workspace_operations()],
+            None => self.diff_resource_ctx().map_or_else(
+                || vec![workspace_operations()],
+                |ctx| provide_diff_resources(&ctx),
+            ),
         }
     }
 }
@@ -574,6 +717,57 @@ mod tests {
                 left: Some("/tmp/a".into()),
                 right: Some("/tmp/b".into())
             }
+        );
+    }
+
+    #[test]
+    fn local_diff_blocks_publish_bounded_canonical_view_actions() {
+        let model = DiffModel::compute("a\nb\nc\n", "a\nB\nc\nnew\n");
+        let resources = provide_diff_resources(&DiffResourceCtx {
+            left_label: "before.rs".into(),
+            right_label: "after.rs".into(),
+            model: model.clone(),
+        });
+        let root = &resources[0];
+        assert_eq!(root.kind, "diffmerge.local-comparison");
+        assert_eq!(root.children.len(), model.blocks.len());
+        for (index, child) in root.children.iter().enumerate() {
+            assert!(child.id.0.starts_with("diffmerge.diff-block:"));
+            let show = child
+                .actions
+                .iter()
+                .find(|action| action.id == "show")
+                .unwrap();
+            assert_eq!(show.kind, OperationKind::View);
+            let ActionInput::Immediate(encoded) = &show.input else {
+                panic!("show is immediate");
+            };
+            assert_eq!(
+                decode_operation(DIFFMERGE_OPERATION_TYPE, &encoded.payload)
+                    .unwrap()
+                    .unwrap(),
+                DiffmergeOperation::ShowDiffBlock {
+                    block: u64::try_from(index).unwrap(),
+                    fingerprint: diff_block_fingerprint(&model, index).unwrap(),
+                }
+            );
+            assert!(
+                child
+                    .id
+                    .0
+                    .contains(&diff_block_fingerprint(&model, index).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn diff_block_fingerprint_changes_when_the_addressed_rows_change() {
+        let first = DiffModel::compute("unchanged\nold\n", "unchanged\nnew\n");
+        let second = DiffModel::compute("unchanged\nold\n", "unchanged\nnewer\n");
+        assert_ne!(
+            diff_block_fingerprint(&first, 0),
+            diff_block_fingerprint(&second, 0),
+            "a content address must not survive a changed hunk at the same index"
         );
     }
 
