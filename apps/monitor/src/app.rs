@@ -3,8 +3,8 @@
 //! there is no sidebar. The Processes tab is a full-width process table under
 //! a compact horizontal summary strip; the Resources tab is a reflowing
 //! dashboard of gauges and charts. View-level state (sort, filter, selection,
-//! active tab, scroll) lives in widget fields here; durable preferences live
-//! in the CRDT via [`crate::prefs`].
+//! active tab, scroll) and device-observation preferences live locally in the
+//! widget; no monitoring view or safety preference enters the shared CRDT.
 //!
 //! The widget owns its own geometry: `build_layout` is a single
 //! full-bleed leaf, and `draw` lays out every region by hand and renders
@@ -72,6 +72,13 @@ enum ProcAction {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum MonitorOperation {
     Refresh,
+    /// Copy a process's PID through the platform clipboard bridge. Although
+    /// safe, this is still an OS-facing effect and must use the same stable
+    /// process generation check as signal actions.
+    CopyPid {
+        pid: u32,
+        started_at: u64,
+    },
     Signal {
         pid: u32,
         /// Kernel start-time tick captured with the resource. It binds the
@@ -123,7 +130,7 @@ fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
 }
 
 /// Why a signal operation is being executed. Visible UI honors the user's
-/// persisted local confirmation preference; the resource-action door already
+/// local confirmation preference; the resource-action door already
 /// enforces the operation contract before it calls the app, so it must execute
 /// the approved effect instead of reporting success for merely opening a UI
 /// dialog that an agent cannot operate.
@@ -336,7 +343,7 @@ struct Hit {
     /// Back affordance returning from the pushed detail to the table (narrow).
     detail_back: Rect,
     /// The "Confirm kills" preference toggle pill in the toolbar — the only UI
-    /// that reaches the persisted `confirm_kill` preference.
+    /// that reaches the local `confirm_kill` preference.
     confirm_toggle: Rect,
     /// The process table's vertical row scrollbar (present when rows overflow).
     v_scrollbar: Option<ScrollBarHit>,
@@ -515,16 +522,14 @@ impl MonitorApp {
     /// reproducible offline. The live window uses [`Self::new_live`] instead.
     pub fn new() -> Self {
         let model = MonitorModel::sample();
-        // Pre-select the busiest process so the detail strip is populated
-        // in the headless screenshot.
-        let selected_pid = model
-            .processes
-            .iter()
-            .max_by(|a, b| a.cpu.total_cmp(&b.cpu))
-            .map(|p| p.pid);
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        let mut app = Self::build(model, selected_pid, Instant::now());
+        let mut app = Self::build(model, None, Instant::now());
+        // The default tree starts collapsed. Select a row from that *visible*
+        // projection rather than the globally busiest process, which may be a
+        // hidden descendant. A detail pane with destructive controls must
+        // never refer to a process the user cannot see in the table.
+        app.selected_pid = app.busiest_visible_pid();
         app.sample_only = true;
         // Seed a synthetic CPU history for the pre-selected process so the
         // detail pane's sparkline reads as "alive" in the hermetic shot frame
@@ -611,6 +616,7 @@ impl MonitorApp {
             self.sampler.refresh(&mut self.model);
             self.last_refresh = Instant::now();
             self.record_proc_cpu();
+            self.clear_selection_if_filtered_out();
             self.clamp_scroll();
         }
     }
@@ -751,6 +757,7 @@ impl MonitorApp {
         if !self.expanded.insert(pid) {
             self.expanded.remove(&pid);
         }
+        self.clear_selection_if_filtered_out();
         self.clamp_scroll();
     }
 
@@ -814,7 +821,20 @@ impl MonitorApp {
                 self.sampler.refresh(&mut self.model);
                 self.last_refresh = Instant::now();
                 self.record_proc_cpu();
+                self.clear_selection_if_filtered_out();
                 self.clamp_scroll();
+                Ok(())
+            }
+            MonitorOperation::CopyPid { pid, started_at } => {
+                let Some(process) = self
+                    .model
+                    .processes
+                    .iter()
+                    .find(|process| process.pid == *pid && process.started_at == *started_at)
+                else {
+                    return Err("process is no longer running".into());
+                };
+                self.copy_pid(process.pid);
                 Ok(())
             }
             MonitorOperation::Signal {
@@ -871,6 +891,15 @@ impl MonitorApp {
         self.confirm_dialog = None;
         self.clamp_scroll();
         true
+    }
+
+    /// Complete the safe clipboard effect after the action broker has
+    /// resolved the current process resource and its availability contract.
+    fn copy_pid(&mut self, pid: u32) {
+        ui::clipboard_copy(&pid.to_string());
+        self.copied_pid = Some(pid);
+        self.copied_at = Some(Instant::now());
+        self.selected_pid = Some(pid);
     }
 
     // ---- right-click context menu ----------------------------------------
@@ -999,14 +1028,13 @@ impl MonitorApp {
         self.interval_popover.open_at(anchor, selected);
     }
 
-    /// Apply the interval option the popover just yielded (drained via
-    /// `take_selection`) to the prefs + CRDT.
-    fn apply_interval_selection(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    /// Apply the interval option the popover just yielded. This changes only
+    /// the current window's device-observation cadence.
+    fn apply_interval_selection(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(sel) = self.interval_popover.take_selection()
             && let Some(&ms) = INTERVAL_OPTIONS.get(sel)
         {
             self.prefs.interval_ms = ms;
-            self.prefs.store(doc, path);
         }
     }
 
@@ -1016,7 +1044,7 @@ impl MonitorApp {
     /// cadence — the plain click. A release that crosses the threshold with no
     /// paint in between (headless) opens the popover now. Returns whether a
     /// pending press was consumed.
-    fn release_interval_press(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn release_interval_press(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
         let Some(started) = self.interval_press.take() else {
             return false;
         };
@@ -1028,7 +1056,6 @@ impl MonitorApp {
             self.open_interval_popover();
         } else {
             self.prefs.cycle_interval();
-            self.prefs.store(doc, path);
         }
         true
     }
@@ -1073,12 +1100,7 @@ impl MonitorApp {
         match action {
             ProcAction::Stop(pid) => self.request_process_control(pid, "stop"),
             ProcAction::Kill(pid) => self.request_process_control(pid, "kill"),
-            ProcAction::CopyPid(pid) => {
-                ui::clipboard_copy(&pid.to_string());
-                self.copied_pid = Some(pid);
-                self.copied_at = Some(Instant::now());
-                self.selected_pid = Some(pid);
-            }
+            ProcAction::CopyPid(pid) => self.request_process_control(pid, "copy-pid"),
             ProcAction::ShowDetails(pid) => {
                 self.selected_pid = Some(pid);
                 if self.is_narrow() {
@@ -2993,7 +3015,7 @@ impl MonitorApp {
     }
 
     /// Draw the "Confirm kills" preference pill, left of the tree pill — the
-    /// only affordance that reaches the persisted `confirm_kill` preference.
+    /// only affordance that reaches the local `confirm_kill` preference.
     /// Drawn whenever it fits within the pills row; at extreme-narrow widths
     /// (where the toolbar is already stacked) it's dropped rather than
     /// clipped off the left edge. Returns the left edge of the pill cluster,
@@ -3167,7 +3189,7 @@ impl MonitorApp {
             );
 
             // The per-process view controls retain their relationship, while
-            // both persisted preferences remain directly reachable below.
+            // both device-local preferences remain directly reachable below.
             let next_x1 = self.draw_sum_mode_pill(scene, t, tr, theme, view_row, view_row.x1);
             self.draw_tree_flat_pill(scene, t, tr, theme, view_row, next_x1);
             let kernel = self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
@@ -4166,20 +4188,28 @@ impl MonitorApp {
             }
         }
         if let Some(idx) = hit_idx {
-            self.context.click_item(idx); // fires the callback → pending_action
-            let action = self.pending_action.lock().ok().and_then(|mut g| g.take());
-            if let Some(action) = action {
-                self.apply_action(action, doc, path);
-            }
+            self.activate_context_item(idx, doc, path);
         }
         self.close_context_menu();
         true
     }
 
+    /// Route a context-menu choice through the same callback sink used by a
+    /// pointer click. This small shared path lets accessibility invoke the
+    /// menu without re-implementing (and eventually drifting from) its action
+    /// mapping.
+    fn activate_context_item(&mut self, idx: usize, doc: &mut AutoCommit, path: &ObjId) {
+        self.context.click_item(idx); // fires the callback → pending_action
+        let action = self.pending_action.lock().ok().and_then(|mut g| g.take());
+        if let Some(action) = action {
+            self.apply_action(action, doc, path);
+        }
+    }
+
     /// Non-tab-specific chrome: the detail-pane Back affordance, a
     /// summary-strip cell jump, the tab pills, and starting the interval
     /// pill's press-and-hold timer. Returns whether the click was consumed.
-    fn click_nav_chrome(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn click_nav_chrome(&mut self, p: Point, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
             self.proc_push.show_table();
@@ -4219,7 +4249,6 @@ impl MonitorApp {
         }
         if self.hit.auto_refresh.contains(p) {
             self.prefs.auto_refresh = !self.prefs.auto_refresh;
-            self.prefs.store(doc, path);
             // Resuming starts a fresh cadence window. That avoids an immediate
             // surprise sample after the user intentionally paused inspection.
             if self.prefs.auto_refresh {
@@ -4251,22 +4280,21 @@ impl MonitorApp {
         &mut self,
         p: Point,
         clicked_search: bool,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
     ) -> bool {
         if clicked_search {
             return true;
         }
         if self.hit.kernel_toggle.contains(p) {
             self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
-            self.prefs.store(doc, path);
+            self.clear_selection_if_filtered_out();
             self.clamp_scroll();
             return true;
         }
-        // Confirm-kills preference toggle (persisted).
+        // Confirm-kills preference toggle (local to this window/device).
         if self.hit.confirm_toggle.contains(p) {
             self.prefs.confirm_kill = !self.prefs.confirm_kill;
-            self.prefs.store(doc, path);
             return true;
         }
         // Tree/Flat view toggle.
@@ -4481,6 +4509,7 @@ impl MonitorApp {
             Key::Named(NamedKey::ArrowLeft) if self.tab == Tab::Processes && self.tree_mode => {
                 if let Some(pid) = self.selected_pid {
                     if self.expanded.remove(&pid) {
+                        self.clear_selection_if_filtered_out();
                         self.clamp_scroll();
                     }
                     *handled = true;
@@ -4503,7 +4532,7 @@ impl MonitorApp {
     /// Single-character keyboard shortcuts: tab switch, search focus, sort
     /// keys, Stop, and the tree/sum toggles. Returns whether the character
     /// was recognised.
-    fn key_character_shortcut(&mut self, s: &str, doc: &mut AutoCommit, path: &ObjId) -> bool {
+    fn key_character_shortcut(&mut self, s: &str, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
         match s {
             "1" => self.tab = Tab::Processes,
             "2" => self.tab = Tab::Resources,
@@ -4518,7 +4547,6 @@ impl MonitorApp {
             "r" | "R" => self.request_monitor_control("refresh"),
             "a" | "A" => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
-                self.prefs.store(doc, path);
                 if self.prefs.auto_refresh {
                     self.last_refresh = Instant::now();
                 }
@@ -4719,6 +4747,27 @@ impl MonitorApp {
                 &format!("Sort by {label}"),
             ));
         }
+        // The four process-summary cards are navigation controls, not merely
+        // decoration: each lands on its matching Resources chart. Expose the
+        // same destinations to screen readers and semantic drivers.
+        for (index, rect) in self.hit.summary_cells.iter().enumerate() {
+            let label = ["CPU", "Memory", "Network", "Disk"]
+                .get(index)
+                .copied()
+                .unwrap_or("system metric");
+            targets.push(button(
+                &format!("monitor.summary.{index}"),
+                *rect,
+                &format!("Open {label} resources"),
+            ));
+        }
+        if self.hit.detail_back.area() > 0.0 {
+            targets.push(button(
+                "monitor.detail-back",
+                self.hit.detail_back,
+                "Back to processes",
+            ));
+        }
         for (pid, rect) in &self.hit.rows {
             let process = self
                 .model
@@ -4743,6 +4792,58 @@ impl MonitorApp {
                     )
                     .with_bounds(*rect),
             ));
+        }
+        for (pid, rect) in &self.hit.twisties {
+            if let Some(process) = self
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == *pid)
+            {
+                let expanded = self.expanded.contains(pid);
+                targets.push((
+                    format!(
+                        "monitor.tree-toggle:{}",
+                        process_resource_id(*pid, process.started_at)
+                    ),
+                    *rect,
+                    AccessNode::new(Role::Button)
+                        .with_name(format!(
+                            "{} {}",
+                            if expanded { "Collapse" } else { "Expand" },
+                            process.name
+                        ))
+                        .with_semantic_key(format!(
+                            "tree-toggle:{}",
+                            process_resource_id(*pid, process.started_at)
+                        ))
+                        .with_state(AccessState::new().focusable(true).expanded(expanded))
+                        .with_bounds(*rect),
+                ));
+            }
+        }
+        if self.context.is_open()
+            && let Some(pid) = self.context_pid
+            && let Some(process) = self
+                .model
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+        {
+            let resource_id = process_resource_id(pid, process.started_at);
+            for (item, rect) in self.context_menu_item_rects() {
+                if let Some(label) = self.context.items().get(item).and_then(MenuItem::label) {
+                    targets.push((
+                        format!("monitor.context:{resource_id}:{item}"),
+                        rect,
+                        AccessNode::new(Role::MenuItem)
+                            .with_name(label)
+                            .with_semantic_key(format!("context:{resource_id}:{item}"))
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(rect),
+                    ));
+                }
+            }
         }
         if self.hit.stop_btn.area() > 0.0
             && let Some(process) = self.selected_process()
@@ -4801,6 +4902,22 @@ impl Widget for MonitorApp {
                 "monitor.process",
                 format!("{} ({})", process.name, process.pid),
             );
+            if let Ok(copy) = ActionSpec::operation(
+                "copy-pid",
+                "Copy PID",
+                OperationKind::Effect,
+                MONITOR_OPERATION_TYPE,
+                &MonitorOperation::CopyPid {
+                    pid: process.pid,
+                    started_at: process.started_at,
+                },
+            ) {
+                resource.actions.push(copy.with_contract(ActionContract {
+                    permission: PermissionRequirement::Read,
+                    retry: RetryPolicy::Idempotent,
+                    ..ActionContract::default()
+                }));
+            }
             for (verb, label, signal) in [
                 ("stop", "Stop process", MonitorSignal::Stop),
                 ("kill", "Force kill", MonitorSignal::Kill),
@@ -4862,9 +4979,10 @@ impl Widget for MonitorApp {
         self.pending_control_invocation.take()
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Pull durable preferences out of the CRDT each sync.
-        self.prefs = Prefs::load(state, path);
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        // Monitor's observation and safety preferences are device-local, so a
+        // shared document sync must never overwrite this window's state.
+        self.clear_selection_if_filtered_out();
     }
 
     #[allow(
@@ -5053,6 +5171,7 @@ impl Widget for MonitorApp {
             "monitor.search" => return self.search_input.perform_action(action, state, path),
             "monitor.tab.processes" if activated => self.tab = Tab::Processes,
             "monitor.tab.resources" if activated => self.tab = Tab::Resources,
+            "monitor.detail-back" if activated => self.proc_push.show_table(),
             "monitor.interval" if matches!(action, Action::Activate | Action::Expand) => {
                 self.open_interval_popover();
             }
@@ -5062,14 +5181,13 @@ impl Widget for MonitorApp {
             }
             "monitor.auto-refresh" if activated => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
-                self.prefs.store(state, path);
                 if self.prefs.auto_refresh {
                     self.last_refresh = Instant::now();
                 }
             }
             "monitor.kernel-threads" if activated => {
                 self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
-                self.prefs.store(state, path);
+                self.clear_selection_if_filtered_out();
                 self.clamp_scroll();
             }
             "monitor.tree-mode" if activated => {
@@ -5082,9 +5200,69 @@ impl Widget for MonitorApp {
             }
             "monitor.confirm-kills" if activated => {
                 self.prefs.confirm_kill = !self.prefs.confirm_kill;
-                self.prefs.store(state, path);
             }
             _ => {
+                if let Some(index) = target.strip_prefix("monitor.summary.") {
+                    let Ok(index) = index.parse::<usize>() else {
+                        return false;
+                    };
+                    if activated && index < 4 {
+                        self.tab = Tab::Resources;
+                        let (body_w, viewport_h) = self.body_metrics();
+                        self.view_scroll_y =
+                            self.resources_scroll_for_stat(index, body_w, viewport_h);
+                        return true;
+                    }
+                    return false;
+                }
+                if let Some(resource_id) = target.strip_prefix("monitor.tree-toggle:") {
+                    let Some((pid, started_at)) = parse_process_resource_id(resource_id) else {
+                        return false;
+                    };
+                    if activated
+                        && self.tree_mode
+                        && self.row_has_children(pid)
+                        && self
+                            .model
+                            .processes
+                            .iter()
+                            .any(|process| process.pid == pid && process.started_at == started_at)
+                    {
+                        self.toggle_expand(pid);
+                        return true;
+                    }
+                    return false;
+                }
+                if let Some(context_target) = target.strip_prefix("monitor.context:") {
+                    let Some((resource_id, item)) = context_target.rsplit_once(':') else {
+                        return false;
+                    };
+                    let Some((pid, started_at)) = parse_process_resource_id(resource_id) else {
+                        return false;
+                    };
+                    let Ok(item) = item.parse::<usize>() else {
+                        return false;
+                    };
+                    let process_is_current = self
+                        .model
+                        .processes
+                        .iter()
+                        .any(|process| process.pid == pid && process.started_at == started_at);
+                    if activated
+                        && process_is_current
+                        && self.context.is_open()
+                        && self.context_pid == Some(pid)
+                        && matches!(
+                            self.context.items().get(item),
+                            Some(MenuItem::Action { .. })
+                        )
+                    {
+                        self.activate_context_item(item, state, path);
+                        self.close_context_menu();
+                        return true;
+                    }
+                    return false;
+                }
                 if let Some(label) = target.strip_prefix("monitor.sort.") {
                     let sort = match label {
                         "PID" => SortKey::Pid,
@@ -5107,7 +5285,6 @@ impl Widget for MonitorApp {
                     };
                     if activated && INTERVAL_OPTIONS.contains(&ms) {
                         self.prefs.interval_ms = ms;
-                        self.prefs.store(state, path);
                         self.interval_popover.close();
                         return true;
                     }
@@ -6173,9 +6350,10 @@ mod tests {
         );
     }
 
-    /// Copy PID records the pid (clipboard bridge) and is observable.
+    /// Copy PID queues the stable resource action; the broker then performs
+    /// the clipboard effect after resolving the current process generation.
     #[test]
-    fn context_menu_copy_pid_records_pid() {
+    fn context_menu_copy_pid_queues_canonical_resource_action() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let pid = a.model.processes[3].pid;
@@ -6198,7 +6376,11 @@ mod tests {
             .unwrap();
         let mut h2 = false;
         a.on_click(rect.center(), &mut doc, &root, &mut h2);
-        assert_eq!(a.copied_pid, Some(pid), "Copy PID recorded");
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
+        );
     }
 
     /// Search/filter still works over the tree: filtering to a deep child
@@ -6537,24 +6719,23 @@ mod tests {
         }
     }
 
-    /// A quick click (press + prompt release) on the interval pill cycles the
-    /// cadence AND persists it to the CRDT — the full `on_click` press →
-    /// `release_interval_press` → `cycle_interval` → `store` production path. A
-    /// press alone must NOT cycle (that would double-fire on a long-press).
+    /// A quick click (press + prompt release) on the interval pill cycles this
+    /// window's cadence without changing the shared document.
     #[test]
-    fn interval_pill_click_cycles_and_persists() {
+    fn interval_pill_click_cycles_without_touching_the_shared_doc() {
         let mut a = app();
         a.hit.interval = Rect::new(0.0, 0.0, 80.0, 30.0);
         a.prefs.interval_ms = 1000; // land on the cycle grid
         let before = a.prefs.interval_ms;
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
+        let heads_before = doc.get_heads();
         let mut h = false;
         // Press: starts the hold timer, does NOT cycle yet.
         a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
         assert!(h, "interval pill consumed the press");
         assert_eq!(a.prefs.interval_ms, before, "a bare press does not cycle");
-        // Release before the long-press threshold cycles + persists.
+        // Release before the long-press threshold cycles locally.
         let cycled = a.release_interval_press(&mut doc, &root);
         assert!(cycled, "the pending press was resolved on release");
         assert_ne!(
@@ -6562,9 +6743,9 @@ mod tests {
             "a quick release cycled the cadence"
         );
         assert_eq!(
-            Prefs::load(&doc, &root).interval_ms,
-            a.prefs.interval_ms,
-            "new cadence persisted to the CRDT"
+            doc.get_heads(),
+            heads_before,
+            "device cadence is not history"
         );
         assert!(
             !a.interval_popover.is_open(),
@@ -6641,15 +6822,14 @@ mod tests {
             a.prefs.interval_ms, INTERVAL_OPTIONS[3],
             "the picked cadence applied"
         );
-        assert_eq!(
-            Prefs::load(&doc, &root).interval_ms,
-            INTERVAL_OPTIONS[3],
-            "the picked cadence persisted to the CRDT"
+        assert!(
+            doc.get_heads().is_empty(),
+            "interval choice is device-local"
         );
     }
 
     /// Keyboard nav in the open popover: ↓ moves the highlight, Enter applies
-    /// the highlighted cadence + persists, and every key is consumed so nothing
+    /// the highlighted device cadence, and every key is consumed so nothing
     /// leaks to the table behind it.
     #[test]
     fn interval_popover_keyboard_selects_and_captures_input() {
@@ -6712,10 +6892,9 @@ mod tests {
             a.prefs.interval_ms, INTERVAL_OPTIONS[2],
             "the highlighted cadence applied"
         );
-        assert_eq!(
-            Prefs::load(&doc, &root).interval_ms,
-            INTERVAL_OPTIONS[2],
-            "persisted"
+        assert!(
+            doc.get_heads().is_empty(),
+            "keyboard view action is not history"
         );
     }
 
@@ -6759,11 +6938,11 @@ mod tests {
         );
     }
 
-    /// Clicking the kernel-threads pill flips the pref, persists it, and the
+    /// Clicking the kernel-threads pill flips the local device pref, and the
     /// table now lists kernel threads — the whole `on_click` path, not a direct
     /// field poke.
     #[test]
-    fn kernel_toggle_click_flips_persists_and_reveals_threads() {
+    fn kernel_toggle_click_is_local_and_reveals_threads() {
         let mut a = app();
         assert!(a.visible_processes().iter().all(|p| !p.kernel));
         a.hit.kernel_toggle = Rect::new(0.0, 0.0, 160.0, 30.0);
@@ -6774,8 +6953,8 @@ mod tests {
         assert!(h);
         assert!(a.prefs.show_kernel_threads, "toggled on");
         assert!(
-            Prefs::load(&doc, &root).show_kernel_threads,
-            "persisted to the CRDT"
+            doc.get_heads().is_empty(),
+            "kernel filter is not shared state"
         );
         assert!(
             a.visible_processes().iter().any(|p| p.kernel),
@@ -7243,20 +7422,61 @@ mod tests {
         assert!(a.scroll_drag.is_none());
     }
 
-    /// Copy PID records the pid (also pushed to the OS clipboard) and raises a
+    /// The canonical resource operation performs the copy and raises a
     /// transient toast that expires on its own rather than sticking forever.
     #[test]
-    fn copy_pid_records_and_shows_expiring_toast() {
+    fn copy_pid_resource_operation_is_safe_and_shows_expiring_toast() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let pid = a.model.processes[3].pid;
-        a.apply_action(
-            ProcAction::CopyPid(pid),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
+        let process = a.model.processes[3].clone();
+        let pid = process.pid;
+        let resources = Widget::resources(&a, &AutoCommit::new());
+        let process_resource = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == resource_id_for(&a, pid))
+            .expect("process resource");
+        let copy = process_resource
+            .actions
+            .iter()
+            .find(|action| action.id == "copy-pid")
+            .expect("copy action");
+        assert_eq!(copy.kind, OperationKind::Effect);
+        assert_eq!(copy.contract.permission, PermissionRequirement::Read);
+        assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
+        let operation = MonitorOperation::CopyPid {
+            pid,
+            started_at: process.started_at,
+        };
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut a,
+                OperationKind::Effect,
+                MONITOR_OPERATION_TYPE,
+                &serde_json::to_vec(&operation).unwrap(),
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .expect("copy invocation accepted")
         );
         assert_eq!(a.copied_pid, Some(pid), "copy recorded");
         assert!(a.copied_at.is_some());
+        let stale = MonitorOperation::CopyPid {
+            pid,
+            started_at: process.started_at.saturating_add(1),
+        };
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut a,
+                OperationKind::Effect,
+                MONITOR_OPERATION_TYPE,
+                &serde_json::to_vec(&stale).unwrap(),
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_err(),
+            "a recycled PID cannot receive a stale copy action"
+        );
         assert!(
             a.copy_toast_active(),
             "toast active immediately after copying"
@@ -7269,10 +7489,10 @@ mod tests {
         );
     }
 
-    /// The Confirm-kills pill reaches the persisted preference: clicking it
-    /// flips + stores `confirm_kill`, after which a kill is un-gated.
+    /// The Confirm-kills pill changes only this window's preference; the
+    /// published force-kill action remains host-confirmed regardless.
     #[test]
-    fn confirm_kills_pill_toggles_persists_and_ungates_kill() {
+    fn confirm_kills_pill_is_local_and_does_not_ungate_resource_kill() {
         let mut a = app();
         assert!(a.prefs.confirm_kill, "confirm defaults on");
         a.hit.confirm_toggle = Rect::new(0.0, 0.0, 140.0, 30.0);
@@ -7283,17 +7503,74 @@ mod tests {
         assert!(h);
         assert!(!a.prefs.confirm_kill, "pill toggled the pref off");
         assert!(
-            !Prefs::load(&doc, &root).confirm_kill,
-            "persisted to the CRDT"
+            doc.get_heads().is_empty(),
+            "local safety preference is not shared"
         );
-        // The preference remains durable UI configuration, but all visible
-        // force-kill routes still enter the host-owned confirmation contract.
+        // All visible force-kill routes still enter the host-owned contract.
         let pid = a.visible_rows()[0].pid;
         a.request_process_control(pid, "kill");
         assert_eq!(
             a.take_control_invocation()
                 .map(|invocation| invocation.address),
             Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
+        );
+    }
+
+    #[test]
+    fn local_monitor_views_and_device_prefs_do_not_cross_window_or_doc_heads() {
+        let mut first = app();
+        let mut second = app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let heads_before = doc.get_heads();
+
+        // Device preferences: cadence, sampler state, kernel visibility, and
+        // local kill confirmation. These must remain first-window-only.
+        assert!(Widget::perform_semantic_action(
+            &mut first,
+            "monitor.interval:3000",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert!(Widget::perform_semantic_action(
+            &mut first,
+            "monitor.auto-refresh",
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &root,
+        ));
+        assert!(Widget::perform_semantic_action(
+            &mut first,
+            "monitor.kernel-threads",
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &root,
+        ));
+        assert!(Widget::perform_semantic_action(
+            &mut first,
+            "monitor.confirm-kills",
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &root,
+        ));
+        // Presentation state: filter, sort, tree, and selection.
+        first.search_input.set_text("shell");
+        first.set_sort(SortKey::Name);
+        first.tree_mode = false;
+        first.selected_pid = first.model.processes.last().map(|process| process.pid);
+
+        // A shared-document sync must not import first's local settings.
+        second.sync(&mut doc, &root);
+        assert_eq!(second.prefs, Prefs::default());
+        assert!(second.search_input.value().is_empty());
+        assert_eq!(second.sort_key, SortKey::Cpu);
+        assert!(second.tree_mode);
+        assert_ne!(second.selected_pid, first.selected_pid);
+        assert_eq!(
+            doc.get_heads(),
+            heads_before,
+            "no local state enters history"
         );
     }
 
@@ -7349,6 +7626,100 @@ mod tests {
                 "semantic control {index} must activate at its drawn rect"
             );
         }
+    }
+
+    #[test]
+    fn selected_detail_always_refers_to_a_visible_tree_row() {
+        let mut a = app();
+        draw_at(&mut a, 1_280.0, 720.0);
+        let selected = a.selected_pid.expect("sample selects a visible row");
+        assert!(
+            a.hit.rows.iter().any(|(pid, _)| *pid == selected),
+            "a selected detail must not expose actions for a collapsed descendant"
+        );
+
+        // Collapsing a parent that contains the selection clears that stale
+        // detail rather than leaving hidden Stop/Kill controls behind.
+        let parent = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.ppid.is_none() && a.row_has_children(process.pid))
+            .expect("sample has a tree parent")
+            .pid;
+        a.toggle_expand(parent);
+        let child = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.ppid == Some(parent))
+            .expect("parent has a child")
+            .pid;
+        a.selected_pid = Some(child);
+        a.toggle_expand(parent);
+        assert_eq!(a.selected_pid, None);
+    }
+
+    #[test]
+    fn semantic_summary_tree_and_context_controls_follow_pointer_paths() {
+        let mut a = app();
+        draw_at(&mut a, 1_280.0, 720.0);
+        let mut doc = AutoCommit::new();
+
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "monitor.summary.2",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(a.tab, Tab::Resources);
+
+        a.tab = Tab::Processes;
+        draw_at(&mut a, 1_280.0, 720.0);
+        let (pid, _) = a.hit.twisties[0];
+        let started_at = a
+            .model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid)
+            .expect("twisty process exists")
+            .started_at;
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            &format!(
+                "monitor.tree-toggle:{}",
+                process_resource_id(pid, started_at)
+            ),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(a.expanded.contains(&pid));
+
+        a.open_context_menu(pid, Point::new(20.0, 20.0));
+        let copy_item = a
+            .context
+            .items()
+            .iter()
+            .position(|item| item.label() == Some("Copy PID"))
+            .expect("copy item");
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            &format!(
+                "monitor.context:{}:{copy_item}",
+                process_resource_id(pid, started_at)
+            ),
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            a.take_control_invocation()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
+        );
+        assert!(!a.context.is_open());
     }
 
     #[test]

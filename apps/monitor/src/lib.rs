@@ -14,7 +14,8 @@
 //! - [`sampler`]    — live `sysinfo` readings folded into the model.
 //! - [`charts`]     — custom Vello primitives (area charts, ring/bar gauges).
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
-//! - [`prefs`]      — durable preferences persisted in the Automerge document.
+//! - [`prefs`]      — per-window device observation and safety preferences,
+//!   deliberately outside Automerge and collaborative history.
 //! - [`responsive`] — width-driven Processes push navigation + dashboard reflow.
 //! - [`app`]        — the root [`app::MonitorApp`] widget.
 //!
