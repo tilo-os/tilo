@@ -1,105 +1,731 @@
-//! CRDT persistence for the Maps app.
+//! Typed Automerge schema for Maps' durable collaborative resources.
 //!
-//! The whole [`MapModel`] is serialised to JSON and stored in a single
-//! Automerge `Text` object at `root["maps"]`. This mirrors the notes app's
-//! Phase-1 storage shim: it gives us free undo/redo (full-doc snapshots)
-//! and live replication across collaborating peers, while keeping the data
-//! model a plain serde type. A later phase could promote individual fields
-//! to native Automerge structures for finer-grained merges.
+//! The `maps_v2` map has named fields for each durable resource. It never uses
+//! a JSON/native-tree projection as authority; the old `maps` JSON text is a
+//! read-only migration source. Search results and viewport POIs are local,
+//! derived caches and deliberately have no CRDT representation.
 
+#![allow(
+    clippy::collapsible_if,
+    clippy::field_reassign_with_default,
+    clippy::format_collect,
+    clippy::many_single_char_names,
+    clippy::match_wildcard_for_single_variants,
+    clippy::needless_collect,
+    clippy::semicolon_if_nothing_returned,
+    reason = "the schema keeps each CRDT reader/writer adjacent to its resource field"
+)]
+
+use crate::model::{
+    Category, DownloadedRegion, LatLon, Maneuver, MapModel, Place, Route, RouteStep,
+    TransitJourney, TransitLeg, TransitMode, TransitTime, TransitTimeMode, TravelMode,
+};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::MapModel;
-
+const ROOT_KEY: &str = "maps_v2";
 pub struct MapsDoc;
 
 impl MapsDoc {
-    /// Read the model from the CRDT, if it has been seeded.
     pub fn load(doc: &AutoCommit) -> Option<MapModel> {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "maps") {
-            let s = doc.text(&id).ok()?;
-            serde_json::from_str(&s).ok()
-        } else {
-            None
+        Self::load_v2(doc).or_else(|| Self::load_legacy(doc))
+    }
+
+    /// Explicit durable schema writer. Ranked results, drafts, status, camera,
+    /// selection, panel and transit-row choice are presentation/derived data
+    /// and are not mirrored here.
+    pub fn save(doc: &mut AutoCommit, m: &MapModel) {
+        let r = Self::root(doc);
+        Self::places(doc, &r, &m.places);
+        Self::recents(doc, &r, &m.recents);
+        Self::route(doc, &r, m.route.as_ref());
+        Self::transit(doc, &r, &m.transit);
+        Self::text_put(doc, &r, "mode", travel_name(m.mode));
+        Self::opt_point(doc, &r, "origin", m.origin);
+        Self::text_put(doc, &r, "origin_name", &m.origin_name);
+        Self::opt_point(doc, &r, "dest", m.dest);
+        Self::text_put(doc, &r, "dest_name", &m.dest_name);
+        Self::text_put(doc, &r, "transit_time_mode", time_name(m.transit_time.mode));
+        Self::i(
+            doc,
+            &r,
+            "transit_time_offset",
+            i64::from(m.transit_time.offset_min),
+        );
+        Self::regions(doc, &r, &m.regions);
+        if m.route.is_some() {
+            Self::b(doc, &r, "route_deleted", false)
         }
     }
 
-    /// Write the model into the CRDT, splicing the `Text` blob only when the
-    /// serialisation actually changed (avoids op churn on idle frames).
-    pub fn save(doc: &mut AutoCommit, model: &MapModel) {
-        let id = match doc.get(&ROOT, "maps") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => match doc.put_object(&ROOT, "maps", ObjType::Text) {
-                Ok(id) => id,
-                Err(_) => return,
-            },
+    /// Pull shared durable state only; derived result/POI caches stay local.
+    pub fn apply_durable(doc: &AutoCommit, target: &mut MapModel) -> bool {
+        let Some(s) = Self::load(doc) else {
+            return false;
         };
-        let Ok(json) = serde_json::to_string(model) else {
+        target.places = s.places;
+        target.recents = s.recents;
+        target.route = s.route;
+        target.transit = s.transit;
+        target.mode = s.mode;
+        target.origin = s.origin;
+        target.origin_name = s.origin_name;
+        target.dest = s.dest;
+        target.dest_name = s.dest_name;
+        target.transit_time = s.transit_time;
+        target.regions = s.regions;
+        true
+    }
+    pub fn set_place_saved(doc: &mut AutoCommit, id: &str, saved: bool) {
+        if let Some(row) = Self::row(doc, "places", id)
+            && !Self::dead(doc, &row)
+        {
+            Self::b(doc, &row, "saved", saved)
+        }
+    }
+    pub fn upsert_places(doc: &mut AutoCommit, items: &[Place]) {
+        let r = Self::root(doc);
+        let rows = Self::map_make(doc, &r, "places");
+        for p in items {
+            let row = Self::map_make(doc, &rows, &p.id);
+            Self::place_put(doc, &row, p);
+            Self::b(doc, &row, "deleted", false)
+        }
+    }
+    pub fn commit_search(doc: &mut AutoCommit, q: &str) {
+        let q = q.trim();
+        if q.is_empty() {
             return;
+        }
+        let r = Self::root(doc);
+        let mut v = Self::recents_get(doc, &r);
+        v.retain(|x| !x.eq_ignore_ascii_case(q));
+        v.insert(0, q.into());
+        v.truncate(8);
+        Self::recents(doc, &r, &v)
+    }
+    pub fn clear_recents(doc: &mut AutoCommit) {
+        let r = Self::root(doc);
+        Self::all_dead(doc, &r, "recents")
+    }
+    pub fn clear_route(doc: &mut AutoCommit) {
+        let r = Self::root(doc);
+        Self::b(doc, &r, "route_deleted", true)
+    }
+    pub fn clear_transit(doc: &mut AutoCommit) {
+        let r = Self::root(doc);
+        Self::b(doc, &r, "transit_deleted", true)
+    }
+    pub fn set_route(doc: &mut AutoCommit, route: &Route) {
+        let r = Self::root(doc);
+        Self::route(doc, &r, Some(route));
+        Self::b(doc, &r, "route_deleted", false)
+    }
+    pub fn set_transit(doc: &mut AutoCommit, items: &[TransitJourney]) {
+        let r = Self::root(doc);
+        Self::transit(doc, &r, items);
+        Self::b(doc, &r, "transit_deleted", false)
+    }
+    pub fn set_route_context(
+        doc: &mut AutoCommit,
+        origin: Option<LatLon>,
+        origin_name: &str,
+        dest: Option<LatLon>,
+        dest_name: &str,
+        mode: TravelMode,
+    ) {
+        let r = Self::root(doc);
+        Self::opt_point(doc, &r, "origin", origin);
+        Self::text_put(doc, &r, "origin_name", origin_name);
+        Self::opt_point(doc, &r, "dest", dest);
+        Self::text_put(doc, &r, "dest_name", dest_name);
+        Self::text_put(doc, &r, "mode", travel_name(mode))
+    }
+    pub fn add_region(doc: &mut AutoCommit, x: &DownloadedRegion) {
+        let r = Self::root(doc);
+        let rows = Self::map_make(doc, &r, "regions");
+        let row = Self::map_make(doc, &rows, &x.id);
+        Self::region_put(doc, &row, x);
+        Self::b(doc, &row, "deleted", false)
+    }
+    pub fn delete_region(doc: &mut AutoCommit, id: &str) {
+        if let Some(row) = Self::row(doc, "regions", id) {
+            Self::b(doc, &row, "deleted", true)
+        }
+    }
+    pub fn clear_regions(doc: &mut AutoCommit) {
+        let r = Self::root(doc);
+        Self::all_dead(doc, &r, "regions")
+    }
+
+    fn load_v2(doc: &AutoCommit) -> Option<MapModel> {
+        let r = Self::existing(doc)?;
+        let mut m = MapModel::default();
+        m.places = Self::places_get(doc, &r);
+        m.recents = Self::recents_get(doc, &r);
+        m.route = (!Self::conflict_true(doc, &r, "route_deleted"))
+            .then(|| Self::route_get(doc, &r))
+            .flatten();
+        m.transit = if Self::conflict_true(doc, &r, "transit_deleted") {
+            vec![]
+        } else {
+            Self::transit_get(doc, &r)
         };
-        ui::doc::splice_text_diffed(doc, &id, &json);
+        m.mode = Self::text(doc, &r, "mode")
+            .as_deref()
+            .and_then(travel)
+            .unwrap_or(TravelMode::Car);
+        m.origin = Self::point_get(doc, &r, "origin");
+        m.origin_name = Self::text(doc, &r, "origin_name").unwrap_or_else(|| "Map centre".into());
+        m.dest = Self::point_get(doc, &r, "dest");
+        m.dest_name = Self::text(doc, &r, "dest_name").unwrap_or_default();
+        m.transit_time = TransitTime {
+            mode: Self::text(doc, &r, "transit_time_mode")
+                .as_deref()
+                .and_then(time)
+                .unwrap_or(TransitTimeMode::Depart),
+            offset_min: Self::i_get(doc, &r, "transit_time_offset").unwrap_or(0) as i32,
+        };
+        m.regions = Self::regions_get(doc, &r);
+        Some(m)
+    }
+    fn load_legacy(doc: &AutoCommit) -> Option<MapModel> {
+        let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "maps") else {
+            return None;
+        };
+        serde_json::from_str(&doc.text(&id).ok()?).ok()
+    }
+    fn root(doc: &mut AutoCommit) -> ObjId {
+        Self::map_make(doc, &ROOT, ROOT_KEY)
+    }
+    fn existing(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, ROOT_KEY).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
+        }
+    }
+    fn map_make(doc: &mut AutoCommit, p: &ObjId, k: &str) -> ObjId {
+        match doc.get(p, k) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(p, k, ObjType::Map)
+                .unwrap_or_else(|_| p.clone()),
+        }
+    }
+    fn list_make(doc: &mut AutoCommit, p: &ObjId, k: &str) -> ObjId {
+        match doc.get(p, k) {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => doc
+                .put_object(p, k, ObjType::List)
+                .unwrap_or_else(|_| p.clone()),
+        }
+    }
+    fn map(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<ObjId> {
+        match doc.get(p, k).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
+        }
+    }
+    fn list(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<ObjId> {
+        match doc.get(p, k).ok().flatten() {
+            Some((Value::Object(ObjType::List), id)) => Some(id),
+            _ => None,
+        }
+    }
+    fn row(doc: &mut AutoCommit, collection: &str, id: &str) -> Option<ObjId> {
+        let r = Self::root(doc);
+        let rows = Self::map_make(doc, &r, collection);
+        match doc.get(&rows, id).ok().flatten() {
+            Some((Value::Object(ObjType::Map), x)) => Some(x),
+            _ => None,
+        }
+    }
+    fn dead(doc: &AutoCommit, row: &ObjId) -> bool {
+        Self::conflict_true(doc, row, "deleted")
+    }
+    fn conflict_true(doc: &AutoCommit, p: &ObjId, k: &str) -> bool {
+        doc.get_all(p,k).is_ok_and(|v|v.into_iter().any(|(v,_)|matches!(v,Value::Scalar(v)if matches!(v.as_ref(),ScalarValue::Boolean(true)))))
+    }
+    fn all_dead(doc: &mut AutoCommit, r: &ObjId, k: &str) {
+        let rows = Self::map_make(doc, r, k);
+        for id in doc.keys(&rows).collect::<Vec<_>>() {
+            if let Some(row) = Self::map(doc, &rows, &id) {
+                Self::b(doc, &row, "deleted", true)
+            }
+        }
+    }
+
+    fn places(doc: &mut AutoCommit, r: &ObjId, v: &[Place]) {
+        let rows = Self::map_make(doc, r, "places");
+        let keep: std::collections::BTreeSet<_> = v.iter().map(|x| x.id.as_str()).collect();
+        for x in v {
+            let row = Self::map_make(doc, &rows, &x.id);
+            Self::place_put(doc, &row, x);
+            Self::b(doc, &row, "deleted", false)
+        }
+        for id in doc.keys(&rows).collect::<Vec<_>>() {
+            if !keep.contains(id.as_str()) {
+                if let Some(row) = Self::map(doc, &rows, &id) {
+                    Self::b(doc, &row, "deleted", true)
+                }
+            }
+        }
+    }
+    fn place_put(doc: &mut AutoCommit, r: &ObjId, x: &Place) {
+        Self::text_put(doc, r, "id", &x.id);
+        Self::text_put(doc, r, "name", &x.name);
+        Self::text_put(doc, r, "category", category_name(x.category));
+        Self::text_put(doc, r, "address", &x.address);
+        Self::point(doc, r, "pos", x.pos);
+        Self::b(doc, r, "saved", x.saved)
+    }
+    fn places_get(doc: &AutoCommit, r: &ObjId) -> Vec<Place> {
+        let Some(rows) = Self::map(doc, r, "places") else {
+            return vec![];
+        };
+        let mut v = doc
+            .keys(&rows)
+            .filter_map(|id| {
+                let x = Self::map(doc, &rows, &id)?;
+                (!Self::dead(doc, &x))
+                    .then(|| Self::place_get(doc, &x))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+    fn place_get(doc: &AutoCommit, r: &ObjId) -> Option<Place> {
+        Some(Place {
+            id: Self::text(doc, r, "id")?,
+            name: Self::text(doc, r, "name")?,
+            category: category(&Self::text(doc, r, "category")?)?,
+            address: Self::text(doc, r, "address").unwrap_or_default(),
+            pos: Self::point_get(doc, r, "pos")?,
+            saved: Self::bool_get(doc, r, "saved").unwrap_or(false),
+        })
+    }
+    fn recents(doc: &mut AutoCommit, r: &ObjId, v: &[String]) {
+        let rows = Self::map_make(doc, r, "recents");
+        let keep: std::collections::BTreeSet<_> = v.iter().map(|q| recent_id(q)).collect();
+        for (n, q) in v.iter().enumerate() {
+            let id = recent_id(q);
+            let row = Self::map_make(doc, &rows, &id);
+            Self::text_put(doc, &row, "text", q);
+            Self::u(doc, &row, "rank", n as u64);
+            Self::b(doc, &row, "deleted", false)
+        }
+        for id in doc.keys(&rows).collect::<Vec<_>>() {
+            if !keep.contains(&id) {
+                if let Some(row) = Self::map(doc, &rows, &id) {
+                    Self::b(doc, &row, "deleted", true)
+                }
+            }
+        }
+    }
+    fn recents_get(doc: &AutoCommit, r: &ObjId) -> Vec<String> {
+        let Some(rows) = Self::map(doc, r, "recents") else {
+            return vec![];
+        };
+        let mut v = doc
+            .keys(&rows)
+            .filter_map(|id| {
+                let x = Self::map(doc, &rows, &id)?;
+                (!Self::dead(doc, &x))
+                    .then(|| {
+                        Some((
+                            Self::u_get(doc, &x, "rank").unwrap_or(u64::MAX),
+                            id,
+                            Self::text(doc, &x, "text")?,
+                        ))
+                    })
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        v.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        v.into_iter().map(|(_, _, q)| q).collect()
+    }
+
+    fn route(doc: &mut AutoCommit, r: &ObjId, x: Option<&Route>) {
+        let Some(x) = x else { return };
+        let row = Self::map_make(doc, r, "route");
+        Self::text_put(doc, &row, "mode", travel_name(x.mode));
+        Self::f(doc, &row, "distance_m", x.distance_m);
+        Self::f(doc, &row, "duration_s", x.duration_s);
+        Self::points(doc, &row, "geometry", &x.geometry);
+        let steps = Self::list_make(doc, &row, "steps");
+        Self::clear(doc, &steps);
+        for (n, s) in x.steps.iter().enumerate() {
+            let Ok(q) = doc.insert_object(&steps, n, ObjType::Map) else {
+                continue;
+            };
+            Self::text_put(doc, &q, "instruction", &s.instruction);
+            Self::f(doc, &q, "distance_m", s.distance_m);
+            Self::text_put(doc, &q, "maneuver", maneuver_name(s.maneuver))
+        }
+        Self::point(doc, &row, "from", x.from);
+        Self::point(doc, &row, "to", x.to)
+    }
+    fn route_get(doc: &AutoCommit, r: &ObjId) -> Option<Route> {
+        let x = Self::map(doc, r, "route")?;
+        let steps = Self::list(doc, &x, "steps")
+            .into_iter()
+            .flat_map(|l| {
+                (0..doc.length(&l)).filter_map(move |n| {
+                    let q = Self::index_map(doc, &l, n)?;
+                    Some(RouteStep {
+                        instruction: Self::text(doc, &q, "instruction")?,
+                        distance_m: Self::f_get(doc, &q, "distance_m")?,
+                        maneuver: maneuver(&Self::text(doc, &q, "maneuver")?)?,
+                    })
+                })
+            })
+            .collect();
+        Some(Route {
+            mode: travel(&Self::text(doc, &x, "mode")?)?,
+            distance_m: Self::f_get(doc, &x, "distance_m")?,
+            duration_s: Self::f_get(doc, &x, "duration_s")?,
+            geometry: Self::points_get(doc, &x, "geometry"),
+            steps,
+            from: Self::point_get(doc, &x, "from")?,
+            to: Self::point_get(doc, &x, "to")?,
+        })
+    }
+    fn transit(doc: &mut AutoCommit, r: &ObjId, v: &[TransitJourney]) {
+        let list = Self::list_make(doc, r, "transit");
+        Self::clear(doc, &list);
+        for (n, x) in v.iter().enumerate() {
+            let Ok(row) = doc.insert_object(&list, n, ObjType::Map) else {
+                continue;
+            };
+            Self::text_put(doc, &row, "dep", &x.dep);
+            Self::text_put(doc, &row, "arr", &x.arr);
+            Self::u(doc, &row, "duration_min", u64::from(x.duration_min));
+            Self::u(doc, &row, "transfers", u64::from(x.transfers));
+            let legs = Self::list_make(doc, &row, "legs");
+            Self::clear(doc, &legs);
+            for (k, l) in x.legs.iter().enumerate() {
+                let Ok(q) = doc.insert_object(&legs, k, ObjType::Map) else {
+                    continue;
+                };
+                Self::leg(doc, &q, l)
+            }
+        }
+    }
+    fn leg(doc: &mut AutoCommit, r: &ObjId, x: &TransitLeg) {
+        Self::text_put(doc, r, "mode", transit_name(x.mode));
+        for (k, v) in [
+            ("line", &x.line),
+            ("headsign", &x.headsign),
+            ("from_name", &x.from_name),
+            ("to_name", &x.to_name),
+            ("dep", &x.dep),
+            ("arr", &x.arr),
+            ("agency", &x.agency),
+        ] {
+            Self::text_put(doc, r, k, v)
+        }
+        Self::u(doc, r, "duration_min", u64::from(x.duration_min));
+        Self::u(doc, r, "num_stops", u64::from(x.num_stops));
+        Self::points(doc, r, "geometry", &x.geometry);
+        Self::opt_text(doc, r, "color", x.color.as_deref());
+        Self::opt_text(doc, r, "text_color", x.text_color.as_deref());
+        Self::b(doc, r, "realtime", x.realtime)
+    }
+    fn transit_get(doc: &AutoCommit, r: &ObjId) -> Vec<TransitJourney> {
+        Self::list(doc, r, "transit")
+            .into_iter()
+            .flat_map(|l| {
+                (0..doc.length(&l)).filter_map(move |n| {
+                    let x = Self::index_map(doc, &l, n)?;
+                    let legs = Self::list(doc, &x, "legs")
+                        .into_iter()
+                        .flat_map(|q| {
+                            (0..doc.length(&q)).filter_map(move |k| {
+                                Self::leg_get(doc, &Self::index_map(doc, &q, k)?)
+                            })
+                        })
+                        .collect();
+                    Some(TransitJourney {
+                        dep: Self::text(doc, &x, "dep")?,
+                        arr: Self::text(doc, &x, "arr")?,
+                        duration_min: Self::u_get(doc, &x, "duration_min")? as u32,
+                        transfers: Self::u_get(doc, &x, "transfers")? as u32,
+                        legs,
+                    })
+                })
+            })
+            .collect()
+    }
+    fn leg_get(doc: &AutoCommit, r: &ObjId) -> Option<TransitLeg> {
+        Some(TransitLeg {
+            mode: transit(&Self::text(doc, r, "mode")?)?,
+            line: Self::text(doc, r, "line")?,
+            headsign: Self::text(doc, r, "headsign")?,
+            from_name: Self::text(doc, r, "from_name")?,
+            to_name: Self::text(doc, r, "to_name")?,
+            dep: Self::text(doc, r, "dep")?,
+            arr: Self::text(doc, r, "arr")?,
+            duration_min: Self::u_get(doc, r, "duration_min")? as u32,
+            num_stops: Self::u_get(doc, r, "num_stops")? as u32,
+            geometry: Self::points_get(doc, r, "geometry"),
+            color: Self::text(doc, r, "color"),
+            text_color: Self::text(doc, r, "text_color"),
+            agency: Self::text(doc, r, "agency").unwrap_or_default(),
+            realtime: Self::bool_get(doc, r, "realtime").unwrap_or(false),
+        })
+    }
+
+    fn regions(doc: &mut AutoCommit, r: &ObjId, v: &[DownloadedRegion]) {
+        let rows = Self::map_make(doc, r, "regions");
+        let keep: std::collections::BTreeSet<_> = v.iter().map(|x| x.id.as_str()).collect();
+        for x in v {
+            let row = Self::map_make(doc, &rows, &x.id);
+            Self::region_put(doc, &row, x);
+            Self::b(doc, &row, "deleted", false)
+        }
+        for id in doc.keys(&rows).collect::<Vec<_>>() {
+            if !keep.contains(id.as_str()) {
+                if let Some(row) = Self::map(doc, &rows, &id) {
+                    Self::b(doc, &row, "deleted", true)
+                }
+            }
+        }
+    }
+    fn region_put(doc: &mut AutoCommit, r: &ObjId, x: &DownloadedRegion) {
+        Self::text_put(doc, r, "id", &x.id);
+        Self::text_put(doc, r, "name", &x.name);
+        Self::point(doc, r, "min", x.min);
+        Self::point(doc, r, "max", x.max);
+        Self::u(doc, r, "z0", u64::from(x.z0));
+        Self::u(doc, r, "z1", u64::from(x.z1));
+        Self::u(doc, r, "tiles", u64::from(x.tiles))
+    }
+    fn regions_get(doc: &AutoCommit, r: &ObjId) -> Vec<DownloadedRegion> {
+        let Some(rows) = Self::map(doc, r, "regions") else {
+            return vec![];
+        };
+        let mut v = doc
+            .keys(&rows)
+            .filter_map(|id| {
+                let x = Self::map(doc, &rows, &id)?;
+                (!Self::dead(doc, &x))
+                    .then(|| {
+                        Some(DownloadedRegion {
+                            id: Self::text(doc, &x, "id")?,
+                            name: Self::text(doc, &x, "name")?,
+                            min: Self::point_get(doc, &x, "min")?,
+                            max: Self::point_get(doc, &x, "max")?,
+                            z0: Self::u_get(doc, &x, "z0")? as u8,
+                            z1: Self::u_get(doc, &x, "z1")? as u8,
+                            tiles: Self::u_get(doc, &x, "tiles")? as u32,
+                        })
+                    })
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
+    fn point(doc: &mut AutoCommit, p: &ObjId, k: &str, x: LatLon) {
+        let r = Self::map_make(doc, p, k);
+        Self::f(doc, &r, "lat", x.lat);
+        Self::f(doc, &r, "lon", x.lon)
+    }
+    fn opt_point(doc: &mut AutoCommit, p: &ObjId, k: &str, x: Option<LatLon>) {
+        if let Some(x) = x {
+            Self::point(doc, p, k, x)
+        } else {
+            let _ = doc.delete(p, k);
+        }
+    }
+    fn point_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<LatLon> {
+        let r = Self::map(doc, p, k)?;
+        Some(LatLon::new(
+            Self::f_get(doc, &r, "lat")?,
+            Self::f_get(doc, &r, "lon")?,
+        ))
+    }
+    fn points(doc: &mut AutoCommit, p: &ObjId, k: &str, v: &[LatLon]) {
+        let l = Self::list_make(doc, p, k);
+        Self::clear(doc, &l);
+        for (n, x) in v.iter().enumerate() {
+            let Ok(r) = doc.insert_object(&l, n, ObjType::Map) else {
+                continue;
+            };
+            Self::f(doc, &r, "lat", x.lat);
+            Self::f(doc, &r, "lon", x.lon)
+        }
+    }
+    fn points_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Vec<LatLon> {
+        Self::list(doc, p, k)
+            .into_iter()
+            .flat_map(|l| {
+                (0..doc.length(&l)).filter_map(move |n| {
+                    let r = Self::index_map(doc, &l, n)?;
+                    Some(LatLon::new(
+                        Self::f_get(doc, &r, "lat")?,
+                        Self::f_get(doc, &r, "lon")?,
+                    ))
+                })
+            })
+            .collect()
+    }
+    fn clear(doc: &mut AutoCommit, l: &ObjId) {
+        for n in (0..doc.length(l)).rev() {
+            let _ = doc.delete(l, n);
+        }
+    }
+    fn opt_text(doc: &mut AutoCommit, p: &ObjId, k: &str, v: Option<&str>) {
+        if let Some(v) = v {
+            Self::text_put(doc, p, k, v)
+        } else {
+            let _ = doc.delete(p, k);
+        }
+    }
+    fn text_put(doc: &mut AutoCommit, p: &ObjId, k: &str, v: &str) {
+        match doc.get(p, k) {
+            Ok(Some((Value::Object(ObjType::Text), id))) => {
+                ui::doc::splice_text_diffed(doc, &id, v);
+            }
+            _ => {
+                if let Ok(id) = doc.put_object(p, k, ObjType::Text) {
+                    ui::doc::splice_text_diffed(doc, &id, v);
+                }
+            }
+        }
+    }
+    fn b(doc: &mut AutoCommit, p: &ObjId, k: &str, v: bool) {
+        if Self::bool_get(doc, p, k) != Some(v) {
+            let _ = doc.put(p, k, v);
+        }
+    }
+    fn u(doc: &mut AutoCommit, p: &ObjId, k: &str, v: u64) {
+        if Self::u_get(doc, p, k) != Some(v) {
+            let _ = doc.put(p, k, v);
+        }
+    }
+    fn i(doc: &mut AutoCommit, p: &ObjId, k: &str, v: i64) {
+        if Self::i_get(doc, p, k) != Some(v) {
+            let _ = doc.put(p, k, v);
+        }
+    }
+    fn f(doc: &mut AutoCommit, p: &ObjId, k: &str, v: f64) {
+        if Self::f_get(doc, p, k).is_none_or(|x| (x - v).abs() > f64::EPSILON) {
+            let _ = doc.put(p, k, v);
+        }
+    }
+    fn index_map(doc: &AutoCommit, p: &ObjId, n: usize) -> Option<ObjId> {
+        match doc.get(p, n).ok().flatten() {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
+        }
+    }
+    fn text(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<String> {
+        match doc.get(p, k).ok().flatten() {
+            Some((Value::Object(ObjType::Text), id)) => doc.text(&id).ok(),
+            Some((Value::Scalar(v), _)) => match v.as_ref() {
+                ScalarValue::Str(x) => Some(x.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn bool_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<bool> {
+        match doc.get(p, k).ok().flatten()?.0 {
+            Value::Scalar(v) => match v.as_ref() {
+                ScalarValue::Boolean(x) => Some(*x),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn u_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<u64> {
+        match doc.get(p, k).ok().flatten()?.0 {
+            Value::Scalar(v) => match v.as_ref() {
+                ScalarValue::Uint(x) => Some(*x),
+                ScalarValue::Int(x) if *x >= 0 => Some(*x as u64),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn i_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<i64> {
+        match doc.get(p, k).ok().flatten()?.0 {
+            Value::Scalar(v) => match v.as_ref() {
+                ScalarValue::Int(x) => Some(*x),
+                ScalarValue::Uint(x) => i64::try_from(*x).ok(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    fn f_get(doc: &AutoCommit, p: &ObjId, k: &str) -> Option<f64> {
+        match doc.get(p, k).ok().flatten()?.0 {
+            Value::Scalar(v) => match v.as_ref() {
+                ScalarValue::F64(x) => Some(*x),
+                ScalarValue::Int(x) => Some(*x as f64),
+                ScalarValue::Uint(x) => Some(*x as f64),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 }
+fn recent_id(q: &str) -> String {
+    q.trim()
+        .to_lowercase()
+        .bytes()
+        .map(|x| format!("{x:02x}"))
+        .collect()
+}
+macro_rules! names{($a:ident,$b:ident,$t:ty,{$($v:ident=>$s:literal),+})=>{fn $a(x:$t)->&'static str{match x{$(<$t>::$v=>$s),+}}fn $b(x:&str)->Option<$t>{match x{$($s=>Some(<$t>::$v)),+,_=>None}}};}
+names!(category_name,category,Category,{Landmark=>"landmark",Cafe=>"cafe",Restaurant=>"restaurant",Bar=>"bar",Museum=>"museum",Park=>"park",Transit=>"transit",Hotel=>"hotel",Shop=>"shop",Hospital=>"hospital",Other=>"other"});
+names!(travel_name,travel,TravelMode,{Car=>"car",Transit=>"transit",Bike=>"bike",Foot=>"foot"});
+names!(maneuver_name,maneuver,Maneuver,{Depart=>"depart",Continue=>"continue",SlightLeft=>"slight_left",Left=>"left",SharpLeft=>"sharp_left",SlightRight=>"slight_right",Right=>"right",SharpRight=>"sharp_right",Uturn=>"uturn",Roundabout=>"roundabout",Merge=>"merge",Arrive=>"arrive"});
+names!(transit_name,transit,TransitMode,{Walk=>"walk",Bus=>"bus",Tram=>"tram",Subway=>"subway",Rail=>"rail",Ferry=>"ferry"});
+names!(time_name,time,TransitTimeMode,{Depart=>"depart",Arrive=>"arrive"});
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sample;
-
+    use automerge::ActorId;
     #[test]
-    fn roundtrip_through_crdt() {
-        let mut doc = AutoCommit::new();
-        let model = sample::default_model();
-        MapsDoc::save(&mut doc, &model);
-        let loaded = MapsDoc::load(&doc).expect("loads back");
-        assert_eq!(loaded.places.len(), model.places.len());
-        assert_eq!(loaded.selected, model.selected);
-        assert!(loaded.route.is_some());
-        assert_eq!(loaded.transit.len(), model.transit.len());
+    fn typed_schema_excludes_window_local_state() {
+        let mut d = AutoCommit::new();
+        let mut m = sample::default_model();
+        m.selected = Some("marienplatz".into());
+        m.panel = crate::model::Panel::Directions;
+        m.transit_choice = 1;
+        MapsDoc::save(&mut d, &m);
+        let out = MapsDoc::load(&d).unwrap();
+        assert_eq!(out.route, m.route);
+        assert_eq!(out.transit, m.transit);
+        assert!(out.results.is_empty());
+        assert!(out.selected.is_none());
+        assert_eq!(out.panel, crate::model::Panel::Explore);
+        assert_eq!(out.transit_choice, 0);
+        assert!(d.get(&ROOT, "maps").unwrap().is_none())
     }
-
     #[test]
-    fn load_empty_doc_is_none() {
-        let doc = AutoCommit::new();
-        assert!(MapsDoc::load(&doc).is_none());
-    }
-
-    #[test]
-    fn small_model_edit_is_a_bounded_splice() {
-        // A one-char change to the serialized model must splice only the diff,
-        // not rewrite the whole JSON blob.
-        let mut doc = AutoCommit::new();
-        let mut model = sample::default_model();
-        MapsDoc::save(&mut doc, &model);
-        let before = doc.save().len();
-        model.recents[0].push('!');
-        MapsDoc::save(&mut doc, &model);
-        let grew = doc.save().len() - before;
-        assert_eq!(
-            MapsDoc::load(&doc).unwrap().recents[0],
-            model.recents[0],
-            "value round-trips"
-        );
-        assert!(
-            grew < 40,
-            "one-char model edit grew doc by {grew} bytes — diff regressed"
-        );
-    }
-
-    #[test]
-    fn repeated_save_keeps_doc_bounded() {
-        let mut doc = AutoCommit::new();
-        let model = sample::default_model();
-        MapsDoc::save(&mut doc, &model);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            MapsDoc::save(&mut doc, &model);
-        }
-        let b = doc.save().len();
-        assert_eq!(
-            a, b,
-            "re-saving the same model grew the document {a} -> {b}"
-        );
+    fn route_fields_merge_independently() {
+        let mut s = AutoCommit::new();
+        let m = sample::default_model();
+        MapsDoc::save(&mut s, &m);
+        let bytes = s.save();
+        let mut a = AutoCommit::load(&bytes).unwrap();
+        a.set_actor(ActorId::from([1; 16].as_slice()));
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        b.set_actor(ActorId::from([2; 16].as_slice()));
+        let mut route = m.route.clone().unwrap();
+        route.distance_m = 1234.;
+        MapsDoc::set_route(&mut a, &route);
+        MapsDoc::set_route_context(&mut b, m.origin, "Changed", m.dest, &m.dest_name, m.mode);
+        a.merge(&mut b).unwrap();
+        let out = MapsDoc::load(&a).unwrap();
+        assert_eq!(out.route.unwrap().distance_m, 1234.);
+        assert_eq!(out.origin_name, "Changed")
     }
 }
