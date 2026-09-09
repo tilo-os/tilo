@@ -1,70 +1,519 @@
-//! CRDT bridge between the in-memory [`FirewallConfig`] and the shared
-//! Automerge document.
+//! Native, field-addressable Automerge schema for firewall configuration.
 //!
-//! Storage shape (Phase 1 — coarse-grained, like the notes app's first
-//! phase): the entire configuration is serialised to JSON and held in a
-//! single `Text` object at `root["config"]`. Storing it as `Text` (rather
-//! than a scalar string) means concurrent edits splice-merge at the
-//! character level instead of last-writer-wins clobbering the whole blob —
-//! good enough to demonstrate live collaboration on the ruleset. A later
-//! phase can promote each zone/rule to its own automerge Map/List for
-//! field-level convergence.
-//!
-//! ```text
-//! root
-//! └── "config" (Text)   # JSON of FirewallConfig
-//! ```
+//! New data lives at `firewall.zones[zone].rules[rule-id]`; the old
+//! `config` JSON text is a read-only migration input. Rules have independent
+//! fields, an Automerge order list, and a separate delete-wins tombstone map.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::FirewallConfig;
+use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Target, Zone, ZoneKind};
 
-const CONFIG_KEY: &str = "config";
-
-/// Stateless namespace for the document helpers.
+const ROOT_KEY: &str = "firewall";
+const LEGACY_KEY: &str = "config";
 pub struct FirewallDoc;
 
-impl FirewallDoc {
-    /// Get-or-create the `config` Text object.
-    #[allow(
-        clippy::expect_used,
-        reason = "put_object on ROOT with a fresh key is infallible; there is no meaningful fallback ObjId to return instead"
-    )]
-    fn config_text(doc: &mut AutoCommit) -> ObjId {
-        match doc.get(&ROOT, CONFIG_KEY) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => doc
-                .put_object(&ROOT, CONFIG_KEY, ObjType::Text)
-                .expect("put_object config on root never fails"),
-        }
+fn get_map(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(parent, key) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
     }
-
-    /// Read the JSON config string out of the document, if present and
-    /// non-empty.
-    pub fn load_json(doc: &AutoCommit) -> Option<String> {
-        match doc.get(&ROOT, CONFIG_KEY) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => {
-                let s = doc.text(&id).unwrap_or_default();
-                if s.is_empty() { None } else { Some(s) }
-            }
+}
+fn get_list(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(parent, key) {
+        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+        _ => None,
+    }
+}
+fn get_text(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+    match doc.get(parent, key) {
+        Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
+        _ => None,
+    }
+}
+fn map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
+    get_map(doc, parent, key).or_else(|| doc.put_object(parent, key, ObjType::Map).ok())
+}
+fn text(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
+    let Some(id) =
+        get_text(doc, parent, key).or_else(|| doc.put_object(parent, key, ObjType::Text).ok())
+    else {
+        return;
+    };
+    ui::doc::splice_text_diffed(doc, &id, value);
+}
+fn str_value(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
+    if let Some(id) = get_text(doc, parent, key) {
+        return Some(doc.text(&id).unwrap_or_default());
+    }
+    match doc.get(parent, key) {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Str(s) => Some(s.to_string()),
             _ => None,
+        },
+        _ => None,
+    }
+}
+fn bool_value(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<bool> {
+    match doc.get(parent, key) {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Boolean(v) => Some(*v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+fn at_str(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<String> {
+    match doc.get(list, index) {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Str(s) => Some(s.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+fn target_name(value: Target) -> &'static str {
+    match value {
+        Target::Default => "default",
+        Target::Accept => "accept",
+        Target::Reject => "reject",
+        Target::Drop => "drop",
+    }
+}
+fn target(value: &str) -> Option<Target> {
+    Some(match value {
+        "default" => Target::Default,
+        "accept" => Target::Accept,
+        "reject" => Target::Reject,
+        "drop" => Target::Drop,
+        _ => return None,
+    })
+}
+fn action_name(value: Action) -> &'static str {
+    match value {
+        Action::Allow => "allow",
+        Action::Deny => "deny",
+    }
+}
+fn action(value: &str) -> Option<Action> {
+    Some(match value {
+        "allow" => Action::Allow,
+        "deny" => Action::Deny,
+        _ => return None,
+    })
+}
+fn proto(value: &str) -> Option<Proto> {
+    Some(match value {
+        "tcp" => Proto::Tcp,
+        "udp" => Proto::Udp,
+        _ => return None,
+    })
+}
+
+fn write_matcher(doc: &mut AutoCommit, row: &ObjId, matcher: &Matcher) {
+    match matcher {
+        Matcher::Service(service) => {
+            text(doc, row, "matcher_kind", "service");
+            text(doc, row, "service", service);
+        }
+        Matcher::Port { port, proto } => {
+            text(doc, row, "matcher_kind", "port");
+            text(doc, row, "port", port);
+            text(doc, row, "proto", proto.label());
         }
     }
+}
+fn write_rule(doc: &mut AutoCommit, row: &ObjId, rule: &Rule) {
+    write_matcher(doc, row, &rule.matcher);
+    text(doc, row, "action", action_name(rule.action));
+    text(doc, row, "source", &rule.source);
+    let _ = doc.put(row, "enabled", rule.enabled);
+}
+fn read_rule(doc: &AutoCommit, row: &ObjId, id: RuleId) -> Option<Rule> {
+    let matcher = match str_value(doc, row, "matcher_kind")?.as_str() {
+        "service" => Matcher::Service(str_value(doc, row, "service")?),
+        "port" => Matcher::Port {
+            port: str_value(doc, row, "port")?,
+            proto: proto(&str_value(doc, row, "proto")?)?,
+        },
+        _ => return None,
+    };
+    Some(Rule {
+        id,
+        matcher,
+        action: action(&str_value(doc, row, "action")?)?,
+        source: str_value(doc, row, "source")?,
+        enabled: bool_value(doc, row, "enabled")?,
+    })
+}
 
-    /// Parse the document into a [`FirewallConfig`], if one is stored.
-    pub fn load(doc: &AutoCommit) -> Option<FirewallConfig> {
-        Self::load_json(doc).and_then(|s| FirewallConfig::from_json(&s))
+impl FirewallDoc {
+    /// The compatibility JSON payload. New writers never call this.
+    pub fn load_json(doc: &AutoCommit) -> Option<String> {
+        let id = get_text(doc, &ROOT, LEGACY_KEY)?;
+        let value = doc.text(&id).ok()?;
+        (!value.is_empty()).then_some(value)
     }
-
-    /// Persist `cfg` into the document, replacing the whole `config` Text.
-    /// Returns the JSON that was written so callers can cache it and skip
-    /// redundant adopt-on-sync churn.
+    pub fn has_native(doc: &AutoCommit) -> bool {
+        get_map(doc, &ROOT, ROOT_KEY).is_some()
+    }
+    pub fn load(doc: &AutoCommit) -> Option<FirewallConfig> {
+        match get_map(doc, &ROOT, ROOT_KEY) {
+            Some(root) => Self::read_native(doc, &root),
+            None => Self::load_json(doc).and_then(|v| FirewallConfig::from_json(&v)),
+        }
+    }
+    fn read_native(doc: &AutoCommit, root: &ObjId) -> Option<FirewallConfig> {
+        let enabled = bool_value(doc, root, "enabled")?;
+        let panic_mode = bool_value(doc, root, "panic_mode")?;
+        let default_zone = ZoneKind::from_name(&str_value(doc, root, "default_zone")?)?;
+        let zones = get_map(doc, root, "zones")?;
+        let mut result = Vec::new();
+        for kind in ZoneKind::ALL {
+            let Some(zone) = get_map(doc, &zones, kind.name()) else {
+                continue;
+            };
+            let Some(target) = str_value(doc, &zone, "target").and_then(|v| target(&v)) else {
+                continue;
+            };
+            let interfaces = get_map(doc, &zone, "interfaces")
+                .map(|m| {
+                    doc.keys(&m)
+                        .filter(|id| bool_value(doc, &m, id) == Some(true))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let services = get_map(doc, &zone, "services")
+                .map(|m| {
+                    doc.keys(&m)
+                        .filter(|id| bool_value(doc, &m, id) == Some(true))
+                        .collect()
+                })
+                .unwrap_or_default();
+            result.push(Zone {
+                kind,
+                target,
+                interfaces,
+                services,
+                rules: Self::rules(doc, &zone),
+                masquerade: bool_value(doc, &zone, "masquerade").unwrap_or(false),
+            });
+        }
+        Some(FirewallConfig {
+            enabled,
+            panic_mode,
+            default_zone,
+            zones: result,
+        })
+    }
+    fn rules(doc: &AutoCommit, zone: &ObjId) -> Vec<Rule> {
+        let Some(rows) = get_map(doc, zone, "rules") else {
+            return Vec::new();
+        };
+        let tombs = get_map(doc, zone, "rule_tombstones");
+        let mut remaining = std::collections::BTreeMap::new();
+        for key in doc.keys(&rows) {
+            if tombs
+                .as_ref()
+                .is_some_and(|m| bool_value(doc, m, &key) == Some(true))
+            {
+                continue;
+            }
+            let (Ok(id), Some(row)) = (key.parse::<RuleId>(), get_map(doc, &rows, &key)) else {
+                continue;
+            };
+            if let Some(rule) = read_rule(doc, &row, id) {
+                remaining.insert(key, rule);
+            }
+        }
+        let mut ordered = Vec::new();
+        if let Some(order) = get_list(doc, zone, "rule_order") {
+            for index in 0..doc.length(&order) {
+                if let Some(key) = at_str(doc, &order, index)
+                    && let Some(rule) = remaining.remove(&key)
+                {
+                    ordered.push(rule);
+                }
+            }
+        }
+        ordered.extend(remaining.into_values());
+        ordered
+    }
+    /// Full native seed/import. Interactive actions use the narrow methods.
     pub fn store(doc: &mut AutoCommit, cfg: &FirewallConfig) -> String {
-        let json = cfg.to_json();
-        let id = Self::config_text(doc);
-        ui::doc::splice_text_diffed(doc, &id, &json);
-        json
+        let Some(root) = map(doc, &ROOT, ROOT_KEY) else {
+            return cfg.to_json();
+        };
+        let _ = doc.put(&root, "enabled", cfg.enabled);
+        let _ = doc.put(&root, "panic_mode", cfg.panic_mode);
+        text(doc, &root, "default_zone", cfg.default_zone.name());
+        let Some(zones) = map(doc, &root, "zones") else {
+            return cfg.to_json();
+        };
+        for zone in &cfg.zones {
+            let Some(row) = map(doc, &zones, zone.kind.name()) else {
+                continue;
+            };
+            text(doc, &row, "target", target_name(zone.target));
+            let _ = doc.put(&row, "masquerade", zone.masquerade);
+            if let Some(services) = map(doc, &row, "services") {
+                for service in &zone.services {
+                    let _ = doc.put(&services, service, true);
+                }
+            }
+            if let Some(interfaces) = map(doc, &row, "interfaces") {
+                for interface in &zone.interfaces {
+                    let _ = doc.put(&interfaces, interface, true);
+                }
+            }
+            for rule in &zone.rules {
+                Self::add_rule(doc, zone.kind, rule);
+            }
+        }
+        cfg.to_json()
+    }
+    /// Reconcile an authoritative, read-only host probe into a native document.
+    ///
+    /// Unlike `store`, this makes absence explicit: stale interfaces/services
+    /// become false membership and stale rules receive delete-wins tombstones.
+    /// A concurrent user deletion still wins over a probe that carries the same
+    /// id; an external snapshot never resurrects a tombstoned rule.
+    pub fn reconcile_probe(doc: &mut AutoCommit, cfg: &FirewallConfig) -> String {
+        if !Self::has_native(doc) {
+            return Self::store(doc, cfg);
+        }
+        let Some(root) = map(doc, &ROOT, ROOT_KEY) else {
+            return cfg.to_json();
+        };
+        let _ = doc.put(&root, "enabled", cfg.enabled);
+        let _ = doc.put(&root, "panic_mode", cfg.panic_mode);
+        text(doc, &root, "default_zone", cfg.default_zone.name());
+        let Some(zones) = map(doc, &root, "zones") else {
+            return cfg.to_json();
+        };
+        for incoming in &cfg.zones {
+            let Some(zone) = map(doc, &zones, incoming.kind.name()) else {
+                continue;
+            };
+            text(doc, &zone, "target", target_name(incoming.target));
+            let _ = doc.put(&zone, "masquerade", incoming.masquerade);
+            Self::reconcile_membership(doc, &zone, "interfaces", &incoming.interfaces);
+            Self::reconcile_membership(doc, &zone, "services", &incoming.services);
+            Self::reconcile_rules(doc, incoming.kind, &incoming.rules);
+        }
+        cfg.to_json()
+    }
+    fn reconcile_membership(doc: &mut AutoCommit, zone: &ObjId, field: &str, incoming: &[String]) {
+        let Some(members) = map(doc, zone, field) else {
+            return;
+        };
+        let desired: std::collections::BTreeSet<_> = incoming.iter().map(String::as_str).collect();
+        let existing: Vec<_> = doc.keys(&members).collect();
+        for id in existing {
+            if !desired.contains(id.as_str()) {
+                let _ = doc.put(&members, &id, false);
+            }
+        }
+        for id in desired {
+            let _ = doc.put(&members, id, true);
+        }
+    }
+    fn reconcile_rules(doc: &mut AutoCommit, kind: ZoneKind, incoming: &[Rule]) {
+        let Some(zone) = Self::zone(doc, kind) else {
+            return;
+        };
+        let Some(rows) = map(doc, &zone, "rules") else {
+            return;
+        };
+        let desired: std::collections::BTreeSet<_> =
+            incoming.iter().map(|rule| rule.id.to_string()).collect();
+        let existing: Vec<_> = doc.keys(&rows).collect();
+        for id in existing {
+            if !desired.contains(&id)
+                && let Ok(rule_id) = id.parse()
+            {
+                Self::delete_rule(doc, kind, rule_id);
+            }
+        }
+        for rule in incoming {
+            if Self::tombstoned(doc, &zone, rule.id) {
+                continue;
+            }
+            let key = rule.id.to_string();
+            if let Some(row) = get_map(doc, &rows, &key) {
+                write_rule(doc, &row, rule);
+            } else {
+                Self::add_rule(doc, kind, rule);
+            }
+        }
+    }
+    fn zone(doc: &AutoCommit, kind: ZoneKind) -> Option<ObjId> {
+        get_map(doc, &ROOT, ROOT_KEY)
+            .and_then(|root| get_map(doc, &root, "zones"))
+            .and_then(|zones| get_map(doc, &zones, kind.name()))
+    }
+    fn tombstoned(doc: &AutoCommit, zone: &ObjId, id: RuleId) -> bool {
+        get_map(doc, zone, "rule_tombstones")
+            .is_some_and(|m| bool_value(doc, &m, &id.to_string()) == Some(true))
+    }
+    pub fn add_rule(doc: &mut AutoCommit, kind: ZoneKind, rule: &Rule) {
+        let Some(root) = map(doc, &ROOT, ROOT_KEY) else {
+            return;
+        };
+        let Some(zones) = map(doc, &root, "zones") else {
+            return;
+        };
+        let Some(zone) = map(doc, &zones, kind.name()) else {
+            return;
+        };
+        if Self::tombstoned(doc, &zone, rule.id) {
+            return;
+        }
+        let Some(rows) = map(doc, &zone, "rules") else {
+            return;
+        };
+        let key = rule.id.to_string();
+        let row = match get_map(doc, &rows, &key) {
+            Some(row) => row,
+            None => match doc.put_object(&rows, &key, ObjType::Map) {
+                Ok(row) => row,
+                Err(_) => return,
+            },
+        };
+        if doc.keys(&row).next().is_none() {
+            write_rule(doc, &row, rule);
+        }
+        let order = match get_list(doc, &zone, "rule_order") {
+            Some(list) => list,
+            None => match doc.put_object(&zone, "rule_order", ObjType::List) {
+                Ok(list) => list,
+                Err(_) => return,
+            },
+        };
+        if !(0..doc.length(&order)).any(|i| at_str(doc, &order, i).as_deref() == Some(key.as_str()))
+        {
+            let _ = doc.insert(&order, doc.length(&order), key);
+        }
+    }
+    /// Applies fields independently, so two changes to different rule fields
+    /// merge rather than replacing a row. Tombstones make delete win.
+    pub fn edit_rule(doc: &mut AutoCommit, kind: ZoneKind, rule: &Rule) {
+        let Some(zone) = Self::zone(doc, kind) else {
+            return;
+        };
+        if Self::tombstoned(doc, &zone, rule.id) {
+            return;
+        }
+        let Some(rows) = get_map(doc, &zone, "rules") else {
+            return;
+        };
+        let Some(row) = get_map(doc, &rows, &rule.id.to_string()) else {
+            return;
+        };
+        let Some(current) = read_rule(doc, &row, rule.id) else {
+            return;
+        };
+        if current.source != rule.source {
+            text(doc, &row, "source", &rule.source);
+        }
+        if current.enabled != rule.enabled {
+            let _ = doc.put(&row, "enabled", rule.enabled);
+        }
+        if current.action != rule.action {
+            text(doc, &row, "action", action_name(rule.action));
+        }
+        if current.matcher != rule.matcher {
+            write_matcher(doc, &row, &rule.matcher);
+        }
+    }
+    pub fn set_rule_enabled(doc: &mut AutoCommit, kind: ZoneKind, id: RuleId, on: bool) {
+        let Some(zone) = Self::zone(doc, kind) else {
+            return;
+        };
+        if Self::tombstoned(doc, &zone, id) {
+            return;
+        }
+        if let Some(rows) = get_map(doc, &zone, "rules")
+            && let Some(row) = get_map(doc, &rows, &id.to_string())
+        {
+            let _ = doc.put(&row, "enabled", on);
+        }
+    }
+    /// Narrow source patch used by the editable rule control. It intentionally
+    /// cannot carry a stale value for another rule field.
+    pub fn set_rule_source(doc: &mut AutoCommit, kind: ZoneKind, id: RuleId, source: &str) {
+        let Some(zone) = Self::zone(doc, kind) else {
+            return;
+        };
+        if Self::tombstoned(doc, &zone, id) {
+            return;
+        }
+        if let Some(rows) = get_map(doc, &zone, "rules")
+            && let Some(row) = get_map(doc, &rows, &id.to_string())
+        {
+            text(doc, &row, "source", source);
+        }
+    }
+    pub fn delete_rule(doc: &mut AutoCommit, kind: ZoneKind, id: RuleId) {
+        let Some(zone) = Self::zone(doc, kind) else {
+            return;
+        };
+        let Some(rows) = get_map(doc, &zone, "rules") else {
+            return;
+        };
+        if get_map(doc, &rows, &id.to_string()).is_none() {
+            return;
+        }
+        if let Some(tombs) = map(doc, &zone, "rule_tombstones") {
+            let _ = doc.put(&tombs, id.to_string(), true);
+        }
+    }
+    pub fn set_service(doc: &mut AutoCommit, kind: ZoneKind, service: &str, on: bool) {
+        if let Some(zone) = Self::zone(doc, kind)
+            && let Some(services) = map(doc, &zone, "services")
+        {
+            let _ = doc.put(&services, service, on);
+        }
+    }
+    pub fn set_zone_target(doc: &mut AutoCommit, kind: ZoneKind, value: Target) {
+        if let Some(zone) = Self::zone(doc, kind) {
+            text(doc, &zone, "target", target_name(value));
+        }
+    }
+    pub fn set_default_zone(doc: &mut AutoCommit, kind: ZoneKind) {
+        if let Some(root) = map(doc, &ROOT, ROOT_KEY) {
+            text(doc, &root, "default_zone", kind.name());
+        }
+    }
+    pub fn set_panic(doc: &mut AutoCommit, on: bool) {
+        if let Some(root) = map(doc, &ROOT, ROOT_KEY) {
+            let _ = doc.put(&root, "panic_mode", on);
+        }
+    }
+    pub fn set_enabled(doc: &mut AutoCommit, on: bool) {
+        if let Some(root) = map(doc, &ROOT, ROOT_KEY) {
+            let _ = doc.put(&root, "enabled", on);
+        }
+    }
+    pub fn reorder_rule(doc: &mut AutoCommit, kind: ZoneKind, id: RuleId, delta: i32) {
+        let Some(zone) = Self::zone(doc, kind) else {
+            return;
+        };
+        let Some(order) = get_list(doc, &zone, "rule_order") else {
+            return;
+        };
+        let key = id.to_string();
+        let Some(index) = (0..doc.length(&order))
+            .find(|i| at_str(doc, &order, *i).as_deref() == Some(key.as_str()))
+        else {
+            return;
+        };
+        let target =
+            (index as i32 + delta).clamp(0, doc.length(&order).saturating_sub(1) as i32) as usize;
+        if target != index {
+            let _ = doc.delete(&order, index);
+            let _ = doc.insert(&order, target, key);
+        }
     }
 }
 
@@ -72,89 +521,129 @@ impl FirewallDoc {
 mod tests {
     use super::*;
     use crate::sample::sample_config;
-
     #[test]
-    fn store_then_load_round_trips() {
-        let mut doc = AutoCommit::new();
-        let cfg = sample_config();
-        FirewallDoc::store(&mut doc, &cfg);
-        let back = FirewallDoc::load(&doc).unwrap();
-        assert_eq!(cfg, back);
-    }
-
-    #[test]
-    fn empty_doc_loads_none() {
-        let doc = AutoCommit::new();
-        assert!(FirewallDoc::load(&doc).is_none());
-    }
-
-    #[test]
-    fn store_is_idempotent_text() {
-        let mut doc = AutoCommit::new();
-        let cfg = sample_config();
-        let a = FirewallDoc::store(&mut doc, &cfg);
-        let b = FirewallDoc::store(&mut doc, &cfg);
-        assert_eq!(a, b);
-        // A second identical store must not grow the document into two
-        // copies; load still yields exactly one parseable config.
-        assert_eq!(FirewallDoc::load(&doc).unwrap(), cfg);
-    }
-
-    #[test]
-    fn repeated_store_keeps_doc_bounded() {
-        // The freeze came from `store` rewriting the whole config Text each
-        // frame. With the diff-splice, an unchanged re-store is a no-op.
-        let mut doc = AutoCommit::new();
-        let cfg = sample_config();
-        FirewallDoc::store(&mut doc, &cfg);
-        let a = doc.save().len();
-        for _ in 0..50 {
-            FirewallDoc::store(&mut doc, &cfg);
-        }
-        let b = doc.save().len();
+    fn native_round_trip() {
+        let mut d = AutoCommit::new();
+        let c = sample_config();
+        FirewallDoc::store(&mut d, &c);
+        assert!(FirewallDoc::has_native(&d));
+        let restored = FirewallDoc::load(&d).unwrap();
+        assert_eq!(restored.enabled, c.enabled);
+        assert_eq!(restored.panic_mode, c.panic_mode);
+        assert_eq!(restored.default_zone, c.default_zone);
         assert_eq!(
-            a, b,
-            "re-storing the same config grew the document {a} -> {b}"
+            restored
+                .zones
+                .iter()
+                .map(|zone| zone.rules.len())
+                .sum::<usize>(),
+            c.zones.iter().map(|zone| zone.rules.len()).sum::<usize>()
         );
     }
-
     #[test]
-    fn small_config_edit_is_a_bounded_splice() {
-        // A one-field change must splice only the changed JSON span, not
-        // re-insert the whole blob.
+    fn legacy_json_is_read_without_becoming_a_write_target() {
         let mut doc = AutoCommit::new();
-        let json_len = FirewallDoc::store(&mut doc, &sample_config()).len();
-        let before = doc.save().len();
-        let mut cfg2 = sample_config();
-        cfg2.enabled = !cfg2.enabled;
-        FirewallDoc::store(&mut doc, &cfg2);
-        let grew = doc.save().len() - before;
-        assert_eq!(
-            FirewallDoc::load(&doc).unwrap().enabled,
-            cfg2.enabled,
-            "value round-trips"
-        );
-        assert!(
-            grew < json_len,
-            "a one-field edit spliced ~the whole {json_len}-char JSON ({grew} bytes) — diff regressed"
-        );
+        let config = sample_config();
+        let legacy = doc.put_object(&ROOT, LEGACY_KEY, ObjType::Text).unwrap();
+        ui::doc::splice_text_diffed(&mut doc, &legacy, &config.to_json());
+        assert_eq!(FirewallDoc::load(&doc), Some(config.clone()));
+        FirewallDoc::store(&mut doc, &config);
+        assert!(FirewallDoc::has_native(&doc));
+        assert_eq!(FirewallDoc::load_json(&doc), Some(config.to_json()));
     }
-
     #[test]
-    fn two_peers_converge_on_edit() {
-        // Peer A seeds; peer B joins from A's state, edits, A merges back.
+    fn probe_reconciliation_removes_absent_members_and_rules() {
+        let mut doc = AutoCommit::new();
+        let before = sample_config();
+        FirewallDoc::store(&mut doc, &before);
+        let zone_kind = before.default_zone;
+        let stale_rule = before.zone(zone_kind).unwrap().rules[0].id;
+        let mut probe = before.clone();
+        let zone = probe.zone_mut(zone_kind).unwrap();
+        zone.services.retain(|service| service != "ssh");
+        zone.interfaces.retain(|interface| interface != "eth0");
+        zone.rules.retain(|rule| rule.id != stale_rule);
+
+        FirewallDoc::reconcile_probe(&mut doc, &probe);
+        let restored = FirewallDoc::load(&doc).unwrap();
+        let zone = restored.zone(zone_kind).unwrap();
+        assert!(!zone.has_service("ssh"));
+        assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
+        assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
+    }
+    #[allow(clippy::many_single_char_names)]
+    #[test]
+    fn independent_fields_merge() {
         let mut a = AutoCommit::new();
-        let cfg = sample_config();
-        FirewallDoc::store(&mut a, &cfg);
-
+        let c = sample_config();
+        FirewallDoc::store(&mut a, &c);
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        let mut cfg_b = FirewallDoc::load(&b).unwrap();
-        cfg_b.panic_mode = true;
-        FirewallDoc::store(&mut b, &cfg_b);
-
-        let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        let z = c.default_zone;
+        let mut r = c.zone(z).unwrap().rules[0].clone();
+        r.source = "10.0.0.0/8".into();
+        FirewallDoc::edit_rule(&mut a, z, &r);
+        FirewallDoc::set_rule_enabled(&mut b, z, r.id, false);
+        a.merge(&mut b).unwrap();
         let merged = FirewallDoc::load(&a).unwrap();
-        assert!(merged.panic_mode, "panic edit converged into peer A");
+        let r = merged
+            .zone(z)
+            .unwrap()
+            .rules
+            .iter()
+            .find(|x| x.id == r.id)
+            .unwrap();
+        assert_eq!(r.source, "10.0.0.0/8");
+        assert!(!r.enabled);
+    }
+    #[test]
+    fn different_rule_and_service_edits_merge() {
+        let mut a = AutoCommit::new();
+        let c = sample_config();
+        FirewallDoc::store(&mut a, &c);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let z = c.default_zone;
+        let ids: Vec<_> = c.zone(z).unwrap().rules.iter().map(|r| r.id).collect();
+        FirewallDoc::set_rule_enabled(&mut a, z, ids[0], false);
+        FirewallDoc::set_rule_enabled(&mut b, z, ids[1], false);
+        FirewallDoc::set_service(&mut a, z, "ssh", true);
+        FirewallDoc::set_service(&mut b, z, "https", true);
+        a.merge(&mut b).unwrap();
+        let merged = FirewallDoc::load(&a).unwrap();
+        let z = merged.zone(z).unwrap();
+        let states: Vec<_> = z
+            .rules
+            .iter()
+            .filter(|rule| ids.contains(&rule.id))
+            .map(|rule| (rule.id, rule.enabled))
+            .collect();
+        assert_eq!(
+            states.iter().filter(|(_, enabled)| !enabled).count(),
+            2,
+            "{states:?}"
+        );
+        assert!(z.has_service("ssh") && z.has_service("https"));
+    }
+    #[allow(clippy::many_single_char_names)]
+    #[test]
+    fn delete_wins_stale_edit() {
+        let mut a = AutoCommit::new();
+        let c = sample_config();
+        FirewallDoc::store(&mut a, &c);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let z = c.default_zone;
+        let mut r = c.zone(z).unwrap().rules[0].clone();
+        r.source = "192.168.1.0/24".into();
+        FirewallDoc::delete_rule(&mut a, z, r.id);
+        FirewallDoc::edit_rule(&mut b, z, &r);
+        a.merge(&mut b).unwrap();
+        assert!(
+            !FirewallDoc::load(&a)
+                .unwrap()
+                .zone(z)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|x| x.id == r.id)
+        );
     }
 }
