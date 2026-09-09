@@ -15,10 +15,9 @@
 //!     change or a bottom-corner hover, then fades; no permanent strip
 //!   * overlay — search bar and goto-offset prompt (modal-ish, on top)
 //!
-//! State lives in the CRDT: every edit is written straight back into the
-//! Automerge document via [`HexDoc`], so undo/redo and live collaboration
-//! come for free. The view keeps the decoded [`HexModel`] as a render
-//! cache, rebuilt from the document in `sync`.
+//! File paths and byte contents stay in this device-local view model. The
+//! canonical resource operations remain palette/agent-driveable, but never
+//! become collaborative document changes.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -26,8 +25,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
-use qos_actions::EncodedAction;
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -43,13 +41,14 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, TextInputKind};
 
-use crate::doc::HexDoc;
+use crate::actions::HexOperation;
 use crate::inspector::{self, Interpretation};
-use crate::model::{Column, EditMode, HexModel};
+use crate::model::{Column, EditMode, HexModel, LocalEdit};
 use crate::search::{self, SearchKind};
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
+const LOCAL_HISTORY_LIMIT: usize = 256;
 
 fn file_open_request() -> PickRequest {
     PickRequest::open("Open file", "Open")
@@ -81,17 +80,17 @@ struct OverlayLayoutCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-// The four bools below are independent view flags (redraw-pending, doc-seeded,
+// The three bools below are independent view flags (redraw-pending,
 // buffer-present, shots-forced-visible), not a combinatorial option set, so
 // folding them into an enum would only add indirection.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "four unrelated view flags (dirty/seeded/has_file/shots_status), not a combinatorial option set"
+    reason = "three unrelated view flags (dirty/has_file/shots_status), not a combinatorial option set"
 )]
 pub struct HexView {
-    /// Decoded render cache of the document. Rebuilt in `sync`.
+    /// Decoded local buffer and editor state. Refreshed from local I/O only.
     model: HexModel,
-    /// File name shown in the header (cosmetic; the buffer is the doc).
+    /// File name shown in the header (cosmetic; the buffer is local).
     file_name: String,
     rect: Rect,
     dirty: bool,
@@ -104,6 +103,11 @@ pub struct HexView {
     search_kind: SearchKind,
     /// Cached match offsets for the current query, recomputed on demand.
     matches: Vec<usize>,
+    /// Parsed search bytes paired with `matches`; keeping this cache avoids
+    /// reparsing the query for every painted cell.
+    search_needle: Option<Vec<u8>>,
+    /// True when matching continued past the retained offset budget.
+    matches_truncated: bool,
     /// Index into `matches` of the currently-focused hit.
     match_idx: Option<usize>,
 
@@ -111,9 +115,6 @@ pub struct HexView {
     /// Shared local text field for decimal / hexadecimal offsets.
     goto_input: TextInput,
 
-    /// Whether the user has seeded the doc yet (so the first sync writes
-    /// the model in rather than reading an empty document back out).
-    seeded: bool,
     /// Rows currently fitting in the grid viewport — updated each draw,
     /// read by keyboard paging so PageUp/Down move a screenful.
     visible_rows: usize,
@@ -140,12 +141,10 @@ pub struct HexView {
     /// Hit rect of the empty-state "Open file…" button, recorded during draw.
     open_button: Rect,
 
-    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
-    /// path a Ctrl+K palette dispatch takes), encodes and dispatches each
-    /// buffer-edit action, and remembers the last one so a test can prove a
-    /// keystroke and the Ctrl+K [`qos_actions::ActionSpec`] build the
-    /// byte-identical action.
-    actions: ui::ActionHost,
+    /// Bounded, device-local undo/redo journal. Resource operations and
+    /// keyboard shortcuts use the same inverse edit representation.
+    undo: Vec<LocalEdit>,
+    redo: Vec<LocalEdit>,
 
     /// The cursor read-out / edit status, surfaced as a transient floating
     /// bubble (see `draw_status_bubble`) instead of a permanent bottom strip,
@@ -160,6 +159,11 @@ pub struct HexView {
     /// `--shots` forces the bubble fully visible so a single headless frame
     /// captures the floating chip.
     shots_status: bool,
+    /// Headless shots render one base layer only; this explicitly includes a
+    /// focused overlay in that base layer for visual review.
+    shots_overlay: bool,
+    /// The canvas is keyboard-focusable even though it is custom drawn.
+    focused: bool,
 }
 
 impl HexView {
@@ -178,6 +182,8 @@ impl HexView {
                 .with_mono(),
             search_kind: SearchKind::Hex,
             matches: Vec::new(),
+            search_needle: None,
+            matches_truncated: false,
             match_idx: None,
             goto_input: TextInput::local()
                 .with_kind(TextInputKind::Number)
@@ -185,7 +191,6 @@ impl HexView {
                 .with_placeholder("0x… or decimal")
                 .with_plain_chrome()
                 .with_mono(),
-            seeded: false,
             visible_rows: 1,
             last_mouse: Point::ZERO,
             has_file: true,
@@ -197,10 +202,13 @@ impl HexView {
             resource_result: None,
             flash: None,
             open_button: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
             status_bubble: ui::StatusBubble::new(),
             last_status_label: None,
             shots_status: false,
+            shots_overlay: false,
+            focused: false,
         }
     }
 
@@ -233,14 +241,6 @@ impl HexView {
         &mut self.model
     }
 
-    /// Test accessor for the last action a keystroke dispatched, so a test can
-    /// prove the keystroke and the palette build the byte-identical action.
-    /// Not `#[cfg(test)]` so the integration test crate (`tests/open_save.rs`),
-    /// which compiles against the public API only, can read it too.
-    pub fn last_dispatched(&self) -> Option<&EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
     /// The presentation context Ctrl+K needs to target its byte-edit actions at
     /// the live cursor / selection. Everything here is view state the document
     /// doesn't own.
@@ -255,6 +255,8 @@ impl HexView {
             len: self.model.len(),
             selection: self.model.selection(),
             has_file: self.has_file,
+            can_undo: !self.undo.is_empty(),
+            can_redo: !self.redo.is_empty(),
         }
     }
 
@@ -300,40 +302,40 @@ impl HexView {
         self.status_bubble.poke(Instant::now());
     }
 
-    /// Seed / replace the whole shared buffer at once — used when opening a file
-    /// or adopting a peer's document, not for incremental edits. Writing the
-    /// bytes wholesale (rather than through an edit action) is right here: a file
-    /// load is external I/O, not a collaborative mutation.
-    fn flush(&mut self, doc: &mut AutoCommit) {
-        HexDoc::write_model(doc, &self.model);
+    /// Deterministic `--shots` hook for the real search overlay. It is not
+    /// reachable in a normal launch and exists only so visual review can cover
+    /// focused text input and match highlighting without a live compositor.
+    pub fn arm_search_for_shots(&mut self) {
+        self.overlay = Overlay::Search;
+        self.search_kind = SearchKind::Text;
+        self.search_input.set_mono(false);
+        self.search_input.set_text("IHDR");
+        self.search_input.set_focus(true);
+        self.recompute_matches();
+        self.shots_overlay = true;
         self.dirty = true;
     }
 
-    /// Persist whatever the last input changed. Buffer mutations the model
-    /// journaled are dispatched through the qOS action model — each replays
-    /// byte-identically on peers and the batch records one undo boundary Ctrl+Z
-    /// reverts. Presentation meta (cursor, mode, endianness) is view state, so
-    /// it is written straight to the document, never as an action.
-    fn persist(&mut self, doc: &mut AutoCommit) {
-        for edit in self.model.take_edits() {
-            self.perform_action(doc, &crate::actions::edit_to_action(&edit));
+    /// Deterministic `--shots` hook for a failed local-file operation. Uses
+    /// the same transient error presentation as `open_path`/`write_to`.
+    pub fn arm_error_for_shots(&mut self) {
+        self.flash("Open failed: permission denied", true);
+        self.arm_status_bubble_for_shots();
+    }
+
+    /// Record bounded inverse edits for a completed local input. Neither bytes
+    /// nor paths enter the collaboration document.
+    fn record_local_history(&mut self) {
+        let edits = self.model.take_local_history();
+        if !edits.is_empty() {
+            self.undo.extend(edits);
+            let excess = self.undo.len().saturating_sub(LOCAL_HISTORY_LIMIT);
+            if excess > 0 {
+                self.undo.drain(..excess);
+            }
+            self.redo.clear();
         }
-        HexDoc::write_meta(doc, &self.model);
         self.dirty = true;
-    }
-
-    /// Dispatch one [`crate::actions::HexEditorAction`] — the single buffer-edit
-    /// path shared with the Ctrl+K palette. The action runs through the qOS
-    /// executor (a pinned actor + committed change, so it replays byte-identically
-    /// on peers). The heads captured just before the first action of the event
-    /// are stashed so the host records **one** undo boundary bracketing it.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::HexEditorAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::HEX_EDITOR_ACTION_TYPE,
-            action,
-            qos_actions::ActionContext::for_action("org.qos.HexEditor", "Hex Editor", action),
-        );
     }
 
     // --- file open / save (through the host portal) --------------------
@@ -390,9 +392,8 @@ impl HexView {
         }
     }
 
-    /// Load `path` into the editor, replacing the buffer and persisting it to
-    /// the shared document so collaborators converge on the opened file.
-    fn open_path(&mut self, path: PathBuf, doc: &mut AutoCommit) -> Result<(), String> {
+    /// Load a local path into this editor. The path and bytes stay local.
+    fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 let name = path.file_name().map_or_else(
@@ -406,8 +407,10 @@ impl HexView {
                 self.has_file = true;
                 self.overlay = Overlay::None;
                 self.matches.clear();
+                self.search_needle = None;
+                self.matches_truncated = false;
                 self.match_idx = None;
-                self.flush(doc);
+                self.dirty = true;
                 self.flash(
                     format!(
                         "Opened {}",
@@ -424,15 +427,14 @@ impl HexView {
         }
     }
 
-    /// Drain any completed portal open/save requests. Called from `sync`, so
-    /// it has the document to persist a freshly-opened buffer into.
-    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+    /// Drain completed portal open/save requests into this device-local view.
+    fn drain_portal(&mut self) {
         if let Some(rx) = self.open_rx.as_ref() {
             match rx.try_recv() {
                 Ok(outcome) => {
                     self.open_rx = None;
                     let result = match outcome {
-                        PortalOutcome::Opened(path) => self.open_path(path, doc),
+                        PortalOutcome::Opened(path) => self.open_path(path),
                         PortalOutcome::Cancelled => Err("cancelled".into()),
                         PortalOutcome::Failed(reason) => {
                             self.flash(&reason, true);
@@ -515,13 +517,17 @@ impl HexView {
     /// sea of empty space). Snapped to a multiple of 8 and clamped to a sane
     /// range.
     fn fit_bytes_per_row(&self) -> usize {
+        let inspector_reserve = if self.show_inspector() {
+            GridMetrics::INSPECTOR_GAP + GridMetrics::INSPECTOR_MIN
+        } else {
+            0.0
+        };
         let avail = self.rect.width()
             - GridMetrics::LEFT_PAD
             - GridMetrics::GUTTER_W
             - GridMetrics::GUTTER_GAP
             - GridMetrics::HEX_ASCII_GAP
-            - GridMetrics::INSPECTOR_GAP
-            - GridMetrics::INSPECTOR_MIN;
+            - inspector_reserve;
         let per_byte = GridMetrics::HEX_COL_W + GridMetrics::CHAR_W;
         if per_byte <= 0.0 {
             return 16;
@@ -533,10 +539,15 @@ impl HexView {
 
     /// Recompute match offsets from the current query + kind.
     fn recompute_matches(&mut self) {
-        self.matches = match search::needle(self.search_input.value(), self.search_kind) {
-            Some(n) => search::find_all(self.model.bytes(), &n),
-            None => Vec::new(),
-        };
+        self.search_needle = search::needle(self.search_input.value(), self.search_kind);
+        let (matches, truncated) = self.search_needle.as_ref().map_or_else(
+            || (Vec::new(), false),
+            |needle| {
+                search::find_all_bounded(self.model.bytes(), needle, search::MAX_RETAINED_MATCHES)
+            },
+        );
+        self.matches = matches;
+        self.matches_truncated = truncated;
         // Keep match_idx pointing at the nearest hit to the cursor.
         self.match_idx = if self.matches.is_empty() {
             None
@@ -544,6 +555,26 @@ impl HexView {
             let cur = self.model.cursor();
             Some(self.matches.iter().position(|&m| m >= cur).unwrap_or(0))
         };
+    }
+
+    /// Whether `offset` sits inside a match. This tests the local byte slice,
+    /// not the retained result index: painting remains correct after the
+    /// capped index has dropped older/farther matches.
+    fn is_match_offset(&self, offset: usize) -> bool {
+        let Some(needle) = self.search_needle.as_ref() else {
+            return false;
+        };
+        let first = offset.saturating_sub(needle.len().saturating_sub(1));
+        (first..=offset).any(|start| {
+            self.model
+                .bytes()
+                .get(start..start.saturating_add(needle.len()))
+                == Some(needle)
+        })
+    }
+
+    fn show_inspector(&self) -> bool {
+        self.rect.width() >= 860.0
     }
 
     fn jump_to_match(&mut self, forward: bool) {
@@ -685,20 +716,23 @@ impl HexView {
             None,
         );
 
-        // Right-aligned pills: mode + endianness + width.
+        // Right-aligned pills: mode + endianness + width. Narrow windows keep
+        // the interactive state pills and drop the informational width chip.
         let mut x = bar.x1 - pad;
-        let width_label = format!("{}/row", self.model.bytes_per_row());
-        x = Self::draw_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            x,
-            bar,
-            &width_label,
-            tokens.colors.neutral[3],
-        );
-        x -= 8.0;
+        if self.rect.width() >= 620.0 {
+            let width_label = format!("{}/row", self.model.bytes_per_row());
+            x = Self::draw_pill(
+                scene,
+                t,
+                tr,
+                theme,
+                x,
+                bar,
+                &width_label,
+                tokens.colors.neutral[3],
+            );
+            x -= 8.0;
+        }
         let endian_color = tokens.colors.accent[4];
         x = Self::draw_pill(
             scene,
@@ -955,14 +989,7 @@ impl HexView {
         let inspected = ctx
             .inspector_span
             .is_some_and(|(lo, hi)| off >= lo && off <= hi);
-        let is_match = self.matches.iter().any(|&mh| {
-            // Highlight cells inside any match span.
-            if let Some(n) = search::needle(self.search_input.value(), self.search_kind) {
-                off >= mh && off < mh + n.len()
-            } else {
-                false
-            }
-        });
+        let is_match = self.is_match_offset(off);
 
         if inspected && !is_cursor {
             let tint = with_alpha(tokens.colors.accent[5], 40);
@@ -1106,6 +1133,9 @@ impl HexView {
         theme: &Theme,
         m: &GridMetrics,
     ) {
+        if !self.show_inspector() {
+            return;
+        }
         let tokens = &theme.tokens;
         let panel = Rect::new(
             m.inspector_x0,
@@ -1443,8 +1473,12 @@ impl HexView {
                 "no matches".to_string()
             }
         } else {
-            let pos = self.match_idx.map_or(0, |i| i + 1);
-            format!("{}/{}", pos, self.matches.len())
+            if self.matches_truncated {
+                format!("{}+ matches", self.matches.len())
+            } else {
+                let pos = self.match_idx.map_or(0, |i| i + 1);
+                format!("{pos}/{}", self.matches.len())
+            }
         };
         let count_w = if count.is_empty() {
             0.0
@@ -1568,7 +1602,7 @@ impl HexView {
                 }
                 (Overlay::Search, Key::Named(NamedKey::Enter)) => {
                     self.jump_to_match(!shift);
-                    self.persist(doc);
+                    self.record_local_history();
                     return true;
                 }
                 (Overlay::Search, Key::Named(NamedKey::Tab)) => {
@@ -1588,7 +1622,7 @@ impl HexView {
                 }
                 (Overlay::Goto, Key::Named(NamedKey::Enter)) => {
                     self.commit_goto();
-                    self.persist(doc);
+                    self.record_local_history();
                     return true;
                 }
                 _ => {}
@@ -1662,7 +1696,6 @@ impl Widget for HexView {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::HexOperation;
         match operation {
             HexOperation::Open { .. } => self.begin_open(),
             HexOperation::Save { .. } if self.has_file => self.begin_save(),
@@ -1677,6 +1710,19 @@ impl Widget for HexView {
                 self.goto_input.set_focus(true);
                 self.dirty = true;
             }
+            HexOperation::Edit { edit } if self.has_file => {
+                self.model.apply_local_edit(&edit.into());
+                self.record_local_history();
+                self.dirty = true;
+            }
+            HexOperation::Undo if !self.undo.is_empty() => {
+                let _ = self.undo_local();
+            }
+            HexOperation::Redo if !self.redo.is_empty() => {
+                let _ = self.redo_local();
+            }
+            HexOperation::Undo => return Err("no local edit to undo".into()),
+            HexOperation::Redo => return Err("no local edit to redo".into()),
             _ => return Err("open a file first".into()),
         }
         Ok(true)
@@ -1755,11 +1801,11 @@ impl Widget for HexView {
             .flatten()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
                 crate::actions::HexOperation::Open { path: Some(path) } => {
-                    self.open_path(path.into(), doc)
+                    self.open_path(path.into())
                 }
                 crate::actions::HexOperation::Save { path: Some(path) } => {
                     self.write_to(std::path::Path::new(&path))
@@ -1784,45 +1830,11 @@ impl Widget for HexView {
         }
         // Drain any completed file open/save picks first, so a freshly opened
         // buffer is in place before this frame lays out.
-        self.drain_portal(doc);
+        self.drain_portal();
 
-        if !self.seeded {
-            if HexDoc::is_seeded(doc) {
-                // Adopt an existing peer's document — but only when we opened
-                // no file of our own (an explicit `hex FILE` wins over an empty
-                // shared doc, and seeds the peers instead).
-                if self.has_file {
-                    HexDoc::write_model(doc, &self.model);
-                } else if let Some(m) = HexDoc::read_model(doc) {
-                    self.model = m;
-                    self.has_file = true;
-                    self.file_name = "shared buffer".to_string();
-                }
-            } else if self.has_file {
-                // Seed ours.
-                HexDoc::write_model(doc, &self.model);
-            }
-            self.seeded = true;
-            self.dirty = true;
-        }
-
-        // Adopt buffer changes that arrived out-of-band: a peer's edit, a Ctrl+K
-        // palette action, or an undo restoring the document. The shared bytes are
-        // authoritative, so the render cache re-derives from them whenever they
-        // diverge from ours. A local keystroke keeps model and document in step
-        // (the edit is applied to both), so this is a no-op on the common path
-        // and never clobbers an in-progress edit.
-        if self.seeded
-            && self.has_file
-            && let Some(bytes) = HexDoc::read_bytes(doc)
-            && bytes != self.model.bytes()
-        {
-            self.model.adopt_bytes(bytes);
-            if self.overlay == Overlay::Search {
-                self.recompute_matches();
-            }
-            self.dirty = true;
-        }
+        // Paths, bytes, selection and cursor are local device state. Never
+        // seed or adopt them through Automerge: a collaborator cannot open
+        // this machine's path or receive its raw file contents.
 
         // Expire a status flash so an idle window settles back to no message.
         if let Some((_, _, born)) = &self.flash
@@ -1914,6 +1926,9 @@ impl Widget for HexView {
         // The permanent status strip is gone; a transient floating bubble
         // surfaces the cursor read-out over the reclaimed space at the bottom.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
+        if self.shots_overlay && self.overlay == Overlay::Search {
+            self.draw_search_overlay(scene, transform, text_renderer, theme);
+        }
     }
 
     fn draw_overlay(
@@ -1974,7 +1989,7 @@ impl Widget for HexView {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_mouse_press(shift, state, handled),
+            } => self.handle_mouse_press(shift, handled),
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
             }
@@ -1995,7 +2010,7 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, state, handled);
+                self.handle_key_event(ke, ctrl, shift, handled);
             }
             _ => {}
         }
@@ -2007,13 +2022,6 @@ impl Widget for HexView {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Hand the host the heads captured before a keystroke dispatched its
-    /// buffer-edit action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 
     fn name(&self) -> &'static str {
@@ -2056,8 +2064,108 @@ impl Widget for HexView {
         match self.overlay {
             Overlay::Search => self.search_input.accessibility(),
             Overlay::Goto => self.goto_input.accessibility(),
-            Overlay::None => None,
+            Overlay::None => {
+                use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+
+                let mut children = vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name(if self.has_file {
+                            format!(
+                                "{}; {} bytes; cursor at hexadecimal 0x{:X}; {} mode; {} endian",
+                                self.file_name,
+                                self.model.len(),
+                                self.model.cursor(),
+                                self.model.mode().label(),
+                                self.model.endian().label(),
+                            )
+                        } else {
+                            "No file open. Open a local file to inspect its bytes.".to_string()
+                        })
+                        .with_live(Politeness::Polite),
+                ];
+                if self.has_file {
+                    children.push(
+                        AccessNode::new(Role::StaticText).with_name(
+                            "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F search, Ctrl+G go to offset, Ctrl+Z undo, Ctrl+Y redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                        ),
+                    );
+                    children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name("Undo local edit")
+                            .with_description("Revert the most recent local byte edit")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(self.undo.is_empty()),
+                            )
+                            .with_action_target("hex.undo"),
+                    );
+                    children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name("Redo local edit")
+                            .with_description("Reapply the most recently undone local byte edit")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(self.redo.is_empty()),
+                            )
+                            .with_action_target("hex.redo"),
+                    );
+                } else {
+                    children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name("Open file")
+                            .with_description("Choose a local file to inspect")
+                            .with_state(AccessState::default().focusable(true))
+                            .with_action_target("hex.open"),
+                    );
+                }
+                Some(
+                    AccessNode::new(Role::Document)
+                        .with_name("Hex editor")
+                        .with_description("Local file bytes are not shared with collaborators.")
+                        .with_state(AccessState::default().focusable(true).focused(self.focused))
+                        .with_children(children),
+                )
+            }
         }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        self.dirty = true;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if matches!(action, ui::a11y::Action::Activate) {
+            match target {
+                "hex.open" => self.begin_open(),
+                "hex.undo" if self.has_file && !self.undo.is_empty() => {
+                    let _ = self.undo_local();
+                }
+                "hex.redo" if self.has_file && !self.redo.is_empty() => {
+                    let _ = self.redo_local();
+                }
+                _ => return false,
+            }
+            self.dirty = true;
+            return true;
+        }
+        false
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2074,7 +2182,7 @@ impl HexView {
     /// a grid hit-test that moves the cursor (optionally extending the
     /// selection). Split out of `Widget::handle_event` to keep that dispatch
     /// under the line-count limit.
-    fn handle_mouse_press(&mut self, shift: bool, state: &mut AutoCommit, handled: &mut bool) {
+    fn handle_mouse_press(&mut self, shift: bool, handled: &mut bool) {
         // Empty state: the only affordance is the centred Open button.
         if !self.has_file {
             if self.open_button.contains(self.last_mouse) {
@@ -2088,7 +2196,7 @@ impl HexView {
         if let Some((off, col)) = self.hit_test(self.last_mouse) {
             self.model.set_column(col);
             self.model.move_to(off, shift);
-            self.persist(state);
+            self.record_local_history();
             *handled = true;
         }
     }
@@ -2102,7 +2210,6 @@ impl HexView {
         ke: &winit::event::KeyEvent,
         ctrl: bool,
         shift: bool,
-        state: &mut AutoCommit,
         handled: &mut bool,
     ) {
         let key = &ke.logical_key;
@@ -2113,7 +2220,7 @@ impl HexView {
             return;
         }
 
-        if self.handle_global_chord(key, ctrl, state, handled) {
+        if self.handle_global_chord(key, ctrl, handled) {
             return;
         }
 
@@ -2121,7 +2228,7 @@ impl HexView {
         if moved {
             let (row, _) = self.model.cursor_cell();
             self.model.scroll_into_view(row, self.visible_rows);
-            self.persist(state);
+            self.record_local_history();
             *handled = true;
         }
     }
@@ -2138,16 +2245,32 @@ impl HexView {
         }
     }
 
+    fn undo_local(&mut self) -> bool {
+        if let Some(edit) = self.undo.pop() {
+            self.model.apply_history_edit(&edit.undo);
+            self.redo.push(edit);
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn redo_local(&mut self) -> bool {
+        if let Some(edit) = self.redo.pop() {
+            self.model.apply_history_edit(&edit.redo);
+            self.undo.push(edit);
+            self.dirty = true;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Ctrl+letter global chords. Returns `true` if one matched (the caller
     /// should stop dispatching this key further). Part of
     /// [`Self::handle_key_event`].
-    fn handle_global_chord(
-        &mut self,
-        key: &Key,
-        ctrl: bool,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) -> bool {
+    fn handle_global_chord(&mut self, key: &Key, ctrl: bool, handled: &mut bool) -> bool {
         let Key::Character(c) = key else {
             return false;
         };
@@ -2155,6 +2278,16 @@ impl HexView {
             return false;
         }
         match c.as_str() {
+            "z" | "Z" => {
+                self.undo_local();
+                *handled = true;
+                true
+            }
+            "y" | "Y" => {
+                self.redo_local();
+                *handled = true;
+                true
+            }
             "o" | "O" => {
                 self.begin_open();
                 *handled = true;
@@ -2186,7 +2319,7 @@ impl HexView {
             }
             "a" | "A" => {
                 self.model.select_all();
-                self.persist(state);
+                self.record_local_history();
                 *handled = true;
                 true
             }
@@ -2358,10 +2491,14 @@ impl GridMetrics {
         let ascii_x0 = hex_x1 + Self::HEX_ASCII_GAP;
         let ascii_x1 = ascii_x0 + bpr as f64 * char_w;
 
-        // The inspector sits directly to the right of the ASCII column and
-        // fills the remaining width — the byte grid auto-fits so this stays a
-        // clean gutter, never a stranded band of empty space.
-        let inspector_x0 = (ascii_x1 + Self::INSPECTOR_GAP).min(rect.x1 - Self::INSPECTOR_MIN);
+        // The inspector is a desktop side panel. On a narrow surface the grid
+        // gets the full width; reserving a permanent 300px inspector would
+        // make byte cells too narrow to read or target.
+        let inspector_x0 = if rect.width() >= 860.0 {
+            (ascii_x1 + Self::INSPECTOR_GAP).min(rect.x1 - Self::INSPECTOR_MIN)
+        } else {
+            rect.x1
+        };
 
         let visible_rows = ((grid_bottom - grid_top) / row_h).floor().max(1.0) as usize;
 
@@ -2460,6 +2597,80 @@ mod tests {
     }
 
     #[test]
+    fn canonical_edit_undo_and_redo_stay_local_and_update_availability() {
+        use automerge::ReadDoc as _;
+
+        let mut view = HexView::new(vec![0x10, 0x20], "bytes.bin");
+        let doc = AutoCommit::new();
+        let undo = serde_json::to_vec(&crate::actions::HexOperation::Undo).unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut view,
+                qos_actions::OperationKind::Effect,
+                crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                &undo,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        let edit = serde_json::to_vec(&crate::actions::HexOperation::Edit {
+            edit: crate::actions::BufferEditWire::Overwrite {
+                offset: 1,
+                bytes: vec![0xAB],
+            },
+        })
+        .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut view,
+                qos_actions::OperationKind::Effect,
+                crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                &edit,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
+        assert!(
+            Widget::resources(&view, &doc)[0]
+                .actions
+                .iter()
+                .find(|action| action.id == "undo")
+                .is_some_and(|action| action.contract.availability.is_available())
+        );
+
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut view,
+                qos_actions::OperationKind::Effect,
+                crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                &undo,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(view.model.bytes(), &[0x10, 0x20]);
+
+        let redo = serde_json::to_vec(&crate::actions::HexOperation::Redo).unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut view,
+                qos_actions::OperationKind::Effect,
+                crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                &redo,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
+        assert!(doc.get(automerge::ROOT, "bytes").unwrap().is_none());
+    }
+
+    #[test]
     fn shared_search_field_still_drives_byte_match_policy() {
         let mut view = HexView::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
         view.search_input.set_text("de ad");
@@ -2489,5 +2700,43 @@ mod tests {
         view.goto_input.set_text("12");
         view.commit_goto();
         assert_eq!(view.model.cursor(), 12);
+    }
+
+    #[test]
+    fn large_search_retains_a_bounded_result_index() {
+        let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
+        view.search_input.set_text("00");
+        view.recompute_matches();
+
+        assert_eq!(view.matches.len(), search::MAX_RETAINED_MATCHES);
+        assert!(view.matches_truncated);
+        assert!(view.is_match_offset(0));
+        assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES - 1));
+        assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES));
+    }
+
+    #[test]
+    fn narrow_layout_hides_the_inspector_without_shrinking_the_grid() {
+        let mut view = HexView::new(vec![0; 128], "narrow.bin");
+        view.rect = Rect::new(0.0, 0.0, 540.0, 500.0);
+
+        assert!(!view.show_inspector());
+        assert!(view.fit_bytes_per_row() >= 8);
+        assert!((view.metrics().inspector_x0 - view.rect.x1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn closed_editor_exposes_a_local_document_a11y_summary() {
+        use ui::a11y::Role;
+
+        let view = HexView::empty();
+        let tree = Widget::accessibility(&view).expect("semantic root");
+        assert_eq!(tree.role, Role::Document);
+        assert!(
+            tree.description
+                .as_deref()
+                .is_some_and(|text| text.contains("not shared"))
+        );
+        assert!(tree.children.iter().any(|node| node.role == Role::Button));
     }
 }

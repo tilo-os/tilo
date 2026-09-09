@@ -9,6 +9,11 @@ pub enum SearchKind {
     Text,
 }
 
+/// Upper bound for retained match offsets. A binary file can contain millions
+/// of one-byte hits; keeping every one would turn a local find into an
+/// unbounded allocation and make the result counter misleadingly expensive.
+pub const MAX_RETAINED_MATCHES: usize = 10_000;
+
 impl SearchKind {
     #[must_use]
     pub fn toggle(self) -> Self {
@@ -63,41 +68,64 @@ pub fn needle(query: &str, kind: SearchKind) -> Option<Vec<u8>> {
 /// Find every match offset of `needle` in `haystack` (overlapping). Used
 /// for the "N matches" indicator and to drive next/prev navigation.
 pub fn find_all(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
+    find_all_bounded(haystack, needle, usize::MAX).0
+}
+
+/// Find overlapping matches while retaining at most `limit` offsets.
+///
+/// The boolean is true when more hits exist. Callers can show an honest
+/// `10,000+` result count without allocating an offset for every matching byte
+/// in a large file.
+pub fn find_all_bounded(haystack: &[u8], needle: &[u8], limit: usize) -> (Vec<usize>, bool) {
     if needle.is_empty() || needle.len() > haystack.len() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
-    haystack
-        .windows(needle.len())
-        .enumerate()
-        .filter_map(|(i, w)| (w == needle).then_some(i))
-        .collect()
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    for (offset, window) in haystack.windows(needle.len()).enumerate() {
+        if window != needle {
+            continue;
+        }
+        if hits.len() == limit {
+            truncated = true;
+            break;
+        }
+        hits.push(offset);
+    }
+    (hits, truncated)
 }
 
 /// The first match at or after `from`, wrapping to the start of the
 /// buffer if none is found in the tail.
 pub fn find_next(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    let hits = find_all(haystack, needle);
-    if hits.is_empty() {
+    if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    hits.iter()
-        .find(|&&h| h >= from)
-        .copied()
-        .or_else(|| hits.first().copied())
+    let last = haystack.len() - needle.len();
+    let from = from.min(last.saturating_add(1));
+    (from..=last)
+        .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
+        .or_else(|| {
+            (0..from).find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
+        })
 }
 
 /// The last match strictly before `from`, wrapping to the end of the
 /// buffer if none precedes it.
 pub fn find_prev(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    let hits = find_all(haystack, needle);
-    if hits.is_empty() {
+    if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    hits.iter()
+    let last = haystack.len() - needle.len();
+    let before = from.min(last.saturating_add(1));
+    (0..before)
         .rev()
-        .find(|&&h| h < from)
-        .copied()
-        .or_else(|| hits.last().copied())
+        .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
+        .or_else(|| {
+            (before..=last)
+                .rev()
+                .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
+        })
 }
 
 #[cfg(test)]
@@ -128,6 +156,13 @@ mod tests {
     }
 
     #[test]
+    fn bounded_find_reports_more_hits_without_retaining_them() {
+        let (hits, truncated) = find_all_bounded(b"aaaa", b"a", 2);
+        assert_eq!(hits, vec![0, 1]);
+        assert!(truncated);
+    }
+
+    #[test]
     fn find_next_wraps() {
         let hay = b"\x00\xFF\x00\xFF";
         let needle = b"\xFF";
@@ -143,6 +178,19 @@ mod tests {
         let needle = b"\xFF";
         assert_eq!(find_prev(hay, needle, 3), Some(1));
         assert_eq!(find_prev(hay, needle, 1), Some(3)); // wraps to end
+    }
+
+    #[test]
+    fn navigation_does_not_depend_on_retaining_all_hits() {
+        let hay = vec![0_u8; MAX_RETAINED_MATCHES + 12];
+        assert_eq!(
+            find_next(&hay, &[0], MAX_RETAINED_MATCHES + 5),
+            Some(MAX_RETAINED_MATCHES + 5)
+        );
+        assert_eq!(
+            find_prev(&hay, &[0], MAX_RETAINED_MATCHES + 5),
+            Some(MAX_RETAINED_MATCHES + 4)
+        );
     }
 
     #[test]
