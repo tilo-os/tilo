@@ -1,10 +1,10 @@
 //! Pure data model for the Maps app.
 //!
-//! Everything the app persists or replicates lives here as plain serde
-//! types. The CRDT (see [`crate::doc`]) stores the JSON serialisation of
-//! [`MapModel`] so that saved places, recent searches and the current view
-//! converge across collaborating peers and ride the undo/redo machinery for
-//! free. Widget structs hold only render/layout caches — never app state.
+//! Durable resources and window-local presentation state live here as plain
+//! serde types. The typed CRDT schema (see [`crate::doc`]) persists only the
+//! collaborative subset: saved/accepted places, history, itineraries and
+//! offline regions. Camera, panel, selection, drafts and ranked caches remain
+//! per-window.
 
 use serde::{Deserialize, Serialize};
 
@@ -474,7 +474,8 @@ pub struct DownloadedRegion {
     pub tiles: u32,
 }
 
-/// The entire application state. Serialised into the CRDT.
+/// The Maps window state. [`crate::doc::MapsDoc`] persists its explicit
+/// collaborative subset rather than serialising this entire struct.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MapModel {
     /// All places known to the app: sample POIs, search results that were
