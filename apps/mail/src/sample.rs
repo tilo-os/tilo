@@ -125,7 +125,8 @@ pub fn sample_mailbox() -> Mailbox {
 /// the list's threading and unread-head rendering have something to group.
 fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
     // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
-    mb.insert(message(
+    let root_id = "sample-launch-plan-root@qos.example";
+    let mut root = message(
         ada.clone(),
         vec![me.clone()],
         "Launch plan for the spatial shell",
@@ -137,8 +138,10 @@ collaboration buffer streaming. Thoughts on sequencing?\n\n— Ada",
         true,
         Folder::Inbox,
         vec![],
-    ));
-    mb.insert(message(
+    );
+    root.rfc_message_id = Some(root_id.into());
+    mb.insert(root);
+    let mut reply = message(
         grace.clone(),
         vec![me.clone(), ada.clone()],
         "Re: Launch plan for the spatial shell",
@@ -150,8 +153,11 @@ the bubblewrap policy is solid.\n\nGrace",
         false,
         Folder::Inbox,
         vec![],
-    ));
-    mb.insert(message(
+    );
+    reply.rfc_message_id = Some("sample-launch-plan-reply@qos.example".into());
+    reply.in_reply_to = Some(root_id.into());
+    mb.insert(reply);
+    let mut latest = message(
         ada.clone(),
         vec![me.clone(), grace.clone()],
         "Re: Launch plan for the spatial shell",
@@ -162,7 +168,10 @@ revised gantt. Can you review the collaboration section before Friday?",
         false,
         Folder::Inbox,
         vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
-    ));
+    );
+    latest.rfc_message_id = Some("sample-launch-plan-latest@qos.example".into());
+    latest.in_reply_to = Some(root_id.into());
+    mb.insert(latest);
 }
 
 /// The one-off inbox items: a CI failure, two short replies, a mailing-list

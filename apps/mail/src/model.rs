@@ -8,7 +8,7 @@
 //! bundled `sample.rs` corpus when running headless (`--shots`).
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -261,7 +261,9 @@ pub struct Message {
     pub id: MessageId,
     /// RFC 5322 `Message-ID` (without angle brackets), if known.
     pub rfc_message_id: Option<String>,
-    /// The `In-Reply-To` / `References` anchor used for threading.
+    /// Canonical RFC thread anchor used for grouping: the oldest `References`
+    /// token when present, otherwise `In-Reply-To`. The transport deliberately
+    /// retains the root rather than a display-subject heuristic.
     pub in_reply_to: Option<String>,
     pub from: Addr,
     pub to: Vec<Addr>,
@@ -341,10 +343,58 @@ pub fn normalize_subject(subject: &str) -> String {
     s.to_string()
 }
 
-/// A conversation: 1+ messages sharing a normalized subject, ordered oldest
-/// → newest. The list pane renders one row per thread.
+/// Normalise an RFC `Message-ID` / `In-Reply-To` token to the spelling used by
+/// the transport's stable message ids. Empty/malformed headers are discarded
+/// rather than becoming a shared thread key.
+fn canonical_message_id(value: Option<&str>) -> Option<String> {
+    let value = value?
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// Resolve one message's durable thread root. The parent header itself is a
+/// valid anchor when the parent is not loaded yet; that is what makes a reply's
+/// resource address survive incremental history hydration.
+fn thread_anchor(
+    message: &Message,
+    messages: &HashMap<MessageId, Message>,
+    rfc_ids: &HashMap<String, MessageId>,
+) -> String {
+    let mut current = message;
+    let mut seen = HashSet::new();
+    loop {
+        // Broken cyclic headers are rare but must not make the view loop. The
+        // current message's protocol identity (or UUID) is deterministic.
+        if !seen.insert(current.id) {
+            return canonical_message_id(current.rfc_message_id.as_deref())
+                .unwrap_or_else(|| current.id.to_string());
+        }
+        let Some(parent_header) = canonical_message_id(current.in_reply_to.as_deref()) else {
+            return canonical_message_id(current.rfc_message_id.as_deref())
+                .unwrap_or_else(|| current.id.to_string());
+        };
+        let Some(parent_id) = rfc_ids.get(&parent_header) else {
+            return parent_header;
+        };
+        let Some(parent) = messages.get(parent_id) else {
+            return parent_header;
+        };
+        current = parent;
+    }
+}
+
+/// A conversation: 1+ messages connected through RFC `Message-ID` /
+/// `In-Reply-To`, ordered oldest → newest. `id` is the root RFC identity (or
+/// the root message id for legacy mail with no RFC identity), so it remains
+/// stable when older members are hydrated later. The list pane renders one row
+/// per thread.
 #[derive(Clone, Debug)]
 pub struct Thread {
+    /// Stable protocol/root identity, never derived from a display subject.
+    pub id: String,
     pub subject: String,
     pub message_ids: Vec<MessageId>,
 }
@@ -665,21 +715,46 @@ impl Mailbox {
         v
     }
 
-    /// Group the messages of `folder` into threads, each thread ordered
-    /// oldest→newest, and the thread list ordered by most-recent activity.
+    /// Group the messages of `folder` into RFC-linked threads, each ordered
+    /// oldest→newest, and order those threads by most-recent activity.
+    ///
+    /// A matching subject is intentionally *not* evidence of a conversation:
+    /// unrelated "Status update" messages must stay separately addressable.
+    /// Legacy messages that have neither a usable `Message-ID` nor a usable
+    /// `In-Reply-To` receive their own UUID-backed thread identity. A reply
+    /// with a `References` root retains that root even when intermediate or
+    /// older members are hydrated later. An `In-Reply-To`-only partial chain
+    /// can only anchor at its unloaded immediate parent until more history is
+    /// available; this is the RFC's unavoidable information limit.
     pub fn threads_in(&self, folder: Folder) -> Vec<Thread> {
-        let mut by_subject: HashMap<String, Vec<MessageId>> = HashMap::new();
-        for m in self.messages_in(folder) {
-            by_subject.entry(m.thread_subject()).or_default().push(m.id);
+        let visible = self.messages_in(folder);
+        let rfc_ids: HashMap<_, _> = visible
+            .iter()
+            .filter_map(|message| {
+                canonical_message_id(message.rfc_message_id.as_deref())
+                    .map(|header| (header, message.id))
+            })
+            .collect();
+        let mut by_anchor: HashMap<String, Vec<MessageId>> = HashMap::new();
+        for message in &visible {
+            let anchor = thread_anchor(message, &self.messages, &rfc_ids);
+            by_anchor.entry(anchor).or_default().push(message.id);
         }
-        let mut threads: Vec<Thread> = by_subject
+        let mut threads: Vec<Thread> = by_anchor
             .into_iter()
-            .map(|(subject, mut ids)| {
-                ids.sort_by_key(|id| self.messages.get(id).map_or(0, |m| m.timestamp_min));
-                Thread {
-                    subject,
-                    message_ids: ids,
-                }
+            .filter_map(|(id, mut ids)| {
+                ids.sort_by(|left, right| {
+                    let left_time = self.messages.get(left).map_or(0, |m| m.timestamp_min);
+                    let right_time = self.messages.get(right).map_or(0, |m| m.timestamp_min);
+                    left_time.cmp(&right_time).then_with(|| left.cmp(right))
+                });
+                ids.first()
+                    .and_then(|first| self.messages.get(first))
+                    .map(|message| Thread {
+                        id,
+                        subject: message.thread_subject(),
+                        message_ids: ids,
+                    })
             })
             .collect();
         // Order threads by their newest message, descending.
@@ -859,17 +934,56 @@ mod tests {
     }
 
     #[test]
-    fn threads_group_by_normalized_subject() {
+    fn threads_follow_rfc_reply_links_without_merging_same_subject_mail() {
         let mut mb = Mailbox::default();
-        mb.insert(msg("Launch plan", 100, Folder::Inbox));
-        mb.insert(msg("Re: Launch plan", 200, Folder::Inbox));
-        mb.insert(msg("Lunch?", 150, Folder::Inbox));
+        let mut first = msg("Launch plan", 100, Folder::Inbox);
+        first.rfc_message_id = Some("launch-root@example.test".into());
+        let mut reply = msg("Re: Launch plan", 200, Folder::Inbox);
+        reply.rfc_message_id = Some("launch-reply@example.test".into());
+        reply.in_reply_to = Some("<launch-root@example.test>".into());
+        let mut unrelated = msg("Launch plan", 150, Folder::Inbox);
+        unrelated.rfc_message_id = Some("unrelated@example.test".into());
+        mb.insert(first);
+        mb.insert(reply);
+        mb.insert(unrelated);
         let threads = mb.threads_in(Folder::Inbox);
         assert_eq!(threads.len(), 2);
         // Most-recent-first: "Launch plan" (200) before "Lunch?" (150).
         assert_eq!(threads[0].subject, "Launch plan");
         assert_eq!(threads[0].message_ids.len(), 2);
-        assert_eq!(threads[1].subject, "Lunch?");
+        assert_eq!(threads[0].id, "launch-root@example.test");
+        assert_eq!(threads[1].message_ids.len(), 1);
+        assert_eq!(threads[1].id, "unrelated@example.test");
+    }
+
+    #[test]
+    fn references_root_keeps_a_multihop_thread_stable_during_hydration() {
+        let mut mb = Mailbox::default();
+        // C's raw mail held `References: <launch-root> <launch-middle>`;
+        // transport stores the oldest/root token in `in_reply_to`. At this
+        // point neither B nor A has been hydrated yet.
+        let mut latest = msg("Re: Launch plan", 300, Folder::Inbox);
+        latest.rfc_message_id = Some("launch-latest@example.test".into());
+        latest.in_reply_to = Some("launch-root@example.test".into());
+        mb.insert(latest);
+        let before = mb.threads_in(Folder::Inbox);
+        assert_eq!(before[0].id, "launch-root@example.test");
+
+        let mut middle = msg("Re: Launch plan", 200, Folder::Inbox);
+        middle.rfc_message_id = Some("launch-middle@example.test".into());
+        middle.in_reply_to = Some("launch-root@example.test".into());
+        mb.insert(middle);
+        let after_middle = mb.threads_in(Folder::Inbox);
+        assert_eq!(after_middle.len(), 1);
+        assert_eq!(after_middle[0].id, "launch-root@example.test");
+
+        let mut root = msg("Launch plan", 100, Folder::Inbox);
+        root.rfc_message_id = Some("launch-root@example.test".into());
+        mb.insert(root);
+        let after = mb.threads_in(Folder::Inbox);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, "launch-root@example.test");
+        assert_eq!(after[0].message_ids.len(), 3);
     }
 
     #[test]
