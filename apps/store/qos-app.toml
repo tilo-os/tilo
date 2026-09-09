@@ -19,7 +19,7 @@
 id       = "dev.qos.store"
 name     = "App Store"
 category = "System"
-version = "0.1.0"
+version = "0.1.1"
 kind    = "app"
 runtime = "qos-runtime/2026.07"
 
