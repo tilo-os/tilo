@@ -18,7 +18,7 @@ use std::path::Path;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -30,6 +30,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup, Widget};
 
+use crate::actions::DiffmergeOperation;
 use crate::diff_view::DiffView;
 use crate::merge_view::MergeView;
 use crate::samples;
@@ -71,7 +72,7 @@ struct ToolHit {
     action: Action,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     ModeDiff,
     ModeMerge,
@@ -122,12 +123,21 @@ pub struct DiffMergeApp {
     /// Poked only when the summary text actually changes, or held open while
     /// the pointer hovers the bottom-right reveal zone; fades otherwise.
     status_bubble: ui::StatusBubble,
+    /// Last computed bounds of the transient summary. Keeping this explicit
+    /// makes the narrow-width geometry testable as well as ensuring hover
+    /// reveal uses exactly the visible target.
+    status_bubble_rect: Rect,
     /// The last summary string shown in the bubble. The bubble is poked only on
     /// the transition to a *different* string, never every frame.
     last_status: String,
     /// `--shots`: forces the status bubble fully visible for the one headless
     /// frame (there is no live pointer to hover the reveal zone).
     shots_status: bool,
+    /// The custom-painted toolbar exposes this focus state to both the shared
+    /// focus ring and the accessibility tree. It intentionally stores the
+    /// semantic action, not a draw-order index, so responsive layout never
+    /// moves focus to a different operation.
+    toolbar_focus: Option<Action>,
 }
 
 impl DiffMergeApp {
@@ -142,6 +152,33 @@ impl DiffMergeApp {
     /// is the ONLY place the sample content is used on construction.
     pub fn new_demo() -> Self {
         Self::build(true)
+    }
+
+    /// Deterministic visual-review states. These are intentionally only used
+    /// by the offscreen launcher: the live app always opens empty until the
+    /// user chooses local files or a sample.
+    pub fn for_shot(scenario: Option<&str>) -> Self {
+        let mut app = match scenario {
+            Some("empty") => Self::new(),
+            _ => Self::new_demo(),
+        };
+        match scenario {
+            Some("diff") => {
+                app.mode = Mode::Diff;
+                app.structure_dirty = true;
+            }
+            Some("error") => {
+                app.mode = Mode::Diff;
+                app.load_error = Some(
+                    "Couldn’t read the selected files. Check permissions and try again.".into(),
+                );
+                app.structure_dirty = true;
+                app.arm_status_bubble_for_shots();
+            }
+            Some("status") => app.arm_status_bubble_for_shots(),
+            _ => {}
+        }
+        app
     }
 
     fn build(demo: bool) -> Self {
@@ -190,8 +227,10 @@ impl DiffMergeApp {
             structure_dirty: false,
             actions: ui::ActionHost::new(),
             status_bubble: ui::StatusBubble::new(),
+            status_bubble_rect: Rect::ZERO,
             last_status: String::new(),
             shots_status: false,
+            toolbar_focus: None,
         }
     }
 
@@ -305,6 +344,12 @@ impl DiffMergeApp {
             return None;
         }
         self.merge.resource_ctx()
+    }
+
+    pub(crate) fn diff_resource_ctx(&self) -> Option<crate::actions::DiffResourceCtx> {
+        (self.mode == Mode::Diff)
+            .then(|| self.diff.resource_ctx())
+            .flatten()
     }
 
     /// Ask the host desktop's file chooser to open a file to compare. Per HIG
@@ -462,6 +507,10 @@ impl DiffMergeApp {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "toolbar geometry, paint, focus ring, and matching hit targets stay together"
+    )]
     fn draw_toolbar(
         &mut self,
         scene: &mut Scene,
@@ -526,6 +575,25 @@ impl DiffMergeApp {
                 action,
             });
         }
+        if self
+            .toolbar_focus
+            .is_some_and(|action| matches!(action, Action::ModeDiff | Action::ModeMerge))
+        {
+            let focused = if self.toolbar_focus == Some(Action::ModeDiff) {
+                mode_rects.first().copied()
+            } else {
+                mode_rects.get(1).copied()
+            };
+            if let Some(focused) = focused {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    theme.border_focus,
+                    None,
+                    &RoundedRect::from_rect(focused, 6.0),
+                );
+            }
+        }
 
         // Right-aligned action buttons.
         let mut rx = r.x1 - if compact { 8.0 } else { 16.0 };
@@ -557,6 +625,7 @@ impl DiffMergeApp {
                     .radius(6.0)
                     .text_size(12.5)
                     .weight(TextWeight::Regular)
+                    .focused(self.toolbar_focus == Some(*action))
                     .hovered(btn.contains(self.cursor)),
             );
             self.tool_hits.push(ToolHit {
@@ -603,6 +672,35 @@ impl DiffMergeApp {
         }
     }
 
+    /// A deliberately compact status for a phone-width viewport. The full
+    /// detail remains in the accessible status description; this label is only
+    /// the painted transient pill and must never escape its viewport.
+    fn compact_status_text(&self) -> String {
+        if self.load_error.is_some() {
+            return "Couldn’t open files".into();
+        }
+        match self.mode {
+            Mode::Diff => {
+                let model = self.diff.model();
+                format!(
+                    "+{}  −{}  ~{}  ·  {} changes",
+                    model.added,
+                    model.removed,
+                    model.modified,
+                    model.blocks.len()
+                )
+            }
+            Mode::Merge => {
+                let model = self.merge.model();
+                format!(
+                    "{} hunks · {} conflicts",
+                    model.change_count(),
+                    model.conflict_count()
+                )
+            }
+        }
+    }
+
     /// Surfaces on a real change to the summary (poked only when the string
     /// differs) or while the pointer hovers the bottom-right reveal band, then
     /// fades.
@@ -614,23 +712,34 @@ impl DiffMergeApp {
         theme: &Theme,
     ) {
         let now = std::time::Instant::now();
-        let label = self.status_text();
+        let raw_label = self.status_text();
         // Poke only on a genuine change to the summary, never every frame.
-        if label != self.last_status {
+        if raw_label != self.last_status {
             self.status_bubble.poke(now);
-            self.last_status.clone_from(&label);
+            self.last_status.clone_from(&raw_label);
         }
 
         let text_size = 12.0f32;
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
         let margin = 14.0;
         let r = self.rect;
+        let preferred = if r.width() < 640.0 {
+            self.compact_status_text()
+        } else {
+            raw_label
+        };
+        // The pill owns 14px horizontal padding on either side. Elide before
+        // measuring so its intrinsic text width can never put its left edge
+        // beyond the viewport (the original narrow-layout regression).
+        let text_budget = (r.width() - 2.0 * margin - 28.0).max(0.0) as f32;
+        let label = tr.elide_to_width(&preferred, text_size, text_budget);
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
         let rect = Rect::new(
             r.x1 - margin - w,
             r.y1 - margin - h,
             r.x1 - margin,
             r.y1 - margin,
         );
+        self.status_bubble_rect = rect;
 
         // Reveal zone: the bottom-right corner band (plus the pill), so nudging
         // the pointer there re-surfaces the summary on demand.
@@ -653,9 +762,18 @@ impl DiffMergeApp {
         scene.pop_layer();
     }
 
+    #[cfg(test)]
+    fn status_bubble_rect(&self) -> Rect {
+        self.status_bubble_rect
+    }
+
     /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
     /// Returns `true` if the event was consumed.
-    fn handle_keyboard_shortcut(&mut self, event: &WindowEvent) -> bool {
+    fn handle_keyboard_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -668,6 +786,44 @@ impl DiffMergeApp {
         else {
             return false;
         };
+
+        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
+            const TOOLBAR_ORDER: [Action; 6] = [
+                Action::ModeDiff,
+                Action::ModeMerge,
+                Action::PrevChange,
+                Action::NextChange,
+                Action::LoadSample,
+                Action::Open,
+            ];
+            let next = if let Some(current) = self
+                .toolbar_focus
+                .and_then(|focused| TOOLBAR_ORDER.iter().position(|item| *item == focused))
+            {
+                if modifiers.state().shift_key() {
+                    current.saturating_sub(1)
+                } else {
+                    (current + 1).min(TOOLBAR_ORDER.len().saturating_sub(1))
+                }
+            } else if modifiers.state().shift_key() {
+                TOOLBAR_ORDER.len().saturating_sub(1)
+            } else {
+                0
+            };
+            let Some(action) = TOOLBAR_ORDER.get(next).copied() else {
+                return false;
+            };
+            self.toolbar_focus = Some(action);
+            self.dirty = true;
+            return true;
+        }
+        if (matches!(logical_key, Key::Named(NamedKey::Enter))
+            || matches!(logical_key, Key::Character(ch) if ch == " "))
+            && let Some(toolbar_action) = self.toolbar_focus
+        {
+            self.act(toolbar_action);
+            return true;
+        }
 
         match logical_key {
             Key::Character(ch) => match ch.as_str() {
@@ -719,8 +875,43 @@ impl DiffMergeApp {
         let Some(action) = hit else {
             return false;
         };
+        self.toolbar_focus = Some(action);
         self.act(action);
         true
+    }
+
+    fn toolbar_action_name(action: Action) -> &'static str {
+        match action {
+            Action::ModeDiff => "Show two-way diff",
+            Action::ModeMerge => "Show three-way merge",
+            Action::PrevChange => "Previous change",
+            Action::NextChange => "Next change",
+            Action::Open => "Open two files",
+            Action::LoadSample => "Load sample comparison",
+        }
+    }
+
+    fn toolbar_action_target(action: Action) -> &'static str {
+        match action {
+            Action::ModeDiff => "diffmerge.toolbar.show-diff",
+            Action::ModeMerge => "diffmerge.toolbar.show-merge",
+            Action::PrevChange => "diffmerge.toolbar.previous-change",
+            Action::NextChange => "diffmerge.toolbar.next-change",
+            Action::Open => "diffmerge.toolbar.open-files",
+            Action::LoadSample => "diffmerge.toolbar.load-sample",
+        }
+    }
+
+    fn toolbar_action_from_target(target: &str) -> Option<Action> {
+        match target {
+            "diffmerge.toolbar.show-diff" => Some(Action::ModeDiff),
+            "diffmerge.toolbar.show-merge" => Some(Action::ModeMerge),
+            "diffmerge.toolbar.previous-change" => Some(Action::PrevChange),
+            "diffmerge.toolbar.next-change" => Some(Action::NextChange),
+            "diffmerge.toolbar.open-files" => Some(Action::Open),
+            "diffmerge.toolbar.load-sample" => Some(Action::LoadSample),
+            _ => None,
+        }
     }
 }
 
@@ -749,12 +940,24 @@ impl Widget for DiffMergeApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        use crate::actions::DiffmergeOperation;
         self.act(match operation {
             DiffmergeOperation::ShowDiff => Action::ModeDiff,
             DiffmergeOperation::ShowMerge => Action::ModeMerge,
             DiffmergeOperation::PreviousChange => Action::PrevChange,
             DiffmergeOperation::NextChange => Action::NextChange,
+            DiffmergeOperation::ShowDiffBlock { block, fingerprint } => {
+                let Ok(block) = usize::try_from(block) else {
+                    return Err("this change target is no longer available".into());
+                };
+                if !self.diff.show_block(block, &fingerprint) {
+                    return Err(
+                        "the comparison changed; reopen this change from the current results"
+                            .into(),
+                    );
+                }
+                self.dirty = true;
+                return Ok(true);
+            }
             DiffmergeOperation::OpenFiles { .. } => Action::Open,
             DiffmergeOperation::LoadSample => Action::LoadSample,
         });
@@ -784,7 +987,7 @@ impl Widget for DiffMergeApp {
         }
         match (left, right) {
             (Some(left), Some(right)) => {
-                self.pending_resource_paths = Some((invocation, left.into(), right.into()))
+                self.pending_resource_paths = Some((invocation, left.into(), right.into()));
             }
             (None, None) => {
                 self.resource_invocation = Some(invocation);
@@ -984,7 +1187,7 @@ impl Widget for DiffMergeApp {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        if self.handle_keyboard_shortcut(event) {
+        if self.handle_keyboard_shortcut(event, *modifiers) {
             *handled = true;
             return;
         }
@@ -1056,6 +1259,174 @@ impl Widget for DiffMergeApp {
             Mode::Diff => vec![&mut self.diff],
             Mode::Merge => vec![&mut self.merge],
         }
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let controls = self
+            .tool_hits
+            .iter()
+            .map(|hit| {
+                let action = hit.action;
+                let role = match action {
+                    Action::ModeDiff | Action::ModeMerge => Role::ToggleButton,
+                    _ => Role::Button,
+                };
+                let selected = matches!(
+                    (action, self.mode),
+                    (Action::ModeDiff, Mode::Diff) | (Action::ModeMerge, Mode::Merge)
+                );
+                AccessNode::new(role)
+                    .with_name(Self::toolbar_action_name(action))
+                    .with_action_target(Self::toolbar_action_target(action))
+                    .with_bounds(hit.rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.toolbar_focus == Some(action))
+                            .checked(selected),
+                    )
+            })
+            .collect();
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Comparison controls")
+                .with_children(controls),
+        ];
+        if let Some(content) = match self.mode {
+            Mode::Diff => self.diff.accessibility(),
+            Mode::Merge => self.merge.accessibility(),
+        } {
+            children.push(content);
+        }
+        if self.mode == Mode::Diff && self.diff.model().rows.is_empty() {
+            children.push(
+                AccessNode::new(Role::Paragraph)
+                    .with_name("No files loaded")
+                    .with_description("Use Open two files to start a local comparison."),
+            );
+        }
+        if let Some(error) = &self.load_error {
+            children.push(
+                AccessNode::new(Role::Paragraph)
+                    .with_name("File loading failed")
+                    .with_description(error),
+            );
+        }
+        children.push(
+            AccessNode::new(Role::Paragraph)
+                .with_name("Comparison status")
+                .with_description(self.status_text()),
+        );
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Diff and Merge")
+                .with_description("Compare local files or resolve a shared three-way merge")
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [0, index] = path else {
+            return None;
+        };
+        self.tool_hits.get(*index).map(|hit| hit.rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [0, index] = path else {
+            return false;
+        };
+        let Some(hit) = self.tool_hits.get(*index) else {
+            return false;
+        };
+        self.toolbar_focus = Some(hit.action);
+        self.dirty = true;
+        true
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
+            return false;
+        }
+        if let Some((block, fingerprint)) = target
+            .strip_prefix("diffmerge.diff-block:")
+            .and_then(|id| id.split_once(':'))
+            .and_then(|(index, fingerprint)| {
+                index
+                    .parse::<usize>()
+                    .ok()
+                    .map(|index| (index, fingerprint))
+            })
+        {
+            if self.mode != Mode::Diff || !self.diff.show_block(block, fingerprint) {
+                return false;
+            }
+            self.dirty = true;
+            return true;
+        }
+        if let Some(show_right) = match target {
+            "diffmerge.diff-source:left" => Some(false),
+            "diffmerge.diff-source:right" => Some(true),
+            _ => None,
+        } {
+            if self.mode != Mode::Diff {
+                return false;
+            }
+            self.diff.select_compact_side(show_right);
+            self.dirty = true;
+            return true;
+        }
+        if let Some((hunk, choice)) = target
+            .strip_prefix("diffmerge.merge.resolve:")
+            .and_then(|value| value.split_once(':'))
+            .and_then(|(hunk, choice)| {
+                let hunk = hunk.parse::<usize>().ok()?;
+                let choice = match choice {
+                    "ours" => crate::actions::HunkChoice::Ours,
+                    "theirs" => crate::actions::HunkChoice::Theirs,
+                    "both" => crate::actions::HunkChoice::Both,
+                    _ => return None,
+                };
+                Some((hunk, choice))
+            })
+        {
+            if self.mode != Mode::Merge || self.merge.model().hunks.get(hunk).is_none() {
+                return false;
+            }
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.merge.resolve(hunk, choice);
+                if let Some(pending) = self.merge.take_pending_action() {
+                    self.perform_action(state, &pending);
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
+        let Some(toolbar_action) = Self::toolbar_action_from_target(target) else {
+            return false;
+        };
+        self.toolbar_focus = Some(toolbar_action);
+        if matches!(action, ui::a11y::Action::Activate) {
+            self.act(toolbar_action);
+        } else {
+            self.dirty = true;
+        }
+        true
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        self.tool_hits
+            .iter()
+            .find(|hit| hit.rect.contains(self.cursor))
+            .map(|hit| Self::toolbar_action_name(hit.action))
     }
 
     /// Publish the open merge + its hunks so the host's Ctrl+K action palette
@@ -1505,7 +1876,18 @@ mod tests {
         assert!(hits.windows(2).all(|pair| pair[0].0.x1 <= pair[1].0.x0));
 
         let semantic = Widget::accessibility(&app.merge).expect("merge semantics");
-        assert_eq!(semantic.children.len(), 3);
+        assert_eq!(
+            semantic
+                .children
+                .iter()
+                .filter(|child| child
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("Show ")))
+                .count(),
+            3,
+            "the source switcher remains accessible alongside resolution controls"
+        );
         assert_eq!(selected_compact_source(&app), "Show Ours source");
 
         // At tablet width the selector disappears because all three panes are
@@ -1516,7 +1898,13 @@ mod tests {
             Widget::accessibility(&app.merge)
                 .expect("merge semantics")
                 .children
-                .is_empty()
+                .iter()
+                .all(|child| {
+                    !child
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("Show "))
+                })
         );
     }
 
@@ -1618,6 +2006,233 @@ mod tests {
             &state.root,
         ));
         assert_eq!(selected_compact_source(&app), "Show Theirs source");
+    }
+
+    #[test]
+    fn toolbar_controls_have_semantic_names_focus_geometry_and_activation() {
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (980.0, 720.0));
+
+        let semantics = Widget::accessibility(&app).expect("toolbar semantics");
+        let toolbar = semantics.children.first().expect("toolbar group");
+        assert_eq!(toolbar.children.len(), 6, "both modes and four actions");
+        assert!(toolbar.children.iter().all(|node| {
+            node.state.focusable && node.bounds.is_some() && node.action_target.is_some()
+        }));
+        let sample_index = toolbar
+            .children
+            .iter()
+            .position(|node| node.name.as_deref() == Some("Load sample comparison"))
+            .expect("sample control");
+        assert!(Widget::focus_synthetic_accessibility(
+            &mut app,
+            &[0, sample_index]
+        ));
+        assert_eq!(app.toolbar_focus, Some(Action::LoadSample));
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "diffmerge.toolbar.show-diff",
+            &ui::a11y::Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_eq!(app.mode, Mode::Diff);
+    }
+
+    #[test]
+    fn toolbar_keyboard_tab_and_enter_follow_the_painted_control_order() {
+        use winit::event::Modifiers;
+
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let modifiers = Modifiers::default();
+        app.handle_event(
+            &keyboard_event(Key::Named(NamedKey::Tab)),
+            1.0,
+            &modifiers,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert!(handled);
+        assert_eq!(app.toolbar_focus, Some(Action::ModeDiff));
+        handled = false;
+        app.handle_event(
+            &keyboard_event(Key::Named(NamedKey::Tab)),
+            1.0,
+            &modifiers,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert_eq!(app.toolbar_focus, Some(Action::ModeMerge));
+        app.handle_event(
+            &keyboard_event(Key::Named(NamedKey::Enter)),
+            1.0,
+            &modifiers,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert_eq!(app.mode, Mode::Merge);
+    }
+
+    #[test]
+    fn phone_diff_uses_an_accessible_one_source_switcher() {
+        let mut app = DiffMergeApp::new_demo();
+        app.mode = Mode::Diff;
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (390.0, 760.0));
+        let root = Widget::accessibility(&app).expect("diff semantics");
+        let diff = root
+            .children
+            .iter()
+            .find(|child| {
+                child
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("Diff between"))
+            })
+            .expect("active diff content");
+        assert_eq!(
+            diff.children
+                .iter()
+                .filter(|child| child
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("Show ")))
+                .count(),
+            2
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "diffmerge.diff-source:right",
+            &ui::a11y::Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert!(app.diff.compact_showing_right());
+    }
+
+    #[test]
+    fn stale_diff_block_operation_refuses_a_recomputed_block_at_the_same_index() {
+        let mut app = DiffMergeApp::new();
+        app.diff.set_inputs(
+            "before.txt",
+            "same\nold value\n",
+            "after.txt",
+            "same\nnew value\n",
+        );
+        let stale_fingerprint = app.diff.block_fingerprint(0).expect("one change block");
+        app.diff.set_inputs(
+            "before.txt",
+            "same\nold value\n",
+            "after.txt",
+            "same\nreplacement value\n",
+        );
+        let state = ui::State::new();
+        let payload = serde_json::to_vec(&DiffmergeOperation::ShowDiffBlock {
+            block: 0,
+            fingerprint: stale_fingerprint,
+        })
+        .expect("operation serializes");
+
+        let error = Widget::invoke_resource_operation(
+            &mut app,
+            qos_actions::OperationKind::View,
+            crate::actions::DIFFMERGE_OPERATION_TYPE,
+            &payload,
+            &state.doc,
+            &state.root,
+        )
+        .expect_err("stale local operation must explain why its target is unsafe");
+        assert!(error.contains("comparison changed"));
+    }
+
+    #[test]
+    fn narrow_status_bubble_stays_within_the_viewport_for_long_errors() {
+        let mut app = DiffMergeApp::for_shot(Some("error"));
+        app.arm_status_bubble_for_shots();
+        draw_merge_frame(&mut app, (390.0, 760.0));
+        let bubble = app.status_bubble_rect();
+        assert!(
+            bubble.x0 >= app.rect.x0 && bubble.x1 <= app.rect.x1,
+            "narrow status bubble must not clip: {bubble:?} in {:?}",
+            app.rect
+        );
+        assert!(
+            bubble.y0 >= app.rect.y0 && bubble.y1 <= app.rect.y1,
+            "narrow status bubble must remain vertically visible: {bubble:?} in {:?}",
+            app.rect
+        );
+    }
+
+    #[test]
+    fn root_accessibility_includes_active_hunks_and_uses_the_crdt_resolution_path() {
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (980.0, 720.0));
+
+        let root = Widget::accessibility(&app).expect("root semantics");
+        let merge = root
+            .children
+            .iter()
+            .find(|child| child.name.as_deref() == Some("Three-way merge"))
+            .expect("active merge content is not hidden behind toolbar chrome");
+        let target = merge
+            .children
+            .iter()
+            .find_map(|child| child.action_target.clone())
+            .expect("one drawn resolution action is accessible");
+        let before = crate::doc::MergeDoc::merged_text(&state.doc);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert_ne!(crate::doc::MergeDoc::merged_text(&state.doc), before);
+    }
+
+    #[test]
+    fn root_accessibility_explains_empty_and_error_content() {
+        let mut empty = DiffMergeApp::for_shot(Some("empty"));
+        draw_merge_frame(&mut empty, (980.0, 720.0));
+        let empty_semantics = Widget::accessibility(&empty).expect("empty semantics");
+        let names = empty_semantics
+            .children
+            .iter()
+            .filter_map(|child| child.name.as_deref())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"No files loaded"), "{names:?}");
+
+        let mut error = DiffMergeApp::for_shot(Some("error"));
+        draw_merge_frame(&mut error, (980.0, 720.0));
+        let error_semantics = Widget::accessibility(&error).expect("error semantics");
+        let names = error_semantics
+            .children
+            .iter()
+            .filter_map(|child| child.name.as_deref())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"File loading failed"), "{names:?}");
     }
 
     /// Clicking a resolution chip at its drawn pixel position resolves *that*
