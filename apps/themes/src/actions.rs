@@ -2,8 +2,8 @@
 //!
 //! Every document-mutating operation Themes performs on its shared catalog is a
 //! [`ThemesAction`]: a small serializable value that deterministically mutates
-//! the CRDT (see [`crate::doc`], where the catalog lives as a JSON `Text` blob
-//! and the active theme id as a scalar). Because that state already lives in the
+//! the CRDT (see [`crate::doc`], where each custom theme is a native keyed
+//! Automerge record and the active theme id is a scalar). Because that state already lives in the
 //! shared document, an action replicates and replays for free. The exact same
 //! [`EncodedAction`] is what the on-screen affordances (the top-bar Apply / New,
 //! the customizer Duplicate / Reset / Delete, the sidebar context menu) dispatch
@@ -13,11 +13,9 @@
 //! each theme exports the [`ActionSpec`]s Ctrl+K offers for it (apply it as the
 //! OS theme, rename it, recolour it, duplicate it, delete it).
 //!
-//! Presentation — which theme is selected, the colour picker's live drag until
-//! commit, the open editor tab, scroll position — stays out of the document as
-//! shared *intent* and never becomes an action. (Selection does live in the
-//! document as scratch view-state, but it is never dispatched as an action: it
-//! is not a collaborative mutation and never an undo boundary.)
+//! Presentation — selection, colour-picker drags until commit, open editor
+//! tab, scroll position, and command pulses — is per-window local state. It is
+//! never stored in the shared document, action history, or presence stream.
 //!
 //! ## Determinism contract
 //!
@@ -55,17 +53,46 @@ pub enum ThemesAction {
     /// look). Persisting the full spec to `~/.config/qos/settings.json` is an
     /// app-level side effect, not part of this replayable action. A malformed id
     /// (naming no theme in the catalog) is a no-op.
-    SetActiveTheme { id: String },
-    /// Create or replace a **custom** theme in the catalog. One variant covers
-    /// New, Duplicate, Reset, a rename, and every committed colour / shape /
-    /// typography edit — it carries the whole [`ThemeSpec`]. Built-in presets are
-    /// read-only: an upsert whose `spec` is marked built-in, or whose id already
-    /// names a built-in preset, is a no-op.
-    UpsertCustomTheme { spec: ThemeSpec },
+    SetActiveTheme {
+        id: String,
+    },
+    /// Create a custom theme once. Existing ids are a no-op; field edits use
+    /// the granular variants below so stale snapshots cannot overwrite peers.
+    CreateCustomTheme {
+        spec: ThemeSpec,
+    },
+    SetCustomThemeName {
+        id: String,
+        name: String,
+    },
+    SetCustomThemeToken {
+        id: String,
+        token: TokenId,
+        rgb: crate::model::Rgb,
+    },
+    SetCustomThemeRadius {
+        id: String,
+        radius_norm: f32,
+    },
+    SetCustomThemeSpacing {
+        id: String,
+        spacing_norm: f32,
+    },
+    SetCustomThemeFont {
+        id: String,
+        font: String,
+    },
+    /// Reset deliberately writes the independent token/shape/font fields, not
+    /// a replacement record, so unrelated concurrent edits remain mergeable.
+    ResetCustomTheme {
+        id: String,
+    },
     /// Delete the custom theme `id`. Built-in presets are protected (a no-op) and
     /// the catalog is never emptied (deleting the last surviving theme is a
     /// no-op), mirroring the on-screen Delete guard.
-    DeleteCustomTheme { id: String },
+    DeleteCustomTheme {
+        id: String,
+    },
 }
 
 impl Action for ThemesAction {
@@ -80,34 +107,48 @@ impl Action for ThemesAction {
                     doc::put_str(doc, &ROOT, doc::KEY_ACTIVE, id);
                 }
             }
-            ThemesAction::UpsertCustomTheme { spec } => {
-                // Never create or overwrite a read-only preset via an upsert.
-                if spec.builtin {
-                    return Ok(());
+            ThemesAction::CreateCustomTheme { spec } => {
+                let _ = doc::create_custom_theme(doc, &ROOT, spec);
+            }
+            ThemesAction::SetCustomThemeName { id, name } => {
+                let _ = doc::set_name(doc, &ROOT, id, name);
+            }
+            ThemesAction::SetCustomThemeToken { id, token, rgb } => {
+                let _ = doc::set_token(doc, &ROOT, id, *token, *rgb);
+            }
+            ThemesAction::SetCustomThemeRadius { id, radius_norm } => {
+                let _ = doc::set_radius(doc, &ROOT, id, *radius_norm);
+            }
+            ThemesAction::SetCustomThemeSpacing { id, spacing_norm } => {
+                let _ = doc::set_spacing(doc, &ROOT, id, *spacing_norm);
+            }
+            ThemesAction::SetCustomThemeFont { id, font } => {
+                let _ = doc::set_font(doc, &ROOT, id, font);
+            }
+            ThemesAction::ResetCustomTheme { id } => {
+                if let Some(current) = doc::load_catalog(doc, &ROOT)
+                    .and_then(|c| c.into_iter().find(|s| s.id == *id && !s.builtin))
+                {
+                    let base = reset_spec(&current);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::Accent, base.accent);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::AccentHover, base.accent_hover);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::SurfaceBase, base.surface_base);
+                    let _ =
+                        doc::set_token(doc, &ROOT, id, TokenId::SurfaceRaised, base.surface_raised);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::TextPrimary, base.text_primary);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::TextDim, base.text_dim);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::Border, base.border);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::Success, base.success);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::Warning, base.warning);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::Danger, base.danger);
+                    let _ = doc::set_token(doc, &ROOT, id, TokenId::Info, base.info);
+                    let _ = doc::set_radius(doc, &ROOT, id, base.radius_norm);
+                    let _ = doc::set_spacing(doc, &ROOT, id, base.spacing_norm);
+                    let _ = doc::set_font(doc, &ROOT, id, &base.font);
                 }
-                let mut catalog = doc::load_catalog(doc, &ROOT).unwrap_or_default();
-                // Guard: an id that already names a built-in preset is protected
-                // even if the incoming spec claims to be custom.
-                if catalog.iter().any(|s| s.id == spec.id && s.builtin) {
-                    return Ok(());
-                }
-                if let Some(slot) = catalog.iter_mut().find(|s| s.id == spec.id) {
-                    *slot = spec.clone();
-                } else {
-                    catalog.push(spec.clone());
-                }
-                doc::save_catalog(doc, &ROOT, &catalog);
             }
             ThemesAction::DeleteCustomTheme { id } => {
-                let mut catalog = doc::load_catalog(doc, &ROOT).unwrap_or_default();
-                if let Some(i) = catalog.iter().position(|s| &s.id == id) {
-                    // Built-in presets are protected; never empty the catalog.
-                    let builtin = catalog.get(i).is_some_and(|s| s.builtin);
-                    if !builtin && catalog.len() > 1 {
-                        catalog.remove(i);
-                        doc::save_catalog(doc, &ROOT, &catalog);
-                    }
-                }
+                let _ = doc::delete_custom_theme(doc, &ROOT, id);
             }
         }
         Ok(())
@@ -154,12 +195,132 @@ pub fn set_active_theme_action(id: impl Into<String>) -> ThemesAction {
     ThemesAction::SetActiveTheme { id: id.into() }
 }
 
-/// Create or replace a custom theme (New, Duplicate, Reset, rename, recolour).
+/// Create a custom theme (New or Duplicate). Existing ids are deliberately a
+/// no-op; use a field-specific builder for an edit.
 pub fn upsert_custom_theme_action(spec: &ThemeSpec) -> ThemesAction {
-    ThemesAction::UpsertCustomTheme { spec: spec.clone() }
+    ThemesAction::CreateCustomTheme { spec: spec.clone() }
+}
+pub fn set_custom_theme_name_action(
+    id: impl Into<String>,
+    name: impl Into<String>,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeName {
+        id: id.into(),
+        name: name.into(),
+    }
+}
+pub fn set_custom_theme_token_action(
+    id: impl Into<String>,
+    token: TokenId,
+    rgb: crate::model::Rgb,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeToken {
+        id: id.into(),
+        token,
+        rgb,
+    }
+}
+pub fn set_custom_theme_radius_action(id: impl Into<String>, radius_norm: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeRadius {
+        id: id.into(),
+        radius_norm,
+    }
+}
+pub fn set_custom_theme_spacing_action(id: impl Into<String>, spacing_norm: f32) -> ThemesAction {
+    ThemesAction::SetCustomThemeSpacing {
+        id: id.into(),
+        spacing_norm,
+    }
+}
+pub fn set_custom_theme_font_action(
+    id: impl Into<String>,
+    font: impl Into<String>,
+) -> ThemesAction {
+    ThemesAction::SetCustomThemeFont {
+        id: id.into(),
+        font: font.into(),
+    }
+}
+pub fn reset_custom_theme_action(id: impl Into<String>) -> ThemesAction {
+    ThemesAction::ResetCustomTheme { id: id.into() }
 }
 
-/// Delete a custom theme.
+/// Local brokered effect for exporting the selected theme. It has no document
+/// payload and never enters collaboration/history.
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the unit payload always serializes"
+)]
+pub fn export_selected_spec() -> ActionSpec {
+    ActionSpec::operation(
+        "export-selected",
+        "Export selected theme JSON",
+        OperationKind::Effect,
+        "themes.export",
+        &(),
+    )
+    .expect("unit payload serializes")
+    .with_contract(ActionContract {
+        discovery: DiscoveryScope::Launchable,
+        execution: qos_actions::ExecutionMode::Background { cancellable: false },
+        tags: vec!["appearance".into(), "theme".into(), "export".into()],
+        ..ActionContract::default()
+    })
+}
+
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the static resource has this nullary action"
+)]
+pub fn export_selected_binding() -> qos_actions::ActionBinding<()> {
+    let resource = Resource::new("themes.library", "themes.library", "Themes")
+        .with_action(export_selected_spec());
+    qos_actions::ActionBinding::unit_for(&resource, "export-selected")
+        .expect("export-selected is nullary")
+}
+
+/// The selected-theme counterpart of a per-theme Apply operation. The top bar
+/// binds this exact brokered effect while resource children carry stable ids.
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the unit payload always serializes"
+)]
+pub fn apply_selected_spec() -> ActionSpec {
+    ActionSpec::operation(
+        "apply-selected",
+        "Apply selected theme",
+        OperationKind::Effect,
+        "themes.apply",
+        &(),
+    )
+    .expect("unit payload serializes")
+    .with_contract(ActionContract {
+        discovery: DiscoveryScope::Launchable,
+        retry: RetryPolicy::Idempotent,
+        execution: qos_actions::ExecutionMode::Background { cancellable: true },
+        result: qos_actions::ResultSpec::Job,
+        tags: vec!["appearance".into(), "theme".into()],
+        ..ActionContract::default()
+    })
+}
+
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the static resource has this nullary action"
+)]
+pub fn apply_selected_binding() -> qos_actions::ActionBinding<()> {
+    let resource = Resource::new("themes.library", "themes.library", "Themes")
+        .with_action(apply_selected_spec());
+    qos_actions::ActionBinding::unit_for(&resource, "apply-selected")
+        .expect("apply-selected is nullary")
+}
+
+/// Delete a custom theme. A durable tombstone makes delete win over an edit
+/// delivered later by an offline peer.
 pub fn delete_custom_theme_action(id: impl Into<String>) -> ThemesAction {
     ThemesAction::DeleteCustomTheme { id: id.into() }
 }
@@ -265,10 +426,22 @@ fn theme_contract() -> ActionContract {
 /// OS theme or duplicated; custom themes additionally export rename, recolour,
 /// and delete. Every document-mutating operation is exported as the same action
 /// the on-screen affordance dispatches.
+///
+/// # Panics
+///
+/// Panics only if a validated catalog id cannot be JSON-encoded for the
+/// external apply-operation envelope.
+#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::expect_used,
+    reason = "Theme ids admitted by doc::load_catalog are bounded UTF-8 strings and always serialize"
+)]
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let catalog = doc::load_catalog(doc, &ROOT).unwrap_or_default();
 
-    let mut root = Resource::new("themes.library", "themes.library", "Themes");
+    let mut root = Resource::new("themes.library", "themes.library", "Themes")
+        .with_action(export_selected_spec())
+        .with_action(apply_selected_spec());
 
     // Library-level: create a new theme from the base preset. The uuid is minted
     // once when the name argument is committed, then baked into the envelope, so
@@ -324,6 +497,25 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             }),
         );
 
+        // Agents can export a specific stable id; the visible control uses the
+        // sibling selected-theme operation with the same broker type.
+        child = child.with_action(
+            ActionSpec::operation(
+                "export",
+                "Export theme JSON",
+                OperationKind::Effect,
+                "themes.export",
+                &spec.id,
+            )
+            .expect("theme id is serializable")
+            .with_contract(ActionContract {
+                discovery: DiscoveryScope::Launchable,
+                execution: qos_actions::ExecutionMode::Background { cancellable: false },
+                tags: vec!["appearance".into(), "theme".into(), "export".into()],
+                ..ActionContract::default()
+            }),
+        );
+
         // Every theme can be duplicated into a new editable copy. The copy's uuid
         // is minted at authoring time so replay is deterministic.
         let dup_order = next_order;
@@ -342,7 +534,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                 immediate_spec(
                     "reset",
                     "Reset theme",
-                    &upsert_custom_theme_action(&reset_spec(spec)),
+                    &reset_custom_theme_action(spec.id.clone()),
                 )
                 .with_contract(ActionContract {
                     confirmation: ConfirmationPolicy::Confirm,
@@ -359,10 +551,10 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                     ExecutionLocus::ClientLocal,
                     vec![ActionParam::required("name", ParamType::Text, "Theme name")],
                     move |args| {
-                        encode(&upsert_custom_theme_action(&rename_spec(
-                            &base,
+                        encode(&set_custom_theme_name_action(
+                            base.id.clone(),
                             args.text("name").unwrap_or_default(),
-                        )))
+                        ))
                     },
                 )
                 .with_contract(theme_contract()),
@@ -383,11 +575,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
                     move |args| {
                         let hex = args.text("colour").unwrap_or_default();
                         let rgb = crate::model::parse_hex(hex).unwrap_or(base.accent);
-                        encode(&upsert_custom_theme_action(&recolor_spec(
-                            &base,
+                        encode(&set_custom_theme_token_action(
+                            base.id.clone(),
                             TokenId::Accent,
                             rgb,
-                        )))
+                        ))
                     },
                 )
                 .with_contract(theme_contract()),
@@ -638,7 +830,7 @@ mod tests {
         let mut b = AutoCommit::load(&bytes).unwrap();
 
         let sunset = catalog(&a).into_iter().find(|s| s.id == "sunset").unwrap();
-        let action = upsert_custom_theme_action(&recolor_spec(&sunset, TokenId::Accent, [1, 2, 3]));
+        let action = set_custom_theme_token_action(&sunset.id, TokenId::Accent, [1, 2, 3]);
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
@@ -762,12 +954,69 @@ mod tests {
             .unwrap();
         let edit_spec = custom.actions.iter().find(|a| a.id == "edit").unwrap();
         let from_spec = prompted_encode(edit_spec, "Twilight");
-        let from_builder = encode(&upsert_custom_theme_action(&rename_spec(
-            &sunset, "Twilight",
-        )));
+        let from_builder = encode(&set_custom_theme_name_action(&sunset.id, "Twilight"));
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "rename is one source of truth"
+        );
+    }
+
+    #[test]
+    fn every_theme_control_resource_uses_the_canonical_action_or_broker() {
+        let doc = seeded_doc();
+        let library = &provide_resources(&doc)[0];
+        let sunset = library
+            .children
+            .iter()
+            .find(|theme| theme.id.as_str() == "themes.theme:sunset")
+            .unwrap();
+        let decode = |id: &str| -> ThemesAction {
+            let spec = sunset
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            serde_json::from_slice(&immediate_encode(spec).payload).unwrap()
+        };
+        assert!(matches!(
+            decode("duplicate"),
+            ThemesAction::CreateCustomTheme { .. }
+        ));
+        assert!(matches!(
+            decode("reset"),
+            ThemesAction::ResetCustomTheme { id } if id == "sunset"
+        ));
+        assert!(matches!(
+            decode("delete"),
+            ThemesAction::DeleteCustomTheme { id } if id == "sunset"
+        ));
+        let accent = sunset
+            .actions
+            .iter()
+            .find(|action| action.id == "set-accent")
+            .unwrap();
+        let encoded = prompted_encode(accent, "#010203");
+        assert!(matches!(
+            serde_json::from_slice::<ThemesAction>(&encoded.payload).unwrap(),
+            ThemesAction::SetCustomThemeToken { id, token: TokenId::Accent, rgb: [1, 2, 3] } if id == "sunset"
+        ));
+        assert!(
+            library
+                .actions
+                .iter()
+                .any(|action| action.id == "new-theme")
+        );
+        assert!(
+            library
+                .actions
+                .iter()
+                .any(|action| action.id == "apply-selected")
+        );
+        assert!(
+            library
+                .actions
+                .iter()
+                .any(|action| action.id == "export-selected")
         );
     }
 
