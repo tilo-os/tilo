@@ -89,6 +89,10 @@ enum Storage {
 /// never mislead someone whose portal/device permission was denied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CameraIssue {
+    /// Deterministic/headless equivalent of normal device discovery finding
+    /// no camera. Runtime discovery represents this as `None` so retries can
+    /// immediately reopen a newly attached device.
+    NoDevice,
     PermissionDenied,
     StartFailed,
 }
@@ -414,6 +418,14 @@ impl CameraApp {
 
     /// Whether a live viewfinder feed is currently available.
     fn feed_active(&self) -> bool {
+        // A forced unavailable state is used by the hermetic screenshot/test
+        // path. `Storage::Sample` normally supplies a procedural viewfinder,
+        // but it must never obscure the permission/no-device recovery UI a
+        // person will see in the live app. A disk source retains any real
+        // frame that has already arrived; device lifecycle owns its recovery.
+        if matches!(self.storage, Storage::Sample) && self.camera_issue.is_some() {
+            return false;
+        }
         match self.storage {
             Storage::Sample => true,
             Storage::Disk(_) => self.latest_frame.is_some(),
@@ -422,6 +434,10 @@ impl CameraApp {
 
     fn no_feed_copy(&self) -> (&'static str, &'static str) {
         match self.camera_issue {
+            Some(CameraIssue::NoDevice) | None => (
+                "No camera connected",
+                "Connect a camera to start the viewfinder",
+            ),
             Some(CameraIssue::PermissionDenied) => (
                 "Camera access needed",
                 "Allow camera access in system settings, then try again",
@@ -429,10 +445,6 @@ impl CameraApp {
             Some(CameraIssue::StartFailed) => (
                 "Camera unavailable",
                 "The connected camera could not be started. Try another camera or reconnect it",
-            ),
-            None => (
-                "No camera connected",
-                "Connect a camera to start the viewfinder",
             ),
         }
     }
@@ -2031,13 +2043,12 @@ impl Widget for CameraApp {
         // fabricating a feed. Production state below still comes from an
         // actual device-open result.
         let forced_camera_state = std::env::var("CAMERA_SHOT_CAMERA_STATE").ok();
-        if matches!(self.storage, Storage::Disk(_)) {
-            self.camera_issue = match forced_camera_state.as_deref() {
-                Some("permission") => Some(CameraIssue::PermissionDenied),
-                Some("error") => Some(CameraIssue::StartFailed),
-                _ => self.camera_issue,
-            };
-        }
+        self.camera_issue = match forced_camera_state.as_deref() {
+            Some("no-device") => Some(CameraIssue::NoDevice),
+            Some("permission") => Some(CameraIssue::PermissionDenied),
+            Some("error") => Some(CameraIssue::StartFailed),
+            _ => self.camera_issue,
+        };
 
         #[cfg(feature = "live-capture")]
         if forced_camera_state.is_none() {
@@ -2149,6 +2160,18 @@ impl Widget for CameraApp {
         {
             self.gallery_scroll = px;
             self.settings_scroll = px;
+        }
+        // A deterministic cursor fixture makes it possible to inspect compact
+        // control tooltips without synthesizing a pointer event or reaching a
+        // real device.  It is deliberately presentation-only and ignored if
+        // malformed, just like the other `--shots` knobs.
+        if let Ok(v) = std::env::var("CAMERA_SHOT_HOVER")
+            && let Some((x, y)) = v.split_once(',')
+            && let (Ok(x), Ok(y)) = (x.trim().parse::<f64>(), y.trim().parse::<f64>())
+            && x.is_finite()
+            && y.is_finite()
+        {
+            self.last_mouse = Point::new(x, y);
         }
     }
 
@@ -5764,6 +5787,38 @@ mod tests {
             "Refreshing camera"
         };
         assert_eq!(app.toast.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn sample_fixture_can_render_the_same_honest_permission_recovery() {
+        // The screenshot harness uses `Storage::Sample` to avoid both a real
+        // camera and private imagery.  An explicit permission result must
+        // still win over that procedural feed, otherwise visual regressions
+        // would accidentally hide the most important recovery state.
+        let (mut app, mut doc, root) = sample_app();
+        app.camera_issue = Some(CameraIssue::PermissionDenied);
+        assert!(!app.feed_active());
+        render_at(&mut app, &mut doc, &root, 390.0, 844.0);
+        let tree = app.accessibility().expect("camera has semantics");
+        assert!(
+            tree.children
+                .iter()
+                .any(|node| { node.name.as_deref() == Some("Open camera privacy settings") })
+        );
+    }
+
+    #[test]
+    fn sample_fixture_can_render_the_honest_no_device_state() {
+        let (mut app, _doc, _root) = sample_app();
+        app.camera_issue = Some(CameraIssue::NoDevice);
+        assert!(!app.feed_active());
+        assert_eq!(
+            app.no_feed_copy(),
+            (
+                "No camera connected",
+                "Connect a camera to start the viewfinder"
+            )
+        );
     }
 
     #[test]

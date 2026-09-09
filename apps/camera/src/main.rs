@@ -52,6 +52,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             ("--screen", "CAMERA_SCREEN"),
             ("--dir", "CAMERA_DIR"),
             ("--scroll", "CAMERA_SCROLL"),
+            ("--hover", "CAMERA_SHOT_HOVER"),
             ("--library-loading", "CAMERA_SHOT_LIBRARY_LOADING"),
         ] {
             if let Some(value) = args.value(option) {
@@ -135,6 +136,7 @@ pub fn main() {
                 "--screen",
                 "--dir",
                 "--scroll",
+                "--hover",
                 "--width",
                 "--height",
                 "--camera-state",
