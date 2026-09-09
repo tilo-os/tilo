@@ -138,12 +138,14 @@ jobs:
     # full-native runs retain their architecture-specific runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
-    # A userspace crash or daemon failure must not corrupt the other distro
-    # results. Runner capacity, rather than one long-lived Docker daemon,
-    # governs concurrency between these isolated jobs.
+    # Forgejo currently ignores strategy.max-parallel for matrix children.
+    # One repository-wide mutex keeps fat-LTO links from exhausting the shared
+    # native builder while retaining independent, restartable distro jobs.
+    concurrency:
+      group: desktop-package-native-builder
+      cancel-in-progress: false
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
