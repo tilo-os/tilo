@@ -7,11 +7,11 @@
 //! navigation sidebar needs the opposite: a *full-width* row that left-aligns
 //! an icon + the category's complete label, sizes itself to the text so
 //! nothing is ever clipped, and carries an unmistakable active highlight. So
-//! [`SidebarRow`] is a small purpose-built widget. It still routes its click
-//! through the same CRDT mechanism the rest of the app uses — pressing a row
-//! writes `settings.select.<slug> = true`, which [`crate::SettingsApp::sync`]
-//! reads to switch the active category. No private message bus; the selection
-//! lives in the document like every other piece of state.
+//! [`SidebarRow`] is a small purpose-built widget. Its activation publishes a
+//! typed process-local navigation request which [`crate::SettingsApp::sync`]
+//! consumes to switch the active category. Navigation is presentation state:
+//! it must not become a replicated preference, an undo entry, or a document
+//! click flag.
 //!
 //! ## What makes it a sidebar
 //!
@@ -24,7 +24,6 @@
 
 use std::collections::HashMap;
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -39,13 +38,6 @@ use ui::widget::{Column, Container, Scrollable, Text, Widget};
 
 use crate::categories::{Category, Section};
 use crate::widgets::{caption, vgap};
-
-/// CRDT key the top strip's search field writes its query into. Read by
-/// [`crate::SettingsApp::sync`] to filter the category list.
-/// Sidebar search is process-local presentation state.  Keeping the editable
-/// text under `.edit` prevents a search query from becoming a replicated
-/// preference or a history entry.
-pub const SEARCH_KEY: &str = "settings.search.edit";
 
 /// Gap (logical px) injected above the first section header so it has clear
 /// breathing room at the top of the sidebar surface.
@@ -95,6 +87,18 @@ const ROW_TEXT_SIZE: f32 = 14.0;
 /// Line-height ratio `TextRenderer` shapes with (`size * 1.25`); used to
 /// centre a single text line's box within the row.
 const LINE_HEIGHT_RATIO: f64 = 1.25;
+
+/// Text and icon ink for a sidebar row. A selected row is painted with the
+/// accent fill, whose luminance varies by theme; primary surface text is not
+/// guaranteed to remain legible on it. Keep this selection in the shared row
+/// primitive so its icon and label always use the same contrast-safe ink.
+fn row_ink(theme: &Theme, active: bool) -> vello::peniko::Color {
+    if active {
+        theme.tokens.colors.on_accent(4.5)
+    } else {
+        theme.text_primary
+    }
+}
 
 /// The resolved on-screen geometry of one sidebar row: the selection pill and
 /// the icon / label / baseline positions inside it. Computed once in
@@ -150,9 +154,9 @@ impl RowGeometry {
 /// One selectable category row in the sidebar.
 ///
 /// Fills the available width, left-aligns its icon + full label, and paints an
-/// accent background + bar when it is the active category. Clicking it writes
-/// `settings.select.<slug> = true` into the document — the same key
-/// [`crate::SettingsApp::sync`] consumes to change panes.
+/// accent background + bar when it is the active category. Clicking it emits
+/// a local selection request which [`crate::SettingsApp::sync`] consumes to
+/// change panes without writing presentation state into the document.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "selection, hover, press, and keyboard focus are independent interaction states"
@@ -162,8 +166,9 @@ pub struct SidebarRow {
     /// Whether this row is the currently-selected category — drives the active
     /// highlight. Passed in at build time from the app's selection.
     active: bool,
-    /// CRDT key this row writes `true` to on click.
-    select_key: String,
+    /// One-shot local navigation request. Category selection is deliberately
+    /// not document state: it is only this window's current presentation.
+    selection_request: ui::LocalState<Option<Category>>,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -172,10 +177,18 @@ pub struct SidebarRow {
 
 impl SidebarRow {
     pub fn new(category: Category, active: bool) -> Self {
+        Self::with_selection_request(category, active, ui::LocalState::new(None))
+    }
+
+    pub fn with_selection_request(
+        category: Category,
+        active: bool,
+        selection_request: ui::LocalState<Option<Category>>,
+    ) -> Self {
         Self {
             category,
             active,
-            select_key: format!("settings.select.{}.edit", category.slug()),
+            selection_request,
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -183,11 +196,11 @@ impl SidebarRow {
         }
     }
 
-    /// Commit the same local presentation latch for pointer, keyboard and
-    /// assistive-technology activation.  Selection is local-only and the
-    /// app consumes it as a one-shot edge in `SettingsApp::sync`.
-    fn activate(&self, state: &mut AutoCommit, root: &ObjId) {
-        let _ = state.put(root, self.select_key.as_str(), true);
+    /// Publish the same local presentation request for pointer, keyboard and
+    /// assistive-technology activation. The app consumes it as a one-shot
+    /// edge in `SettingsApp::sync`.
+    fn activate(&self) {
+        self.selection_request.set(Some(self.category));
     }
 }
 
@@ -275,11 +288,7 @@ impl Widget for SidebarRow {
         // Icon + label, left-aligned, vertically centred. The active row uses
         // a bright on-accent foreground; inactive rows use the primary text
         // colour so they stay legible against the sidebar surface.
-        let fg = if self.active {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.text_primary
-        };
+        let fg = row_ink(theme, self.active);
 
         let icon_y = self.rect.center().y - icon_size / 2.0;
         self.category.icon().draw(
@@ -309,8 +318,8 @@ impl Widget for SidebarRow {
         event: &WindowEvent,
         scale_factor: f64,
         _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
@@ -335,11 +344,9 @@ impl Widget for SidebarRow {
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
                         *handled = true;
-                        // Fire selection on release (matches Button semantics):
-                        // write the category's select key so the app's `sync`
-                        // switches the active pane.
+                        // Fire selection on release (matches Button semantics).
                         if !pressed {
-                            self.activate(state, root);
+                            self.activate();
                         }
                         if pressed {
                             *focus_target = Some(node_id);
@@ -358,7 +365,7 @@ impl Widget for SidebarRow {
                         Key::Named(NamedKey::Enter | NamedKey::Space)
                     ) =>
             {
-                self.activate(state, root);
+                self.activate();
                 *handled = true;
             }
             _ => {}
@@ -379,7 +386,7 @@ impl Widget for SidebarRow {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
                 .with_name(self.category.label())
-                .with_action_target(self.select_key.clone())
+                .with_action_target(crate::actions::open_pane_address(self.category).encode())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
                     focused: self.is_focused,
@@ -427,12 +434,12 @@ impl Widget for SidebarRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
     ) -> bool {
         match action {
             ui::a11y::Action::Activate => {
-                self.activate(state, path);
+                self.activate();
                 true
             }
             _ => false,
@@ -449,7 +456,11 @@ impl Widget for SidebarRow {
 /// The whole thing is one [`Container`] tinted a step below the content
 /// background so it reads as a single cohesive sidebar pane, with the rows
 /// inside a [`Scrollable`] so every category stays reachable on short windows.
-pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
+pub fn build(
+    selected: Category,
+    query: &str,
+    selection_request: &ui::LocalState<Option<Category>>,
+) -> Box<dyn Widget> {
     // An intrinsic-height column lays out as a block stack and ignores the
     // toolkit's inter-child gap, so we place explicit fixed-height spacers
     // to control the vertical rhythm.
@@ -472,7 +483,11 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
             col = col.push(section_header(section.label()));
             col = col.push(vgap(SECTION_GAP_BELOW));
             for category in Category::in_section(*section) {
-                col = col.push(Box::new(SidebarRow::new(category, category == selected)));
+                col = col.push(Box::new(SidebarRow::with_selection_request(
+                    category,
+                    category == selected,
+                    selection_request.clone(),
+                )));
             }
         }
     } else {
@@ -491,7 +506,11 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
             )));
         } else {
             for category in matches {
-                col = col.push(Box::new(SidebarRow::new(category, category == selected)));
+                col = col.push(Box::new(SidebarRow::with_selection_request(
+                    category,
+                    category == selected,
+                    selection_request.clone(),
+                )));
             }
         }
     }
@@ -534,7 +553,7 @@ mod tests {
 
     #[test]
     fn empty_query_lists_every_category() {
-        let sb = build(Category::Network, "");
+        let sb = build(Category::Network, "", &ui::LocalState::new(None));
         assert_eq!(
             count_rows(sb.as_ref()),
             Category::ALL.len(),
@@ -545,7 +564,7 @@ mod tests {
     #[test]
     fn query_filters_the_sidebar_to_matching_categories() {
         // "night" is a Displays-only keyword, so exactly one row survives.
-        let sb = build(Category::Displays, "night");
+        let sb = build(Category::Displays, "night", &ui::LocalState::new(None));
         let expected = Category::ALL.iter().filter(|c| c.matches("night")).count();
         assert_eq!(count_rows(sb.as_ref()), expected);
         assert!(
@@ -556,7 +575,7 @@ mod tests {
 
     #[test]
     fn no_match_query_shows_no_rows() {
-        let sb = build(Category::Network, "zzzznope");
+        let sb = build(Category::Network, "zzzznope", &ui::LocalState::new(None));
         assert_eq!(
             count_rows(sb.as_ref()),
             0,
@@ -635,10 +654,21 @@ mod tests {
     }
 
     #[test]
-    fn row_writes_select_key_on_release() {
-        use automerge::{ReadDoc, Value};
+    fn active_row_ink_meets_text_contrast_on_the_accent_fill() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let ink = row_ink(&theme, true);
+            assert!(
+                ui::a11y::contrast_ratio(ink, theme.accent_primary) >= 4.5,
+                "active sidebar ink must remain readable on the accent fill for {}",
+                theme.name
+            );
+        }
+    }
 
-        let mut row = SidebarRow::new(Category::About, false);
+    #[test]
+    fn row_requests_local_selection_on_release_without_mutating_the_document() {
+        let request = ui::LocalState::new(None);
+        let mut row = SidebarRow::with_selection_request(Category::About, false, request.clone());
         // Seat a rect and pretend the cursor is inside it.
         row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         row.is_hovered = true;
@@ -675,18 +705,18 @@ mod tests {
             );
         }
 
-        let got = doc.get(&root, "settings.select.about.edit");
+        assert_eq!(request.with(|selection| *selection), Some(Category::About));
         assert!(
-            matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),
-            "releasing a click on the row writes its select key true"
+            doc.get_heads().is_empty(),
+            "navigation must not create a replicated click-flag change"
         );
     }
 
     #[test]
     fn row_activation_and_semantics_cover_keyboard_and_assistive_technology() {
-        use automerge::{ReadDoc, Value};
-
-        let mut row = SidebarRow::new(Category::Accessibility, false);
+        let request = ui::LocalState::new(None);
+        let mut row =
+            SidebarRow::with_selection_request(Category::Accessibility, false, request.clone());
         row.set_focus(true);
         let node = row.accessibility().expect("sidebar row has semantics");
         assert_eq!(node.role, ui::a11y::Role::RadioButton);
@@ -696,10 +726,11 @@ mod tests {
 
         let mut doc = AutoCommit::new();
         assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
-        let got = doc.get(&automerge::ROOT, "settings.select.accessibility.edit");
-        assert!(
-            matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),
-            "the semantic activation uses the same local navigation latch as a pointer click"
+        assert_eq!(
+            request.with(|selection| *selection),
+            Some(Category::Accessibility),
+            "the semantic activation uses the same local navigation request as a pointer click"
         );
+        assert!(doc.get_heads().is_empty());
     }
 }
