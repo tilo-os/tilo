@@ -23,6 +23,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
@@ -381,6 +382,10 @@ impl Widget for TriStateControl {
 pub struct ColorSwatchPicker {
     /// Packed `0xRRGGBB` palette.
     palette: Vec<u32>,
+    /// Optional human-friendly names for the palette entries. Apps can use
+    /// these when a raw hexadecimal value is not meaningful to a screen-reader
+    /// user (for example, "blue text" versus "yellow highlight").
+    accessible_labels: Option<Vec<String>>,
     columns: usize,
     cell: f64,
     selected: Option<usize>,
@@ -389,6 +394,8 @@ pub struct ColorSwatchPicker {
     swatch_rects: Vec<Rect>,
     last_cursor: Point,
     hovered: Option<usize>,
+    focused: bool,
+    focus_index: usize,
 }
 
 /// Matches the permissions editor.
@@ -413,6 +420,7 @@ impl ColorSwatchPicker {
     pub fn with_palette(palette: Vec<u32>, columns: usize) -> Self {
         Self {
             palette,
+            accessible_labels: None,
             columns: columns.max(1),
             cell: 30.0,
             selected: None,
@@ -421,12 +429,25 @@ impl ColorSwatchPicker {
             swatch_rects: Vec::new(),
             last_cursor: Point::ZERO,
             hovered: None,
+            focused: false,
+            focus_index: 0,
         }
     }
 
     #[must_use]
     pub fn with_selected(mut self, idx: usize) -> Self {
         self.selected = Some(idx);
+        self
+    }
+
+    /// Supply one accessible name per palette entry. Mismatched label lists are
+    /// ignored so callers can safely use a generated palette and retain the
+    /// stable hexadecimal fallback rather than creating partially named items.
+    #[must_use]
+    pub fn with_accessible_labels(mut self, labels: Vec<String>) -> Self {
+        if labels.len() == self.palette.len() {
+            self.accessible_labels = Some(labels);
+        }
         self
     }
 
@@ -564,7 +585,7 @@ impl Widget for ColorSwatchPicker {
         {
             let shape = RoundedRect::from_rect(*sr, 6.0);
             scene.fill(Fill::NonZero, transform, packed_color(rgb), None, &shape);
-            if self.selected == Some(i) {
+            if self.selected == Some(i) || (self.focused && self.focus_index == i) {
                 scene.stroke(
                     &Stroke::new(2.5),
                     transform,
@@ -586,8 +607,8 @@ impl Widget for ColorSwatchPicker {
         _state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
@@ -610,8 +631,43 @@ impl Widget for ColorSwatchPicker {
                 {
                     self.selected = Some(i);
                     self.choice = Some(i);
+                    self.focused = true;
+                    self.focus_index = i;
+                    *focus_target = Some(node_id);
                     *handled = true;
                 }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused && !self.palette.is_empty() => {
+                let last = self.palette.len().saturating_sub(1);
+                let next = match logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => self.focus_index.saturating_sub(1),
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.focus_index.saturating_add(1).min(last)
+                    }
+                    Key::Named(NamedKey::ArrowUp) => self.focus_index.saturating_sub(self.columns),
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.focus_index.saturating_add(self.columns).min(last)
+                    }
+                    Key::Named(NamedKey::Home) => 0,
+                    Key::Named(NamedKey::End) => last,
+                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                        self.selected = Some(self.focus_index);
+                        self.choice = Some(self.focus_index);
+                        *handled = true;
+                        return;
+                    }
+                    _ => return,
+                };
+                self.focus_index = next;
+                *handled = true;
             }
             _ => {}
         }
@@ -625,10 +681,29 @@ impl Widget for ColorSwatchPicker {
         self.rect
     }
 
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused {
+            self.focus_index = self
+                .selected
+                .unwrap_or(0)
+                .min(self.palette.len().saturating_sub(1));
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Each swatch is drawn (not a child widget), so it becomes a
-        // synthetic `ListItem` named by its hex value.
+        // synthetic `ListItem`. Apps may provide a meaningful label; generic
+        // consumers retain the stable hexadecimal fallback.
         let hex = |rgb: u32| format!("#{rgb:06X}");
         let count = self.palette.len();
         let value = self
@@ -640,11 +715,23 @@ impl Widget for ColorSwatchPicker {
             .iter()
             .enumerate()
             .map(|(i, &rgb)| {
+                let name = self
+                    .accessible_labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| hex(rgb));
                 AccessNode::new(Role::ListItem)
                     .with_action_target(format!("swatch:{i}"))
-                    .with_name(hex(rgb))
+                    .with_name(name)
+                    // The cells are custom-painted synthetic descendants, so
+                    // export their real logical-pixel rects for AT hit testing
+                    // and overlay inspection just like the shared pointer path.
+                    .with_bounds(self.swatch_rects.get(i).copied().unwrap_or(Rect::ZERO))
                     .with_state(AccessState {
+                        focusable: true,
                         selected: self.selected == Some(i),
+                        focused: self.focused && self.focus_index == i,
                         ..Default::default()
                     })
                     .with_position(i.saturating_add(1), count)
@@ -683,6 +770,11 @@ impl Widget for ColorSwatchPicker {
         else {
             return false;
         };
+        if matches!(action, crate::a11y::Action::Focus) {
+            self.focused = true;
+            self.focus_index = index;
+            return true;
+        }
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
@@ -735,6 +827,22 @@ mod tests {
             device_id: synth_device(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
+        }
+    }
+    fn named_press(key: NamedKey) -> WindowEvent {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey};
+
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        event.logical_key = Key::Named(key);
+        event.text = None;
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event,
+            is_synthetic: false,
         }
     }
     fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
@@ -831,11 +939,55 @@ mod tests {
     }
 
     #[test]
+    fn swatch_picker_keyboard_navigation_and_activation_match_pointer_choice() {
+        let mut picker =
+            ColorSwatchPicker::with_palette(vec![0x11_22_33, 0x44_55_66, 0x77_88_99], 2);
+        lay_out(&mut picker);
+        Widget::set_focus(&mut picker, true);
+        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowRight)));
+        assert!(dispatch(&mut picker, &named_press(NamedKey::ArrowDown)));
+        assert!(dispatch(&mut picker, &named_press(NamedKey::Space)));
+        assert_eq!(picker.take_choice(), Some(2));
+        let tree = Widget::accessibility(&picker).expect("picker semantics");
+        assert!(tree.children[2].state.selected);
+        assert!(tree.children[2].state.focusable);
+        assert_eq!(tree.children[2].bounds, Some(picker.swatch_rects[2].into()));
+        assert!(Widget::perform_semantic_action(
+            &mut picker,
+            "swatch:1",
+            &crate::a11y::Action::Focus,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!(
+            Widget::accessibility(&picker)
+                .expect("focused picker")
+                .children[1]
+                .state
+                .focused
+        );
+    }
+
+    #[test]
     fn swatch_picker_grid_has_all_swatches() {
         let mut p = ColorSwatchPicker::new();
         lay_out(&mut p);
         assert_eq!(p.swatch_rects.len(), 12, "all 12 palette swatches laid out");
         // 4 columns → 3 rows; row 1 swatch sits below row 0.
         assert!(p.swatch_rects[4].y0 > p.swatch_rects[0].y0);
+    }
+
+    #[test]
+    fn swatch_picker_uses_supplied_accessible_labels_and_keeps_hex_fallback() {
+        let named = ColorSwatchPicker::with_palette(vec![0x11_22_33, 0x44_55_66], 2)
+            .with_accessible_labels(vec!["blue text".into(), "green text".into()]);
+        let named_tree = Widget::accessibility(&named).expect("picker semantics");
+        assert_eq!(named_tree.children[0].name.as_deref(), Some("blue text"));
+        assert_eq!(named_tree.children[1].name.as_deref(), Some("green text"));
+
+        let fallback = ColorSwatchPicker::with_palette(vec![0x11_22_33], 1)
+            .with_accessible_labels(vec!["wrong length".into(), "ignored".into()]);
+        let fallback_tree = Widget::accessibility(&fallback).expect("picker semantics");
+        assert_eq!(fallback_tree.children[0].name.as_deref(), Some("#112233"));
     }
 }
