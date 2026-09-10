@@ -63,17 +63,17 @@ pub fn store_card(
         .with_gap(5.0)
         .push(Box::new(
             Text::new(&item.name)
-                .with_size(18.0)
+                .with_scaled_size(18.0)
                 .with_weight(TextWeight::Semibold),
         ))
         .push(Box::new(
             Text::new(&badge_line(item))
-                .with_size(13.0)
+                .with_scaled_size(13.0)
                 .with_color(theme.text_dim),
         ))
         .push(Box::new(
             Text::new(&category)
-                .with_size(12.0)
+                .with_scaled_size(12.0)
                 .with_color(theme.text_dim),
         ));
 
@@ -134,7 +134,7 @@ pub fn store_card(
                 ))
                 .push(Box::new(
                     Text::new(&item.description)
-                        .with_size(14.0)
+                        .with_scaled_size(14.0)
                         .with_color(theme.text_dim),
                 ))
                 .push(Box::new(
@@ -169,7 +169,7 @@ pub fn store_card(
                 ))
                 .push(Box::new(
                     Text::new(&item.description)
-                        .with_size(14.0)
+                        .with_scaled_size(14.0)
                         .with_color(theme.text_dim),
                 ))
                 .push(Box::new(Spacer::new()))
