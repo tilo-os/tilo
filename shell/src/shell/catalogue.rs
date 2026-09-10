@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,7 @@ pub struct UnreachableRegistry {
 // ---------------------------------------------------------------------
 
 static CATALOGUE: Mutex<Option<(Vec<CatalogueApp>, Instant)>> = Mutex::new(None);
+static CATALOGUE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// So a burst of keystrokes schedules one refresh, not one per character.
 static REFRESHING: AtomicBool = AtomicBool::new(false);
 /// The small search-metadata cache is read once per shell process. App
@@ -154,6 +155,7 @@ fn load_disk_cache_once() -> bool {
         return false;
     };
     *lock_catalogue() = Some((listing.apps, Instant::now()));
+    CATALOGUE_REVISION.fetch_add(1, Ordering::Relaxed);
     true
 }
 
@@ -177,20 +179,26 @@ pub fn available_apps() -> Vec<CatalogueApp> {
     apps
 }
 
+/// Revisioned immutable catalogue snapshot for retained search projections.
+pub fn available_apps_snapshot() -> (u64, Vec<CatalogueApp>) {
+    let before = CATALOGUE_REVISION.load(Ordering::Acquire);
+    let apps = available_apps();
+    let after = CATALOGUE_REVISION.load(Ordering::Acquire);
+    (if before == after { before } else { 0 }, apps)
+}
+
+/// Current catalogue source generation, without cloning the catalogue.
+#[must_use]
+pub fn available_apps_generation() -> u64 {
+    CATALOGUE_REVISION.load(Ordering::Relaxed)
+}
+
 /// Drop the cached catalogue and force the next read to refetch.
 /// Called after an install so the app that just arrived stops being
 /// offered as available.
 pub fn invalidate() {
     *lock_catalogue() = None;
-}
-
-/// For tests, which must not depend on a registry being reachable.
-pub fn seed_for_test(apps: Vec<CatalogueApp>) {
-    // A test fixture is the authoritative cache for this process.  Marking the
-    // disk probe complete prevents the first query from replacing it with a
-    // developer machine's persisted listing.
-    DISK_CACHE_LOADED.store(true, Ordering::SeqCst);
-    *lock_catalogue() = Some((apps, Instant::now()));
+    CATALOGUE_REVISION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// A failure caches an *empty* list rather than leaving the cache cold
@@ -262,6 +270,7 @@ fn schedule_refresh() {
                     .unwrap_or_else(Instant::now)
             };
             *lock_catalogue() = Some((apps, stamped));
+            CATALOGUE_REVISION.fetch_add(1, Ordering::Relaxed);
             REFRESHING.store(false, Ordering::SeqCst);
         });
     if spawned.is_err() {
