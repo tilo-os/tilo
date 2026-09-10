@@ -21162,7 +21162,7 @@ mod tests {
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
 
         // Super+K is the default Search action.  Any rebind goes through the
         // same effective-action resolver used by this dispatcher.
@@ -21174,7 +21174,21 @@ mod tests {
             "Super+K searches the machine"
         );
         h.host.palette.set_query("zzyzx");
-        h.host.refresh_search_results(&doc, &automerge::ROOT);
+        // Retained application indexes are built from the compositor update
+        // pass, never synchronously by the keystroke/query path. Exercise the
+        // real lifecycle here: the first update starts the worker and a later
+        // one publishes its immutable snapshot and refreshes the visible rows.
+        for _ in 0..200 {
+            h.host.update(&mut doc, &automerge::ROOT);
+            if h.host
+                .search_results
+                .iter()
+                .any(|result| result.provider_id == "applications")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
 
         let hit = h
             .host
