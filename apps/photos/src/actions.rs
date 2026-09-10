@@ -58,6 +58,7 @@ const LIBRARY_CONTEXT_LIMIT: usize = 48;
 const ALBUM_CONTEXT_LIMIT: usize = 24;
 const FOLDER_CONTEXT_LIMIT: usize = 24;
 const PERSON_CONTEXT_LIMIT: usize = 24;
+const TAG_CONTEXT_LIMIT: usize = 24;
 type LabelCounts = Vec<(String, usize)>;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -81,6 +82,10 @@ pub enum PhotosOperation {
     /// Show the bounded library slice carrying this durable person label.
     ViewPerson {
         person: String,
+    },
+    /// Show the bounded library slice carrying this durable tag label.
+    ViewTag {
+        tag: String,
     },
     Open {
         path: Option<String>,
@@ -121,6 +126,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
+        | PhotosOperation::ViewTag { .. }
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
@@ -631,18 +637,25 @@ impl ResourceProvider for PhotosResources {
             .find(|album| album.id == id)
             .map(album_resource)
             .or_else(|| {
-                folder_and_people(&library)
+                metadata_label_counts(&library)
                     .0
                     .into_iter()
                     .find(|(folder, _)| folder_resource_id(folder) == id)
                     .map(|(folder, count)| folder_resource(&folder, count))
             })
             .or_else(|| {
-                folder_and_people(&library)
+                metadata_label_counts(&library)
                     .1
                     .into_iter()
                     .find(|(person, _)| person_resource_id(person) == id)
                     .map(|(person, count)| person_resource(&person, count))
+            })
+            .or_else(|| {
+                metadata_label_counts(&library)
+                    .2
+                    .into_iter()
+                    .find(|(tag, _)| tag_resource_id(tag) == id)
+                    .map(|(tag, count)| tag_resource(&tag, count))
             })
     }
 }
@@ -662,12 +675,15 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
         root = root.with_child(album_resource(album));
     }
-    let (folders, people) = folder_and_people(&library);
+    let (folders, people, tags) = metadata_label_counts(&library);
     for (folder, count) in folders.into_iter().take(FOLDER_CONTEXT_LIMIT) {
         root = root.with_child(folder_resource(&folder, count));
     }
     for (person, count) in people.into_iter().take(PERSON_CONTEXT_LIMIT) {
         root = root.with_child(person_resource(&person, count));
+    }
+    for (tag, count) in tags.into_iter().take(TAG_CONTEXT_LIMIT) {
+        root = root.with_child(tag_resource(&tag, count));
     }
     vec![root]
 }
@@ -675,9 +691,12 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
 /// Deterministically collect the small virtual browse namespace.  It is
 /// derived only from durable metadata and does no filesystem work, so it is
 /// safe to publish to search, agents, history, and collaborators.
-fn folder_and_people(library: &crate::model::PhotoLibrary) -> (LabelCounts, LabelCounts) {
+fn metadata_label_counts(
+    library: &crate::model::PhotoLibrary,
+) -> (LabelCounts, LabelCounts, LabelCounts) {
     let mut folders = std::collections::BTreeMap::<String, usize>::new();
     let mut people = std::collections::BTreeMap::<String, usize>::new();
+    let mut tags = std::collections::BTreeMap::<String, usize>::new();
     for photo in &library.photos {
         if let Some(folder) = &photo.folder {
             *folders.entry(folder.clone()).or_default() += 1;
@@ -685,8 +704,15 @@ fn folder_and_people(library: &crate::model::PhotoLibrary) -> (LabelCounts, Labe
         for person in &photo.people {
             *people.entry(person.clone()).or_default() += 1;
         }
+        for tag in &photo.tags {
+            *tags.entry(tag.clone()).or_default() += 1;
+        }
     }
-    (folders.into_iter().collect(), people.into_iter().collect())
+    (
+        folders.into_iter().collect(),
+        people.into_iter().collect(),
+        tags.into_iter().collect(),
+    )
 }
 
 pub(crate) fn folder_resource_id(folder: &str) -> String {
@@ -701,6 +727,12 @@ pub(crate) fn person_resource_id(person: &str) -> String {
         "photos.person:{}",
         qdoc::blobstore::hash_bytes(person.as_bytes())
     )
+}
+
+/// A tag is durable shared metadata, so its derived browse resource must have
+/// the same portable, content-independent identity on every replica.
+pub(crate) fn tag_resource_id(tag: &str) -> String {
+    format!("photos.tag:{}", qdoc::blobstore::hash_bytes(tag.as_bytes()))
 }
 
 fn folder_resource(folder: &str, count: usize) -> Resource {
@@ -739,6 +771,25 @@ fn person_resource(person: &str, count: usize) -> Resource {
         },
     ) {
         item = item.with_action(spec.with_description("Show photographs tagged with this person"));
+    }
+    item
+}
+
+fn tag_resource(tag: &str, count: usize) -> Resource {
+    let mut item =
+        Resource::new(tag_resource_id(tag), "photos.tag", tag).with_child(Resource::new(
+            format!("{}#count", tag_resource_id(tag)),
+            "photos.count",
+            format!("{count} photographs"),
+        ));
+    if let Some(spec) = operation(
+        "open",
+        "View tag",
+        &PhotosOperation::ViewTag {
+            tag: tag.to_owned(),
+        },
+    ) {
+        item = item.with_action(spec.with_description("Show photographs carrying this shared tag"));
     }
     item
 }
@@ -1324,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_metadata_is_bounded_replayable_and_publishes_folder_and_person_resources() {
+    fn shared_metadata_is_bounded_replayable_and_publishes_each_metadata_resource() {
         let mut doc = doc_with_image();
         let photo_id = PhotosDoc::library(&doc).photos[0].id.clone();
         let action = PhotosAction::SetMetadata {
@@ -1354,7 +1405,8 @@ mod tests {
 
         let folder_id = folder_resource_id("2026 travels");
         let person_id = person_resource_id("München-夏");
-        for id in [folder_id, person_id] {
+        let tag_id = tag_resource_id("harbour");
+        for id in [folder_id, person_id, tag_id] {
             let resource = PhotosResources
                 .resource(&doc, &id)
                 .expect("virtual resource resolves");

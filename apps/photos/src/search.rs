@@ -16,7 +16,7 @@ use ui::search::{
     SearchResult,
 };
 
-use crate::actions::{folder_resource_id, person_resource_id};
+use crate::actions::{folder_resource_id, person_resource_id, tag_resource_id};
 use crate::doc::PhotosDoc;
 
 /// Search group label for Photos results.
@@ -110,18 +110,22 @@ impl PhotosSearchProvider {
         provider
     }
 
-    /// Folder and person resources are virtual, but their ids and open
+    /// Folder, person, and tag resources are virtual, but their ids and open
     /// actions are still canonical. Index them separately to keep the main
     /// photo/album catalogue construction readable and bounded.
     fn index_metadata_views(&self, library: &crate::model::PhotoLibrary) {
         let mut folders = std::collections::BTreeMap::<String, usize>::new();
         let mut people = std::collections::BTreeMap::<String, usize>::new();
+        let mut tags = std::collections::BTreeMap::<String, usize>::new();
         for photo in &library.photos {
             if let Some(folder) = &photo.folder {
                 *folders.entry(folder.clone()).or_default() += 1;
             }
             for person in &photo.people {
                 *people.entry(person.clone()).or_default() += 1;
+            }
+            for tag in &photo.tags {
+                *tags.entry(tag.clone()).or_default() += 1;
             }
         }
         for (folder, count) in folders {
@@ -151,6 +155,18 @@ impl PhotosSearchProvider {
             let _ = self.catalog.upsert(
                 id,
                 format!("{person}\0photos.person\0person\0{count} photographs\0open"),
+                result,
+            );
+        }
+        for (tag, count) in tags {
+            let id = tag_resource_id(&tag);
+            let result =
+                SearchResult::for_action(PHOTO_SEARCH_KIND, &tag, ActionAddress::new(&id, "open"))
+                    .with_subtitle(format!("Tag · {count} photographs"))
+                    .with_icon(Icon::Image);
+            let _ = self.catalog.upsert(
+                id,
+                format!("{tag}\0photos.tag\0tag\0{count} photographs\0open"),
                 result,
             );
         }
@@ -333,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_search_hits_resolve_to_the_same_folder_and_person_resources() {
+    fn metadata_search_hits_resolve_to_their_canonical_resources() {
         let mut doc = open_doc("harbour.png");
         let mut library = PhotosDoc::library(&doc);
         let photo = library.photos.first_mut().expect("opening imports a photo");
@@ -347,7 +363,10 @@ mod tests {
         for (query, expected_resource) in [
             ("旅行-夏", crate::actions::folder_resource_id("旅行-夏")),
             ("ÉLODIE", crate::actions::person_resource_id("Élodie")),
-            ("golden-hour", library.photos[0].id.clone()),
+            (
+                "golden-hour",
+                crate::actions::tag_resource_id("golden-hour"),
+            ),
             ("2026-09-07", library.photos[0].id.clone()),
         ] {
             let hit = provider

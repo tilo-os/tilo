@@ -102,6 +102,23 @@ const LIBRARY_PAGE_SIZE: usize = 24;
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
 const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
 
+/// Grid density is presentation-local, but text scale is part of that
+/// presentation. Keep the decision pure so wide/high-text and sheet-open
+/// regressions cannot silently drift apart.
+fn library_column_count(width: f64, large_text: bool, metadata_editor: bool) -> usize {
+    if large_text && width >= 620.0 {
+        if metadata_editor { 1 } else { 2 }
+    } else if width < LIBRARY_ONE_COLUMN_MAX_W {
+        1
+    } else if width < LIBRARY_TWO_COLUMN_MAX_W {
+        2
+    } else if width >= 1_440.0 {
+        5
+    } else {
+        4
+    }
+}
+
 #[derive(Clone)]
 struct ThumbnailJob {
     generation: u64,
@@ -203,6 +220,10 @@ struct LibraryItem {
 pub enum Face {
     /// Glyph and words together.
     Labelled,
+    /// A deliberately wide labelled overflow trigger used only for the
+    /// large-text compact toolbar.  It keeps the word “More” visible instead
+    /// of asking a pointer user to infer a horizontal-ellipsis glyph.
+    LargeOverflow,
     /// Glyph alone.
     IconOnly,
 }
@@ -316,6 +337,14 @@ fn item_width(face: Face, label: &str) -> f32 {
             let text = label.chars().count() as f32 * APPROX_CHAR_W;
             (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
         }
+        // The normal estimate is calibrated for 100% text.  At the supported
+        // 200% screenshot scale the overflow label needs a real word-sized
+        // slot, while every other command is represented by an accessible
+        // icon in the compact menu.
+        Face::LargeOverflow => {
+            let text = label.chars().count() as f32 * APPROX_CHAR_W * 2.0;
+            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
+        }
     }
 }
 
@@ -413,6 +442,9 @@ pub struct PhotosApp {
     separator_rects: Vec<Rect>,
     /// Presentation of each toolbar item at the width last laid out.
     faces: Vec<Face>,
+    /// Kept local: text preference changes presentation, never document
+    /// contents or another collaborator's toolbar.
+    large_text_toolbar: bool,
     compact_more_open: bool,
     compact_more_focus: usize,
     compact_more_hits: Vec<(Hit, Rect)>,
@@ -439,6 +471,9 @@ pub struct PhotosApp {
     /// changing a filter must never rewrite another collaborator's metadata.
     active_folder: Option<String>,
     active_person: Option<String>,
+    /// Tag filtering is local navigation derived from a durable tag resource.
+    /// It never mutates a collaborator's metadata just by opening a view.
+    active_tag: Option<String>,
     /// Bounded labels used for discoverable visual filtering. Search and the
     /// resource tree still resolve every stable id outside this shelf.
     library_folders: Vec<(String, usize)>,
@@ -513,7 +548,7 @@ impl Default for PhotosApp {
 
 impl PhotosApp {
     fn toolbar_slots(&self) -> &'static [Slot] {
-        if self.rect.width() > 0.0 && self.rect.width() < 600.0 {
+        if self.large_text_toolbar || (self.rect.width() > 0.0 && self.rect.width() < 600.0) {
             COMPACT_SLOTS
         } else {
             SLOTS
@@ -552,6 +587,7 @@ impl PhotosApp {
             status_rect: Rect::ZERO,
             separator_rects: Vec::new(),
             faces,
+            large_text_toolbar: false,
             compact_more_open: false,
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
@@ -569,6 +605,7 @@ impl PhotosApp {
             active_album: None,
             active_folder: None,
             active_person: None,
+            active_tag: None,
             library_folders: Vec::new(),
             library_people: Vec::new(),
             metadata_filter_cards: Vec::new(),
@@ -616,7 +653,21 @@ impl PhotosApp {
     /// the threshold, and it carries the enabled state across so a rebuild
     /// never re-enables a control the document says is unavailable.
     fn refit_toolbar(&mut self, width: f32) {
-        let want = faces_for_width(width);
+        let want = if self.large_text_toolbar {
+            TOOLBAR
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    if index == 9 {
+                        Face::LargeOverflow
+                    } else {
+                        Face::IconOnly
+                    }
+                })
+                .collect()
+        } else {
+            faces_for_width(width)
+        };
         if want == self.faces {
             return;
         }
@@ -764,6 +815,7 @@ impl PhotosApp {
         self.active_album = None;
         self.active_folder = None;
         self.active_person = None;
+        self.active_tag = None;
         self.library_remove_confirm = None;
     }
 
@@ -1494,6 +1546,7 @@ impl PhotosApp {
             | crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
             | crate::actions::PhotosOperation::ViewPerson { .. }
+            | crate::actions::PhotosOperation::ViewTag { .. }
             | crate::actions::PhotosOperation::Open { path: Some(_) } => {}
         }
         Ok(())
@@ -1512,6 +1565,7 @@ impl PhotosApp {
         self.active_album = Some(album_id.to_owned());
         self.active_folder = None;
         self.active_person = None;
+        self.active_tag = None;
         self.library_offset = 0;
         self.album_editor = false;
         self.album_delete_confirm = false;
@@ -1527,17 +1581,22 @@ impl PhotosApp {
         doc: &AutoCommit,
         folder: Option<String>,
         person: Option<String>,
+        tag: Option<String>,
     ) -> Result<(), String> {
         let library = PhotosDoc::library(doc);
-        let exists = match (&folder, &person) {
-            (Some(folder), None) => library
+        let exists = match (&folder, &person, &tag) {
+            (Some(folder), None, None) => library
                 .photos
                 .iter()
                 .any(|photo| photo.folder.as_deref() == Some(folder)),
-            (None, Some(person)) => library
+            (None, Some(person), None) => library
                 .photos
                 .iter()
                 .any(|photo| photo.people.iter().any(|value| value == person)),
+            (None, None, Some(tag)) => library
+                .photos
+                .iter()
+                .any(|photo| photo.tags.iter().any(|value| value == tag)),
             _ => false,
         };
         if !exists {
@@ -1547,6 +1606,7 @@ impl PhotosApp {
         self.active_album = None;
         self.active_folder = folder;
         self.active_person = person;
+        self.active_tag = tag;
         self.library_offset = 0;
         self.album_editor = false;
         self.album_delete_confirm = false;
@@ -1641,6 +1701,7 @@ impl PhotosApp {
                 self.active_album = None;
                 self.active_folder = None;
                 self.active_person = None;
+                self.active_tag = None;
                 self.notice = None;
             }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
@@ -2168,6 +2229,7 @@ impl PhotosApp {
             self.active_album = (album_id != "all").then(|| album_id.to_owned());
             self.active_folder = None;
             self.active_person = None;
+            self.active_tag = None;
             self.library_offset = 0;
             return true;
         }
@@ -2188,6 +2250,7 @@ impl PhotosApp {
             self.active_album = None;
             self.active_folder = (!folder.is_empty()).then(|| folder.to_owned());
             self.active_person = (!person.is_empty()).then(|| person.to_owned());
+            self.active_tag = None;
             self.library_offset = 0;
             return true;
         }
@@ -2542,21 +2605,17 @@ impl PhotosApp {
             return;
         }
         let bounds = self.canvas_rect;
-        let columns: usize = if bounds.width() < LIBRARY_ONE_COLUMN_MAX_W {
-            1
-        } else if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W {
-            2
-        } else if bounds.width() >= 1_440.0 {
-            5
-        } else {
-            4
-        };
+        // Enlarged text needs its own density rule. Five desktop cards leave
+        // only a few words of metadata per card at 200%, which makes labels
+        // overlap their independent destructive controls.
+        let large_text = theme.text_scale > 1.25;
+        let columns = library_column_count(bounds.width(), large_text, self.metadata_editor);
         let gap = if columns <= 2 { 8.0 } else { 12.0 };
         let card_w =
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
                 / columns as f64)
                 .max(1.0);
-        let album_h = if self.library_albums.is_empty() {
+        let album_h = if self.library_albums.is_empty() || large_text {
             0.0
         } else {
             38.0
@@ -2571,23 +2630,27 @@ impl PhotosApp {
             Some((bounds.width() - f64::from(PAD * 2.0)) as f32),
             TextWeight::Medium,
         );
-        let count = if self.library_total == 0 {
+        let count = if large_text {
+            format!("{} photographs", self.library_total)
+        } else if self.library_total == 0 {
             "0".to_owned()
         } else {
             let first = self.library_offset + 1;
             let last = (self.library_offset + self.library_items.len()).min(self.library_total);
             format!("{first}–{last} / {}", self.library_total)
         };
+        let count_width = if large_text { 180.0 } else { 100.0 };
         text_renderer.draw_text_weighted(
             scene,
             &count,
             13.0,
             theme.text_dim,
-            transform * Affine::translate((bounds.x1 - f64::from(PAD) - 100.0, heading_y + 3.0)),
-            Some(100.0),
+            transform
+                * Affine::translate((bounds.x1 - f64::from(PAD) - count_width, heading_y + 3.0)),
+            Some(count_width as f32),
             TextWeight::Regular,
         );
-        if !self.library_albums.is_empty() {
+        if !self.library_albums.is_empty() && !large_text {
             let mut x = bounds.x0 + f64::from(PAD);
             let y = heading_y + 24.0;
             let mut albums = vec![(None, format!("All photos ({})", self.library_total))];
@@ -2638,7 +2701,8 @@ impl PhotosApp {
         // behind global search: folders and people are an everyday browse
         // route.  The six-per-kind cap keeps this compact; every other label
         // remains available through the canonical resource/search surface.
-        let filter_y = heading_y + 31.0 + album_h;
+        let header_h = if large_text { 72.0 } else { 31.0 };
+        let filter_y = heading_y + header_h + album_h;
         let mut filter_x = bounds.x0 + f64::from(PAD);
         let compact_filters = columns <= 2;
         let mut filters = vec![(
@@ -2650,7 +2714,11 @@ impl PhotosApp {
                 "All metadata".to_owned()
             },
         )];
-        if compact_filters {
+        if large_text {
+            // Other durable metadata views remain available through Search
+            // and their own stable resource actions.  Avoid a dense chip row
+            // competing with 200%-scaled library titles.
+        } else if compact_filters {
             // A phone has one shelf row. Show one folder *and* one explicit
             // people label rather than filling it with folders and hiding the
             // privacy-controlled people route.
@@ -2692,7 +2760,8 @@ impl PhotosApp {
             if filter_x + width > bounds.x1 - f64::from(PAD) {
                 break;
             }
-            let chip = Rect::new(filter_x, filter_y, filter_x + width, filter_y + 28.0);
+            let chip_h = if large_text { 44.0 } else { 28.0 };
+            let chip = Rect::new(filter_x, filter_y, filter_x + width, filter_y + chip_h);
             let selected = folder.as_ref() == self.active_folder.as_ref()
                 && person.as_ref() == self.active_person.as_ref()
                 && self.active_album.is_none();
@@ -2719,7 +2788,11 @@ impl PhotosApp {
                 &label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 7.0)),
+                transform
+                    * Affine::translate((
+                        chip.x0 + 8.0,
+                        chip.y0 + if large_text { 10.0 } else { 7.0 },
+                    )),
                 Some((width - 16.0) as f32),
                 TextWeight::Medium,
             );
@@ -2731,22 +2804,45 @@ impl PhotosApp {
         // the grid geometry so a short library cannot make controls look
         // attached to (or hide) an unrelated picture.
         let compact_album_actions_h =
-            if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W && !self.album_editor {
+            if bounds.width() < LIBRARY_TWO_COLUMN_MAX_W && !self.album_editor && !large_text {
                 42.0
             } else {
                 0.0
             };
-        let filter_h = 34.0;
-        let top = heading_y + 31.0 + album_h + filter_h + compact_album_actions_h;
+        let filter_h = if large_text { 50.0 } else { 34.0 };
+        let top = heading_y + header_h + album_h + filter_h + compact_album_actions_h;
         // The worker preserves source aspect ratio. A 3:2 shelf avoids the
         // oversized letterbox trays the old 16:10 geometry produced.
-        let preview_h = (card_w * 0.667).clamp(76.0, 178.0);
+        let preview_h = (card_w * 0.667).clamp(
+            76.0,
+            if large_text && self.metadata_editor {
+                // The sheet owns the right side; retain one complete, bounded
+                // background card without making its action row fall below
+                // the viewport.
+                300.0
+            } else if large_text {
+                f64::INFINITY
+            } else if columns == 1 {
+                320.0
+            } else {
+                178.0
+            },
+        );
         // The footer has two text lines and an honest 44px action row. Keep
         // it roomy instead of letting desktop density turn controls into
         // loose glyphs or make metadata collide with a filename.
-        let card_h = preview_h + 88.0;
+        let card_h = preview_h + if large_text { 128.0 } else { 88.0 };
         let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
-        let visible = columns.saturating_mul(rows.max(1));
+        // The editor is modal at large text: leaving a partially visible
+        // ultra-wide thumbnail behind it creates a false second target and
+        // can make its action row look clipped. The local grid decision still
+        // drops to one lane, ready for the sheet to close, but the sheet owns
+        // the visual surface while it is active.
+        let visible = if large_text && self.metadata_editor {
+            0
+        } else {
+            columns.saturating_mul(rows)
+        };
         for (index, item) in self.library_items.iter().take(visible).enumerate() {
             let id = &item.id;
             let name = &item.name;
@@ -2820,39 +2916,56 @@ impl PhotosApp {
                 &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
             );
             let action_y = card.y1 - 44.0;
+            let control_w = 44.0;
             let details = Rect::new(
                 card.x0 + 8.0,
                 action_y,
-                (card.x0 + 108.0).min(card.x1 - 88.0),
+                (card.x0 + 108.0).min(card.x1 - control_w * 2.0),
                 card.y1,
             );
-            let remove = Rect::new(card.x1 - 88.0, action_y, card.x1 - 44.0, card.y1);
-            let star = Rect::new(card.x1 - 44.0, action_y, card.x1, card.y1);
+            let remove = Rect::new(
+                card.x1 - control_w * 2.0,
+                action_y,
+                card.x1 - control_w,
+                card.y1,
+            );
+            let star = Rect::new(card.x1 - control_w, action_y, card.x1, card.y1);
             // Both text rows are explicitly constrained to this card. The
             // action row owns the bottom 44px, so no title can collide with a
             // neighboring column or a control.
-            let display_name =
-                compact_label(name, ((card_w - 18.0) / 8.0).floor().max(8.0) as usize);
+            let display_name = compact_label(
+                name,
+                ((card_w - 18.0) / if large_text { 16.0 } else { 8.0 })
+                    .floor()
+                    .max(8.0) as usize,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 &display_name,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + 9.0, preview.y1 + 9.0)),
+                transform
+                    * Affine::translate((x + 9.0, preview.y1 + if large_text { 8.0 } else { 9.0 })),
                 Some((card_w - 18.0) as f32),
                 TextWeight::Medium,
             );
             if !item.metadata.is_empty() {
                 let metadata = compact_label(
                     &item.metadata,
-                    ((card_w - 18.0) / 6.5).floor().max(12.0) as usize,
+                    ((card_w - 18.0) / if large_text { 14.0 } else { 6.5 })
+                        .floor()
+                        .max(12.0) as usize,
                 );
                 text_renderer.draw_text_weighted(
                     scene,
                     &metadata,
                     11.0,
                     theme.text_dim,
-                    transform * Affine::translate((x + 9.0, preview.y1 + 29.0)),
+                    transform
+                        * Affine::translate((
+                            x + 9.0,
+                            preview.y1 + if large_text { 34.0 } else { 29.0 },
+                        )),
                     Some((card_w - 18.0) as f32),
                     TextWeight::Regular,
                 );
@@ -2961,6 +3074,17 @@ impl PhotosApp {
     ) {
         self.album_editor_hits.clear();
         if !self.library_mode || self.metadata_editor {
+            return;
+        }
+        if self.album_editor && theme.text_scale > 1.25 {
+            self.draw_large_text_album_editor(scene, transform, text_renderer, theme, presence);
+            return;
+        }
+        // At enlarged text, album management remains available through the
+        // library resource and its semantic actions. Avoid placing fixed-size
+        // "New/Edit album" labels into a header whose type has doubled.
+        if !self.album_editor && theme.text_scale > 1.25 {
+            self.album_editor_rect = Rect::ZERO;
             return;
         }
         let bounds = self.canvas_rect;
@@ -3221,14 +3345,15 @@ impl PhotosApp {
         }
     }
 
-    /// A focused details sheet built from shared `TextInputs`. It intentionally
-    /// asks for labels rather than offering facial analysis: people metadata is
-    /// explicit, editable, and replicated only after Save.
+    /// A large-text album sheet uses a short vertical rhythm instead of trying
+    /// to scale the desktop side panel into a phone viewport.  Its action
+    /// targets are still the same local intents and shared `TextInput` as the
+    /// regular sheet; only this device's presentation changes.
     #[allow(
         clippy::too_many_lines,
-        reason = "the metadata sheet paints four shared fields and its actions in one auditable geometry block"
+        reason = "large-text album geometry deliberately keeps every field and action in one auditable sheet"
     )]
-    fn draw_metadata_editor(
+    fn draw_large_text_album_editor(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -3236,14 +3361,12 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.metadata_editor_hits.clear();
-        if !self.metadata_editor {
-            return;
-        }
+        use vello::peniko::Fill;
+
         let bounds = self.canvas_rect;
         let narrow = bounds.width() < 620.0;
-        let panel_w = if narrow { bounds.width() - 16.0 } else { 420.0 };
-        let panel_h = 408.0;
+        let panel_w = if narrow { bounds.width() - 16.0 } else { 460.0 };
+        let panel_h = (bounds.height() - 16.0).min(620.0);
         let panel = Rect::new(
             if narrow {
                 bounds.x0 + 8.0
@@ -3266,6 +3389,234 @@ impl PhotosApp {
                 bounds.y0 + 12.0 + panel_h
             },
         );
+        self.album_editor_rect = panel;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &panel,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            if self.album_editor_creating {
+                "New album"
+            } else {
+                "Edit album"
+            },
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
+            Some((panel.width() - 32.0) as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Album name",
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 66.0)),
+            Some((panel.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        self.album_name_input.apply_layout_external(Rect::new(
+            panel.x0 + 16.0,
+            panel.y0 + 94.0,
+            panel.x1 - 16.0,
+            panel.y0 + 170.0,
+        ));
+        self.album_name_input
+            .draw(scene, transform, text_renderer, theme, presence);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Choose photographs in the grid",
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 196.0)),
+            Some((panel.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("{} selected", self.album_editor_members.len()),
+            12.0,
+            theme.text_primary,
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 248.0)),
+            Some((panel.width() - 32.0) as f32),
+            TextWeight::Medium,
+        );
+        let page_y = panel.y0 + 290.0;
+        let previous = Rect::new(panel.x0 + 16.0, page_y, panel.x0 + 166.0, page_y + 56.0);
+        let next = Rect::new(panel.x1 - 166.0, page_y, panel.x1 - 16.0, page_y + 56.0);
+        for (hit, rect, label) in [
+            (AlbumEditorHit::PreviousPage, previous, "Previous"),
+            (AlbumEditorHit::NextPage, next, "Next"),
+        ] {
+            let enabled = match hit {
+                AlbumEditorHit::PreviousPage => self.can_page_library(false),
+                AlbumEditorHit::NextPage => self.can_page_library(true),
+                _ => false,
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if enabled {
+                    theme.tokens.colors.neutral[3]
+                } else {
+                    theme.tokens.colors.neutral[2]
+                },
+                None,
+                &rect,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                12.0,
+                if enabled {
+                    theme.text_primary
+                } else {
+                    theme.text_dim
+                },
+                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 16.0)),
+                Some((rect.width() - 24.0) as f32),
+                TextWeight::Medium,
+            );
+            if enabled {
+                self.album_editor_hits.push((hit, rect));
+            }
+        }
+        let action_h = 60.0;
+        let action_y = panel.y1 - action_h - 16.0;
+        let cancel = Rect::new(
+            panel.x0 + 16.0,
+            action_y,
+            panel.x0 + 166.0,
+            action_y + action_h,
+        );
+        let save = Rect::new(
+            panel.x1 - 166.0,
+            action_y,
+            panel.x1 - 16.0,
+            action_y + action_h,
+        );
+        let delete = Rect::new(
+            panel.x0 + 16.0,
+            action_y - action_h - 10.0,
+            panel.x1 - 16.0,
+            action_y - 10.0,
+        );
+        for (hit, rect, label, color) in [
+            (
+                AlbumEditorHit::Cancel,
+                cancel,
+                "Cancel",
+                theme.tokens.colors.neutral[3],
+            ),
+            (
+                AlbumEditorHit::Save,
+                save,
+                "Save",
+                theme.tokens.colors.accent[6],
+            ),
+        ] {
+            scene.fill(Fill::NonZero, transform, color, None, &rect);
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 17.0)),
+                Some((rect.width() - 24.0) as f32),
+                TextWeight::Medium,
+            );
+            self.album_editor_hits.push((hit, rect));
+        }
+        if !self.album_editor_creating {
+            let hit = if self.album_delete_confirm {
+                AlbumEditorHit::ConfirmDelete
+            } else {
+                AlbumEditorHit::Delete
+            };
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.semantic.danger,
+                None,
+                &delete,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                if self.album_delete_confirm {
+                    "Delete album?"
+                } else {
+                    "Delete album"
+                },
+                12.0,
+                theme.text_primary,
+                transform * Affine::translate((delete.x0 + 12.0, delete.y0 + 17.0)),
+                Some((delete.width() - 24.0) as f32),
+                TextWeight::Medium,
+            );
+            self.album_editor_hits.push((hit, delete));
+        }
+    }
+
+    /// A focused details sheet built from shared `TextInputs`. It intentionally
+    /// asks for labels rather than offering facial analysis: people metadata is
+    /// explicit, editable, and replicated only after Save.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the metadata sheet paints four shared fields and its actions in one auditable geometry block"
+    )]
+    fn draw_metadata_editor(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.metadata_editor_hits.clear();
+        if !self.metadata_editor {
+            return;
+        }
+        let bounds = self.canvas_rect;
+        let narrow = bounds.width() < 620.0;
+        let panel_w = if narrow { bounds.width() - 16.0 } else { 420.0 };
+        let scale = f64::from(theme.text_scale);
+        // Keep each field's scaled label, input, and its own focus ring on a
+        // separate line. The former fixed 66px rhythm made 200% text paint
+        // through the next field and the footer actions.
+        let panel_h = (408.0 * scale).min((bounds.height() - 24.0).max(0.0));
+        let panel = Rect::new(
+            if narrow {
+                bounds.x0 + 8.0
+            } else {
+                bounds.x1 - panel_w - 12.0
+            },
+            if narrow {
+                (bounds.y1 - panel_h - 8.0).max(bounds.y0 + 8.0)
+            } else {
+                bounds.y0 + 12.0
+            },
+            if narrow {
+                bounds.x1 - 8.0
+            } else {
+                bounds.x1 - 12.0
+            },
+            if narrow {
+                bounds.y1 - 8.0
+            } else {
+                (bounds.y0 + 12.0 + panel_h).min(bounds.y1 - 8.0)
+            },
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -3285,7 +3636,7 @@ impl PhotosApp {
             "Photo details",
             18.0,
             theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0 * scale)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Medium,
         );
@@ -3294,7 +3645,7 @@ impl PhotosApp {
             "Shared labels only — no automatic people identification",
             12.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 42.0)),
+            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0 * scale)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Regular,
         );
@@ -3305,7 +3656,10 @@ impl PhotosApp {
             ("Captured", &mut self.metadata_captured_at_input),
         ];
         for (index, (label, input)) in fields.into_iter().enumerate() {
-            let y = panel.y0 + 70.0 + index as f64 * 66.0;
+            // Leave a full scaled line after the privacy subtitle.  At 200%
+            // the sentence wraps, so the old 70px origin put “Folder” on its
+            // second line even though the field rectangles themselves fit.
+            let y = panel.y0 + 90.0 * scale + index as f64 * 60.0 * scale;
             text_renderer.draw_text_weighted(
                 scene,
                 label,
@@ -3317,15 +3671,25 @@ impl PhotosApp {
             );
             input.apply_layout_external(Rect::new(
                 panel.x0 + 16.0,
-                y + 17.0,
+                y + 17.0 * scale,
                 panel.x1 - 16.0,
-                y + 55.0,
+                y + 55.0 * scale,
             ));
             input.draw(scene, transform, text_renderer, theme, presence);
         }
-        let y = panel.y1 - 56.0;
-        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 112.0, y + 44.0);
-        let save = Rect::new(panel.x1 - 96.0, y, panel.x1 - 16.0, y + 44.0);
+        let y = panel.y1 - 64.0 * scale;
+        let cancel = Rect::new(
+            panel.x0 + 16.0,
+            y,
+            panel.x0 + 112.0 * scale,
+            y + 44.0 * scale,
+        );
+        let save = Rect::new(
+            panel.x1 - 96.0 * scale,
+            y,
+            panel.x1 - 16.0,
+            y + 44.0 * scale,
+        );
         for (hit, rect, label, color) in [
             (
                 MetadataEditorHit::Cancel,
@@ -3355,7 +3719,7 @@ impl PhotosApp {
                 label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0 * scale)),
                 Some((rect.width() - 16.0) as f32),
                 TextWeight::Medium,
             );
@@ -3425,7 +3789,7 @@ fn build_button(
     let slot = pending.clone();
     let shown = match face {
         Face::Labelled => label.as_str(),
-        Face::IconOnly => "",
+        Face::IconOnly | Face::LargeOverflow => "",
     };
     // “Library” has a measured 104 px compact face (including icon and
     // padding); the conservative generic estimate is 120 px. Keeping the
@@ -3601,10 +3965,13 @@ impl Widget for PhotosApp {
                 self.view_album(doc, &album_id)?;
             }
             crate::actions::PhotosOperation::ViewFolder { folder } => {
-                self.view_metadata_filter(doc, Some(folder), None)?;
+                self.view_metadata_filter(doc, Some(folder), None, None)?;
             }
             crate::actions::PhotosOperation::ViewPerson { person } => {
-                self.view_metadata_filter(doc, None, Some(person))?;
+                self.view_metadata_filter(doc, None, Some(person), None)?;
+            }
+            crate::actions::PhotosOperation::ViewTag { tag } => {
+                self.view_metadata_filter(doc, None, None, Some(tag))?;
             }
             crate::actions::PhotosOperation::Open { path: Some(_) } => {
                 return Err("direct open requires lifecycle dispatch".into());
@@ -3731,6 +4098,10 @@ impl Widget for PhotosApp {
                     .active_person
                     .as_ref()
                     .is_none_or(|person| photo.people.contains(person))
+                && self
+                    .active_tag
+                    .as_ref()
+                    .is_none_or(|tag| photo.tags.contains(tag))
         };
         self.library_total = library
             .photos
@@ -3795,6 +4166,11 @@ impl Widget for PhotosApp {
     ) -> NodeId {
         // Refit against the width the last layout produced. The first frame
         // has no rect yet and lays out roomy; the frame after corrects it.
+        // Large text uses the same labelled More overflow model as a phone:
+        // a small, visible “More” doorway keeps the hidden commands
+        // discoverable, while the four immediate navigation/edit controls
+        // retain their accessible icon names without colliding.
+        self.large_text_toolbar = theme.text_scale > 1.25;
         self.refit_toolbar(self.rect.width() as f32);
 
         let bar = self.build_toolbar_node(taffy, theme, node_map);
@@ -3948,6 +4324,24 @@ impl Widget for PhotosApp {
             if let Some((_, button)) = self.buttons.get_mut(index) {
                 button.draw(scene, transform, text_renderer, theme, presence);
             }
+        }
+        // Button chrome has a fixed 34px height.  Paint the one high-text
+        // overflow word ourselves at a smaller, centred size so it remains
+        // visibly labelled without letting a 200%-scaled button caption
+        // bleed through the toolbar rule.
+        if self.large_text_toolbar
+            && let Some((_, more)) = self.buttons.get(9)
+        {
+            let rect = more.get_rect();
+            text_renderer.draw_text_weighted(
+                scene,
+                "More",
+                10.0,
+                theme.text_primary,
+                transform * Affine::translate((rect.x0 + 34.0, rect.y0 + 8.0)),
+                Some((rect.width() - 40.0) as f32),
+                TextWeight::Medium,
+            );
         }
         if self.library_mode {
             self.draw_library(scene, transform, text_renderer, theme, presence);
@@ -4157,6 +4551,7 @@ impl Widget for PhotosApp {
             self.active_album = album_id;
             self.active_folder = None;
             self.active_person = None;
+            self.active_tag = None;
             self.library_offset = 0;
             *handled = true;
             return;
@@ -4179,6 +4574,7 @@ impl Widget for PhotosApp {
             self.active_album = None;
             self.active_folder = folder;
             self.active_person = person;
+            self.active_tag = None;
             self.library_offset = 0;
             self.notice = None;
             *handled = true;
@@ -4643,7 +5039,7 @@ mod tests {
     }
 
     #[test]
-    fn folder_and_person_views_are_local_filters_with_honest_stale_results() {
+    fn metadata_views_are_local_filters_with_honest_stale_results() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
@@ -4651,6 +5047,7 @@ mod tests {
             LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         in_folder.folder = Some("Travel".into());
         in_folder.people = vec!["Élodie".into()];
+        in_folder.tags = vec!["golden-hour".into()];
         let other = LibraryPhoto::from_image(OpenImage::from_path("/photos/two.png", 20, 10));
         let library = crate::model::PhotoLibrary {
             photos: vec![in_folder, other],
@@ -4658,7 +5055,7 @@ mod tests {
         };
         PhotosDoc::set_library(&mut doc, &library);
 
-        app.view_metadata_filter(&doc, Some("Travel".into()), None)
+        app.view_metadata_filter(&doc, Some("Travel".into()), None, None)
             .expect("existing folder enters a view");
         app.sync(&mut doc, &ROOT);
         assert!(app.library_mode);
@@ -4666,14 +5063,21 @@ mod tests {
         assert_eq!(app.active_folder.as_deref(), Some("Travel"));
         assert!(app.active_person.is_none());
 
-        app.view_metadata_filter(&doc, None, Some("Élodie".into()))
+        app.view_metadata_filter(&doc, None, Some("Élodie".into()), None)
             .expect("existing person enters a view");
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.library_total, 1);
         assert_eq!(app.active_person.as_deref(), Some("Élodie"));
         assert!(app.active_folder.is_none());
+        app.view_metadata_filter(&doc, None, None, Some("golden-hour".into()))
+            .expect("existing tag enters a view");
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.library_total, 1);
+        assert_eq!(app.active_tag.as_deref(), Some("golden-hour"));
+        assert!(app.active_folder.is_none());
+        assert!(app.active_person.is_none());
         assert!(
-            app.view_metadata_filter(&doc, Some("Missing".into()), None)
+            app.view_metadata_filter(&doc, Some("Missing".into()), None, None)
                 .is_err()
         );
     }
@@ -5045,5 +5449,17 @@ mod tests {
         assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
         assert!(PhotosDoc::library(&doc).photo(&id).is_none());
         assert!(app.take_committed_action().is_some());
+    }
+
+    #[test]
+    fn high_text_grid_uses_readable_card_measures_and_a_single_sheet_lane() {
+        let width = 1_440.0;
+        assert_eq!(library_column_count(width, true, false), 2);
+        assert_eq!(library_column_count(width, true, true), 1);
+        let two_column_card_width = (width - f64::from(PAD * 2.0) - 8.0) / 2.0;
+        assert!(
+            two_column_card_width >= 600.0,
+            "200% text needs a real reading measure, got {two_column_card_width}"
+        );
     }
 }
