@@ -3454,6 +3454,12 @@ impl FileExplorerWidget {
         let cut = self.clipboard_cut;
         let items = self.clipboard.clone();
         let mut errors = 0usize;
+        // A cut paste is allowed to complete only part of a multi-selection:
+        // one source may have been removed or become unavailable between Cut
+        // and Paste. Keep precisely those failed sources on the clipboard so
+        // retrying neither repeats successful moves nor loses the unfinished
+        // work. (Copies intentionally remain on the clipboard.)
+        let mut remaining_cut_sources = Vec::new();
         for src in &items {
             let res = if cut {
                 fileops::move_into(src, &dest)
@@ -3462,10 +3468,13 @@ impl FileExplorerWidget {
             };
             if res.is_err() {
                 errors += 1;
+                if cut {
+                    remaining_cut_sources.push(src.clone());
+                }
             }
         }
         if cut {
-            self.clipboard.clear();
+            self.clipboard = remaining_cut_sources;
         }
         self.refresh();
         self.status = Some(if errors == 0 {
@@ -7425,6 +7434,7 @@ impl Widget for FileExplorerWidget {
                 let sources = self.clipboard.clone();
                 let cut = self.clipboard_cut;
                 let mut failures = Vec::new();
+                let mut remaining_cut_sources = Vec::new();
                 for source in &sources {
                     let result = if cut {
                         fileops::move_into(source, &destination)
@@ -7432,11 +7442,14 @@ impl Widget for FileExplorerWidget {
                         fileops::copy_into(source, &destination)
                     };
                     if let Err(error) = result {
+                        if cut {
+                            remaining_cut_sources.push(source.clone());
+                        }
                         failures.push(format!("{}: {error}", source.display()));
                     }
                 }
-                if cut && failures.is_empty() {
-                    self.clipboard.clear();
+                if cut {
+                    self.clipboard = remaining_cut_sources;
                 }
                 self.refresh();
                 if !failures.is_empty() {
@@ -9673,6 +9686,36 @@ mod command_path_tests {
         assert!(w.apply_command(FileCommand::Paste));
         assert!(dest.join("m.txt").exists(), "moved into dest");
         assert!(!src.join("m.txt").exists(), "original removed (move)");
+    }
+
+    #[test]
+    fn partial_cut_paste_retains_only_the_sources_that_need_retrying() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        let moved = src.join("moved.txt");
+        let vanished = src.join("vanished.txt");
+        std::fs::write(&moved, b"x").unwrap();
+        std::fs::write(&vanished, b"x").unwrap();
+        let dest = d.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(src);
+        w.selection.select_all(w.displayed_entries().len());
+        assert!(w.apply_command(FileCommand::Cut));
+        std::fs::remove_file(&vanished).unwrap();
+
+        w.navigate(dest.clone());
+        assert!(w.apply_command(FileCommand::Paste));
+
+        assert!(dest.join("moved.txt").exists(), "the available item moved");
+        assert_eq!(
+            w.clipboard,
+            vec![vanished],
+            "retry must contain only the item whose move actually failed"
+        );
+        assert!(w.clipboard_cut, "the remaining item keeps cut semantics");
     }
 
     #[test]
