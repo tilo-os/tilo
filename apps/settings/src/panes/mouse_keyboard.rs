@@ -190,7 +190,7 @@ impl MouseKeyboardPane {
             Self::spell_checker_card(),
             self.input_sources_card(),
             Self::pointer_card(),
-            self.advanced_pointer_card(),
+            self.pointer_options_card(),
             Self::pen_card(),
         ])
     }
@@ -277,9 +277,12 @@ impl MouseKeyboardPane {
         )
     }
 
-    fn advanced_pointer_card(&self) -> Box<dyn Widget> {
+    /// Less-common pointer choices still get a specific destination instead
+    /// of an opaque "Advanced" bucket: people and assistive agents can tell
+    /// what will be changed before opening the card.
+    fn pointer_options_card(&self) -> Box<dyn Widget> {
         card(
-            "Advanced pointer settings",
+            "Buttons & acceleration",
             rows(vec![
                 setting_row_described(
                     "Left-handed",

@@ -70,11 +70,15 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .push(Box::new(Text::new("SETTINGS").with_size(12.0).dimmed()))
+            .push(Box::new(
+                Text::new("SETTINGS").with_scaled_size(12.0).dimmed(),
+            ))
             .push(vgap(5.0))
-            .push(Box::new(Text::new(title).with_size(24.0)))
+            .push(Box::new(Text::new(title).with_scaled_size(24.0)))
             .push(vgap(5.0))
-            .push(Box::new(Text::new(subtitle).with_size(13.0).dimmed())),
+            .push(Box::new(
+                Text::new(subtitle).with_scaled_size(13.0).dimmed(),
+            )),
     )
 }
 
@@ -99,7 +103,7 @@ pub fn card_with_action(title: &str, action: El, body: El) -> El {
 pub fn setting_row(label: &str, control: El) -> El {
     Box::new(
         Row::new()
-            .push(Box::new(Text::new(label).with_size(13.0)))
+            .push(Box::new(Text::new(label).with_scaled_size(13.0)))
             .push(Box::new(Spacer::new()))
             .push(control),
     )
@@ -119,7 +123,7 @@ pub fn value_row(label: &str, value: &str) -> El {
 /// the row and wrap the control below it, dropping it out of alignment.
 pub fn setting_row_described(label: &str, description: &str, control: El) -> El {
     let top = Row::new()
-        .push(Box::new(Text::new(label).with_size(13.0)))
+        .push(Box::new(Text::new(label).with_scaled_size(13.0)))
         .push(Box::new(Spacer::new()))
         .push(control);
     Box::new(
@@ -127,13 +131,15 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(top))
-            .push(Box::new(Text::new(description).with_size(12.0).dimmed())),
+            .push(Box::new(
+                Text::new(description).with_scaled_size(12.0).dimmed(),
+            )),
     )
 }
 
 /// A dim helper-text line, for captions and "best-effort" notes.
 pub fn caption(text: &str) -> El {
-    Box::new(Text::new(text).with_size(12.0).dimmed())
+    Box::new(Text::new(text).with_scaled_size(12.0).dimmed())
 }
 
 /// Default width (logical px) a compact right-aligned control (dropdown,
@@ -191,9 +197,11 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
     let text_block = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(Text::new(title).with_size(20.0)))
+        .push(Box::new(Text::new(title).with_scaled_size(20.0)))
         .push(vgap(3.0))
-        .push(Box::new(Text::new(subtitle).with_size(12.0).dimmed()));
+        .push(Box::new(
+            Text::new(subtitle).with_scaled_size(12.0).dimmed(),
+        ));
     let row = Row::new()
         .push(Box::new(IconWidget::new(icon, 34.0).with_color(accent)))
         .push(hgap(14.0))

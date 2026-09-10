@@ -938,7 +938,7 @@ impl DeviceMeshPane {
         }
         if shows_advanced_services(self.config.device_role) {
             sections.push(card(
-                "Advanced",
+                "Device services",
                 rows(vec![
                     setting_row_described(
                         "Collaboration and chat relay",

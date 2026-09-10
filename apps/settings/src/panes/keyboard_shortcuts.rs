@@ -136,6 +136,23 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
     .to_vec()
 }
 
+/// The stable durable-key catalogue shared by the visible recorder rows and
+/// the Settings resource tree.  Keeping this next to [`entries`] makes it
+/// impossible for Ctrl+K (or an agent) to expose only a partial shortcut
+/// surface when a new compositor shortcut is added to the page.
+pub(crate) fn resource_entries() -> Vec<(&'static str, &'static str)> {
+    entries()
+        .into_iter()
+        .map(|(_, key, label, _)| (key, label))
+        .collect()
+}
+
+/// Whether `key` names one of this pane's durable shortcut preferences.
+/// Presentation drafts/errors intentionally do not pass this boundary.
+pub(crate) fn is_durable_key(key: &str) -> bool {
+    key == VIM_MODE || resource_entries().iter().any(|(known, _)| *known == key)
+}
+
 fn is_desktop_navigation(action: ShortcutAction) -> bool {
     !matches!(
         action,
