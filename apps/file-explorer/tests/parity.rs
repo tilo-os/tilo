@@ -315,12 +315,12 @@ fn view_mode_toggle_switches_between_list_and_grid() {
 fn initial_path_prefers_workspace_then_home_then_cwd_then_root() {
     // `initial_path()` composes three fallback sources in order. We can't
     // mock all of them in-process, but we can assert the public contract:
-    // the returned path is either `/workspace`, the user's home, the cwd, or
+    // the returned path is either the canonical workspace root, the user's home, the cwd, or
     // `/` — and that the first existing option is chosen. On a normal dev
     // machine `/workspace` does not exist, so we expect home or cwd.
-    use file_explorer::model::initial_path;
+    use file_explorer::model::{WORKSPACE_ROOT, initial_path};
     let p = initial_path();
-    let workspace = std::path::PathBuf::from("/workspace");
+    let workspace = std::path::PathBuf::from(WORKSPACE_ROOT);
     let home = dirs::home_dir();
     let cwd = std::env::current_dir().ok();
 
