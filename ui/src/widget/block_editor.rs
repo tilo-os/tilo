@@ -266,6 +266,9 @@ pub struct BlockEditor {
     /// Decoupled from `focused` so the index survives blur/refocus.
     is_focused: bool,
     rect: Rect,
+    /// Current accessibility text scale, retained for prefix and gutter
+    /// geometry that is resolved after the taffy pass.
+    text_scale: f64,
     child_nodes: Vec<NodeId>,
     dirty: bool,
     /// Set when the block list grows/shrinks; drained by
@@ -355,6 +358,7 @@ impl BlockEditor {
             focused: None,
             is_focused: false,
             rect: Rect::ZERO,
+            text_scale: 1.0,
             child_nodes: Vec::new(),
             dirty: true,
             structure_dirty: true,
@@ -1041,14 +1045,14 @@ impl BlockEditor {
                 continue;
             }
             let line_rect = b.line.get_rect();
-            let gutter = prefix_gutter_for(&b.kind);
+            let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
             let cy = f64::midpoint(line_rect.y0, line_rect.y1);
             let cx = line_rect.x0 - gutter + gutter / 2.0;
             let r = Rect::new(
-                cx - CHECKBOX_SIZE_PX / 2.0,
-                cy - CHECKBOX_SIZE_PX / 2.0,
-                cx + CHECKBOX_SIZE_PX / 2.0,
-                cy + CHECKBOX_SIZE_PX / 2.0,
+                cx - CHECKBOX_SIZE_PX * self.text_scale / 2.0,
+                cy - CHECKBOX_SIZE_PX * self.text_scale / 2.0,
+                cx + CHECKBOX_SIZE_PX * self.text_scale / 2.0,
+                cy + CHECKBOX_SIZE_PX * self.text_scale / 2.0,
             );
             // ~4px slop so users don't have to land pixel-perfect.
             let slop = 4.0;
@@ -3159,8 +3163,9 @@ fn draw_block(
     formulas: &mut FormulaDrawCtx<'_>,
 ) {
     let line_rect = b.line.get_rect();
-    let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
-    let gutter = prefix_gutter_for(&b.kind);
+    let scale = f64::from(ctx.theme.text_scale);
+    let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent()) * scale;
+    let gutter = prefix_gutter_for(&b.kind) * scale;
     let prefix_x0 = line_rect.x0 - gutter;
     let row_x0 = prefix_x0 - indent_px;
     let _ = row_x0;
@@ -3223,7 +3228,7 @@ fn draw_block(
 fn draw_bullet_prefix(line_rect: Rect, prefix_x0: f64, gutter: f64, ctx: &mut BlockDrawCtx<'_>) {
     let cy = f64::midpoint(line_rect.y0, line_rect.y1);
     let cx = prefix_x0 + gutter / 2.0;
-    let radius = 3.0;
+    let radius = 3.0 * f64::from(ctx.theme.text_scale);
     let circle = vello::kurbo::Circle::new((cx, cy), radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
@@ -3247,7 +3252,7 @@ fn draw_numbered_prefix(
     let (label_w, _) = ctx.text_renderer.measure(&label, font_size, None);
     // Matches RichTextLine's line height so the ordinal
     // sits on the item text's baseline.
-    let line_height = f64::from(font_size) * 1.25;
+    let line_height = f64::from(font_size * ctx.theme.text_scale) * 1.25;
     let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
     let x = (line_rect.x0 - 6.0 - f64::from(label_w)).max(prefix_x0);
     ctx.text_renderer.draw_text(
@@ -3267,15 +3272,16 @@ fn draw_checklist_prefix(
     gutter: f64,
     ctx: &mut BlockDrawCtx<'_>,
 ) {
+    let scale = f64::from(ctx.theme.text_scale);
     let cy = f64::midpoint(line_rect.y0, line_rect.y1);
     let cx = prefix_x0 + gutter / 2.0;
     let box_rect = Rect::new(
-        cx - CHECKBOX_SIZE_PX / 2.0,
-        cy - CHECKBOX_SIZE_PX / 2.0,
-        cx + CHECKBOX_SIZE_PX / 2.0,
-        cy + CHECKBOX_SIZE_PX / 2.0,
+        cx - CHECKBOX_SIZE_PX * scale / 2.0,
+        cy - CHECKBOX_SIZE_PX * scale / 2.0,
+        cx + CHECKBOX_SIZE_PX * scale / 2.0,
+        cy + CHECKBOX_SIZE_PX * scale / 2.0,
     );
-    let shape = vello::kurbo::RoundedRect::from_rect(box_rect, 3.0);
+    let shape = vello::kurbo::RoundedRect::from_rect(box_rect, 3.0 * scale);
     if done {
         ctx.scene.fill(
             vello::peniko::Fill::NonZero,
@@ -3286,12 +3292,18 @@ fn draw_checklist_prefix(
         );
         // Two lines from lower-left through center to upper-right.
         let mut path = vello::kurbo::BezPath::new();
-        let pad = CHECKBOX_SIZE_PX * 0.22;
-        path.move_to((box_rect.x0 + pad, box_rect.y0 + CHECKBOX_SIZE_PX * 0.55));
-        path.line_to((box_rect.x0 + CHECKBOX_SIZE_PX * 0.42, box_rect.y1 - pad));
+        let pad = CHECKBOX_SIZE_PX * scale * 0.22;
+        path.move_to((
+            box_rect.x0 + pad,
+            box_rect.y0 + CHECKBOX_SIZE_PX * scale * 0.55,
+        ));
+        path.line_to((
+            box_rect.x0 + CHECKBOX_SIZE_PX * scale * 0.42,
+            box_rect.y1 - pad,
+        ));
         path.line_to((box_rect.x1 - pad, box_rect.y0 + pad));
         ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
+            &vello::kurbo::Stroke::new(2.0 * scale),
             ctx.transform,
             ctx.theme.tokens.colors.text_primary,
             None,
@@ -3299,7 +3311,7 @@ fn draw_checklist_prefix(
         );
     } else {
         ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
+            &vello::kurbo::Stroke::new(1.5 * scale),
             ctx.transform,
             ctx.theme.tokens.colors.border_standard,
             None,
@@ -3517,6 +3529,7 @@ impl Widget for BlockEditor {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         self.child_nodes.clear();
         // Consecutive code lines butt together (no inter-line gap) so
         // they read as one fenced block.
@@ -3539,7 +3552,7 @@ impl Widget for BlockEditor {
             let top_margin: f32 = if i == 0 || b.soft_break || continues_code_block {
                 0.0
             } else {
-                8.0
+                8.0 * theme.text_scale
             };
             let block_is_formula_end = is_formula_end.get(i).copied().unwrap_or(false);
             if top_margin > 0.0 || block_is_formula_end {
@@ -3606,8 +3619,9 @@ impl Widget for BlockEditor {
             b.line.apply_layout(taffy, *child_node, new_origin);
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
-            let gutter = prefix_gutter_for(&b.kind);
-            let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent());
+            let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
+            let indent_px =
+                f64::from(LIST_INDENT_STEP_PX) * f64::from(b.kind.indent()) * self.text_scale;
             let original = b.line.get_rect();
             let descriptor = formula_descriptor(&b.kind);
             let starts_formula = is_formula_start.get(index).copied().unwrap_or(false);
@@ -5429,6 +5443,39 @@ mod tests {
             "converting to a code block switches the cell to monospace"
         );
         assert!(!Block::paragraph("hi").line.inner().is_mono());
+    }
+
+    #[test]
+    fn high_text_checklist_and_code_rows_leave_full_scaled_line_bands() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![
+            Block::checklist(0, false, "Ship the high-text layout"),
+            Block::code_block(Some("rust".into()), "let scale = 2;"),
+        ]);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = editor.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .unwrap();
+        editor.apply_layout(&taffy, node, Point::ZERO);
+
+        let checklist = editor.blocks[0].line.get_rect();
+        let code = editor.blocks[1].line.get_rect();
+        assert!(
+            checklist.height() >= 48.0,
+            "2× checklist text needs a 48px band"
+        );
+        assert!(code.height() >= 42.0, "2× code text needs a 42px band");
+        assert!(checklist.y1 <= code.y0, "scaled rows must not collide");
+        assert!(code.x0 >= prefix_gutter_for(&editor.blocks[1].kind) * 2.0);
     }
 
     #[test]
