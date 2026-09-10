@@ -305,8 +305,28 @@ impl SettingsApp {
             ))
             .push(crate::widgets::vgap(28.0))
             .push(body);
-        let scroll = Scrollable::new_vertical().with_child(Box::new(inner));
+        // Account forms and cards are more legible as a column on large
+        // desktop displays. Operational panes deliberately keep their full
+        // detail width for device tables, channel controls, and bindings.
+        let content: Box<dyn Widget> = if self.uses_readable_content_measure() {
+            Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_centered_max_width(1040.0)
+                    .with_child(Box::new(inner)),
+            )
+        } else {
+            Box::new(inner)
+        };
+        let scroll = Scrollable::new_vertical().with_child(content);
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
+    }
+
+    /// Account forms are intentionally capped to a readable line length on
+    /// large monitors while staying fluid on narrow screens. Other panes keep
+    /// their full width until each has an equivalent content-measure review.
+    fn uses_readable_content_measure(&self) -> bool {
+        self.selected == Category::ExternalAccounts
     }
 
     /// Dispatch to the per-category pane body.
@@ -1149,10 +1169,13 @@ mod tests {
     use taffy::{NodeId, TaffyTree};
 
     fn layout_at(app: &mut SettingsApp, w: f32, h: f32) {
-        let theme = ui::Theme::dark();
+        layout_at_with_theme(app, w, h, &ui::Theme::dark());
+    }
+
+    fn layout_at_with_theme(app: &mut SettingsApp, w: f32, h: f32, theme: &ui::Theme) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let node = app.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 taffy::Style {
@@ -1533,6 +1556,40 @@ mod tests {
         assert!(
             heading.y0 >= back.y1,
             "the destination heading begins below the back band, so the back arrow remains obvious"
+        );
+    }
+
+    #[test]
+    fn narrow_large_text_keeps_the_destination_in_the_initial_viewport() {
+        fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
+            if out.is_none()
+                && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
+            {
+                *out = Some(w.get_rect());
+            }
+            for child in w.children() {
+                named_rect(child, name, out);
+            }
+        }
+
+        let selected = Category::RegionFormats;
+        let mut app = SettingsApp::with_selected(selected)
+            .with_width_hint(390.0)
+            .with_narrow_content_shot();
+        layout_at_with_theme(
+            &mut app,
+            390.0,
+            844.0,
+            &ui::Theme::dark().with_text_scale(1.5),
+        );
+
+        let mut heading = None;
+        named_rect(&app, selected.label(), &mut heading);
+        let heading = heading.expect("the content page names the selected destination");
+        assert!(
+            heading.y0 < 844.0,
+            "large text must retain the destination heading in the first viewport (y={})",
+            heading.y0
         );
     }
 

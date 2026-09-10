@@ -231,6 +231,25 @@ fn audio_demo_pane() -> Box<dyn Widget> {
 /// The `Result` return type matches the `--shots` binary's `main` signature;
 /// every path through this function currently always returns `Ok(())`.
 pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    render_for_path_with_text_scale(out, None)
+}
+
+/// Render a named acceptance scenario with an optional accessibility text
+/// scale. Settings has an app-specific shot pipeline, so it must explicitly
+/// carry the standard launcher's `--text-scale` through rather than silently
+/// dropping it as the old custom renderer did.
+///
+/// # Errors
+///
+/// Propagates an offscreen renderer or PNG-write failure.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the filename-routed acceptance scenarios remain auditable as one exhaustive dispatch table"
+)]
+pub fn render_for_path_with_text_scale(
+    out: &Path,
+    text_scale: Option<f32>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let fname = out
         .file_name()
         .and_then(|s| s.to_str())
@@ -244,7 +263,12 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
             .with_deterministic_hardware_for_shot()
             .with_narrow_list_shot();
-        return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
+        return render_to_path_with_text_scale(
+            Box::new(app),
+            NARROW_SHOTS_VIEWPORT,
+            out,
+            text_scale,
+        );
     }
 
     // `…narrow-content.png` proves the narrow content screen: the selected
@@ -254,7 +278,12 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
             .with_deterministic_hardware_for_shot()
             .with_narrow_content_shot();
-        return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
+        return render_to_path_with_text_scale(
+            Box::new(app),
+            NARROW_SHOTS_VIEWPORT,
+            out,
+            text_scale,
+        );
     }
 
     // `…search.png` proves the sidebar search filters the category list to the
@@ -270,20 +299,35 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
             .with_deterministic_hardware_for_shot()
             .with_search_shot("light");
-        return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
+        return render_to_path_with_text_scale(
+            Box::new(app),
+            DEFAULT_SHOTS_VIEWPORT,
+            out,
+            text_scale,
+        );
     }
 
     // `…netdemo.png` renders the Network pane with a populated scan list and
     // an open inline password prompt, proving the connect flow's surface.
     if fname.contains("netdemo") {
-        return render_to_path(network_demo_pane(), DEFAULT_SHOTS_VIEWPORT, out);
+        return render_to_path_with_text_scale(
+            network_demo_pane(),
+            DEFAULT_SHOTS_VIEWPORT,
+            out,
+            text_scale,
+        );
     }
 
     // `…audiodemo.png` renders the Sound pane with two output devices and
     // per-application streams — the music app routed to headphones while the
     // browser stays on speakers — proving the per-app routing surface.
     if fname.contains("audiodemo") {
-        return render_to_path(audio_demo_pane(), DEFAULT_SHOTS_VIEWPORT, out);
+        return render_to_path_with_text_scale(
+            audio_demo_pane(),
+            DEFAULT_SHOTS_VIEWPORT,
+            out,
+            text_scale,
+        );
     }
 
     // A populated External Accounts acceptance surface. Unlike the live pane,
@@ -306,7 +350,7 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         if fname.contains("narrow") {
             app = app.with_narrow_content_shot();
         }
-        return render_to_path(Box::new(app), viewport, out);
+        return render_to_path_with_text_scale(Box::new(app), viewport, out, text_scale);
     }
 
     // Per-panel capture: a `…panel-<slug>.png` filename (or the
@@ -327,16 +371,31 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
                     .with_deterministic_hardware_for_shot()
                     .with_narrow_content_shot();
-                return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
+                return render_to_path_with_text_scale(
+                    Box::new(app),
+                    NARROW_SHOTS_VIEWPORT,
+                    out,
+                    text_scale,
+                );
             }
             let app = SettingsApp::with_selected(cat)
                 .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
                 .with_deterministic_hardware_for_shot();
-            return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
+            return render_to_path_with_text_scale(
+                Box::new(app),
+                DEFAULT_SHOTS_VIEWPORT,
+                out,
+                text_scale,
+            );
         }
     }
     let scenario = Scenario::from_shots_path(out);
-    render_to_path(Box::new(scenario.app()), scenario.viewport(), out)
+    render_to_path_with_text_scale(
+        Box::new(scenario.app()),
+        scenario.viewport(),
+        out,
+        text_scale,
+    )
 }
 
 /// Render the ordinary Settings root at an explicitly requested acceptance
@@ -351,8 +410,22 @@ pub fn render_responsive_to_path(
     viewport: (u32, u32),
     out: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    render_responsive_to_path_with_text_scale(viewport, out, None)
+}
+
+/// Render an exact responsive viewport while preserving the requested text
+/// scale, just as the normal launcher path does.
+///
+/// # Errors
+///
+/// Propagates an offscreen renderer or PNG-write failure.
+pub fn render_responsive_to_path_with_text_scale(
+    viewport: (u32, u32),
+    out: &Path,
+    text_scale: Option<f32>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let app = responsive_app(viewport);
-    render_to_path(Box::new(app), viewport, out)
+    render_to_path_with_text_scale(Box::new(app), viewport, out, text_scale)
 }
 
 fn responsive_app(viewport: (u32, u32)) -> SettingsApp {
@@ -374,14 +447,26 @@ fn responsive_app(viewport: (u32, u32)) -> SettingsApp {
 /// caller can rasterise many scenes through **one** reused
 /// [`OffscreenRenderer`] (which amortises the expensive vello shader
 /// compilation over every pane instead of paying it per process).
-pub fn build_widget_scene(mut widget: Box<dyn Widget>, viewport: (u32, u32)) -> Scene {
+pub fn build_widget_scene(widget: Box<dyn Widget>, viewport: (u32, u32)) -> Scene {
+    build_widget_scene_with_text_scale(widget, viewport, None)
+}
+
+/// Build a scene with an optional accessibility type multiplier. Kept separate
+/// from the viewport so responsive acceptance captures can prove both layout
+/// mode and large-text behaviour at their exact requested dimensions.
+pub fn build_widget_scene_with_text_scale(
+    mut widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    text_scale: Option<f32>,
+) -> Scene {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
     // `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`); defaults to dark.
     let theme = std::env::var("QOS_SHOTS_THEME")
         .ok()
         .and_then(|n| Theme::named(&n))
-        .unwrap_or_else(Theme::dark);
+        .unwrap_or_else(Theme::dark)
+        .with_text_scale(text_scale.unwrap_or(1.0));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -452,8 +537,22 @@ pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    render_to_path_with_text_scale(widget, viewport, out, None)
+}
+
+/// Render a widget with an optional accessibility text multiplier.
+///
+/// # Errors
+///
+/// Propagates an offscreen renderer or PNG-write failure.
+pub fn render_to_path_with_text_scale(
+    widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &Path,
+    text_scale: Option<f32>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let scene = build_widget_scene(widget, viewport);
+    let scene = build_widget_scene_with_text_scale(widget, viewport, text_scale);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
