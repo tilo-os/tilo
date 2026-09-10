@@ -116,11 +116,48 @@ pub fn parse_path_detailed(path: &Path) -> Result<Book, String> {
     parse_epub(&bytes, 0, "").map_err(|error| error.to_string())
 }
 
+/// Parse an EPUB and place its bytes in the collaborative workspace before it
+/// is admitted to the shelf.  Opening a book is consequently collaborative by
+/// default: the CRDT library row and the content-addressed file become
+/// available to peers together, rather than leaving a remote peer with only a
+/// title and annotations it cannot resolve against any text. If a host has no
+/// writable workspace mount, it remains usable as a clearly local import.
+///
+/// The source is read once, under the normal EPUB byte limit.  This is used by
+/// the background importer, so the potentially expensive copy never runs on
+/// the UI thread.  Already-shared files are parsed in place.
+///
+/// # Errors
+///
+/// Returns a reader-safe message when the source cannot be read or parsed.
+pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String> {
+    let bytes = read_epub_bytes(path)
+        .ok_or_else(|| "the file could not be read or exceeds the 128 MiB limit".to_string())?;
+    // Never place a corrupt EPUB in the shared collection. Parsing before the
+    // copy also means a malformed file has no externally visible side effect.
+    let book = parse_epub(&bytes, 0, "").map_err(|error| error.to_string())?;
+    let destination = if is_shared(path) {
+        path.to_path_buf()
+    } else {
+        match write_shared_copy(&bytes, &content_id(&bytes)) {
+            Ok(destination) => destination,
+            Err(error) => {
+                // A workspace mount is host capability, not a precondition for
+                // reading. Preserve the local fallback while making every
+                // normal import collaborative whenever that capability exists.
+                tracing::warn!(%error, path = %path.display(), "ebook: shared import unavailable; keeping local copy");
+                path.to_path_buf()
+            }
+        }
+    };
+    Ok((book, destination))
+}
+
 /// Commit a previously parsed book to the library CRDT. Call this only on the
 /// UI/document owner after [`parse_path_detailed`] has completed.
 pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, mut book: Book) -> Book {
     book.cover_tint = tint_for(&book.id);
-    BooksDoc::upsert_library_entry(
+    BooksDoc::restore_library_entry(
         doc,
         &LibraryEntry {
             id: book.id.clone(),
@@ -141,42 +178,52 @@ pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, Pat
     if is_shared(src) {
         return None;
     }
-    // Read the source once under the same byte budget as imports. Apart from
-    // avoiding an unbounded `copy`, this gives the shared filename a stable
-    // content address: two unrelated `book.epub` files can never overwrite
-    // one another in the collaborative workspace.
-    let bytes = read_epub_bytes(src)?;
-    let id = content_id(&bytes);
+    let (book, dest) = parse_shared_path_detailed(src).ok()?;
+    // `parse_shared_path_detailed` intentionally falls back to local-only
+    // when a host exposes no workspace mount. The explicit Share control must
+    // not report that fallback as a successful share.
+    if !is_shared(&dest) {
+        return None;
+    }
+    let book = record_imported_book(doc, &dest, book);
+    Some((book, dest))
+}
+
+/// Materialise a content-addressed EPUB object in the shared workspace.
+/// Never overwrites an extant object: a conflicting file is reported instead
+/// of risking another reader's bytes.
+fn write_shared_copy(bytes: &[u8], id: &str) -> Result<PathBuf, String> {
     let dir = workspace_books_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let file_id = id.strip_prefix("book:").unwrap_or(&id);
+    std::fs::create_dir_all(&dir)
+        .map_err(|_| "the shared Books folder could not be created".to_string())?;
+    let file_id = id.strip_prefix("book:").unwrap_or(id);
     let dest = dir.join(format!("book-{file_id}.epub"));
-    // The content is identical, so the book keeps its id (and all its
-    // annotations + progress) — only its home changes from local to shared.
+    // The content address makes independent imports converge on one filename;
+    // create_new makes the collision check non-destructive.
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&dest)
     {
         Ok(mut file) => {
-            if file.write_all(&bytes).is_err() {
+            if file.write_all(bytes).is_err() {
                 let _ = std::fs::remove_file(&dest);
-                return None;
+                return Err("the book could not be copied to the shared library".into());
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             // A peer may have uploaded the same content first. Reuse that
             // exact object, but never replace a different/corrupt file.
-            let existing = read_epub_bytes(&dest)?;
+            let existing = read_epub_bytes(&dest)
+                .ok_or_else(|| "the existing shared book could not be read".to_string())?;
             if content_id(&existing) != id {
                 tracing::warn!(path = %dest.display(), "ebook: workspace name collision");
-                return None;
+                return Err("a different book already occupies this shared address".into());
             }
         }
-        Err(_) => return None,
+        Err(_) => return Err("the book could not be copied to the shared library".into()),
     }
-    let book = import_path(doc, &dest)?;
-    Some((book, dest))
+    Ok(dest)
 }
 
 /// Load the reader's library: auto-import any new books found in a watched
@@ -198,8 +245,13 @@ pub fn load_library<S: BuildHasher>(
     let watched = scan_watched(watched_folders);
     let mut discovered = HashMap::new();
     for path in watched {
-        if let Some(book) = import_path(doc, &path) {
-            discovered.insert(book.id, path);
+        // Startup discovery follows the same collaborative-by-default policy
+        // as picker imports.  The synchronous loader predates the worker, but
+        // it still records the materialised workspace path (or the honest
+        // local fallback) rather than publishing metadata for a private file.
+        if let Ok((book, resolved_path)) = parse_shared_path_detailed(&path) {
+            let book = record_imported_book(doc, &resolved_path, book);
+            discovered.insert(book.id, resolved_path);
         }
     }
 
@@ -586,6 +638,32 @@ mod tests {
 
         assert!(is_shared(&shared), "a /workspace/Books path is shared");
         assert!(!is_shared(&local_path), "a book elsewhere is device-local");
+        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
+    }
+
+    #[test]
+    #[serial]
+    fn shared_parse_materialises_content_before_the_library_row_is_written() {
+        let ws = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let local = tempfile::tempdir().unwrap();
+        let source = local.path().join("peer-readable.epub");
+        std::fs::write(&source, SAMPLE_EPUB).unwrap();
+
+        let (book, destination) = parse_shared_path_detailed(&source).unwrap();
+        assert!(is_shared(&destination));
+        assert!(destination.is_file());
+        assert_eq!(book.id, content_id(SAMPLE_EPUB));
+
+        // The parser/materialiser owns no CRDT authority; the UI worker is
+        // free to discard a superseded result without leaving a ghost shelf
+        // row behind.
+        let mut doc = AutoCommit::new();
+        let recorded = record_imported_book(&mut doc, &destination, book);
+        let entries = BooksDoc::read_library_entries(&doc);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, recorded.id);
+        assert!(entries[0].shared);
         unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 

@@ -137,13 +137,18 @@ impl ShelfControls {
     ) -> Rect {
         let colors = &theme.tokens.colors;
         let y = viewport.y0 + 13.0;
-        let mut right = open_book_x - 16.0;
+        let compact = viewport.width() < 560.0;
+        let mut right = open_book_x - if compact { 12.0 } else { 16.0 };
 
-        let label = format!("Sort · {}", prefs.sort.label());
+        let label = if compact {
+            "Sort".to_string()
+        } else {
+            format!("Sort · {}", prefs.sort.label())
+        };
         let label_width = text
             .measure_weighted(&label, 13.0, None, TextWeight::Medium)
             .0;
-        let width = f64::from(label_width) + 46.0;
+        let width = f64::from(label_width) + if compact { 38.0 } else { 46.0 };
         right -= width;
         let sort = Rect::new(right, y, right + width, y + 30.0);
         paint::fill_round(
@@ -187,7 +192,7 @@ impl ShelfControls {
         );
         self.hits.push((sort, ShelfControlAction::ToggleSortMenu));
 
-        right -= 18.0;
+        right -= if compact { 10.0 } else { 18.0 };
         let toggle = Rect::new(right - 40.0, y + 4.0, right, y + 26.0);
         Toggle::paint(
             scene,
@@ -196,19 +201,21 @@ impl ShelfControls {
             &ToggleFace::new(toggle, prefs.hide_read).hovered(toggle.contains(cursor)),
         );
         self.hits.push((toggle, ShelfControlAction::ToggleHideRead));
-        let hide = "Hide read";
-        let hide_width = text
-            .measure_weighted(hide, 13.0, None, TextWeight::Medium)
-            .0;
-        text.draw_text_weighted(
-            scene,
-            hide,
-            13.0,
-            colors.text_dim,
-            transform * Affine::translate((toggle.x0 - 8.0 - f64::from(hide_width), y + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
+        if !compact {
+            let hide = "Hide read";
+            let hide_width = text
+                .measure_weighted(hide, 13.0, None, TextWeight::Medium)
+                .0;
+            text.draw_text_weighted(
+                scene,
+                hide,
+                13.0,
+                colors.text_dim,
+                transform * Affine::translate((toggle.x0 - 8.0 - f64::from(hide_width), y + 8.0)),
+                None,
+                TextWeight::Medium,
+            );
+        }
         sort
     }
 
