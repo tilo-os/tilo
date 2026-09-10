@@ -506,6 +506,11 @@ impl BrowserWidget {
     pub fn debug_show_load_error(&mut self) {
         self.current_uri = "https://offline.example.test".into();
         self.initial_url = self.current_uri.clone();
+        // The offline state owns the address shown in visual review.  Without
+        // this, the headless engine's normal startup address made the chrome
+        // claim DuckDuckGo while the recovery panel described a different
+        // failed destination.
+        self.address.set(self.current_uri.clone());
         self.title = "Couldn’t open this page".into();
         self.load_error =
             Some("The site did not respond. Check your connection and try again.".into());
@@ -516,6 +521,7 @@ impl BrowserWidget {
     pub fn debug_show_loading(&mut self) {
         self.current_uri = "https://loading.example.test".into();
         self.initial_url = self.current_uri.clone();
+        self.address.set(self.current_uri.clone());
         self.title = "Opening loading.example.test".into();
         self.progress = 0.42;
         self.forced_loading = true;
@@ -1241,7 +1247,11 @@ impl BrowserWidget {
                 .with_accessible_name(history_pause_label)
                 .tooltip(history_pause_label)
                 .with_size(NAV_BTN.0, NAV_BTN.1),
-            "browser.history-pause",
+            // The pause state is a local session resource.  Its *kind* is
+            // `browser.history-pause`, but its stable resource identity is
+            // `browser.session`; binding to the kind silently left this
+            // keyboard/assistive-tech control without an action address.
+            "browser.session",
             "toggle-history-pause",
         );
         let history_pause_btn = if self.history_paused {
@@ -1301,7 +1311,13 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(bookmark_btn));
         }
-        toolbar = toolbar.push(Box::new(history_pause_btn));
+        // Compact chrome protects the address field first.  History capture
+        // remains available from the History section itself, where the
+        // longer privacy label is understandable and touch-sized, instead
+        // of reducing an address/search field to an unusable sliver.
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(history_pause_btn));
+        }
         toolbar = toolbar.push(Box::new(library_btn));
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
@@ -1392,14 +1408,30 @@ impl BrowserWidget {
         } else {
             LIBRARY_DESKTOP_CONTENT_WIDTH
         };
-        let heading = Row::new()
+        let mut heading = Row::new()
             .push(Box::new(Text::new("Library").with_size(24.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(self.bind_button(
-                Button::new("browser.library.close", "Done", None).with_size(96.0, 36.0),
-                "browser",
-                "show-page",
-            )));
+            .push(Box::new(Spacer::new()));
+        if self.compact_chrome && self.library_section == LibrarySection::History {
+            let label = if self.history_paused {
+                "Resume history"
+            } else {
+                "Pause history"
+            };
+            heading = heading.push(Box::new(
+                self.bind_button(
+                    Button::new("browser.library.history-pause", label, None)
+                        .with_accessible_name(label)
+                        .with_size(116.0, 36.0),
+                    "browser.session",
+                    "toggle-history-pause",
+                ),
+            ));
+        }
+        heading = heading.push(Box::new(self.bind_button(
+            Button::new("browser.library.close", "Done", None).with_size(96.0, 36.0),
+            "browser",
+            "show-page",
+        )));
         let section_definitions = [
             (
                 "browser.library.history",
@@ -2040,6 +2072,17 @@ impl BrowserWidget {
     /// chrome, where `PiP` intentionally is not part of the toolbar.
     fn pip_button_rect(&self) -> Option<Rect> {
         self.find_rect("browser.pip")
+    }
+
+    /// Anchor Picture-in-Picture feedback to the real trigger when it is
+    /// visible. Compact chrome deliberately omits that low-frequency button;
+    /// the settings affordance is its stable trailing-toolbar fallback so a
+    /// no-video explanation remains visible (and clamped) rather than being
+    /// silently dropped on phone-sized windows.
+    fn pip_feedback_anchor(&self) -> Option<Rect> {
+        self.pip_button_rect()
+            .or_else(|| self.find_rect("browser.settings"))
+            .or_else(|| self.address_input_rect())
     }
 
     /// Keep the transient `PiP` guidance card wholly inside the Browser's
@@ -2985,7 +3028,7 @@ impl Widget for BrowserWidget {
                 alpha =
                     alpha.min((remaining.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0));
             }
-            if let Some(anchor) = self.pip_button_rect() {
+            if let Some(anchor) = self.pip_feedback_anchor() {
                 let has_actions = feedback.kind == PipFeedbackKind::NoVideo;
                 let Some(rect) = Self::pip_feedback_rect_for_anchor(self.rect, anchor, has_actions)
                 else {
@@ -3308,6 +3351,25 @@ mod architecture_tests {
         }));
     }
 
+    fn assert_action_binding(
+        widget: &BrowserWidget,
+        control_id: &str,
+        resource: &str,
+        action: &str,
+    ) {
+        assert!(
+            widget.control_action_bindings().iter().any(|binding| {
+                binding.control_id == control_id
+                    && matches!(
+                        &binding.kind,
+                        ui::widget::ControlBindingKind::Action(address)
+                            if address.resource == resource && address.action == action
+                    )
+            }),
+            "{control_id} must retain its canonical {resource}/{action} address"
+        );
+    }
+
     #[test]
     fn presentation_operations_are_peer_local_and_do_not_mutate_the_document() {
         let mut left = BrowserWidget::new_headless();
@@ -3357,11 +3419,45 @@ mod architecture_tests {
         let mut page = BrowserWidget::new_headless();
         compose(&mut page);
         assert_no_document_control_paths(&page);
+        for (control, resource, action) in [
+            ("browser.back", "browser.page", "back"),
+            ("browser.forward", "browser.page", "forward"),
+            ("browser.reload", "browser.page", "reload"),
+            ("browser.bookmark", "browser.page", "bookmark"),
+            (
+                "browser.history-pause",
+                "browser.session",
+                "toggle-history-pause",
+            ),
+            ("browser.library", "browser.history", "show"),
+            ("browser.pip", "browser.page", "picture-in-picture"),
+            ("browser.settings", "browser.settings", "show"),
+        ] {
+            assert_action_binding(&page, control, resource, action);
+        }
 
         let mut settings = BrowserWidget::new_headless();
         settings.show_settings = true;
         compose(&mut settings);
         assert_no_document_control_paths(&settings);
+        for (control, resource, action) in [
+            ("browser.settings", "browser", "show-page"),
+            ("settings.close", "browser", "show-page"),
+            ("settings.adblock", "browser.settings", "set-adblock"),
+            (
+                "settings.clear_on_exit",
+                "browser.settings",
+                "set-clear-on-exit",
+            ),
+            ("settings.clear_history", "browser.history", "clear"),
+            (
+                "settings.clear_cookies",
+                "browser.settings",
+                "request-site-data-clear",
+            ),
+        ] {
+            assert_action_binding(&settings, control, resource, action);
+        }
     }
 }
 
@@ -3592,8 +3688,30 @@ mod tests {
         .unwrap();
         widget.apply_layout(&tree, child, Point::ORIGIN);
         let viewport = widget.find_rect("browser.surface").unwrap();
+        let address = widget.find_rect(URL_INPUT_ID).unwrap();
         assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
         assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
+        assert!(
+            address.width() >= 140.0,
+            "compact chrome preserves a usable address/search field"
+        );
+    }
+
+    #[test]
+    fn compact_history_library_retains_the_hidden_toolbar_privacy_action() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_library("history");
+        widget.debug_set_viewport_width(390);
+        layout_at(&mut widget, 390.0, 844.0);
+        assert!(widget.control_action_bindings().iter().any(|binding| {
+            binding.control_id == "browser.library.history-pause"
+                && matches!(
+                    &binding.kind,
+                    ui::widget::ControlBindingKind::Action(address)
+                        if address.resource == "browser.session"
+                            && address.action == "toggle-history-pause"
+                )
+        }));
     }
 
     #[test]
@@ -3777,6 +3895,32 @@ mod tests {
         assert!(
             (card.width() - 354.0).abs() < f64::EPSILON,
             "the full action card still fits"
+        );
+    }
+
+    #[test]
+    fn compact_pip_feedback_uses_a_visible_toolbar_anchor() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_set_viewport_width(390);
+        widget.debug_show_empty_pip_feedback();
+        layout_at(&mut widget, 390.0, 844.0);
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        widget.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        assert!(widget.pip_feedback_rect.width() > 0.0);
+        assert!(widget.pip_feedback_rect.x0 >= 12.0);
+        assert!(widget.pip_feedback_rect.x1 <= 378.0);
+        assert!(
+            !scene.encoding().draw_tags.is_empty(),
+            "compact feedback must remain visible even without a PiP toolbar button"
         );
     }
 
