@@ -999,6 +999,8 @@ pub struct CapnpBrokerState {
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
+    /// Monotonic generation for shell-side retained action projections.
+    surface_generation: AtomicU64,
     /// Last safe launchable/durable projection per app and workspace. This is
     /// session catalogue state, never an executable capability by itself.
     archived_surfaces: Mutex<HashMap<(String, String, String), PublishedSurface>>,
@@ -1184,6 +1186,7 @@ impl CapnpBrokerState {
                 membership,
                 trusted_devices,
                 surfaces: Mutex::new(HashMap::new()),
+                surface_generation: AtomicU64::new(0),
                 archived_surfaces: Mutex::new(HashMap::new()),
                 action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
                 action_directory_roots: Mutex::new(HashMap::new()),
@@ -1216,6 +1219,28 @@ impl CapnpBrokerState {
             None,
         );
         crate::shell::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_action_directory_roots_for_test(&self, roots: Vec<ActionDirectoryRoot>) {
+        if let Ok(mut registered) = self.action_directory_roots.lock() {
+            registered.clear();
+            registered.extend(roots.into_iter().map(|root| (root.peer_id, root)));
+        }
+        self.refresh_action_directory_root_snapshot();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_published_surfaces_for_test(&self, surfaces: Vec<PublishedSurface>) {
+        if let Ok(mut published) = self.surfaces.lock() {
+            published.clear();
+            published.extend(
+                surfaces
+                    .into_iter()
+                    .map(|surface| (surface.peer_id, surface)),
+            );
+            self.surface_generation.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn attach_workspace_control_network(&self, network: &Arc<crate::shell::network::ShellNetwork>) {
@@ -1258,6 +1283,13 @@ impl CapnpBrokerState {
             );
         }
         result
+    }
+
+    /// Generation of the eager action-surface source. Reading this never
+    /// clones the potentially large application action inventory.
+    #[must_use]
+    pub fn published_surfaces_generation(&self) -> u64 {
+        self.surface_generation.load(Ordering::Relaxed)
     }
 
     /// Clone the nonblocking bridge used by shell search.  Sending only
@@ -2685,8 +2717,10 @@ impl CapnpBrokerState {
     }
 
     fn remove_connection(&self, peer_id: u64) {
-        if let Ok(mut surfaces) = self.surfaces.lock() {
-            surfaces.remove(&peer_id);
+        if let Ok(mut surfaces) = self.surfaces.lock()
+            && surfaces.remove(&peer_id).is_some()
+        {
+            self.surface_generation.fetch_add(1, Ordering::Relaxed);
         }
         if let Ok(mut roots) = self.action_directory_roots.lock() {
             roots.remove(&peer_id);
@@ -3753,6 +3787,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .lock()
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, surface);
+            state.surface_generation.fetch_add(1, Ordering::Relaxed);
             state.publish_action_catalogue();
             Ok(())
         })

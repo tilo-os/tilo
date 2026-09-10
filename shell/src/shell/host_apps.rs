@@ -125,6 +125,22 @@ pub fn host_apps() -> Vec<HostApp> {
     )
 }
 
+/// Host-app source snapshot paired with the desktop-entry generation used to
+/// construct it.  The provider retains this projection between queries.
+pub fn host_apps_snapshot() -> (u64, Vec<HostApp>) {
+    let (generation, scan) = desktop_entry::cache::cached_scan_snapshot();
+    (
+        generation,
+        deduplicate_host_apps(scan.entries.iter().map(HostApp::from_entry).collect()),
+    )
+}
+
+/// Current host-app source generation, without cloning the scan.
+#[must_use]
+pub fn host_apps_generation() -> u64 {
+    desktop_entry::cache::cached_scan_generation()
+}
+
 /// Collapse packaging aliases while preserving genuinely distinct launch
 /// modes. A shared display name alone is not identity; a shared declared
 /// window identity is. Prefer Flatpak when a user/system export and a distro
