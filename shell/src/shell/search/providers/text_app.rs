@@ -7,12 +7,48 @@
 //! here once.
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::search::{ResourceKind, SearchContext, SearchResult};
+use std::cell::RefCell;
+
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchResult,
+};
 use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
 use crate::shell::tab_documents::tab_body;
 
 /// Top of the shared score scale — a title prefix. See [`match_score`].
 pub const MAX_SCORE: i32 = 110;
+
+/// Retained projection for the two CRDT-backed tab providers.  It is rebuilt
+/// only after `ChromeState` advances, never for an ordinary query edit.
+pub struct TextSearchCache {
+    snapshot: RefCell<Option<TextSnapshot>>,
+}
+
+impl Default for TextSearchCache {
+    fn default() -> Self {
+        Self {
+            snapshot: RefCell::new(None),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TextEntry {
+    workspace: WorkspaceId,
+    strip: StripId,
+    group: GroupId,
+    tab: TabId,
+    title: String,
+    title_lower: String,
+    body: String,
+    body_lower: String,
+}
+
+struct TextSnapshot {
+    revision: u64,
+    entries: Vec<TextEntry>,
+    index: ui::search::SearchTextIndex,
+}
 
 /// Does `tile` host the shell text app called `app`, matched case-insensitively?
 pub fn tile_hosts_app(tile: &TileContent, app: &str) -> bool {
@@ -56,6 +92,8 @@ pub fn query_text_app(
     provider_id: &'static str,
     kind: &ResourceKind,
 ) -> Vec<SearchResult> {
+    // Kept for direct callers and old provider tests. The live providers use
+    // `query_text_app_page` and therefore their retained snapshot.
     if !ctx.wanted.contains(kind) {
         return Vec::new();
     }
@@ -95,6 +133,147 @@ pub fn query_text_app(
     }
     drop(tree);
     out
+}
+
+/// Query the retained tab/body projection.  Cursors carry only a snapshot
+/// offset and the Chrome revision; a changed tree invalidates rather than
+/// skipping a concurrent insert or edit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the shared helper preserves one explicit provider contract for each text-app source without an allocation-only parameter object"
+)]
+pub fn query_text_app_page(
+    cache: &TextSearchCache,
+    ctx: &SearchContext<'_>,
+    app: &str,
+    body_key: &str,
+    provider_id: &'static str,
+    kind: &ResourceKind,
+    cursor: Option<&SearchCursor>,
+    budget: SearchBudget,
+) -> SearchPage {
+    if !ctx.wanted.contains(kind) || budget.max_results == 0 || budget.max_work == 0 {
+        return SearchPage::exhausted(ctx.chrome.revision.to_string(), Vec::new());
+    }
+    let revision = ctx.chrome.revision.to_string();
+    let after = match cursor {
+        Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+        Some(cursor) => {
+            let Some((offset, cursor_query)) = cursor
+                .token
+                .strip_prefix("text:")
+                .and_then(|token| token.split_once('\u{1f}'))
+            else {
+                return SearchPage::stale(revision);
+            };
+            if cursor_query != ctx.needle {
+                return SearchPage::stale(revision);
+            }
+            let Ok(offset) = offset.parse::<usize>() else {
+                return SearchPage::stale(revision);
+            };
+            Some(offset)
+        }
+        None => None,
+    };
+    let mut slot = cache.snapshot.borrow_mut();
+    if slot
+        .as_ref()
+        .is_none_or(|snapshot| snapshot.revision != ctx.chrome.revision)
+    {
+        *slot = Some(build_snapshot(ctx, app, body_key));
+    }
+    let Some(snapshot) = slot.as_ref() else {
+        return SearchPage::exhausted(revision, Vec::new());
+    };
+    let page = snapshot
+        .index
+        .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
+    let needle_lower = ctx.needle.to_lowercase();
+    let mut used = 0usize;
+    let mut results = Vec::new();
+    for id in page.ids {
+        let Some(entry) = snapshot.entries.get(id) else {
+            continue;
+        };
+        let Some((score, snippet)) = match_score(
+            &needle_lower,
+            &entry.title_lower,
+            &entry.body_lower,
+            &entry.body,
+        ) else {
+            continue;
+        };
+        let bytes = entry
+            .title
+            .len()
+            .saturating_add(snippet.as_ref().map_or(0, String::len))
+            .saturating_add(96);
+        if used.saturating_add(bytes) > budget.max_bytes {
+            break;
+        }
+        used = used.saturating_add(bytes);
+        let (workspace, strip, group, tab) = (entry.workspace, entry.strip, entry.group, entry.tab);
+        results.push(SearchResult::nullary(
+            kind.clone(),
+            provider_id,
+            tab.to_string(),
+            entry.title.clone(),
+            snippet,
+            score,
+            move |_doc, _root, chrome: &Chrome| focus_tab(chrome, workspace, strip, group, tab),
+        ));
+    }
+    let exhausted = page.next_after.is_none();
+    SearchPage {
+        revision: revision.clone(),
+        results,
+        next_cursor: page.next_after.map(|offset| SearchCursor {
+            revision,
+            token: format!("text:{offset}\u{1f}{}", ctx.needle),
+        }),
+        exhausted,
+        stale_cursor: false,
+        budget_exhausted: !exhausted,
+    }
+}
+
+fn build_snapshot(ctx: &SearchContext<'_>, app: &str, body_key: &str) -> TextSnapshot {
+    let mut entries = Vec::new();
+    let tree = ctx.chrome.tree();
+    for workspace in &tree.workspaces {
+        for strip in &workspace.strips {
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    if !tile_hosts_app(&tab.tile, app) {
+                        continue;
+                    }
+                    let body = tab_body(ctx.chrome.records(), tab.id, body_key).unwrap_or_default();
+                    entries.push(TextEntry {
+                        workspace: workspace.id,
+                        strip: strip.id,
+                        group: group.id,
+                        tab: tab.id,
+                        title_lower: tab.title.to_lowercase(),
+                        title: tab.title.clone(),
+                        body_lower: body.to_lowercase(),
+                        body,
+                    });
+                }
+            }
+        }
+    }
+    drop(tree);
+    let index = ui::search::SearchTextIndex::new(
+        entries
+            .iter()
+            .map(|entry| format!("{}\u{1f}{}", entry.title_lower, entry.body_lower)),
+    );
+    TextSnapshot {
+        revision: ctx.chrome.revision,
+        entries,
+        index,
+    }
 }
 
 /// Title first, then body; a body hit carries a snippet showing why it matched.

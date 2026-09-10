@@ -12,45 +12,237 @@
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
 
 /// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
 pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
 
 pub struct HostApplicationsProvider {
     kinds: Vec<ResourceKind>,
+    snapshot: RefCell<Option<HostAppsSnapshot>>,
+    build: RefCell<Option<Receiver<HostAppsSnapshot>>>,
+    #[cfg(test)]
+    source: Option<Arc<HostAppsTestSource>>,
+    #[cfg(test)]
+    build_probe: Arc<BuildProbe>,
+}
+
+struct HostAppsSnapshot {
+    source_generation: (u64, u64),
+    apps: Vec<HostApp>,
+    installed_ids: HashSet<String>,
+    index: ui::search::SearchTextIndex,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct BuildProbe {
+    builds: std::sync::atomic::AtomicUsize,
+    thread: Mutex<Option<std::thread::ThreadId>>,
+}
+
+#[cfg(test)]
+struct HostAppsTestSource {
+    generation: std::sync::atomic::AtomicU64,
+    state: Mutex<(Vec<HostApp>, Vec<crate::shell::launcher::InstalledApp>)>,
+    materializations: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl HostAppsTestSource {
+    fn new(apps: Vec<HostApp>, installed: Vec<crate::shell::launcher::InstalledApp>) -> Arc<Self> {
+        Arc::new(Self {
+            generation: std::sync::atomic::AtomicU64::new(1),
+            state: Mutex::new((apps, installed)),
+            materializations: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn generation(&self) -> (u64, u64) {
+        let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        (generation, generation)
+    }
+
+    fn snapshot(&self) -> (u64, Vec<HostApp>, Vec<crate::shell::launcher::InstalledApp>) {
+        self.materializations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        let (apps, installed) = self
+            .state
+            .lock()
+            .expect("host app test source lock")
+            .clone();
+        (generation, apps, installed)
+    }
 }
 
 impl HostApplicationsProvider {
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::HostApplication],
+            snapshot: RefCell::new(None),
+            build: RefCell::new(None),
+            #[cfg(test)]
+            source: None,
+            #[cfg(test)]
+            build_probe: Arc::new(BuildProbe::default()),
         }
     }
 
-    /// Split out so tests can score against a known list.
-    fn apps() -> Vec<HostApp> {
-        host_apps::host_apps()
+    #[cfg(test)]
+    fn with_test_source(source: Arc<HostAppsTestSource>) -> Self {
+        Self {
+            source: Some(source),
+            ..Self::new()
+        }
     }
 
-    fn results_for(&self, needle: &str, apps: Vec<HostApp>) -> Vec<SearchResult> {
-        // When a qOS package and a host app name the same program, the
-        // confined one is the answer, so the host row is dropped.
-        self.results_against(needle, apps, &crate::shell::launcher::gui_apps())
+    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
+    fn source_generation(&self) -> (u64, u64) {
+        #[cfg(test)]
+        if let Some(source) = &self.source {
+            return source.generation();
+        }
+        (
+            host_apps::host_apps_generation(),
+            crate::shell::launcher::gui_apps_generation(),
+        )
+    }
+
+    /// Build the expensive full host-desktop projection while the registry is
+    /// refreshing sources, never from `query_page` itself.
+    fn build_snapshot(
+        #[cfg(test)] source: Option<Arc<HostAppsTestSource>>,
+        #[cfg(test)] probe: &BuildProbe,
+    ) -> HostAppsSnapshot {
+        #[cfg(test)]
+        {
+            probe
+                .builds
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *probe.thread.lock().expect("host app build thread lock") =
+                Some(std::thread::current().id());
+        }
+        #[cfg(test)]
+        if let Some(source) = source {
+            let (generation, apps, installed) = source.snapshot();
+            return Self::snapshot_from_parts((generation, generation), apps, &installed);
+        }
+        let (host_generation, apps) = host_apps::host_apps_snapshot();
+        let (installed_generation, installed) = crate::shell::launcher::gui_apps_snapshot();
+        Self::snapshot_from_parts((host_generation, installed_generation), apps, &installed)
+    }
+
+    fn snapshot_from_parts(
+        source_generation: (u64, u64),
+        apps: Vec<HostApp>,
+        installed: &[crate::shell::launcher::InstalledApp],
+    ) -> HostAppsSnapshot {
+        let installed_ids = installed
+            .iter()
+            .map(|app| app.package_id.to_ascii_lowercase())
+            .collect();
+        let index = ui::search::SearchTextIndex::new(apps.iter().map(|app| {
+            format!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                app.name,
+                app.desktop_id,
+                app.keywords.join(" "),
+                app.categories.join(" ")
+            )
+        }));
+        HostAppsSnapshot {
+            source_generation,
+            apps,
+            installed_ids,
+            index,
+        }
+    }
+
+    fn refresh_snapshot(&self) {
+        let receiver = self.build.borrow_mut().take();
+        if let Some(receiver) = receiver {
+            match receiver.try_recv() {
+                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
+                Err(TryRecvError::Empty) => *self.build.borrow_mut() = Some(receiver),
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+        let current = self.source_generation();
+        if self
+            .snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.source_generation == current)
+            || self.build.borrow().is_some()
+        {
+            return;
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        if std::thread::Builder::new()
+            .name("qos-host-search-index".into())
+            .spawn({
+                #[cfg(test)]
+                let source = self.source.clone();
+                #[cfg(test)]
+                let probe = Arc::clone(&self.build_probe);
+                move || {
+                    let _ = sender.send(Self::build_snapshot(
+                        #[cfg(test)]
+                        source,
+                        #[cfg(test)]
+                        &probe,
+                    ));
+                }
+            })
+            .is_ok()
+        {
+            *self.build.borrow_mut() = Some(receiver);
+        }
+    }
+
+    fn snapshot(&self) -> Option<std::cell::Ref<'_, HostAppsSnapshot>> {
+        let generation = self.source_generation();
+        let snapshot = self.snapshot.borrow();
+        std::cell::Ref::filter_map(snapshot, Option::as_ref)
+            .ok()
+            .filter(|snapshot| snapshot.source_generation == generation)
     }
 
     /// [`Self::results_for`] with the installed-package list supplied, so a
     /// test's scoring doesn't depend on what happens to be installed.
+    #[cfg(test)]
     fn results_against(
         &self,
         needle: &str,
         apps: Vec<HostApp>,
         installed: &[crate::shell::launcher::InstalledApp],
     ) -> Vec<SearchResult> {
+        let installed_ids = installed
+            .iter()
+            .map(|app| app.package_id.to_ascii_lowercase())
+            .collect();
+        self.results_against_membership(needle, apps, &installed_ids)
+    }
+
+    fn results_against_membership(
+        &self,
+        needle: &str,
+        apps: Vec<HostApp>,
+        installed_ids: &HashSet<String>,
+    ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
         for app in apps {
-            if shadowed_by_a_qos_package(&app, installed) {
+            if installed_ids.contains(&app.desktop_id.to_ascii_lowercase()) {
                 continue;
             }
             let name_lower = app.name.to_lowercase();
@@ -133,6 +325,7 @@ impl HostApplicationsProvider {
 /// Whether an installed qOS package already answers for this app. Names and
 /// reverse-DNS tails are deliberately insufficient: different desktops ship
 /// real, distinct applications called Calendar, Notes and Terminal.
+#[cfg(test)]
 fn shadowed_by_a_qos_package(
     app: &HostApp,
     installed: &[crate::shell::launcher::InstalledApp],
@@ -223,7 +416,101 @@ impl SearchProvider for HostApplicationsProvider {
         {
             return Vec::new();
         }
-        self.results_for(ctx.needle, Self::apps())
+        // Compatibility for callers outside the registry. Palette paging
+        // refreshes retained indexes before it calls into a provider.
+        let _ = self.search_revision(&ctx);
+        self.query_page(ctx, None, SearchBudget::PALETTE).results
+    }
+
+    fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
+        self.refresh_snapshot();
+    }
+
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        let (host, installed) = self.source_generation();
+        let ready = self
+            .snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.source_generation == (host, installed));
+        format!(
+            "{}:{host}:{installed}",
+            if ready { "ready" } else { "indexing" }
+        )
+    }
+
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        if !ctx.wanted.contains(&ResourceKind::HostApplication)
+            || budget.max_results == 0
+            || budget.max_work == 0
+        {
+            return SearchPage::exhausted(self.search_revision(&ctx), Vec::new());
+        }
+        let revision = self.search_revision(&ctx);
+        let Some(snapshot) = self.snapshot() else {
+            return SearchPage::exhausted(revision, Vec::new());
+        };
+        let after = match cursor {
+            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+            Some(cursor) => match cursor.token.strip_prefix("host:").and_then(|token| {
+                token
+                    .split_once('\u{1f}')
+                    .filter(|(_, query)| *query == ctx.needle)
+                    .and_then(|(offset, _)| offset.parse::<usize>().ok())
+            }) {
+                Some(offset) => Some(offset),
+                None => return SearchPage::stale(revision),
+            },
+            None => None,
+        };
+        let page =
+            snapshot
+                .index
+                .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
+        let mut next_after = page.next_after;
+        let mut bytes = 0usize;
+        let mut results = Vec::new();
+        for id in page.ids {
+            let Some(app) = snapshot.apps.get(id) else {
+                continue;
+            };
+            let mut rows = self.results_against_membership(
+                ctx.needle,
+                vec![app.clone()],
+                &snapshot.installed_ids,
+            );
+            let Some(row) = rows.pop() else { continue };
+            let row_bytes = row
+                .title
+                .len()
+                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+            if bytes.saturating_add(row_bytes) > budget.max_bytes {
+                // Skip this one too-large row once, and continue after the
+                // candidate actually considered rather than the index page's
+                // farther endpoint.
+                next_after = Some(id);
+                break;
+            }
+            bytes = bytes.saturating_add(row_bytes);
+            results.push(row);
+        }
+        let exhausted = next_after.is_none();
+        SearchPage {
+            revision: revision.clone(),
+            results,
+            next_cursor: next_after.map(|offset| SearchCursor {
+                revision,
+                token: format!("host:{offset}\u{1f}{}", ctx.needle),
+            }),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: !exhausted,
+        }
     }
 }
 
@@ -260,6 +547,158 @@ mod tests {
         assert_eq!(out[0].title, "Open Spotify");
         assert_eq!(out[0].id, "com.spotify.Client");
         assert_eq!(out[0].kind, ResourceKind::HostApplication);
+    }
+
+    #[test]
+    fn cold_and_warm_public_pages_never_rescan_a_hundred_thousand_host_apps() {
+        let chrome = chrome_rc();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            needle: "unique-tail",
+            wanted: &[ResourceKind::HostApplication],
+            chrome: &chrome,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let cold = HostApplicationsProvider::new();
+        assert!(
+            cold.query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        assert!(
+            cold.build.borrow().is_none(),
+            "a public cold query must not start or clone a full host-app corpus"
+        );
+
+        let provider = HostApplicationsProvider::new();
+        let apps = (0..100_001)
+            .map(|index| {
+                app(
+                    &format!("org.fixture.App{index}"),
+                    if index == 100_000 {
+                        "unique-tail"
+                    } else {
+                        "common app"
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let index = ui::search::SearchTextIndex::new(
+            apps.iter()
+                .map(|app| format!("{}\u{1f}{}", app.name, app.desktop_id)),
+        );
+        *provider.snapshot.borrow_mut() = Some(HostAppsSnapshot {
+            source_generation: provider.source_generation(),
+            apps,
+            installed_ids: HashSet::new(),
+            index,
+        });
+        let page = provider.query_page(
+            SearchContext {
+                needle: "unique-tail",
+                wanted: &[ResourceKind::HostApplication],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            },
+        );
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Open unique-tail");
+        assert!(page.exhausted, "the rare posting needs one warm inspection");
+        assert!(provider.build.borrow().is_none());
+    }
+
+    #[test]
+    fn source_backed_cold_query_does_no_host_index_work_before_refresh() {
+        let source = HostAppsTestSource::new(
+            (0..100_001)
+                .map(|index| {
+                    app(
+                        &format!("org.fixture.Source{index}"),
+                        if index == 100_000 {
+                            "unique-source-tail"
+                        } else {
+                            "common source app"
+                        },
+                    )
+                })
+                .collect(),
+            Vec::new(),
+        );
+        let provider = HostApplicationsProvider::with_test_source(Arc::clone(&source));
+        let chrome = chrome_rc();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            needle: "unique-source-tail",
+            wanted: &[ResourceKind::HostApplication],
+            chrome: &chrome,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let query_thread = std::thread::current().id();
+        assert!(provider.search_revision(&ctx).starts_with("indexing:"));
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        assert_eq!(
+            provider
+                .build_probe
+                .builds
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            source
+                .materializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(provider.build.borrow().is_none());
+        for _ in 0..6_000 {
+            provider.refresh_search_index(&ctx);
+            if provider.search_revision(&ctx).starts_with("ready:") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+        assert_eq!(
+            provider
+                .build_probe
+                .builds
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_ne!(
+            *provider
+                .build_probe
+                .thread
+                .lock()
+                .expect("host app build thread lock"),
+            Some(query_thread)
+        );
+        let page = provider.query_page(
+            SearchContext { ..ctx },
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            },
+        );
+        assert_eq!(page.results[0].title, "Open unique-source-tail");
     }
 
     /// "Unconfined" in the subtitle is the whole point of the separate kind.

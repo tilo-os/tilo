@@ -20,6 +20,7 @@
 //! caught by the next TTL expiry.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -38,6 +39,7 @@ fn cell() -> &'static Mutex<Option<Cached>> {
     static CELL: OnceLock<Mutex<Option<Cached>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(None))
 }
+static REVISION: AtomicU64 = AtomicU64::new(0);
 
 /// The host's application entries, memoised.
 ///
@@ -71,7 +73,23 @@ pub fn cached_scan() -> Scan {
         at: Instant::now(),
         fingerprint,
     });
+    drop(guard);
+    REVISION.fetch_add(1, Ordering::Relaxed);
     scan
+}
+
+/// Generation paired with [`cached_scan`] for retained UI projections.
+pub fn cached_scan_snapshot() -> (u64, Scan) {
+    let before = REVISION.load(Ordering::Acquire);
+    let scan = cached_scan();
+    let after = REVISION.load(Ordering::Acquire);
+    (if before == after { before } else { 0 }, scan)
+}
+
+/// Current desktop-entry source generation, without cloning the scan.
+#[must_use]
+pub fn cached_scan_generation() -> u64 {
+    REVISION.load(Ordering::Relaxed)
 }
 
 /// Drop the memoised scan. Called after something is known to have
@@ -81,6 +99,7 @@ pub fn invalidate() {
     *cell()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    REVISION.fetch_add(1, Ordering::Relaxed);
 }
 
 fn fingerprint(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {

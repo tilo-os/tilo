@@ -651,6 +651,7 @@ pub struct LaunchCommand {
 static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
 static EVENTS: Mutex<Vec<LaunchEvent>> = Mutex::new(Vec::new());
 static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None);
+static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// `package_id` -> display name for everything this session has
 /// launched, so an adopted foreign toplevel can show the app's name.
 static LAUNCHED: Mutex<Vec<(String, Vec<String>, String)>> = Mutex::new(Vec::new());
@@ -1029,6 +1030,7 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     }
     let apps = read_installed_apps()?;
     *lock(&APP_CACHE) = Some((apps.clone(), Instant::now()));
+    APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     Ok(apps)
 }
 
@@ -1036,6 +1038,27 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
 /// tests that repoint `QOS_APPS_DATA_DIR`.
 pub fn invalidate_app_cache() {
     *lock(&APP_CACHE) = None;
+    APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Immutable installed-app snapshot revision for retained search projections.
+pub fn gui_apps_snapshot() -> (u64, Vec<InstalledApp>) {
+    // Pair a source generation with the exact projection read under it. If
+    // cache invalidation races this small read, return the observed changed
+    // generation; retained index workers will reject it instead of treating
+    // old records as a current snapshot.
+    let before = APP_CACHE_REVISION.load(Ordering::Acquire);
+    let apps = gui_apps();
+    let after = APP_CACHE_REVISION.load(Ordering::Acquire);
+    (if before == after { before } else { 0 }, apps)
+}
+
+/// Current installed-app source generation.  Search projections use this
+/// cheap read between rebuilds; callers that need the records themselves use
+/// [`gui_apps_snapshot`].
+#[must_use]
+pub fn gui_apps_generation() -> u64 {
+    APP_CACHE_REVISION.load(Ordering::Relaxed)
 }
 
 /// Installed GUI applications, sorted by display name — what the
