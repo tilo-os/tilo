@@ -31,13 +31,14 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 /// The limit is deliberately far above a meaningful palette query; callers
 /// receive an empty page for longer input and can refine it normally.
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
+const SEARCH_GRAM_WIDTH: usize = 4;
 use qos_actions::ActionAddress;
 use std::borrow::Borrow;
 
 /// A compact, reusable exact substring index for app search providers.
 ///
 /// The complete supplied corpus is retained. Normalisation and Unicode
-/// 1/2/3-gram posting lists are built once. Unlike a suffix array, this stores
+/// 1/2/3/4-gram posting lists are built once. Unlike a suffix array, this stores
 /// only a constant number of postings per input scalar rather than retaining
 /// and comparing every suffix.
 /// Providers keep
@@ -183,7 +184,7 @@ fn search_grams(text: &str) -> Vec<String> {
     if chars.is_empty() {
         return Vec::new();
     }
-    let width = chars.len().min(3);
+    let width = chars.len().min(SEARCH_GRAM_WIDTH);
     let mut grams = BTreeSet::new();
     for window in chars.windows(width) {
         grams.insert(window.iter().collect());
@@ -194,7 +195,7 @@ fn search_grams(text: &str) -> Vec<String> {
 fn index_grams(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut grams = BTreeSet::new();
-    for width in 1..=chars.len().min(3) {
+    for width in 1..=chars.len().min(SEARCH_GRAM_WIDTH) {
         for window in chars.windows(width) {
             grams.insert(window.iter().collect());
         }
@@ -340,7 +341,7 @@ struct SearchCatalogInner {
 /// count and candidate-inspection budget; result objects are cloned only for
 /// exact matches in the requested page.
 ///
-/// The index uses Unicode 1/2/3-gram and complete-term postings plus exact verification. A unique
+/// The index uses Unicode 1/2/3/4-gram and complete-term postings plus exact verification. A unique
 /// item remains directly findable even in a corpus larger than 100,000 rows;
 /// broad or adversarial queries can continue through `SearchCursor` pages
 /// without blocking one UI turn on the whole corpus.
