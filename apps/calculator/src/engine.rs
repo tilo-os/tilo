@@ -197,7 +197,10 @@ impl Parser<'_> {
     }
 
     fn parse_prefix(&mut self) -> Result<Expr, String> {
-        let tok = self.next().ok_or_else(|| "unexpected end".to_string())?;
+        // This reaches the result line verbatim while a person is typing. A
+        // next-step hint is more useful than the parser-internal "unexpected
+        // end" for an unfinished call, parenthesis, or operator.
+        let tok = self.next().ok_or_else(|| "enter a value".to_string())?;
         match tok {
             Tok::Num(n) => Ok(Expr::Num(n)),
             Tok::Op('-') => Ok(Expr::Neg(Box::new(self.parse_bp(30)?))),
@@ -662,6 +665,11 @@ mod tests {
 
     #[test]
     fn errors_are_reported() {
+        assert_eq!(
+            evaluate("sqrt(", &Ctx::default()),
+            Err("enter a value".into()),
+            "the live result line tells a person what to do next"
+        );
         assert!(evaluate("1+", &Ctx::default()).is_err());
         assert!(evaluate("frobnicate(2)", &Ctx::default()).is_err());
         assert!(compile("z+1", false, false).is_err());

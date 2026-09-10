@@ -71,9 +71,15 @@ pub fn visible_ids(doc: &AutoCommit, collection: &str) -> Vec<String> {
         })
         .collect();
     if collection == HISTORY {
+        // Newest first. The stable id breaks a rank collision between two
+        // independent replicas without relying on map iteration order.
         ids.sort_by(|a, b| b.cmp(a));
     } else {
-        ids.sort();
+        // Graph additions are authored as an ordered append (`rank` is part of
+        // AddGraph's durable payload). Sorting by the id discarded that intent
+        // and could reorder same-tick ids lexically (…-10 before …-9). Keep a
+        // deterministic id tie-breaker for concurrent equal ranks.
+        ids.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     }
     ids.into_iter().map(|(_, id)| id).collect()
 }
@@ -240,5 +246,23 @@ mod tests {
             d.get(&row, "expr"),
             Ok(Some((Value::Object(ObjType::Text), _)))
         ));
+    }
+
+    #[test]
+    fn graph_rows_follow_rank_with_a_stable_id_tiebreaker() {
+        let mut doc = AutoCommit::new();
+        let rows = ensure_map(&mut doc, FUNCS).expect("function resource map");
+        for (id, rank) in [("curve-z", 2_i64), ("curve-b", 1), ("curve-a", 1)] {
+            let row = doc
+                .put_object(&rows, id, ObjType::Map)
+                .expect("fixture graph row");
+            put_if_changed(&mut doc, &row, "rank", rank);
+            put_if_changed(&mut doc, &row, "deleted", false);
+        }
+        assert_eq!(
+            visible_ids(&doc, FUNCS),
+            vec!["curve-a", "curve-b", "curve-z"],
+            "rank orders additions; id makes concurrent equal ranks deterministic"
+        );
     }
 }

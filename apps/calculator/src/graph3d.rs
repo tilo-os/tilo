@@ -29,6 +29,10 @@ const N: usize = 40;
 const PANEL_DOCK_MIN_W: f64 = 720.0;
 /// Overlay drawer width when the panel floats over the canvas.
 const PANEL_OVERLAY_W: f64 = 300.0;
+/// Minimum independent hit/semantic target for the compact graph-row icons.
+const ROW_ACTION_TARGET: f64 = 44.0;
+const ROW_ACTION_GAP: f64 = 4.0;
+const ROW_ACTION_ICON: f64 = 22.0;
 
 /// Vertical padding between a card's edge and the math-field viewport inside it.
 const CARD_PAD_Y: f64 = 7.0;
@@ -42,6 +46,9 @@ pub struct Graph3dScreen {
     pub canvas: Rect,
     row_rects: Vec<Rect>,
     vis_rects: Vec<Rect>,
+    vis_hit_rects: Vec<Rect>,
+    delete_rects: Vec<Rect>,
+    delete_hit_rects: Vec<Rect>,
     edit_rects: Vec<Rect>,
     add_rect: Rect,
     /// Panel is an overlay drawer (narrow) rather than docked (wide).
@@ -76,6 +83,9 @@ impl Default for Graph3dScreen {
             canvas: Rect::ZERO,
             row_rects: Vec::new(),
             vis_rects: Vec::new(),
+            vis_hit_rects: Vec::new(),
+            delete_rects: Vec::new(),
+            delete_hit_rects: Vec::new(),
             edit_rects: Vec::new(),
             add_rect: Rect::ZERO,
             overlay: false,
@@ -145,6 +155,16 @@ fn bits(x: f64) -> u64 {
     x.to_bits()
 }
 
+fn centered_square(center: Point, side: f64) -> Rect {
+    let radius = side / 2.0;
+    Rect::new(
+        center.x - radius,
+        center.y - radius,
+        center.x + radius,
+        center.y + radius,
+    )
+}
+
 impl SurfaceKey {
     fn build(model: &CalcModel, canvas: Rect) -> Self {
         SurfaceKey {
@@ -177,7 +197,7 @@ impl Graph3dScreen {
             self.panel_open = can_dock;
         }
         if can_dock && self.panel_open {
-            let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
+            let panel_w = (area.width() * 0.27).clamp(300.0, 360.0);
             self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
             self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
             self.scrim_rect = Rect::ZERO;
@@ -212,6 +232,9 @@ impl Graph3dScreen {
 
         self.row_rects.clear();
         self.vis_rects.clear();
+        self.vis_hit_rects.clear();
+        self.delete_rects.clear();
+        self.delete_hit_rects.clear();
         self.edit_rects.clear();
         if self.panel == Rect::ZERO {
             self.add_rect = Rect::ZERO;
@@ -222,20 +245,31 @@ impl Graph3dScreen {
         for i in 0..model.surfaces.len() {
             let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
             let r = Rect::new(self.panel.x0 + 12.0, y, self.panel.x1 - 12.0, y + card_h);
-            let vis = Rect::new(
-                r.x1 - 34.0,
-                r.center().y - 11.0,
-                r.x1 - 12.0,
-                r.center().y + 11.0,
+            let vis_hit = Rect::new(
+                r.x1 - ROW_ACTION_TARGET,
+                r.center().y - ROW_ACTION_TARGET / 2.0,
+                r.x1,
+                r.center().y + ROW_ACTION_TARGET / 2.0,
             );
+            let delete_hit = Rect::new(
+                vis_hit.x0 - ROW_ACTION_GAP - ROW_ACTION_TARGET,
+                r.center().y - ROW_ACTION_TARGET / 2.0,
+                vis_hit.x0 - ROW_ACTION_GAP,
+                r.center().y + ROW_ACTION_TARGET / 2.0,
+            );
+            let vis = centered_square(vis_hit.center(), ROW_ACTION_ICON);
+            let delete = centered_square(delete_hit.center(), ROW_ACTION_ICON);
             // "z =" label at the left, the math field fills the rest up to the dot.
             let edit = Rect::new(
                 r.x0 + 60.0,
                 r.y0 + CARD_PAD_Y,
-                vis.x0 - 8.0,
+                delete_hit.x0 - 8.0,
                 r.y1 - CARD_PAD_Y,
             );
             self.vis_rects.push(vis);
+            self.vis_hit_rects.push(vis_hit);
+            self.delete_rects.push(delete);
+            self.delete_hit_rects.push(delete_hit);
             self.edit_rects.push(edit);
             self.row_rects.push(r);
             y += card_h + ROW_GAP;
@@ -251,10 +285,11 @@ impl Graph3dScreen {
 
     /// Measure every row's formula and compute its grown card height (run at the
     /// top of `draw`, where a `TextRenderer` is available).
-    fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer) {
+    fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer, text_scale: f32) {
         self.sync_fields(model);
         self.card_heights.clear();
         for field in &mut self.fields {
+            field.set_text_scale(text_scale);
             let content_h = if field.is_empty() {
                 crate::mathfield::CARD_MIN_H
             } else {
@@ -331,7 +366,10 @@ impl Graph3dScreen {
         self.add_rect != Rect::ZERO && self.add_rect.contains(p)
     }
     pub fn vis_at(&self, p: Point) -> Option<usize> {
-        self.vis_rects.iter().position(|r| r.contains(p))
+        self.vis_hit_rects.iter().position(|r| r.contains(p))
+    }
+    pub fn delete_at(&self, p: Point) -> Option<usize> {
+        self.delete_hit_rects.iter().position(|r| r.contains(p))
     }
     pub fn row_at(&self, p: Point) -> Option<usize> {
         self.row_rects.iter().position(|r| r.contains(p))
@@ -369,7 +407,10 @@ impl Graph3dScreen {
         self.edit_rects.get(i).copied()
     }
     pub fn visibility_rect(&self, i: usize) -> Option<Rect> {
-        self.vis_rects.get(i).copied()
+        self.vis_hit_rects.get(i).copied()
+    }
+    pub fn delete_rect(&self, i: usize) -> Option<Rect> {
+        self.delete_hit_rects.get(i).copied()
     }
     /// Center of surface row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
@@ -386,8 +427,9 @@ impl Graph3dScreen {
         model: &CalcModel,
         area: Rect,
     ) {
+        draw::set_text_scale(theme.text_scale);
         // Measure formulas → grow cards, then lay out from them.
-        self.measure_cards(model, tr);
+        self.measure_cards(model, tr, theme.text_scale);
         self.layout(area, model);
         let c = &theme.tokens.colors;
 
@@ -487,7 +529,7 @@ impl Graph3dScreen {
     }
 
     /// One row per saved surface: background, colour swatch, "z =" prefix,
-    /// the math editor (or its placeholder), and the visibility dot.
+    /// the math editor (or its placeholder), visibility dot, and delete button.
     /// Rows are already reconciled + measured by `measure_cards`.
     fn draw_surface_rows(
         &mut self,
@@ -499,10 +541,11 @@ impl Graph3dScreen {
     ) {
         let c = &theme.tokens.colors;
         for i in 0..model.surfaces.len() {
-            let (Some(f), Some(&r), Some(&edit), Some(&vr)) = (
+            let (Some(f), Some(&r), Some(&edit), Some(&dr), Some(&vr)) = (
                 model.surfaces.get(i),
                 self.row_rects.get(i),
                 self.edit_rects.get(i),
+                self.delete_rects.get(i),
                 self.vis_rects.get(i),
             ) else {
                 continue;
@@ -578,6 +621,18 @@ impl Graph3dScreen {
                 let fld_col = if f.visible { txt_col } else { c.text_dim };
                 field.draw(scene, t, tr, theme, fld_col, active);
             }
+            draw::fill_rrect(scene, t, dr, 5.0, c.neutral[2]);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                dr,
+                "×",
+                16.0,
+                c.text_dim,
+                Align::Center,
+                TextWeight::Semibold,
+            );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
             draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
@@ -1030,6 +1085,32 @@ mod tests {
     }
 
     #[test]
+    fn row_actions_have_non_overlapping_44px_targets() {
+        let mut s = Graph3dScreen::default();
+        let m = CalcModel::seeded();
+        let area = Rect::new(0.0, 60.0, 390.0, 844.0);
+        s.layout(area, &m);
+        s.toggle_panel();
+        s.layout(area, &m);
+        let delete = s.delete_rect(0).expect("delete target");
+        let visible = s.visibility_rect(0).expect("visibility target");
+        assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
+        assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
+        assert!(delete.x1 <= visible.x0, "row actions must not overlap");
+        assert_eq!(s.delete_at(delete.center()), Some(0));
+        assert_eq!(s.vis_at(visible.center()), Some(0));
+        assert_eq!(
+            s.delete_at(s.delete_rect(1).expect("second delete target").center()),
+            Some(1),
+            "a delete hit must not target the adjacent row"
+        );
+        assert!(
+            s.edit_rects[0].x1 <= delete.x0,
+            "math editing must not steal the delete target"
+        );
+    }
+
+    #[test]
     fn first_draw_samples_every_visible_surface() {
         let mut s = screen();
         let m = CalcModel::seeded(); // 3 visible surfaces
@@ -1126,7 +1207,7 @@ mod tests {
             active_surface: 0,
             ..CalcModel::default()
         };
-        s.measure_cards(&m, &mut tr);
+        s.measure_cards(&m, &mut tr, 1.0);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
         assert!(
             s.card_heights[0] > BASE_ROW_H + 8.0,
@@ -1153,7 +1234,7 @@ mod tests {
             active_surface: 0,
             ..CalcModel::default()
         };
-        s.measure_cards(&m, &mut tr);
+        s.measure_cards(&m, &mut tr, 1.0);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
         let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
         assert!(
