@@ -6504,7 +6504,11 @@ impl PatchCounts {
         }
         if self.active_switched {
             return Some((
-                "Switched the active workspace".to_string(),
+                // This also feeds the fixed-width top-bar activity summary;
+                // "active" adds no useful distinction there and caused the
+                // workspace-switch confirmation to truncate at accessibility
+                // text sizes.
+                "Switched workspace".to_string(),
                 OpClass::EditMeta,
             ));
         }
@@ -6685,6 +6689,22 @@ mod tests {
         }
         tree.seed_doc_from_cache();
         (tree, ws_id, user)
+    }
+
+    #[test]
+    fn workspace_switch_summary_fits_the_chrome_activity_line() {
+        let summary = PatchCounts {
+            active_switched: true,
+            ..Default::default()
+        }
+        .describe()
+        .expect("workspace switch is activity")
+        .0;
+        assert_eq!(summary, "Switched workspace");
+        assert!(
+            summary.len() <= 18,
+            "fixed-width topbar summaries must stay concise: {summary}"
+        );
     }
 
     #[test]
