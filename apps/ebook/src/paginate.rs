@@ -880,7 +880,11 @@ fn compose_block_lines(
     let mut options = ParagraphOptions::new(text_width);
     options.justify = settings.composition.justified()
         && matches!(st.kind, LayoutKind::Paragraph | LayoutKind::Quote);
-    if !settings.composition.justified() {
+    // At accessibility sizes, favour predictable natural glyph metrics over
+    // the subtle expansion used for book-like justification. On a narrow
+    // phone one expanded line can otherwise exceed its measured paint box,
+    // leaving the final word visibly clipped instead of reflowing.
+    if !settings.composition.justified() || settings.font_scale >= 1.35 {
         options.max_glyph_expansion = 0.0;
     }
     let composed = compose_paragraph(&boxes, options);
