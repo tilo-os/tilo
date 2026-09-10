@@ -11388,6 +11388,31 @@ mod interaction_tests {
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, KeyEvent};
 
+    struct WorkspaceEnvGuard(Option<std::ffi::OsString>);
+
+    impl WorkspaceEnvGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os("QOS_WORKSPACE_DIR");
+            // SAFETY: callers use the shared `serial_test` lock while this
+            // process-global compatibility override is installed.
+            unsafe { std::env::set_var("QOS_WORKSPACE_DIR", path) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for WorkspaceEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `set`; restoration also runs during unwinding.
+            unsafe {
+                if let Some(previous) = self.0.take() {
+                    std::env::set_var("QOS_WORKSPACE_DIR", previous);
+                } else {
+                    std::env::remove_var("QOS_WORKSPACE_DIR");
+                }
+            }
+        }
+    }
+
     fn app_with_sample() -> BooksApp {
         BooksApp::with_library(load_sample_library())
     }
@@ -13526,7 +13551,13 @@ mod interaction_tests {
     }
 
     #[test]
+    #[serial]
     fn import_worker_never_blocks_and_rejects_a_stale_result() {
+        // Keep this assertion specifically about latest-request wins and local
+        // fallback. A file root cannot host `Books`, so workspace
+        // materialisation is unavailable regardless of runner privileges.
+        let workspace = tempfile::NamedTempFile::new().unwrap();
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         let pa = a.path().join("slow-a.epub");
@@ -13649,7 +13680,7 @@ mod interaction_tests {
     #[serial]
     fn a_workspace_book_is_surfaced_as_shared() {
         let ws = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", ws.path()) };
+        let _workspace = WorkspaceEnvGuard::set(ws.path());
         let books = crate::content::workspace_books_dir();
         std::fs::create_dir_all(&books).unwrap();
         let shared_path = books.join("shared.epub");
@@ -13676,7 +13707,6 @@ mod interaction_tests {
 
         // The badge is drawn on the shelf: the shared pill's people-glyph action
         // is absent (no Share button on an already-shared book).
-        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
         let _ = local_path;
     }
 
@@ -13684,7 +13714,7 @@ mod interaction_tests {
     #[serial]
     fn sharing_a_local_book_moves_it_onto_the_workspace() {
         let ws = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", ws.path()) };
+        let _workspace = WorkspaceEnvGuard::set(ws.path());
         let home = tempfile::tempdir().unwrap();
         let src = home.path().join("mine.epub");
         std::fs::write(&src, crate::content::SAMPLE_EPUB).unwrap();
@@ -13701,14 +13731,13 @@ mod interaction_tests {
             app.book_is_shared(0),
             "sharing puts the book on the workspace"
         );
-        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
     }
 
     #[test]
     #[serial]
     fn canonical_share_operation_materialises_before_reporting_success() {
         let workspace = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", workspace.path()) };
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
         let source_dir = tempfile::tempdir().unwrap();
         let source = source_dir.path().join("local.epub");
         std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
@@ -13744,7 +13773,6 @@ mod interaction_tests {
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT,),
             Some(qos_actions::InvocationUpdate::Succeeded { .. })
         ));
-        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
     }
 
     #[test]
@@ -13772,7 +13800,7 @@ mod interaction_tests {
     #[serial]
     fn cancellable_share_operation_reports_its_own_lifecycle_status() {
         let workspace = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", workspace.path()) };
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
         let source_dir = tempfile::tempdir().unwrap();
         let source = source_dir.path().join("cancel.epub");
         std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
@@ -13812,7 +13840,6 @@ mod interaction_tests {
             !BooksDoc::read_library_entries(&doc)[0].shared,
             "cancelling before the UI commit never advertises a shared copy"
         );
-        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
     }
 
     #[test]
