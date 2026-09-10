@@ -4,6 +4,7 @@
 
 use crate::icons::Icon;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, RwLock};
 
 /// Maximum number of rows a provider should return from the legacy, unbudgeted
@@ -22,6 +23,14 @@ pub const DEFAULT_SEARCH_INDEX_LIMIT: usize = 4_096;
 /// for one interactive query. The index may contain the complete corpus; this
 /// is a query-time latency budget, not a data-loss limit.
 pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
+/// Maximum Unicode scalar values accepted from one interactive query.
+///
+/// This is an input-work ceiling, independent of the candidate and result
+/// budgets below.  A pasted multi-megabyte string must not allocate a matching
+/// normalised copy or generate one posting lookup per scalar on the UI thread.
+/// The limit is deliberately far above a meaningful palette query; callers
+/// receive an empty page for longer input and can refine it normally.
+pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 use qos_actions::ActionAddress;
 use std::borrow::Borrow;
 
@@ -42,6 +51,16 @@ use std::borrow::Borrow;
 pub struct SearchTextIndex {
     texts: Vec<String>,
     postings: HashMap<String, BTreeSet<usize>>,
+}
+
+/// A bounded page of snapshot offsets from [`SearchTextIndex`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchTextPage {
+    pub ids: Vec<usize>,
+    /// Resume strictly after this snapshot offset. `None` means exhausted.
+    pub next_after: Option<usize>,
+    /// Number of complete candidate texts verified for this page.
+    pub inspected: usize,
 }
 
 impl SearchTextIndex {
@@ -81,33 +100,74 @@ impl SearchTextIndex {
     /// provider's deliberate snapshot order form the bounded result window.
     #[must_use]
     pub fn matching_ids(&self, query: &str, budget: usize) -> Vec<usize> {
-        if budget == 0 {
-            return Vec::new();
-        }
-        let query = normalize_search_text(query);
-        if query.is_empty() {
-            return (0..self.texts.len()).take(budget).collect();
-        }
+        self.matching_page(query, None, budget, budget).ids
+    }
 
-        let grams = search_grams(&query);
-        let Some(candidates) = rarest_posting(&self.postings, &grams) else {
-            return Vec::new();
+    /// Return a deterministic bounded page of matching snapshot offsets.
+    ///
+    /// The cursor is an offset rather than a byte position, so Unicode and
+    /// embedded NULs cannot split or corrupt it.  A broad posting can be
+    /// continued without rescanning earlier records; a rare posting reaches a
+    /// late unique match after inspecting only that posting's candidates.
+    #[must_use]
+    pub fn matching_page(
+        &self,
+        query: &str,
+        after: Option<usize>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchTextPage {
+        if work_budget == 0 || result_limit == 0 {
+            return SearchTextPage::default();
+        }
+        let Some(query) = normalize_bounded_search_query(query) else {
+            return SearchTextPage::default();
         };
-        candidates
-            .iter()
-            .copied()
-            .filter(|record_id| {
-                grams.iter().all(|gram| {
+        let grams = search_grams(&query);
+        let candidates = if query.is_empty() {
+            None
+        } else {
+            let Some(candidates) = rarest_posting(&self.postings, &grams) else {
+                return SearchTextPage::default();
+            };
+            Some(candidates)
+        };
+        let mut inspected = 0usize;
+        let mut ids = Vec::new();
+        let mut last = None;
+        let mut stopped = false;
+        let iterator: Box<dyn Iterator<Item = usize> + '_> = match candidates {
+            Some(candidates) => match after {
+                Some(after) => Box::new(candidates.range((Excluded(after), Unbounded)).copied()),
+                None => Box::new(candidates.iter().copied()),
+            },
+            None => Box::new(after.map_or(0, |offset| offset.saturating_add(1))..self.texts.len()),
+        };
+        for record_id in iterator {
+            if inspected == work_budget || ids.len() == result_limit {
+                stopped = true;
+                break;
+            }
+            inspected = inspected.saturating_add(1);
+            last = Some(record_id);
+            let exact = query.is_empty()
+                || (grams.iter().all(|gram| {
                     self.postings
                         .get(gram)
-                        .is_some_and(|posting| posting.contains(record_id))
+                        .is_some_and(|posting| posting.contains(&record_id))
                 }) && self
                     .texts
-                    .get(*record_id)
-                    .is_some_and(|text| text.contains(&query))
-            })
-            .take(budget)
-            .collect()
+                    .get(record_id)
+                    .is_some_and(|text| text.contains(&query)));
+            if exact {
+                ids.push(record_id);
+            }
+        }
+        SearchTextPage {
+            ids,
+            next_after: stopped.then_some(last).flatten(),
+            inspected,
+        }
     }
 
     /// The normalised text stored for a snapshot offset, for provider-specific
@@ -160,6 +220,24 @@ fn rarest_posting<'a, K: Ord>(
 #[must_use]
 pub fn normalize_search_text(text: &str) -> String {
     text.chars().flat_map(char::to_lowercase).collect()
+}
+
+/// Normalise an interactive query while bounding both input traversal and the
+/// normalised allocation.  Index construction intentionally continues to use
+/// [`normalize_search_text`]: searchable resource content is retained in full
+/// so a unique term late in a large document remains discoverable.  Only
+/// untrusted, per-keystroke query input is constrained here.
+fn normalize_bounded_search_query(text: &str) -> Option<String> {
+    let mut normalized = String::with_capacity(text.len().min(MAX_SEARCH_QUERY_SCALARS));
+    let mut scalars = 0usize;
+    for scalar in text.chars() {
+        scalars = scalars.checked_add(1)?;
+        if scalars > MAX_SEARCH_QUERY_SCALARS {
+            return None;
+        }
+        normalized.extend(scalar.to_lowercase());
+    }
+    Some(normalized)
 }
 
 /// Opaque continuation for a bounded [`SearchCatalog`] query.
@@ -536,7 +614,13 @@ impl SearchCatalog {
                 inspected: 0,
             };
         }
-        let query = normalize_search_text(query);
+        let Some(query) = normalize_bounded_search_query(query) else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
         let grams = search_grams(&query);
         let inner = self
             .inner
@@ -1099,6 +1183,55 @@ mod tests {
         let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
         assert_eq!(index.matching_ids("common", 7).len(), 7);
         assert!(index.matching_ids("common", 0).is_empty());
+    }
+
+    #[test]
+    fn shared_text_index_pages_a_broad_hundred_thousand_row_posting() {
+        let index = SearchTextIndex::new((0..100_001).map(|i| format!("common item {i}")));
+        let first = index.matching_page("common", None, 7, 3);
+        assert_eq!(first.inspected, 3);
+        assert_eq!(first.ids, vec![0, 1, 2]);
+        let second = index.matching_page("common", first.next_after, 7, 3);
+        assert_eq!(second.inspected, 3);
+        assert_eq!(second.ids, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn oversized_query_stops_before_index_work_or_materialisation() {
+        let catalog = SearchCatalog::new("Documents");
+        for index in 0..100_001 {
+            let id = format!("document:{index:06}");
+            catalog
+                .upsert(&id, "common searchable document", catalog_hit(&id, &id))
+                .unwrap();
+        }
+        let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
+
+        let page = catalog.query_page(&query, None, 1, 1);
+        assert!(page.results.is_empty());
+        assert!(page.next.is_none());
+        assert_eq!(page.inspected, 0, "input rejection must precede scans");
+        assert!(
+            SearchTextIndex::new(["common searchable document"])
+                .matching_ids(&query, 1)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn bounded_query_normalization_keeps_unicode_case_matching() {
+        let catalog = SearchCatalog::new("Documents");
+        catalog
+            .upsert(
+                "document:munich",
+                "MÜNCHEN 夏",
+                catalog_hit("document:munich", "München"),
+            )
+            .unwrap();
+
+        let page = catalog.query_page("mÜnChEn 夏", None, 1, 1);
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.inspected, 1);
     }
 
     #[test]

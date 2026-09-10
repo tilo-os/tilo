@@ -293,6 +293,37 @@ pub fn dynamic_launcher_records() -> Vec<DynamicLauncherRecord> {
         .collect()
 }
 
+/// Cheap file generation for the reviewed launcher library.  This is used to
+/// decide whether a retained palette projection must re-read the JSON; normal
+/// query edits only stat the private file and never clone its records.
+#[must_use]
+pub fn dynamic_launcher_generation() -> u128 {
+    let path = portal_state_path("dynamic-launchers.json");
+    let Ok(metadata) = fs::metadata(path) else {
+        return 0;
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |duration| duration.as_nanos());
+    modified ^ u128::from(metadata.len())
+}
+
+/// Pair one parsed dynamic-launcher library with the file generation that was
+/// observed for that same read. A writer racing the read yields a different
+/// generation and causes a retained worker result to be discarded rather than
+/// relabelled as current.
+pub fn dynamic_launcher_snapshot() -> (u128, Vec<DynamicLauncherRecord>) {
+    let before = dynamic_launcher_generation();
+    let records = dynamic_launcher_records();
+    let after = dynamic_launcher_generation();
+    // `before` is the generation of the bytes we intended to read; a changed
+    // post-read generation is deliberately returned so consumers reject this
+    // possibly mixed snapshot and schedule a fresh worker.
+    (if before == after { before } else { 0 }, records)
+}
+
 impl DynamicLauncherService for ShellDynamicLauncherService {
     fn prepare_install(
         &self,

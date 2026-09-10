@@ -22,6 +22,18 @@ use automerge::{AutoCommit, ObjId};
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 use action_api::{ActionArgs, ActionError, ActionParam};
 
+/// Keep shell-only providers (including network directories) behind the same
+/// per-keystroke Unicode input ceiling as app-side [`ui::search::SearchCatalog`]
+/// providers.  The check happens before provider routing, so no provider gets
+/// to lower-case or otherwise allocate from an arbitrarily pasted query.
+fn query_input_is_bounded(needle: &str) -> bool {
+    needle
+        .chars()
+        .take(ui::search::MAX_SEARCH_QUERY_SCALARS.saturating_add(1))
+        .count()
+        <= ui::search::MAX_SEARCH_QUERY_SCALARS
+}
+
 /// One well-known category a result can belong to — the domain vocabulary
 /// the chip strip and grouping use. Providers pick from it or, via
 /// [`ResourceKind::Custom`], mint a new one.
@@ -332,6 +344,12 @@ pub trait SearchProvider {
     /// ONE query and split the response into the wanted kinds.
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult>;
 
+    /// Non-query maintenance hook for retained indexes. The compositor calls
+    /// this from its frame/timer tick, before an input event is routed. A
+    /// large provider may begin or poll a deduplicated background build here;
+    /// `query_page` must only ever observe ready immutable snapshots.
+    fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {}
+
     /// Version of the retained index used by [`Self::query_page`].  A
     /// provider whose data is immutable may keep the default.  Mutable
     /// providers must change it whenever their ordering or disclosure can
@@ -399,6 +417,7 @@ pub trait SearchProvider {
 
 /// Bundle of everything a provider might need to answer a query. Passed
 /// by value so providers don't have to store the borrows.
+#[derive(Clone, Copy)]
 pub struct SearchContext<'a> {
     pub needle: &'a str,
     pub wanted: &'a [ResourceKind],
@@ -463,6 +482,46 @@ impl SearchRegistry {
         self.providers.iter().map(std::convert::AsRef::as_ref)
     }
 
+    /// Poll/start retained index maintenance without routing a query. This is
+    /// intentionally separate from `query`, `query_revision`, and
+    /// `query_provider_page`: a cold 100k source must never be flattened on
+    /// the keystroke path.
+    pub fn refresh_indexes(&self, args: &QueryArgs<'_>) -> bool {
+        if !query_input_is_bounded(args.needle) {
+            return false;
+        }
+        let mut changed = false;
+        for provider in &self.providers {
+            if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+                continue;
+            }
+            let wanted = if args.wanted_kinds.is_empty() {
+                provider.resource_kinds().to_vec()
+            } else {
+                provider
+                    .resource_kinds()
+                    .iter()
+                    .filter(|kind| args.wanted_kinds.contains(kind))
+                    .cloned()
+                    .collect()
+            };
+            if wanted.is_empty() {
+                continue;
+            }
+            let ctx = SearchContext {
+                needle: args.needle,
+                wanted: &wanted,
+                chrome: args.chrome,
+                doc: args.doc,
+                doc_root: args.doc_root,
+            };
+            let before = provider.search_revision(&ctx);
+            provider.refresh_search_index(&ctx);
+            changed |= before != provider.search_revision(&ctx);
+        }
+        changed
+    }
+
     /// Page one named source without flattening every provider into a single
     /// transient vector.  This is the agent-facing primitive behind
     /// hierarchy/navigation UIs: callers retain the opaque cursor and repeat
@@ -474,6 +533,9 @@ impl SearchRegistry {
         cursor: Option<&SearchCursor>,
         budget: SearchBudget,
     ) -> Option<SearchPage> {
+        if !query_input_is_bounded(args.needle) {
+            return Some(SearchPage::exhausted("oversized-query", Vec::new()));
+        }
         let provider = self
             .providers
             .iter()
@@ -527,6 +589,9 @@ impl SearchRegistry {
     /// resources appearing/disappearing update an open palette without
     /// making the user type a throwaway character.
     pub fn query_revision(&self, args: &QueryArgs<'_>) -> String {
+        if !query_input_is_bounded(args.needle) {
+            return "oversized-query".into();
+        }
         let mut out = String::new();
         for provider in &self.providers {
             if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
@@ -550,6 +615,9 @@ impl SearchRegistry {
     /// filter. `wanted_kinds` filters results by kind; empty means "any
     /// kind" so a naive caller can just pass `&[]`.
     pub fn query(&self, args: &QueryArgs<'_>) -> Vec<SearchResult> {
+        if !query_input_is_bounded(args.needle) {
+            return Vec::new();
+        }
         let QueryArgs {
             needle,
             scope,
@@ -765,6 +833,66 @@ mod tests {
     fn mk_doc() -> (AutoCommit, ObjId) {
         let doc = AutoCommit::new();
         (doc, automerge::ROOT)
+    }
+
+    /// The interactive host refreshes retained providers before it routes a
+    /// key event.  Keep public-registry tests on that same contract instead
+    /// of teaching a cold `query()` to synchronously index a corpus.
+    fn refresh_until_ready(registry: &SearchRegistry, args: &QueryArgs<'_>) {
+        for _ in 0..200 {
+            registry.refresh_indexes(args);
+            if registry.query_revision(args).contains("ready:") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("retained search index did not become ready");
+    }
+
+    #[test]
+    fn oversized_query_never_routes_to_a_shell_provider() {
+        use std::cell::Cell;
+
+        struct CountingProvider(Rc<Cell<usize>>);
+        impl SearchProvider for CountingProvider {
+            fn id(&self) -> &'static str {
+                "counting"
+            }
+            fn name(&self) -> &'static str {
+                "Counting"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Action]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                self.0.set(self.0.get().saturating_add(1));
+                Vec::new()
+            }
+        }
+
+        let calls = Rc::new(Cell::new(0));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(CountingProvider(Rc::clone(&calls))));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let query = "夏".repeat(ui::search::MAX_SEARCH_QUERY_SCALARS + 1);
+        let args = QueryArgs {
+            needle: &query,
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+
+        assert!(registry.query(&args).is_empty());
+        assert_eq!(calls.get(), 0, "providers must not receive abusive input");
+        let page = registry
+            .query_provider_page("counting", &args, None, SearchBudget::PALETTE)
+            .expect("registered provider");
+        assert!(page.exhausted && page.results.is_empty());
+        assert_eq!(calls.get(), 0, "direct paging has the same input gate");
     }
 
     #[test]
@@ -1222,6 +1350,16 @@ mod tests {
 
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
+        let refresh_args = QueryArgs {
+            needle: "calculator",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        refresh_until_ready(&reg, &refresh_args);
         for scope in [
             SearchScope::All,
             SearchScope::Workspace,
@@ -1285,6 +1423,16 @@ mod tests {
 
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
+        let refresh_args = QueryArgs {
+            needle: "editor",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        refresh_until_ready(&reg, &refresh_args);
         // "editor" is a leaf-name prefix for all forty files but only a
         // substring of "Hex Editor", so Files legitimately outranks it.
         let groups = reg.query_grouped(

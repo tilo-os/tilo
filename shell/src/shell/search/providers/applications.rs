@@ -6,8 +6,12 @@
 //! stable detail URI. The Store then shows provenance and offers the current
 //! revalidated install action; palette activation never downloads software.
 
+use std::cell::{Ref, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
 
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
@@ -15,7 +19,10 @@ use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::action_api::{ActionArgs, ActionError};
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -110,18 +117,296 @@ fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
+    snapshot: RefCell<Option<ApplicationsSnapshot>>,
+    build: RefCell<Option<Receiver<ApplicationsSnapshot>>>,
+    #[cfg(test)]
+    source: Option<Arc<ApplicationsTestSource>>,
+    #[cfg(test)]
+    build_probe: Arc<BuildProbe>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct BuildProbe {
+    builds: std::sync::atomic::AtomicUsize,
+    thread: Mutex<Option<std::thread::ThreadId>>,
+}
+
+#[cfg(test)]
+type ApplicationsTestState = (
+    Vec<InstalledApp>,
+    Vec<CatalogueApp>,
+    Vec<crate::shell::host_apps::HostApp>,
+    Vec<DynamicLauncherRecord>,
+);
+
+#[cfg(test)]
+struct ApplicationsTestSource {
+    generation: std::sync::atomic::AtomicU64,
+    state: Mutex<ApplicationsTestState>,
+    materializations: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl ApplicationsTestSource {
+    fn new(
+        installed: Vec<InstalledApp>,
+        catalogue: Vec<CatalogueApp>,
+        host_apps: Vec<crate::shell::host_apps::HostApp>,
+        dynamic: Vec<DynamicLauncherRecord>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            generation: std::sync::atomic::AtomicU64::new(1),
+            state: Mutex::new((installed, catalogue, host_apps, dynamic)),
+            materializations: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    fn generation(&self) -> (u64, u64, u64, u128) {
+        let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        (generation, generation, generation, u128::from(generation))
+    }
+
+    fn snapshot(
+        &self,
+    ) -> (
+        u64,
+        Vec<InstalledApp>,
+        Vec<CatalogueApp>,
+        Vec<crate::shell::host_apps::HostApp>,
+        Vec<DynamicLauncherRecord>,
+    ) {
+        self.materializations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        let (installed, catalogue, host_apps, dynamic) = self
+            .state
+            .lock()
+            .expect("application test source lock")
+            .clone();
+        (generation, installed, catalogue, host_apps, dynamic)
+    }
+
+    fn replace_catalogue(&self, catalogue: Vec<CatalogueApp>) {
+        self.state.lock().expect("application test source lock").1 = catalogue;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+enum ApplicationEntry {
+    Installed(InstalledApp),
+    Dynamic(DynamicLauncherRecord),
+    Catalogue(CatalogueApp),
+}
+
+struct ApplicationsSnapshot {
+    source_generation: (u64, u64, u64, u128),
+    entries: Vec<ApplicationEntry>,
+    /// Canonical lower-cased identities make the warm catalogue membership
+    /// check O(1).  Re-walking either complete source for every indexed row
+    /// turns a broad palette page into a quadratic catalogue query.
+    installed_ids: HashSet<String>,
+    host_app_ids: HashSet<String>,
+    index: ui::search::SearchTextIndex,
 }
 
 impl ApplicationsProvider {
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::Application],
+            snapshot: RefCell::new(None),
+            build: RefCell::new(None),
+            #[cfg(test)]
+            source: None,
+            #[cfg(test)]
+            build_probe: Arc::new(BuildProbe::default()),
         }
     }
 
-    /// Split out so tests can exercise scoring against a known list.
-    fn apps() -> Vec<InstalledApp> {
-        launcher::gui_apps()
+    #[cfg(test)]
+    fn with_test_source(source: Arc<ApplicationsTestSource>) -> Self {
+        Self {
+            source: Some(source),
+            ..Self::new()
+        }
+    }
+
+    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
+    fn source_generation(&self) -> (u64, u64, u64, u128) {
+        #[cfg(test)]
+        if let Some(source) = &self.source {
+            return source.generation();
+        }
+        (
+            launcher::gui_apps_generation(),
+            catalogue::available_apps_generation(),
+            crate::shell::host_apps::host_apps_generation(),
+            crate::portal::desktop_services::dynamic_launcher_generation(),
+        )
+    }
+
+    /// Refresh the retained projection during the registry's source-refresh
+    /// pass.  `query_page` deliberately never calls this: a source change may
+    /// contain a very large installed/catalogue corpus and must not turn the
+    /// first keystroke into an indexing job.
+    fn build_snapshot(
+        #[cfg(test)] source: Option<Arc<ApplicationsTestSource>>,
+        #[cfg(test)] probe: &BuildProbe,
+    ) -> ApplicationsSnapshot {
+        #[cfg(test)]
+        {
+            probe
+                .builds
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *probe.thread.lock().expect("application build thread lock") =
+                Some(std::thread::current().id());
+        }
+        #[cfg(test)]
+        if let Some(source) = source {
+            let (generation, installed, catalogue_apps, host_apps, dynamic) = source.snapshot();
+            return Self::snapshot_from_parts(
+                (generation, generation, generation, u128::from(generation)),
+                &installed,
+                catalogue_apps,
+                &host_apps,
+                dynamic,
+            );
+        }
+        let (installed_generation, installed) = launcher::gui_apps_snapshot();
+        let (catalogue_generation, catalogue_apps) = catalogue::available_apps_snapshot();
+        let (host_generation, host_apps) = crate::shell::host_apps::host_apps_snapshot();
+        let (dynamic_generation, dynamic) =
+            crate::portal::desktop_services::dynamic_launcher_snapshot();
+        Self::snapshot_from_parts(
+            (
+                installed_generation,
+                catalogue_generation,
+                host_generation,
+                dynamic_generation,
+            ),
+            &installed,
+            catalogue_apps,
+            &host_apps,
+            dynamic,
+        )
+    }
+
+    fn snapshot_from_parts(
+        source_generation: (u64, u64, u64, u128),
+        installed: &[InstalledApp],
+        catalogue_apps: Vec<CatalogueApp>,
+        host_apps: &[crate::shell::host_apps::HostApp],
+        dynamic: Vec<DynamicLauncherRecord>,
+    ) -> ApplicationsSnapshot {
+        let installed_ids: HashSet<String> = installed
+            .iter()
+            .map(|app| app.package_id.to_ascii_lowercase())
+            .collect();
+        let host_app_ids: HashSet<String> = host_apps
+            .iter()
+            .map(|host| host.desktop_id.to_ascii_lowercase())
+            .collect();
+        let mut seen_catalogue = HashSet::new();
+        let mut entries = installed
+            .iter()
+            .cloned()
+            .map(ApplicationEntry::Installed)
+            .collect::<Vec<_>>();
+        entries.extend(dynamic.into_iter().map(ApplicationEntry::Dynamic));
+        entries.extend(
+            catalogue_apps
+                .into_iter()
+                .filter(|app| {
+                    let package_id = app.package_id.to_ascii_lowercase();
+                    !installed_ids.contains(&package_id)
+                        && !host_app_ids.contains(&package_id)
+                        && seen_catalogue.insert(package_id)
+                })
+                .map(ApplicationEntry::Catalogue),
+        );
+        let index = ui::search::SearchTextIndex::new(entries.iter().map(|entry| match entry {
+            ApplicationEntry::Installed(app) => format!(
+                "{}\u{1f}{}\u{1f}{}",
+                app.display_name,
+                app.package_id,
+                app.category.as_deref().unwrap_or("")
+            ),
+            ApplicationEntry::Dynamic(record) => format!(
+                "{}\u{1f}{}\u{1f}{}",
+                record.name, record.id, record.owner_app_id
+            ),
+            ApplicationEntry::Catalogue(app) => format!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                app.display_name,
+                app.package_id,
+                app.category.as_deref().unwrap_or(""),
+                app.description
+            ),
+        }));
+        ApplicationsSnapshot {
+            // Never stamp a completed mixed read with a generation fetched
+            // afterwards: a source can change while this worker builds.
+            // `snapshot()` compares these captured generations to current
+            // source generations and rejects a stale worker result.
+            source_generation,
+            entries,
+            installed_ids,
+            host_app_ids,
+            index,
+        }
+    }
+
+    /// Start/poll one source-owned worker.  The worker reads and clones every
+    /// source itself; this UI-tick method never flattens an application
+    /// corpus before spawn, and a query never starts it.
+    fn refresh_snapshot(&self) {
+        let receiver = self.build.borrow_mut().take();
+        if let Some(receiver) = receiver {
+            match receiver.try_recv() {
+                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
+                Err(TryRecvError::Empty) => *self.build.borrow_mut() = Some(receiver),
+                Err(TryRecvError::Disconnected) => {}
+            }
+        }
+        let current = self.source_generation();
+        if self
+            .snapshot
+            .borrow()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.source_generation == current)
+            || self.build.borrow().is_some()
+        {
+            return;
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let spawned = std::thread::Builder::new()
+            .name("qos-app-search-index".into())
+            .spawn({
+                #[cfg(test)]
+                let source = self.source.clone();
+                #[cfg(test)]
+                let probe = Arc::clone(&self.build_probe);
+                move || {
+                    let _ = sender.send(Self::build_snapshot(
+                        #[cfg(test)]
+                        source,
+                        #[cfg(test)]
+                        &probe,
+                    ));
+                }
+            });
+        if spawned.is_ok() {
+            *self.build.borrow_mut() = Some(receiver);
+        }
+    }
+
+    fn snapshot(&self) -> Option<Ref<'_, ApplicationsSnapshot>> {
+        let generation = self.source_generation();
+        let snapshot = self.snapshot.borrow();
+        Ref::filter_map(snapshot, Option::as_ref)
+            .ok()
+            .filter(|snapshot| snapshot.source_generation == generation)
     }
 
     /// Score `apps` against `needle`. `open_target` only words the row —
@@ -172,29 +457,33 @@ impl ApplicationsProvider {
         out
     }
 
-    fn catalogue_apps() -> Vec<CatalogueApp> {
-        catalogue::available_apps()
-    }
-
-    fn dynamic_apps() -> Vec<DynamicLauncherRecord> {
-        crate::portal::desktop_services::dynamic_launcher_records()
-    }
-
     /// Reviewed `DynamicLauncher` entries are catalogue aliases, never command
     /// lines. Application entries start only their authenticated owner package;
     /// web entries pass their HTTPS target through the normal URI handler and
     /// workspace policy.
+    #[cfg(test)]
     fn dynamic_results_for(
         &self,
         needle: &str,
         records: Vec<DynamicLauncherRecord>,
+        installed: &[InstalledApp],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
+        let installed_gui = installed
+            .iter()
+            .map(|app| app.package_id.to_ascii_lowercase())
+            .collect();
+        self.dynamic_results_for_membership(needle, records, &installed_gui, open_target)
+    }
+
+    fn dynamic_results_for_membership(
+        &self,
+        needle: &str,
+        records: Vec<DynamicLauncherRecord>,
+        installed_gui: &HashSet<String>,
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
-        let installed_gui: Vec<String> = launcher::gui_apps()
-            .into_iter()
-            .map(|app| app.package_id)
-            .collect();
         records
             .into_iter()
             .filter_map(|record| {
@@ -202,7 +491,8 @@ impl ApplicationsProvider {
                 let id_lower = record.id.to_lowercase();
                 let score = match_score(&needle_lower, &name_lower, &id_lower, None, None)?;
                 let valid = match record.launcher_type {
-                    1 => record.target.is_none() && installed_gui.contains(&record.owner_app_id),
+                    1 => record.target.is_none()
+                        && installed_gui.contains(&record.owner_app_id.to_ascii_lowercase()),
                     2 => record.target.as_deref().is_some_and(|target| {
                         target.starts_with("https://")
                             && crate::shell::uri_open::resource_for_uri(target).is_ok()
@@ -280,23 +570,49 @@ impl ApplicationsProvider {
         clippy::too_many_lines,
         reason = "catalogue-result construction keeps ranking, alias suppression, install state, and action metadata together so duplicate offerings cannot diverge"
     )]
+    #[cfg(test)]
     fn catalogue_results_for_with_hosts(
         &self,
         needle: &str,
         apps: Vec<CatalogueApp>,
         installed: &[String],
         host_apps: &[crate::shell::host_apps::HostApp],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
+        let installed_ids = installed.iter().map(|id| id.to_ascii_lowercase()).collect();
+        let host_app_ids = host_apps
+            .iter()
+            .map(|app| app.desktop_id.to_ascii_lowercase())
+            .collect();
+        self.catalogue_results_for_membership(
+            needle,
+            apps,
+            &installed_ids,
+            &host_app_ids,
+            open_target,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the callback captures one catalogue row's launch safety and failure behaviour, keeping Store activation identical across result sources"
+    )]
+    fn catalogue_results_for_membership(
+        &self,
+        needle: &str,
+        apps: Vec<CatalogueApp>,
+        installed_ids: &HashSet<String>,
+        host_app_ids: &HashSet<String>,
         _open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         for app in apps {
-            if installed.contains(&app.package_id)
-                || host_apps
-                    .iter()
-                    .any(|host| catalogue_aliases_host(&app, host))
-                || !seen.insert(app.package_id.clone())
+            let package_id_key = app.package_id.to_ascii_lowercase();
+            if installed_ids.contains(&package_id_key)
+                || host_app_ids.contains(&package_id_key)
+                || !seen.insert(package_id_key)
             {
                 continue;
             }
@@ -417,18 +733,6 @@ fn store_detail_uri(package_id: &str) -> Result<String, ActionError> {
         ));
     }
     Ok(format!("qos-store:app/{package_id}"))
-}
-
-fn catalogue_aliases_host(
-    catalogue: &CatalogueApp,
-    host: &crate::shell::host_apps::HostApp,
-) -> bool {
-    // Display names and reverse-DNS tails are presentation, not identity:
-    // GNOME Calendar and qOS Calendar are two real applications, as are the
-    // many unrelated programs named Notes or Terminal.  Until the signed
-    // catalogue contract grows explicit aliases, only the complete canonical
-    // ID is strong enough evidence to collapse a cross-provider row.
-    catalogue.package_id.eq_ignore_ascii_case(&host.desktop_id)
 }
 
 /// The package id of the file manager qOS ships as a system app.
@@ -635,22 +939,119 @@ impl SearchProvider for ApplicationsProvider {
         {
             return Vec::new();
         }
-        let installed = Self::apps();
-        let installed_ids: Vec<String> = installed.iter().map(|a| a.package_id.clone()).collect();
-        let mut out = self.results_for(ctx.needle, installed, ctx.chrome.open_target);
-        out.extend(self.dynamic_results_for(
-            ctx.needle,
-            Self::dynamic_apps(),
-            ctx.chrome.open_target,
-        ));
-        out.extend(self.catalogue_results_for_with_hosts(
-            ctx.needle,
-            Self::catalogue_apps(),
-            &installed_ids,
-            &crate::shell::host_apps::host_apps(),
-            ctx.chrome.open_target,
-        ));
-        out
+        // Compatibility for direct unit/headless callers that have not yet
+        // joined the registry source-refresh protocol. Interactive palette
+        // pages always run `search_revision` first (see `SearchRegistry`).
+        let _ = self.search_revision(&ctx);
+        self.query_page(ctx, None, SearchBudget::PALETTE).results
+    }
+
+    fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
+        self.refresh_snapshot();
+    }
+
+    fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
+        self.revision()
+    }
+
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        if !ctx.wanted.contains(&ResourceKind::Application)
+            || budget.max_results == 0
+            || budget.max_work == 0
+        {
+            return SearchPage::exhausted(self.revision(), Vec::new());
+        }
+        let revision = self.revision();
+        let Some(snapshot) = self.snapshot() else {
+            return SearchPage::exhausted(revision, Vec::new());
+        };
+        let after = match cursor {
+            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
+            Some(cursor) => match cursor
+                .token
+                .strip_prefix("applications:")
+                .and_then(|token| {
+                    token
+                        .split_once('\u{1f}')
+                        .filter(|(_, query)| *query == ctx.needle)
+                        .and_then(|(offset, _)| offset.parse::<usize>().ok())
+                }) {
+                Some(offset) => Some(offset),
+                None => return SearchPage::stale(revision),
+            },
+            None => None,
+        };
+        let page =
+            snapshot
+                .index
+                .matching_page(ctx.needle, after, budget.max_work, budget.max_results);
+        let mut next_after = page.next_after;
+        let mut bytes = 0usize;
+        let mut results = Vec::new();
+        for id in page.ids {
+            let Some(entry) = snapshot.entries.get(id) else {
+                continue;
+            };
+            let mut rows = match entry {
+                ApplicationEntry::Installed(app) => {
+                    self.results_for(ctx.needle, vec![app.clone()], ctx.chrome.open_target)
+                }
+                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
+                    ctx.needle,
+                    vec![record.clone()],
+                    &snapshot.installed_ids,
+                    ctx.chrome.open_target,
+                ),
+                ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
+                    ctx.needle,
+                    vec![app.clone()],
+                    &snapshot.installed_ids,
+                    &snapshot.host_app_ids,
+                    ctx.chrome.open_target,
+                ),
+            };
+            let Some(row) = rows.pop() else { continue };
+            let row_bytes = row
+                .title
+                .len()
+                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+            if bytes.saturating_add(row_bytes) > budget.max_bytes {
+                next_after = Some(id);
+                break;
+            }
+            bytes = bytes.saturating_add(row_bytes);
+            results.push(row);
+        }
+        let exhausted = next_after.is_none();
+        SearchPage {
+            revision: revision.clone(),
+            results,
+            next_cursor: next_after.map(|offset| SearchCursor {
+                revision,
+                token: format!("applications:{offset}\u{1f}{}", ctx.needle),
+            }),
+            exhausted,
+            stale_cursor: false,
+            budget_exhausted: !exhausted,
+        }
+    }
+}
+
+impl ApplicationsProvider {
+    fn revision(&self) -> String {
+        let (installed, catalogue, host, dynamic) = self.source_generation();
+        let ready = self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
+            snapshot.source_generation == (installed, catalogue, host, dynamic)
+        });
+        format!(
+            "{}:{installed}:{catalogue}:{host}:{dynamic}",
+            if ready { "ready" } else { "indexing" }
+        )
     }
 }
 
@@ -739,6 +1140,17 @@ mod tests {
     fn chrome_rc() -> Chrome {
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
         ChromeState::new_with_handle(handle)
+    }
+
+    fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
+        for _ in 0..200 {
+            provider.refresh_search_index(ctx);
+            if provider.search_revision(ctx).starts_with("ready:") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("application search index did not become ready");
     }
 
     fn app(package_id: &str, display_name: &str) -> InstalledApp {
@@ -1339,22 +1751,28 @@ mod tests {
 
     #[test]
     fn shell_query_includes_an_uninstalled_app_as_a_store_detail_row() {
-        let p = ApplicationsProvider::new();
-        crate::shell::catalogue::seed_for_test(vec![offered(
-            "dev.qos.uninstalled-sheets",
-            "Sheets",
-            Some("Office"),
-        )]);
+        let p = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
+            Vec::new(),
+            vec![offered(
+                "dev.qos.uninstalled-sheets",
+                "Sheets",
+                Some("Office"),
+            )],
+            Vec::new(),
+            Vec::new(),
+        ));
         let c = chrome_rc();
         let state = c.borrow();
         let doc = AutoCommit::new();
-        let results = p.query(SearchContext {
+        let ctx = SearchContext {
             needle: "sheets",
             wanted: &[ResourceKind::Application],
             chrome: &state,
             doc: &doc,
             doc_root: &automerge::ROOT,
-        });
+        };
+        refresh_until_ready(&p, &ctx);
+        let results = p.query(ctx);
         let row = results
             .iter()
             .find(|row| row.id == "app:dev.qos.uninstalled-sheets")
@@ -1364,6 +1782,211 @@ mod tests {
             row.subtitle
                 .as_deref()
                 .is_some_and(|text| text.contains("verified"))
+        );
+    }
+
+    #[test]
+    fn cold_and_warm_public_pages_never_rescan_a_hundred_thousand_apps() {
+        let chrome = chrome_rc();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            needle: "unique-tail",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let cold = ApplicationsProvider::new();
+        assert!(
+            cold.query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        assert!(
+            cold.build.borrow().is_none(),
+            "a public cold query must not start or clone a full application corpus"
+        );
+
+        let provider = ApplicationsProvider::new();
+        let entries = (0..100_001)
+            .map(|index| {
+                ApplicationEntry::Installed(app_in(
+                    &format!("dev.qos.fixture-{index}"),
+                    if index == 100_000 {
+                        "unique-tail"
+                    } else {
+                        "common app"
+                    },
+                    None,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let index = ui::search::SearchTextIndex::new(entries.iter().map(|entry| match entry {
+            ApplicationEntry::Installed(app) => {
+                format!("{}\u{1f}{}", app.display_name, app.package_id)
+            }
+            ApplicationEntry::Dynamic(_) | ApplicationEntry::Catalogue(_) => String::new(),
+        }));
+        *provider.snapshot.borrow_mut() = Some(ApplicationsSnapshot {
+            source_generation: provider.source_generation(),
+            entries,
+            installed_ids: HashSet::new(),
+            host_app_ids: HashSet::new(),
+            index,
+        });
+        let page = provider.query_page(
+            SearchContext {
+                needle: "unique-tail",
+                wanted: &[ResourceKind::Application],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            },
+        );
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "Open unique-tail");
+        assert!(page.exhausted, "the rare posting needs one warm inspection");
+        assert!(provider.build.borrow().is_none());
+    }
+
+    #[test]
+    fn a_worker_snapshot_is_rejected_when_its_source_revision_changed() {
+        let source = ApplicationsTestSource::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let provider = ApplicationsProvider::with_test_source(Arc::clone(&source));
+        let chrome = chrome_rc();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            needle: "anything",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let initial_revision = provider.search_revision(&ctx);
+        provider.refresh_search_index(&ctx);
+        for _ in 0..200 {
+            if source
+                .materializations
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == 1
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            source
+                .materializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        source.replace_catalogue(vec![offered("dev.qos.changed", "Changed", None)]);
+        provider.refresh_search_index(&ctx);
+        assert!(provider.search_revision(&ctx).starts_with("indexing:"));
+        refresh_until_ready(&provider, &ctx);
+        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+        assert_ne!(provider.search_revision(&ctx), initial_revision);
+    }
+
+    #[test]
+    fn source_backed_cold_query_does_no_application_index_work_before_refresh() {
+        let source = ApplicationsTestSource::new(
+            Vec::new(),
+            (0..100_001)
+                .map(|index| CatalogueApp {
+                    package_id: format!("dev.qos.cold-fixture-{index}"),
+                    display_name: if index == 100_000 {
+                        "unique-source-tail".into()
+                    } else {
+                        "common source app".into()
+                    },
+                    description: String::new(),
+                    category: None,
+                    version: "1".into(),
+                    registry: "fixture".into(),
+                    trust: "verified".into(),
+                })
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let provider = ApplicationsProvider::with_test_source(Arc::clone(&source));
+        let chrome = chrome_rc();
+        let chrome = chrome.borrow();
+        let doc = AutoCommit::new();
+        let ctx = SearchContext {
+            needle: "unique-source-tail",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let query_thread = std::thread::current().id();
+        assert!(provider.search_revision(&ctx).starts_with("indexing:"));
+        assert!(
+            provider
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .is_empty()
+        );
+        assert_eq!(
+            provider
+                .build_probe
+                .builds
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            source
+                .materializations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(provider.build.borrow().is_none());
+
+        for _ in 0..6_000 {
+            provider.refresh_search_index(&ctx);
+            if provider.search_revision(&ctx).starts_with("ready:") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(provider.search_revision(&ctx).starts_with("ready:"));
+        assert_eq!(
+            provider
+                .build_probe
+                .builds
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_ne!(
+            *provider
+                .build_probe
+                .thread
+                .lock()
+                .expect("application build thread lock"),
+            Some(query_thread)
+        );
+        let page = provider.query_page(
+            SearchContext { ..ctx },
+            None,
+            SearchBudget {
+                max_results: 1,
+                max_bytes: usize::MAX,
+                max_work: 1,
+            },
+        );
+        assert_eq!(
+            page.results[0].title,
+            "View unique-source-tail in App Store"
         );
     }
 
@@ -1402,6 +2025,7 @@ mod tests {
                 record("portal-valid", Some("https://example.test/board")),
                 record("portal-invalid", Some("javascript:alert(1)")),
             ],
+            &[],
             OpenTarget::Beside,
         );
         assert_eq!(out.len(), 1);

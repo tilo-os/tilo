@@ -10565,12 +10565,44 @@ impl Widget for ShellOverlayHost {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compositor tick is deliberately ordered in one place so source refreshes precede palette input and every frame-side effect remains visible"
+    )]
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
         if let Some(onboarding) = self.onboarding.as_mut() {
             return onboarding.update(doc, path);
         }
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
+        let mut search_index_ready = false;
+        // Retained search indexes are maintained on the compositor tick,
+        // before palette input is routed.  Providers may do a source refresh
+        // here, but the keystroke/query path below only reads ready indexes.
+        if self.palette_visible
+            && let Some(chrome) = self.chrome.clone()
+        {
+            let current_query = self.palette.query().to_string();
+            let (scope, active_provider) = {
+                let state = chrome.borrow();
+                (
+                    state.search_scope,
+                    active_tab_provider_id(&state, &self.search_registry),
+                )
+            };
+            let state = chrome.borrow();
+            search_index_ready =
+                self.search_registry
+                    .refresh_indexes(&crate::shell::search::QueryArgs {
+                        needle: &current_query,
+                        scope,
+                        active_provider_id: active_provider.as_deref(),
+                        wanted_kinds: &self.active_kind_filter,
+                        chrome: &state,
+                        doc,
+                        doc_root: path,
+                    });
+        }
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
@@ -10588,6 +10620,13 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         let palette_dirty = self.palette.update(doc, path);
+        if search_index_ready {
+            // A worker published an immutable index after the palette opened.
+            // Force one normal fanout this frame so the visible list updates
+            // without requiring another character from the user.
+            self.last_search_revision.clear();
+            self.refresh_search_results(doc, path);
+        }
         #[allow(
             clippy::unnecessary_fold,
             reason = "every mirror update has side effects and must run even after one reports dirty"

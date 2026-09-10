@@ -457,6 +457,22 @@ impl AppActionBroker {
         Self { state }
     }
 
+    #[cfg(test)]
+    pub(crate) fn replace_action_directory_roots_for_test(
+        &self,
+        roots: Vec<crate::shell::collab_broker_capnp::ActionDirectoryRoot>,
+    ) {
+        self.state.replace_action_directory_roots_for_test(roots);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_published_surfaces_for_test(
+        &self,
+        surfaces: Vec<crate::shell::collab_broker_capnp::PublishedSurface>,
+    ) {
+        self.state.replace_published_surfaces_for_test(surfaces);
+    }
+
     /// Bounded, nonblocking bridge from shell chrome into the broker's
     /// LocalSet-owned application directory capabilities. Palette code must
     /// poll the returned oneshot in its cache owner; it must never block a
@@ -470,6 +486,14 @@ impl AppActionBroker {
 
     pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
         self.state.published_surfaces()
+    }
+
+    /// Generation of the retained published-surface source.  Palette query
+    /// edits use this inexpensive read before deciding to clone a new source
+    /// snapshot.
+    #[must_use]
+    pub fn surfaces_generation(&self) -> u64 {
+        self.state.published_surfaces_generation()
     }
 
     /// Small inert routes for currently connected `ActionDirectory` sources.
