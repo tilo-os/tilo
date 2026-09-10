@@ -45,6 +45,8 @@ pub struct MathField {
     /// keeps typing from re-shaping the whole formula each frame.
     layout_sig: Option<(String, f32)>,
     base_size: f32,
+    /// Accessibility text-scale multiplier supplied by the owning graph panel.
+    text_scale: f32,
     /// Whether a drag-select is in progress.
     dragging: bool,
     /// Content-local pixels scrolled off the top-left. Keeps a long or tall
@@ -63,6 +65,7 @@ impl MathField {
             layout: None,
             layout_sig: None,
             base_size: layout::BASE_SIZE,
+            text_scale: 1.0,
             dragging: false,
             scroll: Vec2::ZERO,
         }
@@ -72,6 +75,13 @@ impl MathField {
     pub fn with_size(mut self, size: f32) -> Self {
         self.base_size = size;
         self
+    }
+
+    /// Apply the active UI text scale before measuring or rendering this
+    /// structured field. Changing it invalidates the cached glyph geometry via
+    /// the effective-size layout signature below.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = scale.clamp(0.5, 4.0);
     }
 
     /// Sync the editor to an external linear string (e.g. loaded from the
@@ -127,9 +137,10 @@ impl MathField {
         // Rebuild only when the content or size actually changed. The linear
         // form is a faithful signature of the (canonical) tree the editor
         // builds, and is far cheaper to compute than a full measure+box pass.
-        let sig = (self.editor.to_linear(), self.base_size);
+        let size = self.base_size * self.text_scale;
+        let sig = (self.editor.to_linear(), size);
         if self.layout.is_none() || self.layout_sig.as_ref() != Some(&sig) {
-            self.layout = Some(layout::layout(&self.editor.expr.root, tr, self.base_size));
+            self.layout = Some(layout::layout(&self.editor.expr.root, tr, size));
             self.layout_sig = Some(sig);
         }
         // Track the caret every pass (a caret move doesn't change the content
