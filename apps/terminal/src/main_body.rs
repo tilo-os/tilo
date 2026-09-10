@@ -792,6 +792,28 @@ impl TerminalWidget {
         format!("terminal:{}", self.pane_id)
     }
 
+    /// Read the shared pane identity deterministically even when two peers
+    /// initialise an otherwise-empty document at the same time. Automerge
+    /// preserves concurrent scalar writes rather than silently overwriting
+    /// either one, so `get()` alone is not a sufficient identity rule: it can
+    /// expose a different conflict winner to different callers. Choosing the
+    /// lexicographically first valid UUID makes the resource/presence address
+    /// converge without inventing a destructive conflict-resolution write.
+    fn shared_pane_id(state: &AutoCommit, root: &ObjId) -> Option<String> {
+        let mut candidates = state
+            .get_all(root, "terminal_pane_id")
+            .ok()?
+            .into_iter()
+            .filter_map(|(value, _)| match value {
+                Value::Scalar(value) => value.to_str().map(str::to_owned),
+                Value::Object(_) => None,
+            })
+            .filter(|value| uuid::Uuid::parse_str(value).is_ok())
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        candidates.into_iter().next()
+    }
+
     fn terminal_transcript_target(&self) -> String {
         format!("terminal.transcript:{}", self.pane_id)
     }
@@ -1189,6 +1211,13 @@ impl TerminalWidget {
     #[cfg(test)]
     pub fn grid_char_h(&self) -> f64 {
         self.char_h
+    }
+    /// Bounds of the currently open shared context menu. Test-only so narrow
+    /// viewport regression tests can assert that the terminal keeps its
+    /// overlay reachable rather than clipping it off-screen.
+    #[cfg(test)]
+    pub fn context_menu_rect(&self) -> Rect {
+        Widget::get_rect(&self.context_menu)
     }
     /// Force a viewport scrollback offset for tests that exercise
     /// `selected_text` over a `grid` larger than the visible viewport.
@@ -1699,10 +1728,8 @@ impl TerminalWidget {
         // scope their collaboration presence under the *same* `PresenceKey`,
         // and a peer's caret/selection is found when rendering. The first peer
         // to touch the doc writes its id; late joiners read it back.
-        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_pane_id") {
-            if let Some(s) = v.to_str() {
-                self.pane_id = s.to_string();
-            }
+        if let Some(id) = Self::shared_pane_id(state, root) {
+            self.pane_id = id;
         } else {
             let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
         }
@@ -2034,9 +2061,15 @@ impl Widget for TerminalWidget {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `apply_layout` reflows the PTY immediately after Taffy calls
+        // `measure`. Seed that measurement from the active theme here rather
+        // than waiting for `draw`: at a large accessibility text scale, the
+        // old default 18px row height produced too many blank PTY rows, and
+        // the actual output landed above the first painted viewport.
+        self.font_size = theme.tokens.font_size_base;
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -2162,6 +2195,19 @@ impl Widget for TerminalWidget {
         if !self.alt_active && !self.ever_nonblank {
             self.draw_empty_state(scene, transform, text_renderer, theme);
             self.draw_disconnected_status(scene, transform, text_renderer, theme);
+            // An empty first-run surface is still fully interactive. In
+            // particular, right-click's shared Copy/Paste menu must remain
+            // visible rather than being hidden by this early return.
+            if self.context_menu.is_open() {
+                Widget::draw(
+                    &mut self.context_menu,
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+            }
             return;
         }
 
@@ -3889,7 +3935,31 @@ impl TerminalWidget {
         ));
         let p = self.last_cursor_pos;
         menu.open_at([p.x as f32, p.y as f32]);
+        // `ContextMenu` owns its chrome, while the terminal owns the available
+        // viewport. Re-anchor after the menu computes its intrinsic bounds so
+        // a right-click at the narrow/desktop edge still exposes every action.
+        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            let bounds = Widget::get_rect(&menu);
+            let x = p.x.clamp(
+                self.rect.x0,
+                (self.rect.x1 - bounds.width()).max(self.rect.x0),
+            );
+            let y = p.y.clamp(
+                self.rect.y0,
+                (self.rect.y1 - bounds.height()).max(self.rect.y0),
+            );
+            menu.open_at([x as f32, y as f32]);
+        }
         self.context_menu = menu;
+    }
+
+    /// Open the terminal's shared context menu at a host-owned logical
+    /// position. This is useful for embedders that route a context-menu
+    /// gesture themselves (touch long-press, keyboard invocation, or a custom
+    /// pointer layer) while preserving the terminal's standard actions.
+    pub fn open_context_menu_at(&mut self, position: Point) {
+        self.last_cursor_pos = position;
+        self.open_context_menu_at_cursor();
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {

@@ -1468,6 +1468,62 @@ fn terminal_resource_uses_the_shared_pane_identity() {
     );
 }
 
+/// Two peers can both create the same previously empty terminal document.
+/// Automerge retains both concurrent scalar writes, so the widget must select
+/// a deterministic pane id from that conflict set or resource/action and
+/// presence addresses would split despite the document converging.
+#[test]
+fn concurrent_terminal_initialisation_converges_on_one_resource_identity() {
+    use automerge::ActorId;
+    use ui::widget::Widget;
+
+    let mut base = AutoCommit::new();
+    let mut left_doc = base.fork().with_actor(ActorId::random());
+    let mut right_doc = base.fork().with_actor(ActorId::random());
+    let (mut left, _writes) = build_test_widget();
+    let (mut right, _writes) = build_test_widget();
+
+    left.init_crdt(&mut left_doc, &ROOT);
+    right.init_crdt(&mut right_doc, &ROOT);
+    left_doc.commit();
+    right_doc.commit();
+    left_doc
+        .merge(&mut right_doc)
+        .expect("merge concurrent terminal initialisation");
+    right_doc
+        .merge(&mut left_doc)
+        .expect("return the merged terminal state to the second peer");
+
+    assert_eq!(
+        left_doc
+            .get_all(&ROOT, "terminal_pane_id")
+            .expect("pane-id conflict values")
+            .len(),
+        2,
+        "the test must exercise Automerge's concurrent-value case"
+    );
+
+    // Re-reading the merged document is the path an already-retained widget
+    // takes on its next sync, and must pick the same resource identity on both
+    // replicas without a conflict-cleanup write.
+    left.init_crdt(&mut left_doc, &ROOT);
+    right.init_crdt(&mut right_doc, &ROOT);
+    let left_id = Widget::resources(&left, &left_doc)
+        .into_iter()
+        .next()
+        .expect("left terminal resource")
+        .id;
+    let right_id = Widget::resources(&right, &right_doc)
+        .into_iter()
+        .next()
+        .expect("right terminal resource")
+        .id;
+    assert_eq!(
+        left_id, right_id,
+        "resource identities converge after merge"
+    );
+}
+
 #[test]
 fn terminal_resources_are_bounded_remote_resolvable_and_title_aware() {
     use ui::widget::Widget;
@@ -1654,6 +1710,21 @@ fn context_menu_is_keyboard_navigable_and_semantically_complete() {
             cursor: GridPos { row: 1, col: 3 },
         })
     );
+}
+
+#[test]
+fn context_menu_stays_reachable_at_a_narrow_viewport_edge() {
+    use vello::kurbo::{Point, Rect};
+
+    let (mut widget, _writes) = build_test_widget();
+    let viewport = Rect::new(0.0, 0.0, 390.0, 160.0);
+    widget.force_geometry(viewport, 10.0, 20.0);
+    widget.force_grid(vec!["one".into(), "two".into()]);
+    widget.open_context_menu_at(Point::new(389.0, 159.0));
+
+    let menu = widget.context_menu_rect();
+    assert!(menu.x0 >= viewport.x0 && menu.x1 <= viewport.x1);
+    assert!(menu.y0 >= viewport.y0 && menu.y1 <= viewport.y1);
 }
 
 // ---------------------------------------------------------------

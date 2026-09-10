@@ -81,6 +81,7 @@ pub fn main() {
                 "tui",
                 "scrollback",
                 "empty",
+                "empty-menu",
                 "ended",
             ]),
     );
@@ -159,6 +160,13 @@ fn render_shot_to_png(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     );
+    if let Some(scale) = std::env::var("QOS_SHOTS_TEXT_SCALE")
+        .ok()
+        .and_then(|raw| raw.parse::<f32>().ok())
+        .filter(|scale| scale.is_finite())
+    {
+        theme = theme.with_text_scale(scale);
+    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -375,6 +383,9 @@ fn run_scenario(
         // A command that exits immediately exercises the persistent terminal
         // lifecycle status, including the reader's EOF transition.
         "ended" => std::thread::sleep(std::time::Duration::from_millis(50)),
+        // Context-menu rendering must work before the first PTY byte arrives;
+        // this is deliberately distinct from a content-filled menu shot.
+        "empty-menu" => widget.open_context_menu_at(Point::new(24.0, 24.0)),
         _ => {}
     }
 }
