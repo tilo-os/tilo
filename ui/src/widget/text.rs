@@ -42,6 +42,10 @@ pub struct Text {
     /// Semantic intent drives accessibility and, by default, live typography.
     semantic_role: Option<TextRole>,
     follows_role_style: bool,
+    /// An explicit size can follow the accessibility text multiplier without
+    /// changing its visual hierarchy at the default scale.
+    scales_with_theme: bool,
+    explicit_base_size: f32,
     heading_level: Option<u8>,
     /// Announce changes to this text without moving keyboard focus. Static
     /// copy leaves this unset; status and error text opt in explicitly.
@@ -84,6 +88,8 @@ impl Text {
             style: TextStyle::new(16.0),
             semantic_role: None,
             follows_role_style: false,
+            scales_with_theme: false,
+            explicit_base_size: 16.0,
             heading_level: None,
             live: None,
             layout_engine: None,
@@ -210,6 +216,22 @@ impl Text {
     #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.use_explicit_style();
+        self.scales_with_theme = false;
+        self.explicit_base_size = size;
+        self.style.size = size;
+        self.dirty = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// Sets an explicit size that follows the active accessibility text scale.
+    /// Use this for application hierarchy with a deliberate base size that
+    /// still needs to respect the person's large-text preference.
+    #[must_use]
+    pub fn with_scaled_size(mut self, size: f32) -> Self {
+        self.use_explicit_style();
+        self.scales_with_theme = true;
+        self.explicit_base_size = size;
         self.style.size = size;
         self.dirty = true;
         self.layout_dirty = true;
@@ -221,6 +243,8 @@ impl Text {
     #[must_use]
     pub fn with_style(mut self, style: TextStyle) -> Self {
         self.use_explicit_style();
+        self.scales_with_theme = false;
+        self.explicit_base_size = style.size;
         self.style = style;
         self.dirty = true;
         self.layout_dirty = true;
@@ -280,6 +304,7 @@ impl Text {
     pub fn with_role(mut self, role: TextRole) -> Self {
         self.semantic_role = Some(role);
         self.follows_role_style = true;
+        self.scales_with_theme = false;
         let style = Theme::default().tokens.typography.style(role);
         self.style = self.merged_semantic_style(&style);
         self.dirty = true;
@@ -303,6 +328,14 @@ impl Text {
 
     fn observe_theme_role(&mut self, theme: &Theme) {
         if !self.follows_role_style {
+            if self.scales_with_theme {
+                let size = self.explicit_base_size * theme.text_scale;
+                if (self.style.size - size).abs() > f32::EPSILON {
+                    self.style.size = size;
+                    self.dirty = true;
+                    self.layout_dirty = true;
+                }
+            }
             return;
         }
         let Some(role) = self.semantic_role else {
@@ -1140,6 +1173,21 @@ mod tests {
             &text.text_style().hyphenation,
             crate::text_render::Hyphenation::Auto(language) if language == "en-US"
         ));
+    }
+
+    #[test]
+    fn explicit_scaled_size_follows_the_accessibility_multiplier() {
+        let mut text = Text::new("Readable").with_scaled_size(14.0);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        Widget::build_layout(&mut text, &mut taffy, &Theme::dark(), &mut nodes);
+        assert_eq!(text.text_style().size, 14.0);
+
+        let scaled_theme = Theme::dark().with_text_scale(1.5);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        Widget::build_layout(&mut text, &mut taffy, &scaled_theme, &mut nodes);
+        assert_eq!(text.text_style().size, 21.0);
     }
 
     #[test]
