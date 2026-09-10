@@ -7,7 +7,7 @@
 //! pointer/keyboard events back into CRDT mutations. Throughput is an
 //! ephemeral, time-driven animation layered on top.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -32,7 +32,9 @@ use zeroize::Zeroize;
 use crate::actions::{self, VPN_ACTION_TYPE};
 use crate::config::{self, CommandPlan};
 use crate::doc::VpnDoc;
-use crate::model::{ConnId, ConnKind, ConnStatus, Connection, Vault, human_ago, sample_vault};
+use crate::model::{
+    ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, Vault, human_ago, sample_vault,
+};
 use crate::net::{self, Transfer};
 use crate::throughput;
 
@@ -126,6 +128,36 @@ fn tunnel_import_request(kind: ConnKind) -> PickRequest {
 }
 const ROW_H: f64 = 74.0;
 const ROW_GAP: f64 = 8.0;
+
+/// Deterministic fictional values used only by the hermetic visual-review
+/// build. Live instances populate this map solely from the locally selected
+/// provider file, never from collaboration.
+fn demo_local_details(vault: &Vault) -> HashMap<ConnId, LocalProfileDetails> {
+    vault
+        .connections
+        .iter()
+        .map(|connection| {
+            let details = match connection.kind {
+                ConnKind::WireGuard => LocalProfileDetails {
+                    endpoint: "demo-gateway.example:51820".into(),
+                    address: "10.77.0.2/32".into(),
+                    dns: "10.77.0.1".into(),
+                    public_key: "demo public key ••••7Jq".into(),
+                    allowed_ips: "0.0.0.0/0, ::/0".into(),
+                    ..LocalProfileDetails::default()
+                },
+                ConnKind::OpenVpn => LocalProfileDetails {
+                    endpoint: "demo-vpn.example:1194 (UDP)".into(),
+                    address: "172.20.77.2/24".into(),
+                    dns: "172.20.77.1".into(),
+                    allowed_ips: "172.20.0.0/16".into(),
+                    ..LocalProfileDetails::default()
+                },
+            };
+            (connection.id, details)
+        })
+        .collect()
+}
 
 /// Which detail-pane tab is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,6 +377,9 @@ pub struct VpnApp {
     /// Which protocol the pending import was requested for (seeds the parser
     /// when the chosen file has an ambiguous extension).
     import_hint: ConnKind,
+    /// Existing shared profile being provisioned locally. `None` means a new
+    /// import creates secret-free collaborative metadata after NM succeeds.
+    provision_target: Option<ConnId>,
     import_invocation: Option<qos_actions::InvocationId>,
     completed_import: Option<qos_actions::InvocationUpdate>,
     pending_control_invocation: Option<ControlInvocation>,
@@ -364,6 +399,14 @@ pub struct VpnApp {
     /// Authoritative machine-local tunnel state. It is intentionally not
     /// written into the collaborative profile document.
     live_status: HashMap<ConnId, ConnStatus>,
+    /// IDs whose credential-bearing `NetworkManager` profile is available on
+    /// this machine. Never synchronized, serialized, indexed or rendered as
+    /// tunnel detail: it is only a local activation gate.
+    local_credentials: HashSet<ConnId>,
+    /// Parsed display facts for profiles provisioned on this device. This map
+    /// is intentionally process-local and omitted from all durable/action
+    /// types; `NetworkManager` remains the credential/config owner.
+    local_details: HashMap<ConnId, LocalProfileDetails>,
     /// Last time the real interface state was reconciled, to throttle the
     /// per-frame `ip link` / `pgrep` probes to ~1 Hz.
     last_reconcile: Option<Instant>,
@@ -414,6 +457,16 @@ impl VpnApp {
             .iter()
             .map(|connection| (connection.id, connection.status))
             .collect();
+        let local_credentials = if demo_mode {
+            vault.connections.iter().map(|c| c.id).collect()
+        } else {
+            HashSet::new()
+        };
+        let local_details = if demo_mode {
+            demo_local_details(&vault)
+        } else {
+            crate::local::load()
+        };
         VpnApp {
             vault,
             local_selected,
@@ -432,6 +485,7 @@ impl VpnApp {
             activity: Vec::new(),
             import_rx: None,
             import_hint: ConnKind::WireGuard,
+            provision_target: None,
             import_invocation: None,
             completed_import: None,
             pending_control_invocation: None,
@@ -442,6 +496,8 @@ impl VpnApp {
             is_focused: false,
             throughput: HashMap::new(),
             live_status,
+            local_credentials,
+            local_details,
             last_reconcile: None,
             actions: ui::ActionHost::new(),
             pending_tool_intent: None,
@@ -537,14 +593,23 @@ impl VpnApp {
             return;
         };
         for connection in &mut self.vault.connections {
-            let status = if profiles
-                .iter()
-                .any(|profile| profile.name == connection.name && profile.active)
-            {
+            let local = self.local_details.get(&connection.id).and_then(|details| {
+                profiles
+                    .iter()
+                    .find(|profile| profile.uuid == details.network_manager_uuid)
+            });
+            let status = if local.is_some_and(|profile| profile.active) {
                 ConnStatus::Connected
             } else {
                 ConnStatus::Disconnected
             };
+            if local.is_some() {
+                self.local_credentials.insert(connection.id);
+            } else {
+                // Keep the local association as a recovery hint, but never
+                // advertise machine actions after its exact NM UUID vanished.
+                self.local_credentials.remove(&connection.id);
+            }
             connection.status = status;
             self.live_status.insert(connection.id, status);
         }
@@ -675,6 +740,25 @@ impl VpnApp {
                 self.vault = Vault::default();
                 self.local_selected = None;
                 self.live_status.clear();
+                self.local_credentials.clear();
+                self.local_details.clear();
+            }
+            "unprovisioned" => {
+                if let Some(id) = self.vault.selected {
+                    self.local_credentials.remove(&id);
+                    self.local_details.remove(&id);
+                    self.live_status.insert(id, ConnStatus::Disconnected);
+                    self.compact_detail_open = true;
+                }
+            }
+            "setup" => {
+                if let Some(id) = self.vault.selected {
+                    self.local_credentials.remove(&id);
+                    self.local_details.remove(&id);
+                    self.live_status.insert(id, ConnStatus::Disconnected);
+                    self.provision_target = Some(id);
+                    self.open_add(ConnKind::WireGuard);
+                }
             }
             _ => {}
         }
@@ -682,17 +766,35 @@ impl VpnApp {
 
     fn request_toggle(&mut self, id: ConnId) {
         let Some(c) = self.vault.get(id) else { return };
+        if !self.demo_mode && !self.local_credentials.contains(&id) {
+            self.operation_error = Some(format!(
+                "Credentials are unavailable on this device for '{}'. Import the exact provider profile here before connecting.",
+                c.name
+            ));
+            self.retry_import_kind = Some(c.kind);
+            return;
+        }
         if c.status == ConnStatus::Connecting {
             self.log(format!("{} is already changing state", c.name));
             return;
         }
         self.operation_error = None;
         self.retry_import_kind = None;
-        let backend = config::default_backend(c.kind);
+        let Some(details) = self.local_details.get(&id) else {
+            self.operation_error = Some("Credentials are unavailable on this device. Import the exact provider profile to provision it securely.".into());
+            self.retry_import_kind = Some(c.kind);
+            return;
+        };
         self.pending = Some(if c.is_connected() {
-            Pending::Disconnect(id, config::disconnect_plan(c, backend))
+            Pending::Disconnect(
+                id,
+                config::disconnect_local_plan(c, &details.network_manager_uuid),
+            )
         } else {
-            Pending::Connect(id, config::connect_plan(c, backend))
+            Pending::Connect(
+                id,
+                config::connect_local_plan(c, &details.network_manager_uuid),
+            )
         });
         self.modal = Modal::Confirm;
     }
@@ -714,11 +816,11 @@ impl VpnApp {
         match p {
             Pending::Connect(id, plan) => match config::execute(&plan) {
                 Ok(out) => {
-                    let profile_name = self.vault.get(id).map(|c| c.name.clone());
-                    let real_up = profile_name
-                        .as_deref()
-                        .map(config::network_manager_active)
-                        .transpose();
+                    let profile_uuid = self
+                        .local_details
+                        .get(&id)
+                        .map(|details| details.network_manager_uuid.as_str());
+                    let real_up = profile_uuid.map(config::network_manager_active).transpose();
                     if matches!(real_up, Ok(Some(true))) {
                         self.live_status.insert(id, ConnStatus::Connected);
                         self.log(format!("$ {}  → up {}", plan.display(), out));
@@ -800,7 +902,16 @@ impl VpnApp {
         self.log(format!("choose a .{} file to import…", kind.ext()));
     }
 
+    fn request_local_provision(&mut self, id: ConnId) {
+        let Some(connection) = self.vault.get(id) else {
+            return;
+        };
+        self.provision_target = Some(id);
+        self.request_import(connection.kind);
+    }
+
     fn queue_import(&mut self, kind: ConnKind) {
+        self.provision_target = None;
         let action = match kind {
             ConnKind::WireGuard => "import-wireguard",
             ConnKind::OpenVpn => "import-openvpn",
@@ -857,13 +968,43 @@ impl VpnApp {
                             self.finish_import_error(error);
                             return true;
                         }
-                        let conn = config::parse_config(&stem, kind, &text);
+                        let target = self.provision_target;
+                        let conn = if let Some(id) = target {
+                            let Some(existing) = self.vault.get(id) else {
+                                text.zeroize();
+                                self.finish_import_error("This shared profile was removed before local provisioning completed.".into());
+                                return true;
+                            };
+                            if existing.kind != kind {
+                                text.zeroize();
+                                self.finish_import_error("The selected provider file has a different VPN protocol than this shared profile.".into());
+                                return true;
+                            }
+                            existing.clone()
+                        } else {
+                            config::parse_config(&stem, kind, &text)
+                        };
+                        let mut local_details = config::parse_local_details(kind, &text);
                         // Hand the portal-selected file straight to NetworkManager.
                         // It becomes the sole owner of the profile and its secrets;
                         // Studio deliberately keeps no second raw private-key copy.
                         let nm_kind = match kind {
                             ConnKind::WireGuard => "wireguard",
                             ConnKind::OpenVpn => "openvpn",
+                        };
+                        let known_uuids = if config::exec_allowed() {
+                            match os_actions::list_vpn_connections() {
+                                Ok(profiles) => {
+                                    profiles.into_iter().map(|profile| profile.uuid).collect()
+                                }
+                                Err(error) => {
+                                    text.zeroize();
+                                    self.finish_import_error(format!("NetworkManager availability could not be verified before import: {error}"));
+                                    return true;
+                                }
+                            }
+                        } else {
+                            HashSet::new()
                         };
                         let import_result = config::exec_allowed().then(|| {
                             os_actions::import_vpn_config(nm_kind, &path.to_string_lossy())
@@ -875,11 +1016,33 @@ impl VpnApp {
                                 kind.badge(),
                                 stem
                             )),
-                            Some(Ok(())) => self.log(format!(
-                                "imported {} '{}' into NetworkManager",
-                                kind.badge(),
-                                stem
-                            )),
+                            Some(Ok(())) => {
+                                let discovered = os_actions::list_vpn_connections()
+                                    .map(|profiles| {
+                                        profiles
+                                            .into_iter()
+                                            .filter(|profile| !known_uuids.contains(&profile.uuid))
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default();
+                                let Some(discovered) = (discovered.len() == 1)
+                                    .then(|| discovered.into_iter().next())
+                                    .flatten()
+                                else {
+                                    self.finish_import_recovery_error("NetworkManager imported a profile, but its exact new UUID could not be identified. The external profile exists; recover or remove it in NetworkManager before attempting another import.".into());
+                                    return true;
+                                };
+                                if discovered.uuid.is_empty() {
+                                    self.finish_import_recovery_error("NetworkManager imported a profile, but its exact new UUID could not be identified. The external profile exists; recover or remove it in NetworkManager before attempting another import.".into());
+                                    return true;
+                                }
+                                local_details.network_manager_uuid = discovered.uuid;
+                                self.log(format!(
+                                    "imported {} '{}' into NetworkManager",
+                                    kind.badge(),
+                                    stem
+                                ));
+                            }
                             Some(Err(e)) => {
                                 self.finish_import_error(format!(
                                     "NetworkManager could not import {} '{}': {e}",
@@ -893,17 +1056,51 @@ impl VpnApp {
                         // NetworkManager import above is the external side effect;
                         // adding the resulting profile to the shared document is the
                         // same action the add form dispatches — one source of truth.
-                        let action = actions::add_connection_action(conn);
-                        self.actions.dispatch_with_context(
-                            doc,
-                            VPN_ACTION_TYPE,
-                            &action,
-                            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
-                        );
+                        if target.is_none() {
+                            let action = actions::add_connection_action(conn);
+                            self.actions.dispatch_with_context(
+                                doc,
+                                VPN_ACTION_TYPE,
+                                &action,
+                                qos_actions::ActionContext::for_action(
+                                    "org.qos.Vpn",
+                                    "VPN",
+                                    &action,
+                                ),
+                            );
+                        }
                         self.refresh(doc);
+                        let mut persistence_error = None;
+                        if !local_details.network_manager_uuid.is_empty() {
+                            self.local_credentials.insert(id);
+                            self.local_details.insert(id, local_details);
+                            if let Err(error) = crate::local::save(&self.local_details) {
+                                persistence_error = Some(format!(
+                                    "Profile imported but its device-local association could not be saved: {error}. The external profile exists; do not retry import, reopen NetworkManager to recover it."
+                                ));
+                            }
+                        }
                         self.select(id);
-                        self.operation_error = None;
-                        self.finish_import_success();
+                        if let Some(error) = persistence_error {
+                            self.operation_error = Some(error.clone());
+                            self.retry_import_kind = None;
+                            if let Some(invocation) = self.import_invocation.take() {
+                                self.completed_import =
+                                    Some(qos_actions::InvocationUpdate::Failed {
+                                        invocation,
+                                        error: qos_actions::ActionFailure {
+                                            code: "vpn.local_state_failed".into(),
+                                            message: error,
+                                            details: None,
+                                            retryable: false,
+                                        },
+                                    });
+                            }
+                        } else {
+                            self.operation_error = None;
+                            self.finish_import_success();
+                        }
+                        self.provision_target = None;
                         true
                     }
                     Err(e) => {
@@ -915,6 +1112,7 @@ impl VpnApp {
                 }
             }
             PortalOutcome::Cancelled => {
+                self.provision_target = None;
                 if let Some(invocation) = self.import_invocation.take() {
                     self.completed_import = Some(qos_actions::InvocationUpdate::Cancelled {
                         invocation,
@@ -958,6 +1156,25 @@ impl VpnApp {
         }
     }
 
+    /// A post-import ambiguity is not retryable: retrying could create a
+    /// duplicate credential-bearing `NetworkManager` profile.
+    fn finish_import_recovery_error(&mut self, message: String) {
+        self.operation_error = Some(message.clone());
+        self.retry_import_kind = None;
+        self.log(message.clone());
+        if let Some(invocation) = self.import_invocation.take() {
+            self.completed_import = Some(qos_actions::InvocationUpdate::Failed {
+                invocation,
+                error: qos_actions::ActionFailure {
+                    code: "vpn.import_identity_ambiguous".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            });
+        }
+    }
+
     pub(crate) fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
         let next = self.vault.get(id).is_none_or(|c| !c.tor);
         let action = actions::set_conn_tor_action(id, next);
@@ -982,6 +1199,7 @@ impl VpnApp {
     fn dismiss_error(&mut self) {
         self.operation_error = None;
         self.retry_import_kind = None;
+        self.provision_target = None;
     }
 
     /// Reopen the exact import protocol that failed. This only runs when the
@@ -995,7 +1213,11 @@ impl VpnApp {
     }
 
     pub(crate) fn commit_add(&mut self) {
-        self.queue_import(self.add_kind);
+        if self.provision_target.is_some() {
+            self.request_import(self.add_kind);
+        } else {
+            self.queue_import(self.add_kind);
+        }
         self.modal = Modal::None;
         self.log(format!(
             "waiting for approval to import a complete {} provider profile",
@@ -1046,19 +1268,20 @@ impl VpnApp {
         });
         // No bottom chrome strip: the body spans to the window bottom.
         let body = Rect::new(r.x0, header.y1, r.x1, r.y1);
-        let list = if compact {
+        let empty = self.vault.connections.is_empty();
+        let list = if compact || empty {
             body
         } else {
             Rect::new(body.x0, body.y0, body.x0 + LIST_W, body.y1)
         };
-        let detail = if compact {
+        let detail = if compact || empty {
             body
         } else {
             Rect::new(list.x1, body.y0, body.x1, body.y1)
         };
 
-        // Header controls (right aligned), laid out right → left:
-        // [ Import .conf ][ Import .ovpn ][ Tor pill ][ + Add tunnel ].
+        // One clear import entry point. Protocol-specific imports remain
+        // available as typed resource actions for keyboard/agent invocation.
         let by0 = if compact {
             header.y0 + 52.0
         } else {
@@ -1071,17 +1294,15 @@ impl VpnApp {
             let gap = 8.0;
             let half = (right - left - gap) / 2.0;
             (
-                Rect::new(left + half + gap, by0 + 44.0, right, by1 + 44.0),
-                Rect::new(left, by0 + 44.0, left + half, by1 + 44.0),
-                Rect::new(left, by0, left + half, by1),
                 Rect::new(left + half + gap, by0, right, by1),
+                Rect::new(left, by0, left + half, by1),
+                Rect::ZERO,
+                Rect::ZERO,
             )
         } else {
             let add = Rect::new(header.x1 - 24.0 - 132.0, by0, header.x1 - 24.0, by1);
             let tor = Rect::new(add.x0 - 12.0 - 150.0, by0, add.x0 - 12.0, by1);
-            let ovpn = Rect::new(tor.x0 - 10.0 - 106.0, by0, tor.x0 - 10.0, by1);
-            let conf = Rect::new(ovpn.x0 - 8.0 - 106.0, by0, ovpn.x0 - 8.0, by1);
-            (add, tor, conf, ovpn)
+            (add, tor, Rect::ZERO, Rect::ZERO)
         };
 
         // Rows.
@@ -1382,7 +1603,7 @@ impl VpnApp {
             self.vault.connections.len(),
             self.vault.active_count()
         );
-        text_vc(
+        text_w(
             tr,
             scene,
             t,
@@ -1390,31 +1611,8 @@ impl VpnApp {
             14.0,
             theme.text_primary,
             h.x0 + 24.0,
-            h.y0,
-            if lay.compact { 44.0 } else { HEADER_H },
+            h.y0 + if lay.compact { 15.0 } else { 25.0 },
             TextWeight::Semibold,
-        );
-
-        // Compact import buttons.
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(lay.imp_conf, "Import .conf")
-                .radius(f64::from(theme.tokens.radii.md))
-                .text_size(12.0)
-                .hovered(point_in(lay.imp_conf, self.last_mouse)),
-        );
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(lay.imp_ovpn, "Import .ovpn")
-                .radius(f64::from(theme.tokens.radii.md))
-                .text_size(12.0)
-                .hovered(point_in(lay.imp_ovpn, self.last_mouse)),
         );
 
         // Tor global pill.
@@ -1606,7 +1804,10 @@ impl VpnApp {
             };
             let selected = self.vault.selected == Some(*id);
             let hovered = self.hovered_row == Some(*id);
-            Self::draw_list_row(scene, tr, t, theme, c, row, toggle, selected, hovered);
+            let details = self.local_details.get(id);
+            Self::draw_list_row(
+                scene, tr, t, theme, c, details, row, toggle, selected, hovered,
+            );
         }
     }
 
@@ -1624,6 +1825,7 @@ impl VpnApp {
         t: Affine,
         theme: &Theme,
         c: &Connection,
+        details: Option<&LocalProfileDetails>,
         row: &Rect,
         toggle: &Rect,
         selected: bool,
@@ -1693,8 +1895,10 @@ impl VpnApp {
             c.kind,
         );
 
-        // endpoint + last used
-        let line2 = format!("{} · {}", ellipsize(&c.endpoint, 28), c.last_used);
+        let endpoint = details.map_or("Credentials unavailable on this device", |d| {
+            d.endpoint.as_str()
+        });
+        let line2 = format!("{} · {}", ellipsize(endpoint, 28), c.last_used);
         text_w(
             tr,
             scene,
@@ -1746,7 +1950,7 @@ impl VpnApp {
         let d = lay.detail;
         fill_round(scene, t, d, 0.0, theme.tokens.colors.surfaces.base);
 
-        if lay.compact {
+        if lay.compact && !self.vault.connections.is_empty() {
             Button::paint(
                 scene,
                 t,
@@ -1766,7 +1970,15 @@ impl VpnApp {
         let detail_top = if lay.compact { d.y0 + 48.0 } else { d.y0 };
         let dinner = Rect::new(d.x0 + 24.0, detail_top + 24.0, d.x1 - 24.0, d.y1 - 24.0);
 
-        Self::draw_detail_header(scene, tr, t, theme, dinner, c);
+        Self::draw_detail_header(
+            scene,
+            tr,
+            t,
+            theme,
+            dinner,
+            c,
+            self.local_details.get(&c.id),
+        );
         self.draw_detail_connect_button(scene, tr, t, theme, lay, c);
         self.draw_detail_tabs(scene, tr, t, theme, lay);
 
@@ -1781,7 +1993,7 @@ impl VpnApp {
                 self.draw_status_tab(scene, tr, content_transform, theme, lay, c);
             }
             DetailTab::Config => {
-                Self::draw_config_tab(scene, tr, content_transform, theme, lay, c);
+                self.draw_config_tab(scene, tr, content_transform, theme, lay, c);
             }
             DetailTab::Logs => {
                 self.draw_logs_tab(scene, tr, content_transform, theme, lay, c);
@@ -1830,7 +2042,7 @@ impl VpnApp {
         );
     }
 
-    /// The title, status pill and endpoint subtitle at the top of the detail
+    /// The title, status pill and protocol subtitle at the top of the detail
     /// pane. Split out of [`Self::draw_detail`].
     fn draw_detail_header(
         scene: &mut Scene,
@@ -1839,6 +2051,7 @@ impl VpnApp {
         theme: &Theme,
         dinner: Rect,
         c: &Connection,
+        details: Option<&LocalProfileDetails>,
     ) {
         text_w(
             tr,
@@ -1890,7 +2103,13 @@ impl VpnApp {
             TextWeight::Semibold,
         );
 
-        let sub = format!("{} · {}", c.kind.long_name(), ellipsize(&c.endpoint, 40));
+        let sub = format!(
+            "{} · {}",
+            c.kind.long_name(),
+            details.map_or("Credentials unavailable on this device", |d| d
+                .endpoint
+                .as_str())
+        );
         text_w(
             tr,
             scene,
@@ -1916,8 +2135,15 @@ impl VpnApp {
         c: &Connection,
     ) {
         let connecting = c.status == ConnStatus::Connecting;
+        let locally_provisioned = self.local_credentials.contains(&c.id)
+            && self
+                .local_details
+                .get(&c.id)
+                .is_some_and(|details| !details.network_manager_uuid.is_empty());
         let face = if connecting {
             ButtonFace::new(lay.connect_btn, "Connecting…").disabled(true)
+        } else if !locally_provisioned {
+            ButtonFace::new(lay.connect_btn, "Set up on this device").primary()
         } else if c.is_connected() {
             ButtonFace::new(lay.connect_btn, "Disconnect").danger()
         } else {
@@ -1999,6 +2225,7 @@ impl VpnApp {
         c: &Connection,
     ) {
         let content = lay.content;
+        let details = self.local_details.get(&c.id);
 
         // Real throughput, read from the kernel (`wg show transfer` / sysfs)
         // for this tunnel. `None`/empty until at least two real samples exist;
@@ -2012,7 +2239,7 @@ impl VpnApp {
         let tiles_h = if content.width() < 500.0 { 120.0 } else { 72.0 };
 
         Self::draw_status_tiles(
-            scene, tr, t, theme, content, c, has_rate, down_now, up_now, tiles_h,
+            scene, tr, t, theme, content, c, details, has_rate, down_now, up_now, tiles_h,
         );
         let chart = Self::draw_status_throughput(
             scene,
@@ -2027,10 +2254,20 @@ impl VpnApp {
             latest,
             c,
         );
-        Self::draw_status_kv_rows(scene, tr, t, theme, content, chart.y1 + 16.0, lay, c);
+        Self::draw_status_kv_rows(
+            scene,
+            tr,
+            t,
+            theme,
+            content,
+            chart.y1 + 16.0,
+            lay,
+            c,
+            details,
+        );
     }
 
-    /// The four-across stat tiles (assigned IP / handshake age / measured
+    /// The four-across stat tiles (local state / handshake age / measured
     /// down / measured up). Split out of [`Self::draw_status_tab`] to keep
     /// that function's line count in check.
     #[allow(
@@ -2049,14 +2286,14 @@ impl VpnApp {
         theme: &Theme,
         content: Rect,
         c: &Connection,
+        details: Option<&LocalProfileDetails>,
         has_rate: bool,
         down_now: Option<f64>,
         up_now: Option<f64>,
         tiles_h: f64,
     ) {
-        // Stat tiles (4 across). DOWN/UP show the measured current rate when we
-        // have real samples, otherwise "—". Handshake reflects the real
-        // last-handshake age when connected.
+        // These values are local-only: they never enter the document, actions
+        // or resource search index.
         let compact = content.width() < 500.0;
         let gap = if compact { 8.0 } else { 12.0 };
         let columns = if compact { 2.0 } else { 4.0 };
@@ -2068,11 +2305,7 @@ impl VpnApp {
         let tile_vals = [
             (
                 "ASSIGNED IP",
-                if c.address.is_empty() {
-                    "—".to_string()
-                } else {
-                    c.address.clone()
-                },
+                details.map_or_else(|| "—".into(), |d| d.address.clone()),
             ),
             (
                 "HANDSHAKE",
@@ -2173,7 +2406,6 @@ impl VpnApp {
             TextWeight::Bold,
         );
         if let Some(x) = latest {
-            // Real cumulative counters straight from the kernel.
             let legend = format!(
                 "recv {} · sent {}",
                 ui::format::bytes(x.rx),
@@ -2218,8 +2450,8 @@ impl VpnApp {
         chart
     }
 
-    /// The key/value table (endpoint, DNS, allowed IPs, public key) plus the
-    /// per-tunnel Tor toggle row. Split out of [`Self::draw_status_tab`].
+    /// The secret-free provisioning explanation plus the per-tunnel Tor
+    /// toggle row. Split out of [`Self::draw_status_tab`].
     #[allow(
         clippy::too_many_arguments,
         reason = "the kv table is scene + renderer + transform + theme + layout + the top y-offset + the connection; grouping into a struct would only move the fields, not reduce them"
@@ -2233,13 +2465,25 @@ impl VpnApp {
         kv_top: f64,
         lay: &LayoutRects,
         c: &Connection,
+        details: Option<&LocalProfileDetails>,
     ) {
-        let max_chars = if content.width() < 500.0 { 27 } else { 40 };
         let rows = [
-            ("Endpoint", ellipsize(&c.endpoint, max_chars)),
-            ("DNS", ellipsize(&c.dns, max_chars)),
-            ("Allowed IPs", ellipsize(&c.allowed_ips, max_chars)),
-            ("Public key", ellipsize(&c.public_key, max_chars)),
+            (
+                "Endpoint",
+                details.map_or_else(
+                    || "Credentials unavailable on this device".into(),
+                    |d| d.endpoint.clone(),
+                ),
+            ),
+            ("DNS", details.map_or_else(|| "—".into(), |d| d.dns.clone())),
+            (
+                "Allowed IPs",
+                details.map_or_else(|| "—".into(), |d| d.allowed_ips.clone()),
+            ),
+            (
+                "Public key",
+                details.map_or_else(|| "—".into(), |d| ellipsize(&d.public_key, 32)),
+            ),
         ];
         for (i, (k, v)) in rows.iter().enumerate() {
             let ry = kv_top + i as f64 * 30.0;
@@ -2294,6 +2538,7 @@ impl VpnApp {
     }
 
     fn draw_config_tab(
+        &self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
@@ -2323,7 +2568,7 @@ impl VpnApp {
             ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
             1.0,
         );
-        let text = render_config_text(c);
+        let text = render_config_text(c, self.local_details.get(&c.id));
         let mut y = card.y0 + 14.0;
         for line in text.lines() {
             let col = if line.starts_with('[') || line.starts_with('<') {
@@ -2383,7 +2628,7 @@ impl VpnApp {
             1.0,
         );
         let xfer = self.throughput.get(&c.id).and_then(TransferHistory::latest);
-        let lines = synth_logs(c, &self.activity, xfer);
+        let lines = synth_logs(c, self.local_details.get(&c.id), &self.activity, xfer);
         let mut y = card.y0 + 14.0;
         for line in &lines {
             let col =
@@ -2467,7 +2712,11 @@ impl VpnApp {
             tr,
             scene,
             t,
-            "Import VPN profile",
+            if self.provision_target.is_some() {
+                "Set up on this device"
+            } else {
+                "Import VPN profile"
+            },
             18.0,
             theme.text_primary,
             x,
@@ -2597,7 +2846,9 @@ impl VpnApp {
                 if weight == TextWeight::Semibold {
                     theme.text_primary
                 } else {
-                    theme.text_dim
+                    // Explanatory copy remains secondary without dropping
+                    // below the normal readable-on-raised-surface contrast.
+                    theme.text_primary.multiply_alpha(0.78)
                 },
                 x,
                 y,
@@ -2876,59 +3127,57 @@ fn add_modal_button_rects(card: Rect) -> (Rect, Rect) {
     )
 }
 
-fn render_config_text(c: &Connection) -> String {
+fn render_config_text(c: &Connection, details: Option<&LocalProfileDetails>) -> String {
+    let Some(details) = details else {
+        return format!(
+            "{} profile\n\nCredentials unavailable on this device.\n\nImport the exact provider profile to provision it securely through NetworkManager.\n\nRaw configuration is never synchronized or retained by VPN Studio.",
+            c.kind.long_name()
+        );
+    };
     match c.kind {
         ConnKind::WireGuard => format!(
-            "[Interface]\nPrivateKey = (hidden)\nAddress = {}\nDNS = {}\n\n[Peer]\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = {}\nPersistentKeepalive = 25",
-            c.address, c.dns, c.public_key, c.endpoint, c.allowed_ips
+            "[Interface]\nPrivateKey = (stored securely)\nAddress = {}\nDNS = {}\n\n[Peer]\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = {}",
+            details.address,
+            details.dns,
+            ellipsize(&details.public_key, 32),
+            details.endpoint,
+            details.allowed_ips
         ),
         ConnKind::OpenVpn => format!(
-            "client\ndev tun\nproto udp\nremote {}\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\n# pushed routes: {}\n# dns: {}\n<ca>\n  (certificate)\n</ca>",
-            c.endpoint
-                .replace(':', " ")
-                .split(" (")
-                .next()
-                .unwrap_or(&c.endpoint),
-            c.allowed_ips,
-            c.dns
+            "client\nremote {}\n\n# routes: {}\n# dns: {}\n# credentials are stored securely by NetworkManager",
+            details.endpoint, details.allowed_ips, details.dns
         ),
     }
 }
 
-/// Build the log view from REAL derived state: the true interface name, the
-/// real up/down status, and the real kernel byte counters (`xfer`) when a live
-/// reading exists. Byte lines are omitted rather than fabricated when no
-/// counter has been read. The activity log below records real command results.
-fn synth_logs(c: &Connection, activity: &[String], xfer: Option<Transfer>) -> Vec<String> {
+/// Build a device-local activity view. It is not persisted, shared or indexed.
+fn synth_logs(
+    c: &Connection,
+    details: Option<&LocalProfileDetails>,
+    activity: &[String],
+    xfer: Option<Transfer>,
+) -> Vec<String> {
     let mut out = Vec::new();
-    let iface = config::iface_name(c);
     if c.is_connected() {
-        out.push(format!("[{}] interface up — assigned {}", iface, c.address));
-        if !c.allowed_ips.is_empty() {
-            out.push(format!(
-                "[{}] routing {} via {}",
-                iface, c.allowed_ips, iface
-            ));
+        out.push(format!(
+            "{} connection is active on this device",
+            c.kind.long_name()
+        ));
+        if let Some(details) = details {
+            out.push(format!("local endpoint {}", details.endpoint));
         }
         if let Some(x) = xfer {
             out.push(format!(
-                "[{}] received {} (kernel counter)",
-                iface,
-                ui::format::bytes(x.rx)
-            ));
-            out.push(format!(
-                "[{}] sent {} (kernel counter)",
-                iface,
+                "received {} · sent {}",
+                ui::format::bytes(x.rx),
                 ui::format::bytes(x.tx)
             ));
         }
         if c.tor {
-            out.push(format!(
-                "[{iface}] traffic chained over Tor SOCKS 127.0.0.1:9050"
-            ));
+            out.push("Tor routing preference is enabled".into());
         }
     } else {
-        out.push(format!("[{iface}] interface down"));
+        out.push("Connection is inactive on this device".into());
     }
     // append global activity newest-last
     for a in activity.iter().rev().take(8) {
@@ -2943,6 +3192,7 @@ impl Widget for VpnApp {
             "vpn.toggle-tunnel",
             actions::VPN_IMPORT_TYPE,
             actions::VPN_DELETE_TYPE,
+            actions::VPN_PROVISION_TYPE,
         ]
     }
 
@@ -2977,26 +3227,49 @@ impl Widget for VpnApp {
                 }
             });
         }
-        if let Some((id, name, invocation)) = self.queued_delete.take() {
-            self.completed_delete = Some(match os_actions::delete_vpn_connection(&name) {
+        if let Some((id, uuid, invocation)) = self.queued_delete.take() {
+            self.completed_delete = Some(match os_actions::delete_vpn_connection_uuid(&uuid) {
                 Ok(()) => {
-                    let action = actions::remove_connection_action(id);
-                    self.actions.dispatch_with_context(
-                        state,
-                        VPN_ACTION_TYPE,
-                        &action,
-                        qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
-                    );
-                    self.local_selected = None;
-                    self.live_status.remove(&id);
-                    self.operation_error = None;
-                    qos_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: qos_actions::ActionOutput::default(),
+                    let removed_details = self.local_details.remove(&id);
+                    self.local_credentials.remove(&id);
+                    if let Err(error) = crate::local::save(&self.local_details) {
+                        if let Some(details) = removed_details {
+                            self.local_details.insert(id, details);
+                        }
+                        self.operation_error = Some(format!(
+                            "NetworkManager deleted the profile, but local association cleanup failed: {error}. The shared profile was retained for recovery."
+                        ));
+                        qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "vpn.local_state_failed".into(),
+                                message:
+                                    "NetworkManager deleted the profile but local cleanup failed"
+                                        .into(),
+                                details: None,
+                                retryable: false,
+                            },
+                        }
+                    } else {
+                        let action = actions::remove_connection_action(id);
+                        self.actions.dispatch_with_context(
+                            state,
+                            VPN_ACTION_TYPE,
+                            &action,
+                            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
+                        );
+                        self.local_selected = None;
+                        self.live_status.remove(&id);
+                        self.operation_error = None;
+                        qos_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: qos_actions::ActionOutput::default(),
+                        }
                     }
                 }
                 Err(message) => {
-                    self.operation_error = Some(format!("Could not delete '{name}': {message}"));
+                    self.operation_error =
+                        Some(format!("Could not delete the local VPN profile: {message}"));
                     qos_actions::InvocationUpdate::Failed {
                         invocation,
                         error: qos_actions::ActionFailure {
@@ -3066,14 +3339,18 @@ impl Widget for VpnApp {
         );
         let lay = self.layout();
         if lay.compact {
-            if self.compact_detail_open {
+            if self.compact_detail_open || self.vault.connections.is_empty() {
                 self.draw_detail(scene, text_renderer, transform, theme, &lay);
             } else {
                 self.draw_list(scene, text_renderer, transform, theme, &lay);
             }
         } else {
-            self.draw_list(scene, text_renderer, transform, theme, &lay);
-            self.draw_detail(scene, text_renderer, transform, theme, &lay);
+            if self.vault.connections.is_empty() {
+                self.draw_detail(scene, text_renderer, transform, theme, &lay);
+            } else {
+                self.draw_list(scene, text_renderer, transform, theme, &lay);
+                self.draw_detail(scene, text_renderer, transform, theme, &lay);
+            }
         }
         self.draw_header(scene, text_renderer, transform, theme, &lay);
         // The Add form keeps its compact protocol/card layout but embeds
@@ -3164,6 +3441,25 @@ impl Widget for VpnApp {
                     continue;
                 };
                 let connecting = connection.status == ConnStatus::Connecting;
+                let locally_provisioned = self.local_credentials.contains(&connection.id)
+                    && self
+                        .local_details
+                        .get(&connection.id)
+                        .is_some_and(|details| !details.network_manager_uuid.is_empty());
+                if let Some(delete) = resource
+                    .actions
+                    .iter_mut()
+                    .find(|action| action.id == "delete")
+                {
+                    delete.contract.availability = if locally_provisioned {
+                        qos_actions::Availability::Available
+                    } else {
+                        qos_actions::Availability::Unavailable {
+                            code: "local_credentials_required".into(),
+                            reason: "No exact local NetworkManager profile is provisioned on this device".into(),
+                        }
+                    };
+                }
                 let (id, label) = if connection.is_connected() {
                     ("disconnect", "Disconnect")
                 } else {
@@ -3183,6 +3479,11 @@ impl Widget for VpnApp {
                                 qos_actions::Availability::Unavailable {
                                     code: "transition_in_progress".into(),
                                     reason: "The tunnel is already changing state".into(),
+                                }
+                            } else if !locally_provisioned {
+                                qos_actions::Availability::Unavailable {
+                                    code: "local_credentials_required".into(),
+                                    reason: "Set up this shared profile on this device before connecting".into(),
                                 }
                             } else {
                                 qos_actions::Availability::Available
@@ -3213,7 +3514,10 @@ impl Widget for VpnApp {
         if kind != qos_actions::OperationKind::Effect
             || !matches!(
                 type_id,
-                "vpn.toggle-tunnel" | actions::VPN_IMPORT_TYPE | actions::VPN_DELETE_TYPE
+                "vpn.toggle-tunnel"
+                    | actions::VPN_IMPORT_TYPE
+                    | actions::VPN_DELETE_TYPE
+                    | actions::VPN_PROVISION_TYPE
             )
         {
             return Ok(false);
@@ -3244,7 +3548,11 @@ impl Widget for VpnApp {
                 if connection.name != name {
                     return Err("VPN profile changed before deletion was confirmed".into());
                 }
-                self.queued_delete = Some((id, name, invocation));
+                let uuid = self.local_details.get(&id)
+                    .map(|details| details.network_manager_uuid.clone())
+                    .filter(|uuid| !uuid.is_empty())
+                    .ok_or_else(|| "Credentials are unavailable on this device; local NetworkManager profile cannot be deleted here".to_string())?;
+                self.queued_delete = Some((id, uuid, invocation));
                 return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
             if kind == qos_actions::OperationKind::Effect && type_id == actions::VPN_IMPORT_TYPE {
@@ -3258,7 +3566,30 @@ impl Widget for VpnApp {
                     _ => return Err("unsupported VPN profile type".into()),
                 };
                 self.import_invocation = Some(invocation);
+                self.provision_target = None;
                 self.request_import(kind);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            if kind == qos_actions::OperationKind::Effect && type_id == actions::VPN_PROVISION_TYPE
+            {
+                if self.import_rx.is_some() || self.import_invocation.is_some() {
+                    return Err("another VPN profile import is already in progress".into());
+                }
+                let (raw, expected_kind): (String, String) =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let id = raw
+                    .parse()
+                    .map_err(|_| "Invalid VPN connection id".to_string())?;
+                let (profile_id, actual_kind) = self
+                    .vault
+                    .get(id)
+                    .map(|connection| (connection.id, connection.kind))
+                    .ok_or_else(|| "VPN profile is no longer saved".to_string())?;
+                if actual_kind.as_str() != expected_kind {
+                    return Err("VPN profile protocol changed before setup started".into());
+                }
+                self.import_invocation = Some(invocation);
+                self.request_local_provision(profile_id);
                 return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
             return Ok(None);
@@ -3361,12 +3692,6 @@ impl Widget for VpnApp {
                 .with_state(AccessState::new().focusable(true))
         };
         let mut children = vec![
-            button(
-                "Import WireGuard profile",
-                "vpn:import-wireguard",
-                lay.imp_conf,
-            ),
-            button("Import OpenVPN profile", "vpn:import-openvpn", lay.imp_ovpn),
             AccessNode::new(Role::Switch)
                 .with_name("Route all VPN traffic over Tor")
                 .with_action_target("vpn:tor-global")
@@ -3376,11 +3701,7 @@ impl Widget for VpnApp {
                         .focusable(true)
                         .checked(self.vault.tor_global),
                 ),
-            button(
-                "Choose a VPN profile to import",
-                "vpn:import-dialog",
-                lay.add_btn,
-            ),
+            button("Import VPN profile", "vpn:import-dialog", lay.add_btn),
         ];
         if !lay.compact || !self.compact_detail_open {
             children.push(
@@ -3422,7 +3743,7 @@ impl Widget for VpnApp {
             );
         }
         if !lay.compact || self.compact_detail_open {
-            if lay.compact {
+            if lay.compact && !self.vault.connections.is_empty() {
                 children.push(button("Back to connections", "vpn:back", lay.back_btn));
             }
             if let Some(connection) = self.vault.selected_conn() {
@@ -3437,14 +3758,18 @@ impl Widget for VpnApp {
                 ));
                 children.push(
                     AccessNode::new(Role::StaticText)
-                        .with_name(format!(
-                            "VPN profile details. Endpoint: {}. Address: {}. DNS: {}. Allowed IPs: {}. Public key: {}.",
-                            connection.endpoint,
-                            connection.address,
-                            connection.dns,
-                            connection.allowed_ips,
-                            connection.public_key
-                        ))
+                        .with_name(match self.local_details.get(&connection.id) {
+                            Some(details) => format!(
+                                "{} {} profile. Local endpoint {}, address {}, DNS {}, routes {}, public key {}.",
+                                connection.name, connection.kind.long_name(), details.endpoint,
+                                details.address, details.dns, details.allowed_ips,
+                                ellipsize(&details.public_key, 32)
+                            ),
+                            None => format!(
+                                "{} {} profile. Credentials unavailable on this device; import the exact provider profile to provision it securely.",
+                                connection.name, connection.kind.long_name()
+                            ),
+                        })
                         .with_bounds(lay.content),
                 );
             }
@@ -3524,7 +3849,11 @@ impl Widget for VpnApp {
                 else {
                     return false;
                 };
-                self.request_toggle(id);
+                if self.local_credentials.contains(&id) {
+                    self.request_toggle(id);
+                } else {
+                    self.request_local_provision(id);
+                }
             }
             _ => return false,
         }
@@ -3620,7 +3949,11 @@ impl VpnApp {
                 return;
             }
         }
-        if lay.compact && self.compact_detail_open && point_in(lay.back_btn, p) {
+        if lay.compact
+            && !self.vault.connections.is_empty()
+            && self.compact_detail_open
+            && point_in(lay.back_btn, p)
+        {
             self.compact_detail_open = false;
             return;
         }
@@ -3651,7 +3984,11 @@ impl VpnApp {
         }
         if point_in(lay.connect_btn, p) {
             if let Some(id) = self.vault.selected {
-                self.request_toggle(id);
+                if self.local_credentials.contains(&id) {
+                    self.request_toggle(id);
+                } else {
+                    self.request_local_provision(id);
+                }
             }
             return;
         }
@@ -3916,6 +4253,21 @@ mod tests {
     }
 
     #[test]
+    fn narrow_empty_state_has_no_dead_back_accessibility_action() {
+        fn has_back(node: &ui::a11y::AccessNode) -> bool {
+            node.action_target.as_deref() == Some("vpn:back") || node.children.iter().any(has_back)
+        }
+        let mut app = VpnApp::new();
+        app.seed_shot_state("empty");
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let root = Widget::accessibility(&app).expect("VPN exports accessibility");
+        assert!(
+            !has_back(&root),
+            "empty state has nowhere to navigate back to"
+        );
+    }
+
+    #[test]
     fn select_offset_wraps() {
         let (mut app, _doc) = demo_with_doc();
         let first = app.vault.selected.unwrap();
@@ -4012,13 +4364,14 @@ mod tests {
             .vault
             .connections
             .iter()
-            .find(|c| c.endpoint == "imported.example:51820")
-            .expect("imported tunnel present with parsed endpoint")
+            .find(|c| c.name.starts_with("home-"))
+            .expect("imported secret-free profile identity is present")
             .clone();
         assert_eq!(imported.kind, ConnKind::WireGuard);
-        assert_eq!(imported.dns, "9.9.9.9");
-
-        assert_eq!(imported.config_path(), None, "NetworkManager owns secrets");
+        assert!(
+            !format!("{imported:?}").contains("c2VjcmV0"),
+            "the private key never enters the collaborative model"
+        );
 
         // The live plan uses the shared NetworkManager backend.
         let plan = config::connect_plan(&imported, config::default_backend(imported.kind));
@@ -4026,6 +4379,89 @@ mod tests {
         assert_eq!(plan.args, vec!["connection", "up", imported.name.as_str()]);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn exact_local_setup_keeps_the_shared_connection_id_and_document_secret_free() {
+        let (mut app, mut doc) = demo_with_doc();
+        let id = app.vault.selected.expect("demo selection");
+        let before = app.vault.connections.len();
+        let raw = "[Interface]\nPrivateKey = setup-secret\nAddress = 10.9.0.2/32\n\n[Peer]\nPublicKey = peer=\nEndpoint = setup.example:51820\nAllowedIPs = 0.0.0.0/0\n";
+        let path = std::env::temp_dir().join(format!("setup-{}.conf", uuid::Uuid::new_v4()));
+        std::fs::write(&path, raw).unwrap();
+        app.request_local_provision(id);
+        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
+            path.clone(),
+        )));
+        assert!(app.drain_import(&mut doc));
+        assert_eq!(
+            app.vault.connections.len(),
+            before,
+            "setup does not add a second shared profile"
+        );
+        assert!(
+            app.vault.get(id).is_some(),
+            "the original stable id remains"
+        );
+        assert!(
+            app.last_dispatched().is_none(),
+            "setup emits no AddConnection action"
+        );
+        assert!(!String::from_utf8_lossy(&doc.save()).contains("setup-secret"));
+        assert!(!String::from_utf8_lossy(&doc.save()).contains("setup.example"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cancelled_setup_cannot_capture_a_later_generic_import() {
+        let (mut app, _doc) = demo_with_doc();
+        let id = app.vault.selected.expect("demo selection");
+        app.request_local_provision(id);
+        app.import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let mut doc = AutoCommit::new();
+        assert!(!app.drain_import(&mut doc));
+        assert_eq!(app.provision_target, None);
+        app.queue_import(ConnKind::OpenVpn);
+        assert_eq!(
+            app.provision_target, None,
+            "generic import cannot inherit cancelled setup"
+        );
+    }
+
+    #[test]
+    fn unprovisioned_profile_resources_are_searchable_but_machine_actions_are_honest() {
+        let (mut app, doc) = demo_with_doc();
+        app.seed_shot_state("unprovisioned");
+        let id = app.vault.selected.expect("selected remote profile");
+        let resources = Widget::resources(&app, &doc);
+        let profile = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == format!("vpn.connection:{id}"))
+            .expect("stable remote profile remains searchable");
+        assert!(
+            profile
+                .actions
+                .iter()
+                .any(|action| action.id == "provision-local")
+        );
+        for action_id in [
+            if app.vault.get(id).is_some_and(Connection::is_connected) {
+                "disconnect"
+            } else {
+                "connect"
+            },
+            "delete",
+        ] {
+            let action = profile
+                .actions
+                .iter()
+                .find(|action| action.id == action_id)
+                .unwrap();
+            assert!(
+                matches!(action.contract.availability, qos_actions::Availability::Unavailable { ref code, .. } if code == "local_credentials_required")
+            );
+        }
     }
 
     #[test]
