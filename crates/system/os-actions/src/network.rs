@@ -27,6 +27,9 @@ pub struct RadioState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VpnConnectionInfo {
     pub name: String,
+    /// `NetworkManager`'s stable connection UUID. Consumers must use this to
+    /// associate locally provisioned VPN material; names are mutable labels.
+    pub uuid: String,
     pub active: bool,
     pub kind: String,
 }
@@ -126,7 +129,10 @@ pub fn set_hotspot(enabled: bool) -> Result<(), String> {
 ///
 /// Returns an error message if `nmcli` is not installed or the command fails.
 pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
-    let all = run_capture("nmcli", &["-t", "-f", "NAME,TYPE", "connection", "show"])?;
+    let all = run_capture(
+        "nmcli",
+        &["-t", "-f", "NAME,UUID,TYPE", "connection", "show"],
+    )?;
     let active = run_capture(
         "nmcli",
         &["-t", "-f", "NAME", "connection", "show", "--active"],
@@ -138,9 +144,11 @@ pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
         .filter_map(|line| {
             let fields = split_terse(line);
             let name = fields.first()?.trim();
-            let kind = fields.get(1)?.trim();
+            let uuid = fields.get(1)?.trim();
+            let kind = fields.get(2)?.trim();
             matches!(kind, "vpn" | "wireguard").then(|| VpnConnectionInfo {
                 name: name.to_string(),
+                uuid: uuid.to_string(),
                 active: active.contains(&name),
                 kind: kind.to_string(),
             })
@@ -159,6 +167,29 @@ pub fn set_vpn_connection(name: &str, enabled: bool) -> Result<(), String> {
     run(
         "nmcli",
         &["connection", if enabled { "up" } else { "down" }, name],
+    )
+}
+
+/// Activate/deactivate one VPN profile by `NetworkManager`'s immutable UUID.
+/// This avoids binding a security-relevant local credential association to a
+/// mutable display name.
+///
+/// # Errors
+///
+/// Returns an error when `uuid` is invalid, `nmcli` is unavailable, or
+/// `NetworkManager` rejects the requested transition.
+pub fn set_vpn_connection_uuid(uuid: &str, enabled: bool) -> Result<(), String> {
+    if uuid.is_empty() || uuid.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
+        return Err("invalid VPN connection UUID".into());
+    }
+    run(
+        "nmcli",
+        &[
+            "connection",
+            if enabled { "up" } else { "down" },
+            "uuid",
+            uuid,
+        ],
     )
 }
 
@@ -187,6 +218,19 @@ pub fn delete_vpn_connection(name: &str) -> Result<(), String> {
         return Err("invalid VPN connection name".into());
     }
     run("nmcli", &["connection", "delete", name])
+}
+
+/// Remove one `NetworkManager` VPN profile by immutable UUID.
+///
+/// # Errors
+///
+/// Returns an error when `uuid` is invalid, `nmcli` is unavailable, or
+/// `NetworkManager` refuses the deletion.
+pub fn delete_vpn_connection_uuid(uuid: &str) -> Result<(), String> {
+    if uuid.is_empty() || uuid.bytes().any(|b| matches!(b, 0 | b'\n' | b'\r')) {
+        return Err("invalid VPN connection UUID".into());
+    }
+    run("nmcli", &["connection", "delete", "uuid", uuid])
 }
 
 /// One Wi-Fi network entry returned by [`list_wifi_networks`].

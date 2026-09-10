@@ -42,6 +42,7 @@ pub mod actions;
 pub mod app;
 pub mod config;
 pub mod doc;
+pub mod local;
 pub mod model;
 pub mod net;
 pub mod throughput;
