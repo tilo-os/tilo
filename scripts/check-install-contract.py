@@ -113,6 +113,18 @@ assert "RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}" in session
 assert 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' in session_workflow
 assert "QOS_LANE_TARGETS" in session_workflow
 assert "while IFS='|' read -r distro image revision" in session_workflow
+assert 'echo "::endgroup::"\n              exit 1' in session_workflow
+assert "max-parallel:" not in session_workflow
+assert "QOS_BLAKE3_PURE=1" in rpm_job
+assert 'CARGO_FEATURE_PURE="$QOS_BLAKE3_PURE"' in rpm_job
+assert "cargo_jobs=2" in rpm_job
+assert "cargo_jobs=4" not in rpm_job
+assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
+assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in rpm_job
+nix_package = (ROOT / "dist/nix/package.nix").read_text()
+assert 'CARGO_PROFILE_RELEASE_LTO = "thin";' in nix_package
+assert 'CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16";' in nix_package
+assert "stage=docker-health" in rpm_job
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]

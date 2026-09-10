@@ -99,8 +99,8 @@ impl QuickSettingsRoot {
     const CARD: f64 = 70.0;
     const GAP: f64 = 8.0;
     const POWER: f64 = 50.0;
-    const EDIT_ROW: f64 = 50.0;
-    const EDIT_HELP: f64 = 22.0;
+    const EDIT_ROW: f64 = 46.0;
+    const EDIT_HELP: f64 = 28.0;
     const EDIT_FOOTER: f64 = 38.0;
 
     fn header_baseline_offset(&self) -> f64 {
@@ -263,6 +263,18 @@ impl QuickSettingsRoot {
             })
             .collect()
     }
+    fn active_edit_controls(&self, state: &QuickSettingsState) -> Vec<QuickSettingsControl> {
+        self.edit_controls(state)
+            .into_iter()
+            .filter(|control| self.config.controls.contains(control))
+            .collect()
+    }
+    fn available_edit_controls(&self, state: &QuickSettingsState) -> Vec<QuickSettingsControl> {
+        self.edit_controls(state)
+            .into_iter()
+            .filter(|control| !self.config.controls.contains(control))
+            .collect()
+    }
     #[cfg(test)]
     pub fn control_count(&self, state: &QuickSettingsState) -> usize {
         self.visible_controls(state).len()
@@ -274,7 +286,7 @@ impl QuickSettingsRoot {
             self.visible_controls(state).len()
         };
         let rows = if self.edit_mode {
-            count
+            self.active_edit_controls(state).len()
         } else {
             count.div_ceil(2)
         };
@@ -286,6 +298,11 @@ impl QuickSettingsRoot {
                     + Self::GAP * 2.0
                     + n(rows) * Self::EDIT_ROW
                     + n(rows.saturating_sub(1)) * 6.0
+                    + if self.available_edit_controls(state).is_empty() {
+                        0.0
+                    } else {
+                        68.0
+                    }
                     + Self::EDIT_FOOTER,
             )
         } else {
@@ -329,6 +346,12 @@ impl QuickSettingsRoot {
             + self.scaled(Self::HEADER)
             + self.scaled(Self::EDIT_HELP)
             + self.scaled(Self::GAP)
+    }
+    fn available_edit_top(&self, state: &QuickSettingsState) -> f64 {
+        let active = self.active_edit_controls(state).len();
+        self.edit_grid_top(self.panel)
+            + n(active) * self.scaled(Self::EDIT_ROW + 6.0)
+            + self.scaled(10.0)
     }
     fn card(&self, panel: Rect, i: usize, edit: bool) -> Rect {
         let top = self.grid_top(panel);
@@ -789,9 +812,12 @@ impl QuickSettingsRoot {
         RootAction::None
     }
     fn edit_reset(&self, state: &QuickSettingsState) -> Rect {
-        let y = self.edit_grid_top(self.panel)
-            + n(self.edit_controls(state).len()) * self.scaled(Self::EDIT_ROW + 6.)
-            + self.scaled(Self::GAP);
+        let available = self.available_edit_controls(state);
+        let y = if available.is_empty() {
+            self.available_edit_top(state)
+        } else {
+            self.available_edit_top(state) + self.scaled(68.0)
+        };
         Rect::new(
             self.panel.x0 + self.scaled(Self::PAD),
             y,
@@ -809,7 +835,8 @@ impl QuickSettingsRoot {
         )
     }
     fn edit_click(&mut self, point: Point, state: &QuickSettingsState) -> RootAction {
-        for (i, c) in self.edit_controls(state).iter().copied().enumerate() {
+        let active = self.active_edit_controls(state);
+        for (i, c) in active.iter().copied().enumerate() {
             let row = self.card(self.panel, i, true);
             if !row.contains(point) {
                 continue;
@@ -831,6 +858,29 @@ impl QuickSettingsRoot {
                 return RootAction::LayoutChanged;
             }
             return RootAction::None;
+        }
+        let available = self.available_edit_controls(state);
+        if !available.is_empty() {
+            let gap = self.scaled(6.0);
+            let x0 = self.panel.x0 + self.scaled(Self::PAD);
+            let width = (self.panel.width()
+                - self.scaled(Self::PAD * 2.0)
+                - gap * n(available.len().saturating_sub(1)))
+                / n(available.len());
+            for (i, control) in available.into_iter().enumerate() {
+                let x = x0 + n(i) * (width + gap);
+                let chip = Rect::new(
+                    x,
+                    self.available_edit_top(state) + self.scaled(26.0),
+                    x + width,
+                    self.available_edit_top(state) + self.scaled(60.0),
+                );
+                if chip.contains(point) {
+                    self.config.controls.push(control);
+                    self.save_config();
+                    return RootAction::LayoutChanged;
+                }
+            }
         }
         if self.edit_reset(state).contains(point) {
             self.config = QuickSettingsConfig::default();
@@ -1335,19 +1385,19 @@ impl QuickSettingsRoot {
         let colors = &theme.tokens.colors;
         text.draw_text(
             scene,
-            "Drag the grip to reorder · Ctrl+↑/↓ also works",
+            "ACTIVE CONTROLS",
             theme.tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
                 (
                     self.panel.x0 + self.scaled(Self::PAD),
-                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 14.),
+                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 11.),
                 )
                     .into(),
             ),
             None,
         );
-        let all = self.edit_controls(state);
+        let all = self.active_edit_controls(state);
         let metrics = ListMetrics::uniform(
             self.edit_grid_top(self.panel),
             self.scaled(Self::EDIT_ROW),
@@ -1394,10 +1444,10 @@ impl QuickSettingsRoot {
                 }
             }
             let action = Rect::new(
-                r.x1 - self.scaled(82.),
-                r.y0 + self.scaled(9.),
-                r.x1 - self.scaled(10.),
-                r.y1 - self.scaled(9.),
+                r.x1 - self.scaled(40.),
+                r.y0 + self.scaled(7.),
+                r.x1 - self.scaled(6.),
+                r.y1 - self.scaled(7.),
             );
             #[allow(
                 clippy::cast_possible_truncation,
@@ -1406,7 +1456,7 @@ impl QuickSettingsRoot {
             let label = text.elide_to_width(
                 Self::label(c),
                 theme.tokens.typography.scale.sm,
-                (action.x0 - r.x0 - self.scaled(52.)).max(1.0) as f32,
+                (action.x0 - r.x0 - self.scaled(50.)).max(1.0) as f32,
             );
             text.draw_text_weighted(
                 scene,
@@ -1417,14 +1467,7 @@ impl QuickSettingsRoot {
                 None,
                 TextWeight::Medium,
             );
-            let action_label = if c.required() {
-                "Required"
-            } else if present {
-                "Remove"
-            } else {
-                "Add"
-            };
-            let action_face = ButtonFace::new(action, action_label)
+            let action_face = ButtonFace::new(action, "")
                 .hovered(cursor.is_some_and(|p| action.contains(p)))
                 .accessible_name(if c.required() {
                     "Required Quick Settings control"
@@ -1437,11 +1480,7 @@ impl QuickSettingsRoot {
             let action_face = if c.required() {
                 action_face.ghost()
             } else {
-                action_face.icon(if present {
-                    ui::icons::Icon::X
-                } else {
-                    ui::icons::Icon::Plus
-                })
+                action_face.icon(ui::icons::Icon::X)
             };
             Button::paint(scene, transform, text, theme, &action_face);
         }
@@ -1531,10 +1570,10 @@ impl QuickSettingsRoot {
                     }
                 }
                 let action = Rect::new(
-                    ghost.x1 - self.scaled(82.),
-                    ghost.y0 + self.scaled(9.),
-                    ghost.x1 - self.scaled(10.),
-                    ghost.y1 - self.scaled(9.),
+                    ghost.x1 - self.scaled(40.),
+                    ghost.y0 + self.scaled(7.),
+                    ghost.x1 - self.scaled(6.),
+                    ghost.y1 - self.scaled(7.),
                 );
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -1543,7 +1582,7 @@ impl QuickSettingsRoot {
                 let label = text.elide_to_width(
                     Self::label(control),
                     theme.tokens.typography.scale.sm,
-                    (action.x0 - ghost.x0 - self.scaled(52.)).max(1.0) as f32,
+                    (action.x0 - ghost.x0 - self.scaled(50.)).max(1.0) as f32,
                 );
                 text.draw_text_weighted(
                     scene,
@@ -1556,12 +1595,7 @@ impl QuickSettingsRoot {
                     None,
                     TextWeight::Medium,
                 );
-                let ghost_action = if control.required() {
-                    "Required"
-                } else {
-                    "Remove"
-                };
-                let ghost_face = ButtonFace::new(action, ghost_action)
+                let ghost_face = ButtonFace::new(action, "")
                     .text_size(theme.tokens.typography.scale.xs)
                     .accessible_name(if control.required() {
                         "Required Quick Settings control"
@@ -1598,6 +1632,50 @@ impl QuickSettingsRoot {
                         ),
                         rail_half,
                     ),
+                );
+            }
+        }
+        let available = self.available_edit_controls(state);
+        if !available.is_empty() {
+            let top = self.available_edit_top(state);
+            text.draw_text(
+                scene,
+                "AVAILABLE",
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate(
+                    (
+                        self.panel.x0 + self.scaled(Self::PAD),
+                        top + self.scaled(12.0),
+                    )
+                        .into(),
+                ),
+                None,
+            );
+            let gap = self.scaled(6.0);
+            let x0 = self.panel.x0 + self.scaled(Self::PAD);
+            let width = (self.panel.width()
+                - self.scaled(Self::PAD * 2.0)
+                - gap * n(available.len().saturating_sub(1)))
+                / n(available.len());
+            for (i, control) in available.into_iter().enumerate() {
+                let x = x0 + n(i) * (width + gap);
+                let chip = Rect::new(
+                    x,
+                    top + self.scaled(26.0),
+                    x + width,
+                    top + self.scaled(60.0),
+                );
+                Button::paint(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &ButtonFace::new(chip, Self::label(control))
+                        .icon(ui::icons::Icon::Plus)
+                        .text_size(theme.tokens.typography.scale.xs)
+                        .hovered(cursor.is_some_and(|point| chip.contains(point)))
+                        .accessible_name(Self::label(control)),
                 );
             }
         }
@@ -1815,11 +1893,24 @@ mod tests {
         assert_eq!(root.config.controls[1], QuickSettingsControl::Wifi);
         root.panel = PANEL;
         let airplane = root
-            .edit_controls(&state)
+            .available_edit_controls(&state)
             .iter()
             .position(|c| *c == QuickSettingsControl::AirplaneMode)
             .unwrap_or_default();
-        let row = root.card(PANEL, airplane, true);
+        let available = root.available_edit_controls(&state);
+        let gap = root.scaled(6.0);
+        let width = (PANEL.width()
+            - root.scaled(QuickSettingsRoot::PAD * 2.0)
+            - gap * n(available.len().saturating_sub(1)))
+            / n(available.len());
+        let x = PANEL.x0 + root.scaled(QuickSettingsRoot::PAD) + n(airplane) * (width + gap);
+        let top = root.available_edit_top(&state);
+        let row = Rect::new(
+            x,
+            top + root.scaled(18.0),
+            x + width,
+            top + root.scaled(52.0),
+        );
         assert_eq!(
             root.edit_click(row.center(), &state),
             RootAction::LayoutChanged

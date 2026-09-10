@@ -307,9 +307,11 @@ pub fn rebind_toplevel_for_app_id(
 ) -> bool {
     let title =
         authoritative_title.map_or_else(|| tab_label_for_foreign(&new_app_id), str::to_string);
-    let anonymous =
-        app_id_for_surface(tree, surface_id).is_some_and(|app_id| app_id.starts_with("anon-"));
-    if anonymous
+    let current_app_id = app_id_for_surface(tree, surface_id).map(str::to_string);
+    let identity_changed = current_app_id
+        .as_deref()
+        .is_some_and(|app_id| app_id != new_app_id);
+    if identity_changed
         && let Some(placement) =
             crate::shell::launcher::placement_for_toplevel(&new_app_id, surface_id)
     {
@@ -1510,6 +1512,42 @@ mod tests {
             groups_before + 1,
             "the claimed late identity note must not place the next window as a tab"
         );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    /// Xwayland bridges can publish a provisional WM_CLASS-derived app-id
+    /// before the final class reaches `app_id_changed`. It is no more
+    /// authoritative than `anon-*`: a matching launch note must still rehome
+    /// that exact surface when its identity changes.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn changed_provisional_x11_app_id_claims_pending_placement() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let target = tree.workspaces[0].strips[0].window_groups[0].id;
+        crate::shell::launcher::set_pending_placement_for_identities(
+            "chatgpt",
+            &["chatgpt".to_string()],
+            Placement::NewGroup,
+        );
+
+        let surface = 0x5151;
+        let _ = adopt_toplevel_at(
+            &mut tree,
+            surface,
+            Some("electron".into()),
+            Placement::TabIn(target),
+        );
+        assert_eq!(group_of(&tree, surface).id, target);
+        assert!(rebind_toplevel_for_app_id(
+            &mut tree,
+            surface,
+            "Chatgpt".into(),
+            Some("ChatGPT"),
+        ));
+        assert_ne!(group_of(&tree, surface).id, target);
+        assert_eq!(app_id_for_surface(&tree, surface), Some("Chatgpt"));
+        assert_eq!(tab_of(&tree, surface).title, "ChatGPT");
         crate::shell::launcher::clear_pending_placements();
     }
 

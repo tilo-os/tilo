@@ -3944,6 +3944,43 @@ mod tests {
     }
 
     #[test]
+    fn german_altgr_produces_text_without_becoming_a_shell_alt_chord() {
+        let settings = KeyboardSettings {
+            source_ids: vec!["de:nodeadkeys".into()],
+            layouts: "de".into(),
+            variants: "nodeadkeys".into(),
+            options: None,
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("German xkb keymap unavailable; skipping");
+            return;
+        };
+
+        // Right Alt is ISO_Level3_Shift in the German map. It must select
+        // level three for Q → @ without being represented as the ordinary
+        // Alt modifier used by shell shortcuts such as Alt+Tab/Alt+F4.
+        let altgr = xkb::Keycode::new(100 + 8);
+        let down = keyboard.process(altgr, true);
+        let WindowEvent::KeyboardInput { event, .. } = down.input.expect("AltGr key input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Named(NamedKey::AltGraph));
+        assert!(
+            down.modifiers_changed.is_none(),
+            "AltGr is a level selector, not the shell's Alt modifier"
+        );
+
+        let q = keyboard.process(xkb::Keycode::new(16 + 8), true);
+        let WindowEvent::KeyboardInput { event, .. } = q.input.expect("AltGr+Q input") else {
+            panic!("expected keyboard input")
+        };
+        assert_eq!(event.logical_key, Key::Character("@".into()));
+        assert_eq!(event.text.as_deref(), Some("@"));
+        assert_eq!(event.physical_key.to_scancode(), Some(16));
+    }
+
+    #[test]
     fn side_by_side_layout_single_output_at_origin() {
         // The single-output case must place the one output at (0, 0).
         let positions = side_by_side_layout(&[(1920, 1080)]);
