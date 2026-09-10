@@ -59,7 +59,7 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
 
     // Point every shared-store path resolver (Settings' write + Mail's read)
     // at the throwaway config root. `set_var` is `unsafe` on edition 2024;
-    // this test binary is single-threaded around this mutation.
+    // this dedicated test binary owns the environment mutation.
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", &root_dir);
     }

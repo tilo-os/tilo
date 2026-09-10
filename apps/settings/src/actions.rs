@@ -376,6 +376,8 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "input.middle_emulation"
         | "input.left_handed"
         | "input.touchpad_gestures"
+        | "input.touchpad_natural_scroll"
+        | "input.mouse_natural_scroll"
         | "text.check_spelling"
         | "text.auto_correct"
         | "power.auto_suspend"
@@ -390,7 +392,13 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         "notifications.focus.start" | "notifications.focus.end" | "notifications.focus.days" => {
             text()
         }
-        key if key.starts_with("shortcuts.") && !presentation_key => text(),
+        // Shortcut keys are an intentionally closed catalogue.  The old
+        // prefix rule let a delayed/stale action create arbitrary
+        // `shortcuts.*` scalars that the compositor neither knew nor applied.
+        // The same catalogue drives the recorder rows and resource actions.
+        key if crate::panes::keyboard_shortcuts::is_durable_key(key) && !presentation_key => {
+            text() || (key == "shortcuts.vim_mode" && boolean())
+        }
         key if key.starts_with("default_apps.") && !presentation_key => text(),
         _ if valid_notification_app_key => true,
         // Device-mesh resources are discovered at runtime. Their stable
@@ -2059,20 +2067,15 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
         b("shortcuts.vim_mode", false),
         "Vim-style desktop navigation",
     ));
-    for (id, label, key) in [
-        ("search", "Set Search shortcut", "shortcuts.search"),
-        (
-            "overview",
-            "Set Workspace Overview shortcut",
-            "shortcuts.overview",
-        ),
-        ("lock", "Set Lock Screen shortcut", "shortcuts.lock"),
-        (
-            "quick-settings",
-            "Set Quick Settings shortcut",
-            "shortcuts.quick_settings",
-        ),
-    ] {
+    for (key, shortcut_label) in crate::panes::keyboard_shortcuts::resource_entries() {
+        // Resource action ids are stable, readable derivatives of their
+        // durable key rather than a hand-maintained subset of the recorder
+        // table. Dots become dashes to stay within the action-id vocabulary.
+        let id = key
+            .strip_prefix("shortcuts.")
+            .unwrap_or(key)
+            .replace('_', "-");
+        let label = format!("Set {shortcut_label} shortcut");
         section = section.with_action(
             ActionSpec::typed(
                 id,
@@ -2363,6 +2366,8 @@ mod tests {
             .map(|action| action.id.as_str())
             .collect();
         for id in [
+            "touchpad_natural_scroll",
+            "mouse_natural_scroll",
             "tap-drag",
             "disable-while-typing",
             "middle-emulation",
@@ -2389,6 +2394,39 @@ mod tests {
             }),
             "each input-source row exposes only local typed commands"
         );
+    }
+
+    #[test]
+    fn every_visible_shortcut_has_a_canonical_resource_action() {
+        let resources = provide_resources(&AutoCommit::new());
+        let shortcuts = find(&resources, &pane_resource_id(Category::KeyboardShortcuts));
+        let action_ids: std::collections::HashSet<&str> = shortcuts
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert!(
+            action_ids.contains("vim-mode"),
+            "missing canonical Vim navigation action"
+        );
+
+        for (key, label) in crate::panes::keyboard_shortcuts::resource_entries() {
+            let id = key
+                .strip_prefix("shortcuts.")
+                .unwrap_or(key)
+                .replace('_', "-");
+            assert!(
+                action_ids.contains(id.as_str()),
+                "missing canonical shortcut action for {label} ({key})"
+            );
+            let action = shortcuts
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .expect("action was just found");
+            assert_eq!(action.kind, OperationKind::Document);
+            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+        }
     }
 
     #[test]
@@ -2616,6 +2654,7 @@ mod tests {
         for action in [
             set_bool_action("appearance.high_contrast.edit", true),
             set_text_action("settings.select.appearance", "true"),
+            set_text_action("shortcuts.no-longer-supported", "Super+Shift+K"),
             set_text_action("unknown.preference", "value"),
         ] {
             assert!(matches!(
@@ -2623,6 +2662,34 @@ mod tests {
                 Err(ActionError::Refused(_))
             ));
         }
+    }
+
+    #[test]
+    fn per_device_natural_scroll_actions_are_accepted_and_convergent() {
+        let mut a = AutoCommit::new();
+        a.put(
+            &ROOT,
+            panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
+            ScalarValue::Boolean(false),
+        )
+        .expect("seed touchpad preference");
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).expect("clone the same base document");
+
+        let action = set_bool_action(panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY, true);
+        let encoded = encode(&action);
+        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("apply locally");
+        qos_actions::replay(&mut b, &envelope, &registry()).expect("replay on peer");
+
+        assert_eq!(
+            doc_bool(&a, panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY),
+            Some(true)
+        );
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "the preference converges exactly"
+        );
     }
 
     /// Writing the value a key already holds is a no-op: the document's heads are

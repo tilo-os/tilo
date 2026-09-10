@@ -104,5 +104,16 @@ mail = { path = "../mail" }
 name = "it"
 path = "tests/it.rs"
 
+# These suites deliberately redirect the process-global XDG config root.
+# Keep each in its own test process instead of cohabiting the UI interaction
+# suite, whose parallel tests may legitimately construct settings panes.
+[[test]]
+name = "prefs_persistence"
+path = "tests/prefs_persistence.rs"
+
+[[test]]
+name = "accounts_mail_loop"
+path = "tests/accounts_mail_loop.rs"
+
 [lints]
 workspace = true
