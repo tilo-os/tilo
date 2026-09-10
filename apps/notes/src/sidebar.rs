@@ -204,6 +204,10 @@ pub struct NoteTreeView {
     /// expand the new selection's ancestors so the selected row is always
     /// visible (e.g. after a `[[link]]` jump into a nested page).
     last_selection: Option<PageId>,
+    /// Cached from the latest theme during layout. `TextRenderer` applies this
+    /// scale to glyphs, so every hit row must grow in lockstep to prevent the
+    /// large-text preference from making labels collide.
+    text_scale: f64,
 }
 
 struct RowEntry {
@@ -221,6 +225,18 @@ struct ClickRecord {
 }
 
 impl NoteTreeView {
+    fn scaled(&self, value: f64) -> f64 {
+        value * self.text_scale
+    }
+
+    fn row_height(&self) -> f64 {
+        ROW_HEIGHT * self.text_scale
+    }
+
+    fn header_height(&self) -> f64 {
+        HEADER_HEIGHT * self.text_scale
+    }
+
     pub fn new() -> Self {
         Self {
             flat_rows: Vec::new(),
@@ -244,6 +260,7 @@ impl NoteTreeView {
             empty_menu: false,
             did_initial_expand: false,
             last_selection: None,
+            text_scale: 1.0,
         }
     }
 
@@ -375,8 +392,8 @@ impl NoteTreeView {
     /// (`ROW_HEIGHT` pitch, no gap) starting just below the header.
     fn list_metrics(&self) -> ListMetrics {
         ListMetrics::uniform(
-            self.rect.y0 + HEADER_HEIGHT,
-            ROW_HEIGHT,
+            self.rect.y0 + self.header_height(),
+            self.row_height(),
             0.0,
             self.flat_rows.len(),
         )
@@ -392,16 +409,16 @@ impl NoteTreeView {
             return None;
         }
         let n = self.flat_rows.len();
-        let list_top = self.rect.y0 + HEADER_HEIGHT;
+        let list_top = self.rect.y0 + self.header_height();
         let rel = pt.y - list_top;
         if rel < 0.0 {
             return None;
         }
-        let raw = num::usize_of_f64((rel / ROW_HEIGHT).floor());
+        let raw = num::usize_of_f64((rel / self.row_height()).floor());
         if raw >= n {
             return None;
         }
-        let frac = (rel / ROW_HEIGHT) - num::f64_of_usize(raw);
+        let frac = (rel / self.row_height()) - num::f64_of_usize(raw);
         if raw == from || self.is_descendant_of_dragged(raw, from) {
             return None;
         }
@@ -488,9 +505,9 @@ impl NoteTreeView {
         if pt.x < self.rect.x0 - 40.0 || pt.x > self.rect.x1 + 40.0 {
             return DropPlan::Cancel;
         }
-        let list_top = self.rect.y0 + HEADER_HEIGHT;
-        let list_bottom = list_top + num::f64_of_usize(n) * ROW_HEIGHT;
-        if pt.y < list_top - ROW_HEIGHT || pt.y > list_bottom + ROW_HEIGHT {
+        let list_top = self.rect.y0 + self.header_height();
+        let list_bottom = list_top + num::f64_of_usize(n) * self.row_height();
+        if pt.y < list_top - self.row_height() || pt.y > list_bottom + self.row_height() {
             return DropPlan::Cancel;
         }
         if let Some(row) = self.onto_target(pt) {
@@ -609,11 +626,12 @@ impl Widget for NoteTreeView {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         let rows = self.flat_rows.len().max(1);
-        let height = HEADER_HEIGHT + (rows as f64) * ROW_HEIGHT + 8.0;
+        let height = self.header_height() + (rows as f64) * self.row_height() + 8.0;
         // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
         // returns a bare `NodeId` across every implementor, so surfacing a
         // theoretical error here would mean threading a `Result` through the
@@ -654,16 +672,16 @@ impl Widget for NoteTreeView {
         // Header "+" new-page button — square, pinned to the top-right
         // of the header strip.
         self.new_page_btn_rect = Rect::new(
-            self.rect.x1 - NEW_BTN_MARGIN - NEW_BTN_SIZE,
-            self.rect.y0 + (HEADER_HEIGHT - NEW_BTN_SIZE) / 2.0,
-            self.rect.x1 - NEW_BTN_MARGIN,
-            self.rect.y0 + f64::midpoint(HEADER_HEIGHT, NEW_BTN_SIZE),
+            self.rect.x1 - self.scaled(NEW_BTN_MARGIN) - self.scaled(NEW_BTN_SIZE),
+            self.rect.y0 + (self.header_height() - self.scaled(NEW_BTN_SIZE)) / 2.0,
+            self.rect.x1 - self.scaled(NEW_BTN_MARGIN),
+            self.rect.y0 + f64::midpoint(self.header_height(), self.scaled(NEW_BTN_SIZE)),
         );
         // Position each row, offset below the header strip.
         self.row_rects.clear();
         for i in 0..self.flat_rows.len() {
-            let y0 = self.rect.y0 + HEADER_HEIGHT + (i as f64) * ROW_HEIGHT;
-            let y1 = y0 + ROW_HEIGHT;
+            let y0 = self.rect.y0 + self.header_height() + (i as f64) * self.row_height();
+            let y1 = y0 + self.row_height();
             self.row_rects
                 .push(Rect::new(self.rect.x0, y0, self.rect.x1, y1));
         }
@@ -672,16 +690,17 @@ impl Widget for NoteTreeView {
         }
         // If a rename is active, position the embedded editor against
         // the current row rect — it follows the row across resize.
+        let scale = self.text_scale;
         if let Some(r) = &mut self.rename
             && let Some(idx) = self.flat_rows.iter().position(|row| row.id == r.page)
             && let Some(row_rect) = self.row_rects.get(idx).copied()
             && let Some(depth) = self.flat_rows.get(idx).map(|row| row.depth)
         {
-            let glyph_x = row_rect.x0 + ROW_INSET_X + (depth as f64) * INDENT_PX;
+            let glyph_x = row_rect.x0 + ROW_INSET_X * scale + (depth as f64) * INDENT_PX * scale;
             let editor_rect = Rect::new(
-                glyph_x + GLYPH_WIDTH,
+                glyph_x + GLYPH_WIDTH * scale,
                 row_rect.y0,
-                row_rect.x1 - 4.0,
+                row_rect.x1 - 4.0 * scale,
                 row_rect.y1,
             );
             r.input.apply_layout_external(editor_rect);
@@ -993,15 +1012,20 @@ impl NoteTreeView {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let header_text_y = self.rect.y0 + (HEADER_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
+        let header_text_y = self.rect.y0
+            + (self.header_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
         text_renderer.draw_text(
             scene,
             "Pages",
             ROW_TEXT_SIZE,
             tokens.colors.text_dim,
-            transform * Affine::translate((self.rect.x0 + ROW_INSET_X, header_text_y)),
+            transform * Affine::translate((self.rect.x0 + self.scaled(ROW_INSET_X), header_text_y)),
             Some(num::f32_of_f64(
-                (self.new_page_btn_rect.x0 - self.rect.x0 - ROW_INSET_X - 6.0).max(0.0),
+                (self.new_page_btn_rect.x0
+                    - self.rect.x0
+                    - self.scaled(ROW_INSET_X)
+                    - self.scaled(6.0))
+                .max(0.0),
             )),
         );
         // Button chip — brighter when hovered so it reads as clickable.
@@ -1019,7 +1043,8 @@ impl NoteTreeView {
         let plus_size = ROW_TEXT_SIZE + 2.0;
         let (plus_w, _) = text_renderer.measure("+", plus_size, None);
         let plus_x = self.new_page_btn_rect.center().x - f64::from(plus_w) / 2.0;
-        let plus_y = self.new_page_btn_rect.center().y - f64::from(plus_size) / 2.0;
+        let plus_y =
+            self.new_page_btn_rect.center().y - f64::from(plus_size) * self.text_scale / 2.0;
         text_renderer.draw_text(
             scene,
             "+",
@@ -1108,10 +1133,10 @@ impl NoteTreeView {
             // An inset rounded pill rather than an edge-to-edge bar, so
             // the selection reads as a chip with breathing room.
             let pill = RoundedRect::new(
-                row_rect.x0 + ROW_PILL_MARGIN,
-                row_rect.y0 + 1.0,
-                row_rect.x1 - ROW_PILL_MARGIN,
-                row_rect.y1 - 1.0,
+                row_rect.x0 + self.scaled(ROW_PILL_MARGIN),
+                row_rect.y0 + self.scaled(1.0),
+                row_rect.x1 - self.scaled(ROW_PILL_MARGIN),
+                row_rect.y1 - self.scaled(1.0),
                 f64::from(tokens.radii.md),
             );
             scene.fill(
@@ -1137,16 +1162,26 @@ impl NoteTreeView {
                 presence.draw_peer_mist(scene, theme, user, mist_rect);
             }
         }
-        let glyph_x = row_rect.x0 + ROW_INSET_X + (row.depth as f64) * INDENT_PX;
-        let label_x = glyph_x + GLYPH_WIDTH;
-        let text_y = row_rect.y0 + (ROW_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
+        let glyph_x =
+            row_rect.x0 + self.scaled(ROW_INSET_X) + (row.depth as f64) * self.scaled(INDENT_PX);
+        let label_x = glyph_x + self.scaled(GLYPH_WIDTH);
+        let text_y =
+            row_rect.y0 + (self.row_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
 
         // Nesting guides: a faint vertical rail at each ancestor depth
         // so the tree structure reads at a glance — this is what makes
         // an indented child obviously nested under its parent.
         for level in 0..row.depth {
-            let gx = row_rect.x0 + ROW_INSET_X + (level as f64) * INDENT_PX + GLYPH_WIDTH / 2.0;
-            let guide = Rect::new(gx - 0.5, row_rect.y0, gx + 0.5, row_rect.y1);
+            let gx = row_rect.x0
+                + self.scaled(ROW_INSET_X)
+                + (level as f64) * self.scaled(INDENT_PX)
+                + self.scaled(GLYPH_WIDTH) / 2.0;
+            let guide = Rect::new(
+                gx - self.scaled(0.5),
+                row_rect.y0,
+                gx + self.scaled(0.5),
+                row_rect.y1,
+            );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1167,7 +1202,7 @@ impl NoteTreeView {
                 glyph,
                 ROW_TEXT_SIZE,
                 tokens.colors.text_dim,
-                transform * Affine::translate((glyph_x + 2.0, text_y)),
+                transform * Affine::translate((glyph_x + self.scaled(2.0), text_y)),
                 None,
             );
         }
@@ -1182,7 +1217,7 @@ impl NoteTreeView {
                 ROW_TEXT_SIZE,
                 tokens.colors.text_primary,
                 transform * Affine::translate((label_x, text_y)),
-                Some(num::f32_of_f64(row_rect.x1 - label_x - 4.0)),
+                Some(num::f32_of_f64(row_rect.x1 - label_x - self.scaled(4.0))),
             );
         }
     }
@@ -1224,8 +1259,17 @@ impl NoteTreeView {
                 // Reorder: an accent caret between rows, indented to the
                 // depth the page would land at (so nesting is visible).
                 let y = metrics.slot_lead(*to);
-                let x0 = self.rect.x0 + ROW_INSET_X + (*depth as f64) * INDENT_PX + 6.0;
-                let caret = RoundedRect::new(x0, y - 1.5, self.rect.x1 - 6.0, y + 1.5, 1.5);
+                let x0 = self.rect.x0
+                    + self.scaled(ROW_INSET_X)
+                    + (*depth as f64) * self.scaled(INDENT_PX)
+                    + self.scaled(6.0);
+                let caret = RoundedRect::new(
+                    x0,
+                    y - self.scaled(1.5),
+                    self.rect.x1 - self.scaled(6.0),
+                    y + self.scaled(1.5),
+                    self.scaled(1.5),
+                );
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -1277,15 +1321,16 @@ impl NoteTreeView {
                 None,
                 &shape,
             );
-            let label_x = ghost.x0 + ROW_INSET_X + GLYPH_WIDTH;
-            let text_y = ghost.y0 + (ROW_HEIGHT - f64::from(ROW_TEXT_SIZE)) / 2.0;
+            let label_x = ghost.x0 + self.scaled(ROW_INSET_X) + self.scaled(GLYPH_WIDTH);
+            let text_y =
+                ghost.y0 + (self.row_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
                 ROW_TEXT_SIZE,
                 tokens.colors.text_primary,
                 transform * Affine::translate((label_x, text_y)),
-                Some(num::f32_of_f64(ghost.x1 - label_x - 4.0)),
+                Some(num::f32_of_f64(ghost.x1 - label_x - self.scaled(4.0))),
             );
         }
     }
@@ -1593,8 +1638,9 @@ impl NoteTreeView {
             else {
                 break;
             };
-            let glyph_x0 = row_rect.x0 + ROW_INSET_X + (depth as f64) * INDENT_PX;
-            let glyph_x1 = glyph_x0 + GLYPH_WIDTH;
+            let glyph_x0 =
+                row_rect.x0 + self.scaled(ROW_INSET_X) + (depth as f64) * self.scaled(INDENT_PX);
+            let glyph_x1 = glyph_x0 + self.scaled(GLYPH_WIDTH);
             if has_children && pt.x >= glyph_x0 && pt.x < glyph_x1 {
                 if !self.expanded.insert(row_id) {
                     self.expanded.remove(&row_id);
@@ -1765,7 +1811,12 @@ impl NoteTreeView {
     pub fn row_disclosure_x_for_test(&self, idx: usize) -> Option<f64> {
         let row = self.row_rects.get(idx)?;
         let depth = self.flat_rows.get(idx)?.depth;
-        Some(row.x0 + ROW_INSET_X + num::f64_of_usize(depth) * INDENT_PX + GLYPH_WIDTH / 2.0)
+        Some(
+            row.x0
+                + self.scaled(ROW_INSET_X)
+                + num::f64_of_usize(depth) * self.scaled(INDENT_PX)
+                + self.scaled(GLYPH_WIDTH) / 2.0,
+        )
     }
 
     /// Test hook: the tree depth of visible row `idx` (0 = root), so a test
@@ -1905,5 +1956,24 @@ mod tests {
             Some(root),
             "AT focus selects the visible page"
         );
+    }
+
+    #[test]
+    fn high_text_rows_and_labels_keep_distinct_scaled_geometry() {
+        let mut tree = NoteTreeView::new();
+        tree.text_scale = 2.0;
+        tree.rect = Rect::new(0.0, 0.0, 528.0, 600.0);
+        let first = Rect::new(
+            tree.rect.x0,
+            tree.rect.y0 + tree.header_height(),
+            tree.rect.x1,
+            tree.rect.y0 + tree.header_height() + tree.row_height(),
+        );
+        let second = Rect::new(first.x0, first.y1, first.x1, first.y1 + tree.row_height());
+        let label_x = first.x0 + tree.scaled(ROW_INSET_X) + tree.scaled(GLYPH_WIDTH);
+
+        assert!(tree.header_height() <= first.y0);
+        assert!(first.y1 <= second.y0, "adjacent rows must not overlap");
+        assert!(label_x < first.x1 - tree.scaled(4.0));
     }
 }

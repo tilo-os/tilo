@@ -418,11 +418,17 @@ impl Widget for RichTextLine {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The inner input owns the shaped document text (which bypasses
+        // `TextRenderer`'s global scale), so hand it the effective size here.
+        // Keeping its row height on the same scale prevents large-text lines
+        // from painting into their neighbours.
+        let scale = theme.text_scale;
+        self.inner.set_font_size(self.font_size * scale);
         // font_size * 1.5 so headings end up taller than paragraph rows without a measure pass.
-        let height = (self.font_size * 1.5).max(20.0);
+        let height = (self.font_size * scale * 1.5).max(20.0 * scale);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
@@ -468,8 +474,11 @@ impl Widget for RichTextLine {
             return;
         }
 
+        // Styled runs are painted through `TextRenderer` and therefore take
+        // its global accessibility scale themselves. Their geometry still
+        // needs the physical line height used by the scaled inner input.
         let text_size = self.font_size;
-        let line_height = f64::from(text_size) * 1.25;
+        let line_height = f64::from(text_size * theme.text_scale) * 1.25;
         let rect = self.inner.get_rect();
         let pad = self.inner.text_padding_x(theme);
         let scroll_x = self.inner.scroll_x();
