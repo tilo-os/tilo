@@ -120,6 +120,8 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env GITHUB_SHA="$source_revision" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
+            --env CARGO_PROFILE_RELEASE_LTO=thin \
+            --env CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
             --env CARGO_TERM_COLOR=never \
             "${signing_env[@]}" \
             "${cache_env[@]}" \
@@ -232,6 +234,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_EMULATED=1
         export QOS_DEB_REVISION="$revision"
         export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
+        export CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
         proot_package_binds=()
         if [[ $distro == arch ]]; then
