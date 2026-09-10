@@ -115,8 +115,8 @@ assert "QOS_LANE_TARGETS" in session_workflow
 assert "while IFS='|' read -r distro image revision" in session_workflow
 assert 'echo "::endgroup::"\n              exit 1' in session_workflow
 assert "max-parallel:" not in session_workflow
-assert "QOS_BLAKE3_PREFER_INTRINSICS=1" in rpm_job
-assert 'CARGO_FEATURE_PREFER_INTRINSICS="$QOS_BLAKE3_PREFER_INTRINSICS"' in rpm_job
+assert "QOS_BLAKE3_PURE=1" in rpm_job
+assert 'CARGO_FEATURE_PURE="$QOS_BLAKE3_PURE"' in rpm_job
 assert "cargo_jobs=2" in rpm_job
 assert "cargo_jobs=4" not in rpm_job
 assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
