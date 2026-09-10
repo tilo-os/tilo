@@ -32,7 +32,15 @@ use ui::widget::Widget;
 
 const APP_ID: &str = "dev.qos.totp";
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-const SCREENS: &[&str] = &["add", "add-advanced", "add-picker", "empty"];
+const SCREENS: &[&str] = &[
+    "add",
+    "add-advanced",
+    "add-picker",
+    "empty",
+    "provision",
+    "persistence-error",
+    "missing-secret",
+];
 
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     match args.value("--screen") {
@@ -41,6 +49,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         Some("add-advanced") => Ok(totp::app_root_add_advanced_screen()),
         Some("add-picker") => Ok(totp::app_root_add_picker_screen()),
         Some("empty") => Ok(totp::app_root_empty()),
+        Some("provision") => Ok(totp::app_root_provision_screen()),
+        Some("persistence-error") => Ok(totp::app_root_persistence_error()),
+        Some("missing-secret") => Ok(totp::app_root_missing_secret()),
         Some(screen) => Err(LaunchError::Scenario(format!(
             "unknown Authenticator screen {screen:?}; expected one of {}",
             SCREENS
