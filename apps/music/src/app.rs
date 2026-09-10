@@ -2349,7 +2349,8 @@ impl MusicApp {
     }
 
     fn on_toggle_like(&mut self, id: &str, state: &mut AutoCommit) {
-        self.perform_action(state, &crate::actions::toggle_liked_action(id));
+        let liked = !self.lib.is_liked(id);
+        self.perform_action(state, &crate::actions::set_liked_action(id, liked));
         self.reload_library(state);
         let now = self.lib.is_liked(id);
         let label = self
@@ -2368,7 +2369,8 @@ impl MusicApp {
     }
 
     fn on_toggle_save_album(&mut self, id: &str, state: &mut AutoCommit) {
-        self.perform_action(state, &crate::actions::toggle_saved_album_action(id));
+        let saved = !self.lib.is_album_saved(id);
+        self.perform_action(state, &crate::actions::set_saved_album_action(id, saved));
         self.reload_library(state);
         let now = self.lib.is_album_saved(id);
         let label = self.lib.album_title(id).to_string();
@@ -2383,7 +2385,11 @@ impl MusicApp {
     }
 
     fn on_toggle_follow(&mut self, id: &str, state: &mut AutoCommit) {
-        self.perform_action(state, &crate::actions::toggle_followed_artist_action(id));
+        let followed = !self.lib.is_artist_followed(id);
+        self.perform_action(
+            state,
+            &crate::actions::set_followed_artist_action(id, followed),
+        );
         self.reload_library(state);
         let now = self.lib.is_artist_followed(id);
         // Prefer a live artist-page name; fall back to the library.
@@ -8003,8 +8009,8 @@ mod tests {
     }
 
     /// Single source of truth on the real click path: clicking a song row's like
-    /// heart dispatches the byte-identical `EncodedAction` the Ctrl+K "Toggle
-    /// like" spec builds for that track — the on-screen affordance and the
+    /// heart dispatches the byte-identical absolute `EncodedAction` the Ctrl+K
+    /// like spec builds for that track — the on-screen affordance and the
     /// palette are one action, not two code paths. Proven end-to-end through the
     /// production `handle_event` path.
     #[test]
@@ -8021,10 +8027,10 @@ mod tests {
                 _ => None,
             })
             .expect("a song row registers a like-heart hit");
-        let expected = crate::actions::encode(&crate::actions::toggle_liked_action(&id));
         // The sample library seeds some tracks as already-liked, so assert the
         // membership *flips* rather than assuming a fixed direction.
         let before = doc::load_library(&doc).is_liked(&id);
+        let expected = crate::actions::encode(&crate::actions::set_liked_action(&id, !before));
 
         send(&mut app, &cursor_at(center), &mut doc);
         send(&mut app, &press(MouseButton::Left), &mut doc);

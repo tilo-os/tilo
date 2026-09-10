@@ -248,7 +248,11 @@ pub(super) fn track_row_columns(left: f64, right: f64, number_col: bool) -> Trac
     // width) and of the right-hand control cluster. When the row is too narrow
     // to honour both bounds they cross, so fall back to sitting just left of
     // the cluster (avoids a panicking `clamp`, degrades to a sensible column).
-    let target = left + (right - left) * 0.46;
+    // Bias the metadata column a little left of centre.  On a wide desktop a
+    // mathematical midpoint made the title and album feel disconnected, with a
+    // conspicuous empty channel between them.  This keeps a generous readable
+    // title column while grouping the two pieces of song identity together.
+    let target = left + (right - left) * 0.40;
     let lo = text + 200.0;
     let hi = like - 176.0;
     let album = if hi >= lo {
@@ -2075,10 +2079,33 @@ impl MusicApp {
         // and hands back the sidebar + content rects (settling the reveal on the
         // first frame / a breakpoint crossing, honouring any `--shots` snap).
         self.drawer.tick(false);
-        let content_rect = self.drawer.resolve(self.rect);
-
         let c = Palette::from(theme);
         let r = self.rect;
+
+        // This app is deliberately custom-canvas rather than a stack of stock
+        // widgets.  At 200% text the ordinary multi-column desktop geometry
+        // cannot merely enlarge glyphs: it must become a single-column,
+        // touchable listening view.  Taking this branch before the normal
+        // sidebar/table layout prevents clipped text and overlapping controls.
+        if theme.text_scale >= 1.35 {
+            self.render_large_text_frame(scene, t, tr, &c, r);
+            // Accessibility-scale presentation keeps the same real modal and
+            // context-menu widgets; only the underlying dense canvas changes.
+            if self.name_prompt.is_some() {
+                self.ensure_name_dialog();
+                self.layout_name_dialog();
+                if let Some(nd) = self.name_dialog.as_mut() {
+                    nd.dialog.draw(scene, t, tr, theme, &PresenceCtx::empty());
+                }
+            }
+            if self.context.is_open() {
+                self.context
+                    .draw(scene, t, tr, theme, &PresenceCtx::empty());
+            }
+            return;
+        }
+
+        let content_rect = self.drawer.resolve(self.rect);
 
         // App background.
         scene.fill(Fill::NonZero, t, c.bg, None, &r);
@@ -2155,6 +2182,272 @@ impl MusicApp {
             self.context
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
         }
+    }
+
+    /// An intentionally compact, one-column layout for large accessibility
+    /// text. It keeps the real song actions and transport controls, but drops
+    /// secondary desktop columns so 200% text remains legible and tappable.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the large-text canvas deliberately keeps its header, list, and transport geometry together so accessibility-scale hit targets cannot drift from their drawing"
+    )]
+    fn render_large_text_frame(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        c: &Palette,
+        r: Rect,
+    ) {
+        scene.fill(Fill::NonZero, t, c.bg, None, &r);
+        let header_h = 96.0;
+        let player_h = 116.0;
+        let header = Rect::new(r.x0, r.y0, r.x1, r.y0 + header_h);
+        let body = Rect::new(r.x0, header.y1, r.x1, r.y1 - player_h);
+        self.body_rect = body;
+        let title = self.view_title();
+        draw_text(
+            tr,
+            scene,
+            t,
+            &title,
+            header.x0 + 28.0,
+            28.0,
+            18.0,
+            c.text,
+            TextWeight::Bold,
+            None,
+        );
+        let search = Rect::new(header.x1 - 84.0, 20.0, header.x1 - 28.0, 76.0);
+        let hovered = self.push_hit(search, Action::FocusSearch);
+        fill_rrect(
+            scene,
+            t,
+            search,
+            18.0,
+            if hovered { c.white10 } else { c.panel },
+        );
+        icon::draw(scene, t, Icon::Search, search.center(), 21.0, c.text);
+        self.search_pill_rect = search;
+        self.search_input.apply_layout_external(Rect::ZERO);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.border,
+            None,
+            &Rect::new(body.x0, body.y0, body.x1, body.y0 + 1.0),
+        );
+
+        let ids: Vec<String> = match &self.view {
+            View::Liked => self.lib.liked.iter().cloned().collect(),
+            View::Downloads => self
+                .lib
+                .downloaded_tracks()
+                .into_iter()
+                .map(|track| track.id.clone())
+                .collect(),
+            View::Album(id) => self
+                .lib
+                .album_tracks(id)
+                .into_iter()
+                .map(|track| track.id.clone())
+                .collect(),
+            View::Playlist(id) => self
+                .lib
+                .playlist(id)
+                .map_or_else(Vec::new, |playlist| playlist.track_ids.clone()),
+            _ => self
+                .lib
+                .tracks_sorted()
+                .into_iter()
+                .map(|track| track.id.clone())
+                .collect(),
+        };
+        let row_h = 88.0;
+        let mut y = body.y0 - self.scroll;
+        for (index, id) in ids.iter().enumerate() {
+            let Some(track) = self.lib.track(id).cloned() else {
+                continue;
+            };
+            let row = Rect::new(body.x0 + 16.0, y, body.x1 - 16.0, y + row_h);
+            let hover = self.body_hit(
+                row,
+                Action::Play {
+                    queue: ids.clone(),
+                    index,
+                },
+            );
+            if hover || self.pb.current.as_deref() == Some(track.id.as_str()) {
+                fill_rrect(
+                    scene,
+                    t,
+                    row,
+                    14.0,
+                    if hover {
+                        c.white10
+                    } else {
+                        c.accent.multiply_alpha(0.15)
+                    },
+                );
+            }
+            let title = elide(
+                tr,
+                &track.title,
+                12.0,
+                TextWeight::Semibold,
+                row.width() - 148.0,
+            );
+            let artist = elide(
+                tr,
+                self.lib.artist_name(&track.artist_id),
+                10.0,
+                TextWeight::Regular,
+                row.width() - 148.0,
+            );
+            draw_text(
+                tr,
+                scene,
+                t,
+                &title,
+                row.x0 + 18.0,
+                row.y0 + 15.0,
+                12.0,
+                if self.pb.current.as_deref() == Some(track.id.as_str()) {
+                    c.accent
+                } else {
+                    c.text
+                },
+                TextWeight::Semibold,
+                None,
+            );
+            draw_text(
+                tr,
+                scene,
+                t,
+                &artist,
+                row.x0 + 18.0,
+                row.y0 + 49.0,
+                10.0,
+                c.dim,
+                TextWeight::Regular,
+                None,
+            );
+            let duration = ui::format::timecode(u64::from(track.duration_s));
+            let (dw, _) = tr.measure_weighted(&duration, 10.0, None, TextWeight::Regular);
+            draw_text(
+                tr,
+                scene,
+                t,
+                &duration,
+                row.x1 - 18.0 - f64::from(dw),
+                row.y0 + 32.0,
+                10.0,
+                c.dim,
+                TextWeight::Regular,
+                None,
+            );
+            y += row_h;
+        }
+        self.content_height = (y + self.scroll) - body.y0 + 20.0;
+        self.scroll = self
+            .scroll
+            .clamp(0.0, (self.content_height - body.height()).max(0.0));
+
+        let player = Rect::new(r.x0, r.y1 - player_h, r.x1, r.y1);
+        scene.fill(Fill::NonZero, t, c.panel, None, &player);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.border,
+            None,
+            &Rect::new(player.x0, player.y0, player.x1, player.y0 + 1.0),
+        );
+        if let Some(current) = self.pb.current.as_ref().and_then(|id| self.lib.track(id)) {
+            let art = Rect::new(
+                player.x0 + 20.0,
+                player.y0 + 18.0,
+                player.x0 + 88.0,
+                player.y0 + 86.0,
+            );
+            self.draw_cover(scene, t, art, &current.album_id, &current.title, tr, 10.0);
+            let label = elide(
+                tr,
+                &current.title,
+                11.0,
+                TextWeight::Semibold,
+                (player.width() - 310.0).max(120.0),
+            );
+            draw_text(
+                tr,
+                scene,
+                t,
+                &label,
+                art.x1 + 18.0,
+                player.y0 + 28.0,
+                11.0,
+                c.text,
+                TextWeight::Semibold,
+                None,
+            );
+            let byline = elide(
+                tr,
+                self.lib.artist_name(&current.artist_id),
+                9.0,
+                TextWeight::Regular,
+                (player.width() - 310.0).max(120.0),
+            );
+            draw_text(
+                tr,
+                scene,
+                t,
+                &byline,
+                art.x1 + 18.0,
+                player.y0 + 60.0,
+                9.0,
+                c.dim,
+                TextWeight::Regular,
+                None,
+            );
+        } else {
+            draw_text(
+                tr,
+                scene,
+                t,
+                "Nothing playing",
+                player.x0 + 28.0,
+                player.y0 + 42.0,
+                11.0,
+                c.dim,
+                TextWeight::Regular,
+                None,
+            );
+        }
+        let play = Rect::new(
+            player.x1 - 88.0,
+            player.y0 + 28.0,
+            player.x1 - 28.0,
+            player.y0 + 88.0,
+        );
+        let play_hover = self.push_hit(play, Action::TogglePlay);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            if play_hover { c.accent_hover } else { c.accent },
+            None,
+            &Circle::new(play.center(), 30.0),
+        );
+        icon::draw(
+            scene,
+            t,
+            if self.pb.playing {
+                Icon::Pause
+            } else {
+                Icon::Play
+            },
+            play.center(),
+            24.0,
+            c.bg,
+        );
     }
 
     /// The hamburger (or close-chevron) toggle that summons / dismisses the
@@ -2526,6 +2819,7 @@ impl MusicApp {
                     .map(|tk| tk.id.clone())
                     .collect();
                 let rows = self.gather_tracks(&ids);
+                let y = Self::draw_track_table_headings(scene, t, tr, c, body, y, true);
                 self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None)
             }
             View::Albums => {
@@ -3383,6 +3677,63 @@ impl MusicApp {
     }
 
     // ---- track table ------------------------------------------------------
+
+    /// Quiet column labels make the roomy desktop Songs view scan as a table,
+    /// while compact widths keep the calm, metadata-light mobile list.
+    fn draw_track_table_headings(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        c: &Palette,
+        body: Rect,
+        y: f64,
+        number_col: bool,
+    ) -> f64 {
+        let pad = 28.0;
+        let left = body.x0 + pad;
+        let right = body.x1 - pad;
+        let cols = track_row_columns(left, right, number_col);
+        let label_y = y + 10.0;
+        draw_text(
+            tr,
+            scene,
+            t,
+            "TITLE",
+            cols.text,
+            label_y,
+            11.0,
+            c.dim,
+            TextWeight::Semibold,
+            None,
+        );
+        if right - cols.text >= 560.0 && right - cols.album > 80.0 {
+            draw_text(
+                tr,
+                scene,
+                t,
+                "ALBUM",
+                cols.album,
+                label_y,
+                11.0,
+                c.dim,
+                TextWeight::Semibold,
+                None,
+            );
+        }
+        draw_text(
+            tr,
+            scene,
+            t,
+            "TIME",
+            cols.dur,
+            label_y,
+            11.0,
+            c.dim,
+            TextWeight::Semibold,
+            None,
+        );
+        y + 30.0
+    }
 
     /// The unified track-row table used by album, Liked Songs, Downloads **and**
     /// playlist detail — so every list shares one row look: the now-playing
