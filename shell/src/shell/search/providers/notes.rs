@@ -4,16 +4,23 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::notes_app::BODY_KEY;
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 /// The `AppKind::Other` name a Notes tile carries.
 const APP: &str = "notes";
 
-pub struct NotesProvider;
+pub struct NotesProvider {
+    cache: super::text_app::TextSearchCache,
+}
 
 impl NotesProvider {
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: super::text_app::TextSearchCache::default(),
+        }
     }
 }
 
@@ -42,7 +49,29 @@ impl SearchProvider for NotesProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "notes", &ResourceKind::Note)
+        self.query_page(ctx, None, SearchBudget::PALETTE).results
+    }
+
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        ctx.chrome.revision.to_string()
+    }
+
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        super::text_app::query_text_app_page(
+            &self.cache,
+            &ctx,
+            APP,
+            BODY_KEY,
+            "notes",
+            &ResourceKind::Note,
+            cursor,
+            budget,
+        )
     }
 }
 

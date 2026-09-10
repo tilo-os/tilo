@@ -4,7 +4,10 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::editor_app::BODY_KEY;
-use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+use crate::shell::search::{
+    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
+};
 
 /// The `AppKind::Other` name an Editor tile carries.
 const APP: &str = "editor";
@@ -13,11 +16,15 @@ const APP: &str = "editor";
 /// it matters (`SearchScope::ActiveApp` narrows by provider, not kind).
 const KIND: ResourceKind = ResourceKind::Note;
 
-pub struct EditorProvider;
+pub struct EditorProvider {
+    cache: super::text_app::TextSearchCache,
+}
 
 impl EditorProvider {
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: super::text_app::TextSearchCache::default(),
+        }
     }
 }
 
@@ -46,7 +53,29 @@ impl SearchProvider for EditorProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", &KIND)
+        self.query_page(ctx, None, SearchBudget::PALETTE).results
+    }
+
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        ctx.chrome.revision.to_string()
+    }
+
+    fn query_page(
+        &self,
+        ctx: SearchContext<'_>,
+        cursor: Option<&SearchCursor>,
+        budget: SearchBudget,
+    ) -> SearchPage {
+        super::text_app::query_text_app_page(
+            &self.cache,
+            &ctx,
+            APP,
+            BODY_KEY,
+            "editor",
+            &KIND,
+            cursor,
+            budget,
+        )
     }
 }
 
