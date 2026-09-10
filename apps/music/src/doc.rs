@@ -16,6 +16,7 @@
 //! │   └── "tracks"  (Map<id, {title, album_id, artist_id, track_no,
 //! │                            duration_s, yt_id, plays}>)
 //! ├── "playlists" (List<{id, name, description, tracks: List<str>}>)
+//! ├── "playlist_tombstones" (Map<playlist_id, true>)
 //! ├── "liked"     (List<track_id>)
 //! ├── "saved_albums" (List<album_id>)
 //! └── "followed_artists" (List<artist_id>)
@@ -57,6 +58,16 @@ fn get_list(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
         Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
         _ => None,
     }
+}
+
+/// Playlist deletion is delete-wins.  Keeping a compact keyed tombstone means
+/// an offline device cannot revive a deleted playlist by replaying an old
+/// rename, cover or membership action after it reconnects.
+pub fn playlist_is_tombstoned(doc: &AutoCommit, id: &str) -> bool {
+    !id.is_empty()
+        && get_map(doc, &ROOT, "playlist_tombstones")
+            .and_then(|tombstones| doc.get(&tombstones, id).ok().flatten())
+            .is_some()
 }
 
 fn library_entry_exists(doc: &AutoCommit, collection: &str, id: &str) -> bool {
@@ -148,6 +159,8 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, _playback: &Playback) {
     for (i, id) in lib.saved_albums.iter().enumerate() {
         let _ = doc.insert(&saved, i, id.as_str());
     }
+    // A keyed delete-wins set; empty on a freshly seeded library.
+    let _ = doc.put_object(&ROOT, "playlist_tombstones", ObjType::Map);
     let Ok(followed) = doc.put_object(&ROOT, "followed_artists", ObjType::List) else {
         return;
     };
@@ -262,6 +275,9 @@ pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
 /// Locate a playlist map object by its `id` field. Returns the playlist's
 /// `ObjId` so callers can mutate it directly.
 fn find_playlist_obj(doc: &AutoCommit, playlist_id: &str) -> Option<ObjId> {
+    if playlist_is_tombstoned(doc, playlist_id) {
+        return None;
+    }
     let playlists = get_list(doc, &ROOT, "playlists")?;
     let n = doc.length(&playlists);
     for i in 0..n {
@@ -367,6 +383,13 @@ pub fn rename_playlist(doc: &mut AutoCommit, playlist_id: &str, name: &str) {
 
 /// Delete a playlist by id.
 pub fn delete_playlist(doc: &mut AutoCommit, playlist_id: &str) {
+    let Some(tombstones) = get_map(doc, &ROOT, "playlist_tombstones").or_else(|| {
+        doc.put_object(&ROOT, "playlist_tombstones", ObjType::Map)
+            .ok()
+    }) else {
+        return;
+    };
+    let _ = doc.put(&tombstones, playlist_id, true);
     let Some(playlists) = get_list(doc, &ROOT, "playlists") else {
         return;
     };
@@ -439,6 +462,23 @@ pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
     }
 }
 
+/// Set an album's saved membership to an explicit, replay-safe value.
+pub fn set_saved_album(doc: &mut AutoCommit, album_id: &str, saved: bool) {
+    let Some(list) = ensure_str_list(doc, "saved_albums") else {
+        return;
+    };
+    let ids = list_strings(doc, &list);
+    let present = ids.iter().any(|id| id == album_id);
+    if saved && !present {
+        let _ = doc.insert(&list, doc.length(&list), album_id);
+    } else if !saved
+        && present
+        && let Some(pos) = ids.iter().position(|id| id == album_id)
+    {
+        let _ = doc.delete(&list, pos);
+    }
+}
+
 /// Toggle whether the user follows an artist. Returns the new followed state.
 pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
     let Some(list) = ensure_str_list(doc, "followed_artists") else {
@@ -455,6 +495,23 @@ pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
     }
 }
 
+/// Set an artist's followed membership to an explicit, replay-safe value.
+pub fn set_followed_artist(doc: &mut AutoCommit, artist_id: &str, followed: bool) {
+    let Some(list) = ensure_str_list(doc, "followed_artists") else {
+        return;
+    };
+    let ids = list_strings(doc, &list);
+    let present = ids.iter().any(|id| id == artist_id);
+    if followed && !present {
+        let _ = doc.insert(&list, doc.length(&list), artist_id);
+    } else if !followed
+        && present
+        && let Some(pos) = ids.iter().position(|id| id == artist_id)
+    {
+        let _ = doc.delete(&list, pos);
+    }
+}
+
 /// Create a new empty playlist, returning its generated id.
 pub fn create_playlist(doc: &mut AutoCommit, name: &str) -> String {
     let id = format!("pl_{}", uuid::Uuid::new_v4().simple());
@@ -468,7 +525,7 @@ pub fn create_playlist(doc: &mut AutoCommit, name: &str) -> String {
 /// change — the property the action model relies on. No-op if a playlist with
 /// this id already exists (so a duplicate replay can't double-insert).
 pub fn create_playlist_with_id(doc: &mut AutoCommit, id: &str, name: &str) {
-    if find_playlist_obj(doc, id).is_some() {
+    if id.is_empty() || playlist_is_tombstoned(doc, id) || find_playlist_obj(doc, id).is_some() {
         return;
     }
     let Some(playlists) = get_list(doc, &ROOT, "playlists")
@@ -563,11 +620,15 @@ pub fn load_library(doc: &AutoCommit) -> Library {
         let n = doc.length(&playlists);
         for i in 0..n {
             if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) {
+                let id = get_str(doc, &pm, "id").unwrap_or_default();
+                if id.is_empty() || playlist_is_tombstoned(doc, &id) {
+                    continue;
+                }
                 let tracks = get_list(doc, &pm, "tracks")
                     .map(|l| list_strings(doc, &l))
                     .unwrap_or_default();
                 lib.playlists.push(Playlist {
-                    id: get_str(doc, &pm, "id").unwrap_or_default(),
+                    id,
                     name: get_str(doc, &pm, "name").unwrap_or_default(),
                     description: get_str(doc, &pm, "description").unwrap_or_default(),
                     track_ids: tracks,
@@ -676,6 +737,26 @@ mod tests {
         let after = load_library(&doc);
         assert_eq!(after.playlists.len(), before - 1);
         assert!(after.playlist("pl_focus").is_none());
+    }
+
+    #[test]
+    fn deleted_playlist_stays_hidden_after_an_old_replica_merges() {
+        let mut deleted = seeded_doc();
+        deleted.commit();
+        let mut stale = AutoCommit::load(&deleted.save()).unwrap();
+        delete_playlist(&mut deleted, "pl_focus");
+        // The stale device makes a valid edit to the pre-delete object.
+        rename_playlist(&mut stale, "pl_focus", "Should not revive");
+        let mut stale_changes = AutoCommit::load(&stale.save()).unwrap();
+        deleted.merge(&mut stale_changes).unwrap();
+        assert!(playlist_is_tombstoned(&deleted, "pl_focus"));
+        assert!(!has_playlist(&deleted, "pl_focus"));
+        assert!(
+            load_library(&deleted)
+                .playlists
+                .iter()
+                .all(|playlist| playlist.id != "pl_focus")
+        );
     }
 
     #[test]
