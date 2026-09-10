@@ -1544,7 +1544,13 @@ impl TextInput {
         } else {
             FontChoice::SansSerif
         });
-        let style = TextStyle::new(size)
+        // RichTextLayout owns its own cosmic-text shaping metrics rather than
+        // going through TextRenderer::draw_text, so it must receive the
+        // accessibility scale explicitly. Without this, multiline editors
+        // stayed visually tiny while the surrounding chrome and static text
+        // correctly followed Theme::text_scale.
+        let layout_size = size * theme.text_scale;
+        let style = TextStyle::new(layout_size)
             .with_line_height(LINE_HEIGHT_RATIO)
             .with_family(family.clone());
         self.refresh_highlight();
@@ -1558,7 +1564,7 @@ impl TextInput {
             display
         );
         let signature = Self::attributed_signature(
-            self.shaped_signature(&display, &family, size, Some(available_width)),
+            self.shaped_signature(&display, &family, layout_size, Some(available_width)),
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
@@ -3567,7 +3573,7 @@ impl Widget for TextInput {
         self.multiline_shaped = false;
 
         let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
-        let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
+        let line_height = f64::from(text_size * theme.text_scale * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
             // The parent already adds whatever gutter the document layout wants.
             0.0
@@ -3581,7 +3587,7 @@ impl Widget for TextInput {
         // used for paint and hit-testing. Masked fields keep the prefix path
         // because bullet byte offsets intentionally differ from the secret.
         let display = self.layout_display_text();
-        let total_w = self.build_single_line_metrics(text_renderer, &display, text_size);
+        let total_w = self.build_single_line_metrics(text_renderer, &display, text_size, theme);
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
@@ -4163,6 +4169,7 @@ impl TextInput {
         text_renderer: &mut TextRenderer,
         display: &str,
         text_size: f32,
+        theme: &Theme,
     ) -> f32 {
         self.char_x_positions.clear();
         self.char_x_positions
@@ -4187,10 +4194,11 @@ impl TextInput {
             } else {
                 FontChoice::SansSerif
             });
-            let style = TextStyle::new(text_size)
+            let layout_size = text_size * theme.text_scale;
+            let style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
                 .with_family(family.clone());
-            let signature = self.shaped_signature(display, &family, text_size, None);
+            let signature = self.shaped_signature(display, &family, layout_size, None);
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
                 let mut layout = RichTextLayout::shape_plain(
                     &mut text_renderer.font_system,
@@ -6647,8 +6655,42 @@ mod tests {
     fn draw_with_theme(ti: &mut TextInput, theme: &Theme) {
         let presence = crate::presence::PresenceCtx::empty();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
         Widget::draw(ti, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    }
+
+    #[test]
+    fn multiline_shaped_editor_scales_font_and_line_metrics_with_theme() {
+        let mut normal = TextInput::local()
+            .multiline(true)
+            .with_font_size(12.0)
+            .with_initial_value("A durable comment body that wraps onto another row.");
+        normal.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
+        draw_with_theme(&mut normal, &Theme::dark());
+        let normal_layout = normal.single_layout.as_ref().expect("normal shaped layout");
+        let normal_height = normal_layout.height();
+        let (_, _, normal_line_h) = normal_layout.caret_geometry_at(TextPosition::new(0));
+
+        let mut large = TextInput::local()
+            .multiline(true)
+            .with_font_size(12.0)
+            .with_initial_value("A durable comment body that wraps onto another row.");
+        large.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
+        let large_theme = Theme::dark().with_text_scale(2.0);
+        draw_with_theme(&mut large, &large_theme);
+        let large_layout = large.single_layout.as_ref().expect("large shaped layout");
+        let large_height = large_layout.height();
+        let (_, _, large_line_h) = large_layout.caret_geometry_at(TextPosition::new(0));
+
+        assert!(
+            large_line_h >= normal_line_h * 1.9,
+            "editor line metric scales with the theme ({large_line_h} vs {normal_line_h})"
+        );
+        assert!(
+            large_height >= normal_height * 1.9,
+            "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
+        );
     }
 
     /// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.

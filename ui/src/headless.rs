@@ -441,6 +441,14 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
     ) -> Self {
+        // Keep offscreen review/a11y runs faithful to the live host.  A
+        // text-scale theme without a matching renderer scale only changes
+        // widgets which manually consult `Theme::text_scale`; custom drawing
+        // and shared TextInput then render at the wrong size, hiding exactly
+        // the clipping and collision regressions these shots are meant to
+        // catch.
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
         let mut d = Self {
             state,
             root,
@@ -448,7 +456,7 @@ impl FrameHarness {
             node_map: HashMap::new(),
             root_node: NodeId::from(0usize),
             child_node: NodeId::from(0usize),
-            text: TextRenderer::new(),
+            text,
             theme,
             scene: Scene::new(),
             records: None,
@@ -576,6 +584,7 @@ impl FrameHarness {
     /// Use a different palette for subsequent frames.
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+        self.text.set_text_scale(self.theme.text_scale);
         self.relayout();
     }
 
