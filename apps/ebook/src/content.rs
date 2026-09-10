@@ -528,6 +528,32 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    struct WorkspaceEnvGuard(Option<std::ffi::OsString>);
+
+    impl WorkspaceEnvGuard {
+        fn set(path: &Path) -> Self {
+            let previous = std::env::var_os(WORKSPACE_DIR_ENV);
+            // SAFETY: every test that installs this process-global override is
+            // serialized with the same `serial_test` lock.
+            unsafe { std::env::set_var(WORKSPACE_DIR_ENV, path) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for WorkspaceEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `set`; the guard restores the prior process state
+            // even when an assertion unwinds.
+            unsafe {
+                if let Some(previous) = self.0.take() {
+                    std::env::set_var(WORKSPACE_DIR_ENV, previous);
+                } else {
+                    std::env::remove_var(WORKSPACE_DIR_ENV);
+                }
+            }
+        }
+    }
+
     #[test]
     fn bundled_sample_parses_into_a_real_book() {
         let b = bundled_sample().expect("the embedded starter epub parses");
@@ -552,6 +578,8 @@ mod tests {
     #[test]
     #[serial]
     fn importing_a_path_adds_one_recorded_book() {
+        let workspace = tempfile::tempdir().unwrap();
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("book.epub");
         std::fs::write(&path, SAMPLE_EPUB).unwrap();
@@ -569,7 +597,7 @@ mod tests {
         unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
         assert_eq!(lib.len(), 1, "the imported book is on the shelf");
         assert_eq!(lib[0].book.id, book.id);
-        assert_eq!(lib[0].path, path);
+        assert_eq!(lib[0].path, shared_book_path(&book.id));
         let bytes = doc.save();
         let stored = String::from_utf8_lossy(&bytes);
         assert!(
@@ -587,7 +615,12 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn device_local_source_rehydrates_a_one_off_import_after_restart() {
+        // A regular file cannot contain a `Books` directory, deterministically
+        // modelling a host without the collaborative-workspace capability.
+        let workspace = tempfile::NamedTempFile::new().unwrap();
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("one-off.epub");
         std::fs::write(&path, SAMPLE_EPUB).unwrap();
@@ -627,7 +660,7 @@ mod tests {
     #[serial]
     fn a_book_on_the_workspace_is_shared_others_are_local() {
         let ws = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let _workspace = WorkspaceEnvGuard::set(ws.path());
         let books_dir = workspace_books_dir();
         std::fs::create_dir_all(&books_dir).unwrap();
         let shared = books_dir.join("shared.epub");
@@ -638,14 +671,13 @@ mod tests {
 
         assert!(is_shared(&shared), "a /workspace/Books path is shared");
         assert!(!is_shared(&local_path), "a book elsewhere is device-local");
-        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
     #[test]
     #[serial]
     fn shared_parse_materialises_content_before_the_library_row_is_written() {
         let ws = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let _workspace = WorkspaceEnvGuard::set(ws.path());
         let local = tempfile::tempdir().unwrap();
         let source = local.path().join("peer-readable.epub");
         std::fs::write(&source, SAMPLE_EPUB).unwrap();
@@ -664,14 +696,13 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, recorded.id);
         assert!(entries[0].shared);
-        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
     #[test]
     #[serial]
     fn sharing_copies_the_book_onto_the_workspace_keeping_its_identity() {
         let ws = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let _workspace = WorkspaceEnvGuard::set(ws.path());
         let home = tempfile::tempdir().unwrap();
         let src = home.path().join("mine.epub");
         std::fs::write(&src, SAMPLE_EPUB).unwrap();
@@ -692,14 +723,13 @@ mod tests {
         let entries = BooksDoc::read_library_entries(&doc);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].shared, "the shared copy is discoverable by id");
-        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
     #[test]
     #[serial]
     fn sharing_never_overwrites_an_unrelated_same_named_workspace_file() {
         let ws = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let _workspace = WorkspaceEnvGuard::set(ws.path());
         let home = tempfile::tempdir().unwrap();
         let src = home.path().join("book.epub");
         std::fs::write(&src, SAMPLE_EPUB).unwrap();
@@ -726,7 +756,6 @@ mod tests {
             destination.exists(),
             "the shared content was written separately"
         );
-        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
     #[test]
