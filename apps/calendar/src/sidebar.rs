@@ -20,6 +20,10 @@ use crate::model::View;
 const WIDTH: f64 = 252.0;
 const PERSISTENT_MIN: f64 = 900.0;
 const FULLSCREEN_MAX: f64 = 560.0;
+/// At large accessibility text sizes a 252px dock cannot provide usable
+/// columns for names, counts, and priority chips.  Treat the dock as a drawer
+/// instead, so the calendar keeps a full-width, non-overlapping primary view.
+const LARGE_TEXT_DRAWER_SCALE: f32 = 1.35;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Mode {
@@ -46,6 +50,7 @@ pub(crate) struct Sidebar {
     open: bool,
     collapsed: bool,
     rect: Rect,
+    text_scale: f32,
 }
 
 impl Sidebar {
@@ -55,18 +60,22 @@ impl Sidebar {
             open: false,
             collapsed: false,
             rect: Rect::ZERO,
+            text_scale: 1.0,
         }
     }
 
     /// Recompute the responsive drawer and return the x coordinate at which
     /// the calendar content begins.
     pub(crate) fn layout(&mut self, window: Rect) -> f64 {
-        self.mode = if window.width() >= PERSISTENT_MIN {
+        self.mode = if window.width() >= PERSISTENT_MIN && self.text_scale < LARGE_TEXT_DRAWER_SCALE
+        {
             Mode::Persistent
         } else {
             Mode::Overlay
         };
-        let width = if self.mode == Mode::Overlay && window.width() < FULLSCREEN_MAX {
+        let width = if self.mode == Mode::Overlay
+            && (window.width() < FULLSCREEN_MAX || self.text_scale >= LARGE_TEXT_DRAWER_SCALE)
+        {
             window.width()
         } else {
             WIDTH
@@ -76,6 +85,15 @@ impl Sidebar {
             Mode::Persistent if !self.collapsed => window.x0 + WIDTH,
             _ => window.x0,
         }
+    }
+
+    /// The current theme scale belongs to layout, not durable sidebar state.
+    pub(crate) fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = if scale.is_finite() {
+            scale.clamp(0.5, 4.0)
+        } else {
+            1.0
+        };
     }
 
     pub(crate) fn mode(&self) -> Mode {
@@ -387,5 +405,18 @@ mod tests {
         assert!(!sidebar.visible());
         sidebar.toggle_open();
         assert!(sidebar.visible());
+    }
+
+    #[test]
+    fn large_text_uses_a_full_width_drawer_even_on_desktop() {
+        let mut sidebar = Sidebar::new();
+        sidebar.set_text_scale(2.0);
+        assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1200.0, 900.0)), 0.0);
+        assert_eq!(sidebar.mode(), Mode::Overlay);
+        assert_eq!(sidebar.rect().width(), 1200.0);
+        assert!(
+            !sidebar.visible(),
+            "drawer stays behind the menu until opened"
+        );
     }
 }

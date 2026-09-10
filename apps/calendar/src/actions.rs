@@ -474,10 +474,10 @@ pub enum CalendarAction {
     /// Update only named task registers. This avoids a stale task snapshot
     /// clobbering fields changed on another device.
     PatchTask { id: String, patch: TaskPatch },
-    /// Flip a task's `done` flag. Deterministic against the replay base: the
-    /// current value is read from the document and negated, so two replicas at
-    /// the same heads land on the same result.
-    ToggleTask { id: String },
+    /// Set a task's completion to an absolute value resolved at authoring
+    /// time. Relative toggles are unsafe across independently advancing
+    /// replicas: this action converges no matter which history it reaches.
+    SetTaskDone { id: String, done: bool },
     /// Delete a task and each of its listed subtasks (resolved at authoring
     /// time from the model, carried here so `apply` needs no lookup).
     DeleteTask { id: String, subtasks: Vec<String> },
@@ -547,9 +547,16 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
         CalendarAction::PatchTask { id, .. } => {
             ("Update task", id.clone(), "calendar.task", id.clone())
         }
-        CalendarAction::ToggleTask { id } => {
-            ("Toggle task", id.clone(), "calendar.task", id.clone())
-        }
+        CalendarAction::SetTaskDone { id, done } => (
+            if *done {
+                "Complete task"
+            } else {
+                "Reopen task"
+            },
+            id.clone(),
+            "calendar.task",
+            id.clone(),
+        ),
         CalendarAction::DeleteTask { id, .. } => {
             ("Delete task", id.clone(), "calendar.task", id.clone())
         }
@@ -790,14 +797,14 @@ fn apply_patch_task(doc: &mut Doc, id: &str, patch: &TaskPatch) -> Result<(), Ac
     Ok(())
 }
 
-fn apply_toggle_task(doc: &mut Doc, id: &str) -> Result<(), ActionError> {
+fn apply_set_task_done(doc: &mut Doc, id: &str, done: bool) -> Result<(), ActionError> {
     let id = id
         .parse::<Id>()
         .map_err(|_| refused("task id is invalid"))?;
     if CalDoc::read_model(doc).task(id).is_none() {
         return Err(refused("task no longer exists"));
     }
-    CalDoc::toggle_task_done(doc, id);
+    CalDoc::set_task_done(doc, id, done);
     Ok(())
 }
 
@@ -877,7 +884,7 @@ impl Action for CalendarAction {
             }
             CalendarAction::UpsertTask(data) => apply_upsert_task(doc, data),
             CalendarAction::PatchTask { id, patch } => apply_patch_task(doc, id, patch)?,
-            CalendarAction::ToggleTask { id } => apply_toggle_task(doc, id)?,
+            CalendarAction::SetTaskDone { id, done } => apply_set_task_done(doc, id, *done)?,
             CalendarAction::DeleteTask { id, subtasks } => apply_delete_task(doc, id, subtasks)?,
             CalendarAction::ApplyNoteOps { owner, ops } => apply_note_ops(doc, owner, ops)?,
             CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks),
@@ -964,9 +971,12 @@ pub fn patch_task_action(id: Id, patch: TaskPatch) -> CalendarAction {
     }
 }
 
-/// Toggle a task's completion.
-pub fn toggle_task_action(id: impl Into<String>) -> CalendarAction {
-    CalendarAction::ToggleTask { id: id.into() }
+/// Set a task's completion to a deterministic absolute value.
+pub fn set_task_done_action(id: impl Into<String>, done: bool) -> CalendarAction {
+    CalendarAction::SetTaskDone {
+        id: id.into(),
+        done,
+    }
 }
 
 /// Delete a task and its subtasks.
@@ -1797,7 +1807,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         .with_action(immediate_spec(
             "toggle",
             toggle_label,
-            &toggle_task_action(id.clone()),
+            &set_task_done_action(id.clone(), !tk.data.done),
         ));
         child = child.with_action(task_update_spec(
             "edit",
@@ -2580,14 +2590,14 @@ mod tests {
             "precondition: same base state"
         );
 
-        // Toggle a task: deterministic against the shared base (each replica reads
-        // the stored value and negates it).
+        // Completion is an absolute value, so replay does not depend on the
+        // receiving replica's current task state.
         let task = CalDoc::read_model(&a)
             .tasks
             .into_iter()
             .find(|t| !t.done)
             .unwrap();
-        let action = toggle_task_action(task.id.to_string());
+        let action = set_task_done_action(task.id.to_string(), true);
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
