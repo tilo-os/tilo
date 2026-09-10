@@ -7,7 +7,7 @@
 use chrono::{Datelike, NaiveDate};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -280,7 +280,7 @@ impl Topbar {
                     candidate.label(),
                     13.0,
                     if view == *candidate {
-                        Color::WHITE
+                        colors.on_accent(4.5)
                     } else {
                         colors.neutral[7]
                     },
@@ -308,19 +308,19 @@ impl Topbar {
         );
         fill_round(scene, transform, colors.accent[5], new_event, 9.0);
         if self.compact() {
-            draw_plus(scene, transform, Color::WHITE, new_event.center());
+            draw_plus(scene, transform, colors.on_accent(4.5), new_event.center());
         } else {
             draw_plus(
                 scene,
                 transform,
-                Color::WHITE,
+                colors.on_accent(4.5),
                 Point::new(new_event.x0 + 16.0, center_y),
             );
             text.draw_text(
                 scene,
                 "New",
                 13.0,
-                Color::WHITE,
+                colors.on_accent(4.5),
                 transform * Affine::translate((new_event.x0 + 28.0, center_y - 8.0)),
                 None,
             );
