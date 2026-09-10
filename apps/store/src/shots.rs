@@ -201,7 +201,11 @@ pub fn render_scenario_to_path(
         Some("detail") => app.focus_detail_for_shot("dev.qos.notes"),
         Some("remotes") => app.show_remotes_for_shot(),
         Some("progress") => {
-            app.set_status_line("Installing Notes · verifying signed package…");
+            // Terminal is already installed and its offered action is Open,
+            // so the visible busy card and masthead describe the same real
+            // operation rather than claiming an install for an open-only row.
+            app.set_active_operation_for_shot("dev.qos.terminal", crate::ActionKind::Open);
+            app.set_status_line("Starting Terminal · launching installed app…");
             app.set_worker_busy(true);
         }
         Some("error") => {
