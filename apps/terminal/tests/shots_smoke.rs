@@ -48,3 +48,30 @@ fn terminal_shots_flag_writes_png() {
     // Cleanup so a re-run doesn't pile up tempfiles.
     let _ = fs::remove_file(&out);
 }
+
+#[test]
+fn empty_terminal_context_menu_shot_writes_png_at_narrow_high_text_scale() {
+    let bin = env!("CARGO_BIN_EXE_terminal");
+    let out = std::env::temp_dir().join(format!(
+        "terminal-empty-menu-shot-{}.png",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&out);
+
+    let status = Command::new(bin)
+        .arg("--shots")
+        .arg(&out)
+        .arg("--scenario")
+        .arg("empty-menu")
+        .arg("--size")
+        .arg("390x844")
+        .env("QOS_SHOTS_TEXT_SCALE", "1.5")
+        .status()
+        .expect("spawn terminal empty-menu shot");
+    assert!(status.success(), "terminal --shots exited with {status:?}");
+
+    let bytes = fs::read(&out).expect("read empty-menu PNG");
+    assert!(bytes.len() >= 8, "PNG must have at least an 8-byte header");
+    assert_eq!(&bytes[..8], &PNG_MAGIC, "expected PNG magic header");
+    let _ = fs::remove_file(&out);
+}
