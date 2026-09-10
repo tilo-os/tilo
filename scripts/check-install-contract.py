@@ -119,6 +119,8 @@ assert "QOS_BLAKE3_PREFER_INTRINSICS=1" in rpm_job
 assert 'CARGO_FEATURE_PREFER_INTRINSICS="$QOS_BLAKE3_PREFER_INTRINSICS"' in rpm_job
 assert "cargo_jobs=2" in rpm_job
 assert "cargo_jobs=4" not in rpm_job
+assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
+assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in rpm_job
 assert "stage=docker-health" in rpm_job
 
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
