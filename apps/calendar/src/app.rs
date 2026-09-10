@@ -103,6 +103,9 @@ const MODAL_BODY_W: f64 = MODAL_W - 2.0 * DETAIL_PAD;
 const MODAL_MARGIN: f64 = 40.0;
 /// Cap on the modal card height so it stays a card, not a full-height column.
 const MODAL_MAX_H: f64 = 720.0;
+/// Above this theme scale, an editor needs a wider canvas for its real labels
+/// and controls instead of squeezing 2× glyphs into the normal modal grid.
+const LARGE_TEXT_SCALE: f32 = 1.35;
 
 /// How the event/task detail editor is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -322,6 +325,9 @@ pub struct CalendarApp {
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
     /// renderer can capture the New-Event form. No effect on live runtime.
     shots_pending_new_event: bool,
+    /// A deterministic visual form state should not include a transient toast
+    /// that only exists after an interactive creation action.
+    shots_suppress_status: bool,
     /// Shots-only: open this popover once the form is bound.
     shots_pending_popover: Option<FormPopover>,
 
@@ -347,6 +353,9 @@ pub struct CalendarApp {
     sidebar: Sidebar,
     /// Responsive navigation chrome and its pointer hit map.
     topbar: Topbar,
+    /// Cached from the current theme during layout so bespoke geometry can
+    /// make the same accessibility breakpoints as text painting.
+    text_scale: f32,
     /// Which narrow screen is showing (only meaningful when the editor is
     /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
@@ -524,6 +533,7 @@ impl CalendarApp {
             task_priority_last_choice: String::new(),
             form: FormRects::default(),
             shots_pending_new_event: false,
+            shots_suppress_status: false,
             shots_pending_popover: None,
             demo,
             data_path,
@@ -532,6 +542,7 @@ impl CalendarApp {
             last_persist: std::time::Instant::now(),
             sidebar: Sidebar::new(),
             topbar: Topbar::new(),
+            text_scale: 1.0,
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
@@ -650,6 +661,7 @@ impl CalendarApp {
     /// its placeholder) and empty notes (so the notes editor shows its hint).
     pub fn shots_new_event(&mut self) {
         self.shots_pending_new_event = true;
+        self.shots_suppress_status = true;
         self.dirty = true;
     }
 
@@ -976,6 +988,13 @@ impl CalendarApp {
                     CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
                 }
                 .unwrap_or_else(Uuid::new_v4);
+                // A locally deleted ID is permanent. A late server pull may
+                // still carry its old href, but it must not repopulate the
+                // transient model while the durable tombstone hides it from
+                // every other replica.
+                if CalDoc::event_tombstoned(doc, id) {
+                    continue;
+                }
                 event.id = id;
                 event.calendar_id = Some(resource.calendar_id.clone());
                 if let Some(slot) = self.model.events.iter_mut().find(|item| item.id == id) {
@@ -998,6 +1017,9 @@ impl CalendarApp {
                 let binding_href = format!("{}#qos-task-{index}", resource.href);
                 let id = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
                     .unwrap_or_else(Uuid::new_v4);
+                if CalDoc::task_tombstoned(doc, id) {
+                    continue;
+                }
                 task.id = id;
                 if let Some(slot) = self.model.tasks.iter_mut().find(|item| item.id == id) {
                     *slot = task.clone();
@@ -1791,14 +1813,17 @@ impl CalendarApp {
     }
 
     fn toggle_task(&mut self, id: Id, doc: &mut AutoCommit) {
-        let exists = if let Some(t) = self.model.task_mut(id) {
+        let done = if let Some(t) = self.model.task_mut(id) {
             t.done = !t.done;
-            true
+            Some(t.done)
         } else {
-            false
+            None
         };
-        if exists {
-            self.perform_action(doc, &crate::actions::toggle_task_action(id.to_string()));
+        if let Some(done) = done {
+            self.perform_action(
+                doc,
+                &crate::actions::set_task_done_action(id.to_string(), done),
+            );
             self.dirty = true;
         }
     }
@@ -2645,6 +2670,7 @@ impl CalendarApp {
         let r = self.rect;
         // Two independent responsive axes, each re-derived from the current
         // width so a live resize reflows both.
+        self.sidebar.set_text_scale(self.text_scale);
         let content_x0 = self.sidebar.layout(r);
         self.detail_mode = if r.width() >= EDITOR_OVERLAY_MIN {
             DetailMode::Overlay
@@ -2686,6 +2712,7 @@ impl CalendarApp {
         } else {
             LeadingControl::None
         };
+        self.topbar.set_text_scale(self.text_scale);
         self.topbar.layout(self.content_rect, leading);
 
         // Point the active view's scroll container at the fresh geometry so a
@@ -2768,7 +2795,8 @@ impl CalendarApp {
     fn modal_rect(&self, content_x0: f64) -> Rect {
         let r = self.rect;
         let content_w = (r.x1 - content_x0).max(0.0);
-        let w = MODAL_W.min((content_w - 2.0 * MODAL_MARGIN).max(240.0));
+        let w = (self.modal_body_width() + 2.0 * DETAIL_PAD)
+            .min((content_w - 2.0 * MODAL_MARGIN).max(240.0));
         let h = (r.height() - 2.0 * MODAL_MARGIN).clamp(360.0, MODAL_MAX_H);
         let cx = content_x0 + content_w / 2.0;
         let cy = r.y0 + r.height() / 2.0;
@@ -2818,18 +2846,21 @@ impl CalendarApp {
         f.header_bottom = top + 22.0;
         let mut y = top + 30.0;
 
-        let field_h = 40.0;
-        f.title = Rect::new(x, y, x + w, y + 44.0);
-        y += 44.0 + 16.0;
+        let large_text = self.text_scale >= LARGE_TEXT_SCALE;
+        let field_h = if large_text { 52.0 } else { 40.0 };
+        let title_h = if large_text { 54.0 } else { 44.0 };
+        let all_day_h = if large_text { 38.0 } else { 30.0 };
+        f.title = Rect::new(x, y, x + w, y + title_h);
+        y += title_h + 16.0;
 
-        f.allday = Rect::new(x, y, x + w, y + 30.0);
-        y += 30.0 + 14.0;
+        f.allday = Rect::new(x, y, x + w, y + all_day_h);
+        y += all_day_h + 14.0;
 
         // Start row: [label] [date field] [time field]. Time is hidden for an
         // all-day event, and the date field then spans the row.
-        let label_w = 52.0;
-        let time_w = 92.0;
-        let gap = 12.0;
+        let label_w = if large_text { 90.0 } else { 52.0 };
+        let time_w = if large_text { 150.0 } else { 92.0 };
+        let gap = if large_text { 14.0 } else { 12.0 };
         let date_w = if all_day {
             (w - label_w).max(120.0)
         } else {
@@ -2875,10 +2906,22 @@ impl CalendarApp {
         // `build_layout` and `relayout` — which run in that order within a
         // frame — always agree on the editor node's width.
         if self.rect.width() >= EDITOR_OVERLAY_MIN {
-            MODAL_BODY_W
+            self.modal_body_width()
         } else {
             (self.rect.width() - 2.0 * DETAIL_PAD).clamp(240.0, 620.0)
         }
+    }
+
+    /// Width reserved for the modal's form and notes column.  The value is
+    /// derived from the current viewport as `build_layout` precedes the final
+    /// detail rect in a frame.
+    fn modal_body_width(&self) -> f64 {
+        if self.text_scale < LARGE_TEXT_SCALE {
+            return MODAL_BODY_W;
+        }
+        let desired = MODAL_BODY_W * f64::from(self.text_scale);
+        let available = self.rect.width() - 2.0 * MODAL_MARGIN - 2.0 * DETAIL_PAD;
+        desired.min(available.max(240.0))
     }
 
     /// Y offset (from the detail rect top) of the NOTES section + editor. The
@@ -3112,6 +3155,121 @@ impl CalendarApp {
             Action::Import => (
                 "calendar.import".into(),
                 "Import calendar".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::PickDate(day) | Action::OpenDay(day) => (
+                format!("calendar.date:{day}:open"),
+                format!("Open {}", date::fmt_day_long(*day)),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenEvent(id) => {
+                let label = self.model.event(*id).map_or_else(
+                    || "event".to_string(),
+                    |event| event.display_title().to_string(),
+                );
+                (
+                    format!("{}:open", crate::actions::event_resource_id(*id)),
+                    format!("Open event {label}"),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                )
+            }
+            Action::OpenTask(id) => {
+                let label = self
+                    .model
+                    .task(*id)
+                    .map_or_else(|| "task".to_string(), |task| task.title.clone());
+                (
+                    format!("{}:open", crate::actions::task_resource_id(*id)),
+                    format!("Open task {label}"),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                )
+            }
+            Action::ToggleTask(_) | Action::ToggleSelectedTask => {
+                let id = match action {
+                    Action::ToggleTask(id) => Some(*id),
+                    Action::ToggleSelectedTask => self.selected_task(),
+                    _ => None,
+                };
+                let id = id?;
+                let task = self.model.task(id);
+                let (label, done) = task.map_or_else(
+                    || ("task".to_string(), false),
+                    |task| (task.title.clone(), task.done),
+                );
+                (
+                    format!("{}:toggle", crate::actions::task_resource_id(id)),
+                    format!(
+                        "Mark task {label} {}",
+                        if done { "incomplete" } else { "complete" }
+                    ),
+                    Role::Checkbox,
+                    AccessState::new().focusable(true).checked(done),
+                )
+            }
+            Action::DeleteEvent(id) => (
+                format!("{}:delete", crate::actions::event_resource_id(*id)),
+                "Delete event".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::DeleteTask(id) => (
+                format!("{}:delete", crate::actions::task_resource_id(*id)),
+                "Delete task".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::ToggleAllDay => (
+                "calendar.event:all-day".into(),
+                "All-day event".into(),
+                Role::Switch,
+                AccessState::new().focusable(true).checked(matches!(
+                    self.selection,
+                    Some(Sel::Event(id)) if self.model.event(id).is_some_and(|event| event.all_day)
+                )),
+            ),
+            Action::FocusField(FormField::Title) => (
+                "calendar.event:title".into(),
+                "Edit event title".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::FocusField(FormField::Location) => (
+                "calendar.event:location".into(),
+                "Edit event location".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPopover(FormPopover::StartDate) => (
+                "calendar.event:start-date".into(),
+                "Choose event start date".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPopover(FormPopover::EndDate) => (
+                "calendar.event:end-date".into(),
+                "Choose event end date".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPopover(FormPopover::StartTime) => (
+                "calendar.event:start-time".into(),
+                "Choose event start time".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPopover(FormPopover::EndTime) => (
+                "calendar.event:end-time".into(),
+                "Choose event end time".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::OpenPopover(FormPopover::Calendar) => (
+                "calendar.event:calendar".into(),
+                "Choose calendar".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -4946,7 +5104,7 @@ impl CalendarApp {
         let notes_focused = editor_active && self.notes_editor.is_focused();
 
         if matches!(logical_key, Key::Named(NamedKey::Escape))
-            && self.handle_keyboard_escape(state, field_focused, handled)
+            && self.handle_keyboard_escape(state, field_focused, notes_focused, handled)
         {
             return true;
         }
@@ -4981,13 +5139,14 @@ impl CalendarApp {
     }
 
     /// Escape: cancel a live timeline drag first (it commits nothing), then
-    /// blur a focused field, then dismiss the overlay flap, then pop the
+    /// blur a focused text control, then dismiss the overlay flap, then pop the
     /// narrow detail screen, then close the detail. Split out of
     /// `handle_keyboard` to keep that under the line cap.
     fn handle_keyboard_escape(
         &mut self,
         state: &mut AutoCommit,
         field_focused: bool,
+        notes_focused: bool,
         handled: &mut bool,
     ) -> bool {
         if self.timeline.cancel_drag() {
@@ -4995,9 +5154,10 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
-        if field_focused {
+        if field_focused || notes_focused {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
+            self.notes_editor.set_focus(false);
             *handled = true;
             self.dirty = true;
             return true;
@@ -5573,6 +5733,9 @@ impl Widget for CalendarApp {
         if self.shots_pending_new_event {
             self.shots_pending_new_event = false;
             self.new_event(state);
+            if self.shots_suppress_status {
+                self.status = None;
+            }
         }
         self.poll_sync(state);
         // Account/calendar configuration is Settings-owned rather than CRDT
@@ -5634,6 +5797,7 @@ impl Widget for CalendarApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = theme.text_scale;
         let editor_node = self.notes_editor.build_layout(taffy, theme, node_map);
         let notes_w = self.detail_body_w();
         self.built_notes_w = notes_w;
@@ -5723,6 +5887,9 @@ impl Widget for CalendarApp {
         presence: &PresenceCtx,
     ) {
         let t = transform;
+        // Calendar is a custom canvas-heavy app, so its direct text renderer
+        // calls need the same accessibility multiplier as toolkit widgets.
+        text_renderer.set_text_scale(theme.text_scale);
         let c = &theme.tokens.colors;
         fill_rect(scene, t, c.surfaces.base, self.rect);
 
@@ -7255,6 +7422,85 @@ mod tests {
     // --- responsive layout ---------------------------------------------
 
     #[test]
+    fn large_text_desktop_keeps_modal_form_controls_in_bounds() {
+        let mut app = CalendarApp::new_demo();
+        app.detail_open = true;
+        app.text_scale = 2.0;
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
+        app.relayout();
+
+        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
+        assert_eq!(
+            app.content_rect, app.rect,
+            "drawer is hidden behind the menu"
+        );
+        let controls = [
+            app.form.title,
+            app.form.allday,
+            app.form.start_date,
+            app.form.start_time,
+            app.form.end_date,
+            app.form.end_time,
+            app.form.location,
+            app.form.calendar,
+        ];
+        for (index, rect) in controls.iter().enumerate() {
+            assert!(
+                app.detail_rect.contains_rect(*rect),
+                "form control {index} escaped the modal: {rect:?}"
+            );
+            for other in controls.iter().skip(index + 1) {
+                assert!(
+                    rect.intersect(*other).area() <= 0.0,
+                    "form controls overlap: {rect:?} and {other:?}"
+                );
+            }
+        }
+
+        // Exercise the real paint path too: chip widths come from shaped text,
+        // so static field rect checks alone would miss a scaled label escaping
+        // its modal.  Every semantic event-form target must stay inside it.
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        text.set_text_scale(theme.text_scale);
+        let painted = app.draw_event_form(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        for (rect, _) in painted {
+            assert!(
+                app.detail_rect.contains_rect(rect),
+                "painted form target escaped the modal: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn large_text_new_event_modal_stays_inside_the_viewport() {
+        let mut app = CalendarApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.shots_new_event();
+        app.sync(&mut state, &ROOT);
+        app.text_scale = 2.0;
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
+        app.relayout();
+
+        assert!(app.detail_open);
+        assert!(app.detail_rect.y0 >= app.rect.y0 + MODAL_MARGIN - 0.5);
+        assert!(app.detail_rect.y1 <= app.rect.y1 - MODAL_MARGIN + 0.5);
+        assert!(app.detail_rect.x0 >= app.rect.x0 + MODAL_MARGIN - 0.5);
+        assert!(app.detail_rect.x1 <= app.rect.x1 - MODAL_MARGIN + 0.5);
+        assert!(
+            app.status.is_none(),
+            "shots must not paint a creation toast"
+        );
+    }
+
+    #[test]
     fn wide_window_uses_persistent_sidebar_and_overlay_editor() {
         let mut app = CalendarApp::new_demo();
         app.detail_open = true;
@@ -7744,6 +7990,47 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(app.model.events.len(), before + 1);
+    }
+
+    #[test]
+    fn accessibility_exports_stable_event_and_task_action_targets() {
+        let h = Harness::new(1280, 800);
+        let event = selected_event_id(&h.app);
+        let task = h.app.model.tasks[0].id;
+
+        let (event_target, _, _, _) = h
+            .app
+            .a11y_control(&Action::OpenEvent(event))
+            .expect("event has a semantic action");
+        assert_eq!(
+            event_target,
+            format!("{}:open", crate::actions::event_resource_id(event)),
+            "screen reader activation addresses the same durable event as search/history"
+        );
+        let (task_target, _, role, state) = h
+            .app
+            .a11y_control(&Action::ToggleTask(task))
+            .expect("task toggle has a semantic action");
+        assert_eq!(
+            task_target,
+            format!("{}:toggle", crate::actions::task_resource_id(task))
+        );
+        assert_eq!(role, Role::Checkbox);
+        assert_eq!(state.checked, Some(h.app.model.task(task).unwrap().done));
+    }
+
+    #[test]
+    fn escape_blurs_notes_before_dismissing_the_editor() {
+        let mut h = Harness::new(1280, 800);
+        h.app.title_input.set_focus(false);
+        h.app.location_input.set_focus(false);
+        h.app.notes_editor.set_focus(true);
+        h.press_named(NamedKey::Escape);
+        assert!(h.app.detail_open, "first Escape keeps the editor open");
+        assert!(
+            !h.app.notes_editor.is_focused(),
+            "first Escape returns focus from notes instead of unexpectedly closing the editor"
+        );
     }
 
     // --- caldav accounts seam ------------------------------------------

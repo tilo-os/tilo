@@ -17,6 +17,8 @@ use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
 use crate::{date, model::View};
 
 pub(crate) const HEIGHT: f64 = 60.0;
+const LARGE_TEXT_HEIGHT: f64 = 76.0;
+const LARGE_TEXT_SCALE: f32 = 1.35;
 const SEGMENT_WIDTH: f64 = 56.0;
 const SEGMENTED_WIDTH: f64 = SEGMENT_WIDTH * 4.0;
 const NEW_BUTTON_WIDTH: f64 = 60.0;
@@ -45,6 +47,7 @@ pub(crate) struct Topbar {
     view_rect: Rect,
     leading: LeadingControl,
     switcher_visible: bool,
+    text_scale: f32,
     hits: Vec<(Rect, Action)>,
 }
 
@@ -55,8 +58,13 @@ impl Topbar {
             view_rect: Rect::ZERO,
             leading: LeadingControl::None,
             switcher_visible: false,
+            text_scale: 1.0,
             hits: Vec::new(),
         }
+    }
+
+    pub(crate) fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = scale.clamp(0.5, 4.0);
     }
 
     /// Recompute the bar, the view below it, and switcher placement.
@@ -69,9 +77,26 @@ impl Topbar {
             self.hits.clear();
             return;
         }
-        self.rect = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEIGHT);
+        self.rect = Rect::new(
+            content.x0,
+            content.y0,
+            content.x1,
+            content.y0 + self.bar_height(),
+        );
         self.view_rect = Rect::new(content.x0, self.rect.y1, content.x1, content.y1);
-        self.switcher_visible = switcher_fits(content.width(), leading);
+        self.switcher_visible = switcher_fits(content.width(), leading, self.text_scale);
+    }
+
+    fn compact(&self) -> bool {
+        self.text_scale >= LARGE_TEXT_SCALE
+    }
+
+    fn bar_height(&self) -> f64 {
+        if self.compact() {
+            LARGE_TEXT_HEIGHT
+        } else {
+            HEIGHT
+        }
     }
 
     pub(crate) fn switcher_visible(&self) -> bool {
@@ -171,17 +196,31 @@ impl Topbar {
         self.hits.push((next, Action::Next));
         left += 74.0;
 
-        let today = Rect::new(left, center_y - 15.0, left + 60.0, center_y + 15.0);
-        draw_icon_button(scene, transform, theme, today, today.contains(pointer));
-        center_text(
-            scene,
-            text,
-            "Today",
-            13.0,
-            colors.neutral[8],
-            today,
-            transform,
+        let today_width = if self.compact() { 38.0 } else { 60.0 };
+        let button_half_height = if self.compact() { 21.0 } else { 15.0 };
+        let today = Rect::new(
+            left,
+            center_y - button_half_height,
+            left + today_width,
+            center_y + button_half_height,
         );
+        draw_icon_button(scene, transform, theme, today, today.contains(pointer));
+        if self.compact() {
+            // The named, keyboard-focusable semantic control remains the
+            // tooltip/accessibility affordance; the visual becomes a compact
+            // target so 2x text never collides with the period title.
+            center_text(scene, text, "•", 18.0, colors.neutral[8], today, transform);
+        } else {
+            center_text(
+                scene,
+                text,
+                "Today",
+                13.0,
+                colors.neutral[8],
+                today,
+                transform,
+            );
+        }
         self.hits.push((today, Action::Today));
         today.x1 + 14.0
     }
@@ -255,27 +294,37 @@ impl Topbar {
             self.rect.x1 - 14.0
         };
 
+        let new_width = if self.compact() {
+            48.0
+        } else {
+            NEW_BUTTON_WIDTH * f64::from(self.text_scale)
+        };
+        let new_half_height = if self.compact() { 22.0 } else { 16.0 };
         let new_event = Rect::new(
-            segmented_x0 - NEW_BUTTON_WIDTH - 10.0,
-            center_y - 16.0,
+            segmented_x0 - new_width - 10.0,
+            center_y - new_half_height,
             segmented_x0 - 10.0,
-            center_y + 16.0,
+            center_y + new_half_height,
         );
         fill_round(scene, transform, colors.accent[5], new_event, 9.0);
-        draw_plus(
-            scene,
-            transform,
-            Color::WHITE,
-            Point::new(new_event.x0 + 16.0, center_y),
-        );
-        text.draw_text(
-            scene,
-            "New",
-            13.0,
-            Color::WHITE,
-            transform * Affine::translate((new_event.x0 + 28.0, center_y - 8.0)),
-            None,
-        );
+        if self.compact() {
+            draw_plus(scene, transform, Color::WHITE, new_event.center());
+        } else {
+            draw_plus(
+                scene,
+                transform,
+                Color::WHITE,
+                Point::new(new_event.x0 + 16.0, center_y),
+            );
+            text.draw_text(
+                scene,
+                "New",
+                13.0,
+                Color::WHITE,
+                transform * Affine::translate((new_event.x0 + 28.0, center_y - 8.0)),
+                None,
+            );
+        }
         self.hits.push((new_event, Action::NewEvent));
         new_event.x0 - 12.0
     }
@@ -322,8 +371,14 @@ impl Topbar {
     }
 }
 
-fn switcher_fits(content_width: f64, leading: LeadingControl) -> bool {
+fn switcher_fits(content_width: f64, leading: LeadingControl, text_scale: f32) -> bool {
     if content_width <= 0.0 {
+        return false;
+    }
+    // At high accessibility scales a four-way segmented control is both too
+    // narrow to speak its labels and crowds the primary New action. The same
+    // views remain available in the sidebar drawer.
+    if text_scale >= LARGE_TEXT_SCALE {
         return false;
     }
     let leading_width = if leading == LeadingControl::None {
@@ -472,5 +527,49 @@ mod tests {
                 .count(),
             View::ALL.len()
         );
+    }
+
+    #[test]
+    fn large_text_controls_are_bounded_and_non_overlapping_at_desktop_width() {
+        let content = Rect::new(0.0, 0.0, 1200.0, 900.0);
+        let mut bar = Topbar::new();
+        bar.set_text_scale(2.0);
+        bar.layout(content, LeadingControl::OpenSidebar);
+        assert!(
+            !bar.switcher_visible(),
+            "large-text view controls live in the drawer"
+        );
+        assert_eq!(bar.view_rect().y0, LARGE_TEXT_HEIGHT);
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let hits = bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark().with_text_scale(2.0),
+            View::Month,
+            NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date"),
+            Point::ZERO,
+        );
+        assert!(
+            hits.iter()
+                .any(|(_, action)| *action == Action::OpenSidebar)
+        );
+        assert!(hits.iter().any(|(_, action)| *action == Action::Today));
+        assert!(hits.iter().any(|(_, action)| *action == Action::NewEvent));
+        for (index, (rect, _)) in hits.iter().enumerate() {
+            assert!(
+                content.contains_rect(*rect),
+                "control {index} escaped the viewport: {rect:?}"
+            );
+            for (other, _) in hits.iter().skip(index + 1) {
+                assert!(
+                    rect.intersect(*other).area() <= 0.0,
+                    "controls overlap: {rect:?} and {other:?}"
+                );
+            }
+        }
     }
 }

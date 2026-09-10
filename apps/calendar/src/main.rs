@@ -6,6 +6,8 @@
 //!   * `--shots PATH` — render one offscreen frame of the fully-populated
 //!     demo build to a PNG and exit. Shot-only flags:
 //!       * `--viewport WxH` pick the viewport (drives the responsive layout).
+//!       * `--text-scale N` render with an accessibility text scale from
+//!         0.75–2.0, including the layout pass (not a post-process zoom).
 //!       * `--view V` month | week | day | agenda.
 //!       * `--screen S` calendar | detail (which pane to show).
 //!       * `--flap` open the overlay sidebar (narrow only).
@@ -165,13 +167,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(app) as Box<dyn Widget>
         };
         let resize_from = parse_wxh_flag(&args, "--resize-from");
+        let text_scale = parse_text_scale_arg(&args);
         if let Some(out) = wide {
             let vp = parse_viewport(&args).unwrap_or(WIDE_SHOTS_VIEWPORT);
-            render_shot_to_png(build(), vp, resize_from, &out)?;
+            render_shot_to_png(build(), vp, resize_from, text_scale, &out)?;
         }
         if let Some(out) = narrow {
             let vp = parse_viewport(&args).unwrap_or(NARROW_SHOTS_VIEWPORT);
-            render_shot_to_png(build(), vp, resize_from, &out)?;
+            render_shot_to_png(build(), vp, resize_from, text_scale, &out)?;
         }
         return Ok(());
     }
@@ -210,6 +213,15 @@ fn parse_wxh_flag(args: &[String], flag: &str) -> Option<(u32, u32)> {
     let s = raw.to_str()?;
     let (w, h) = s.split_once(['x', 'X'])?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Parse a bounded `--text-scale N` accessibility factor. A malformed value
+/// deliberately falls back to the system/default scale, matching the live
+/// app's resilient preference handling instead of making a visual audit fail.
+fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
+    let raw = parse_flag_value(args, "--text-scale")?;
+    let scale = raw.to_str()?.parse::<f32>().ok()?;
+    (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
 }
 
 /// Parse `--flag VALUE` or `--flag=VALUE` for the given flag name.
@@ -286,6 +298,7 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     resize_from: Option<(u32, u32)>,
+    text_scale: Option<f32>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -296,9 +309,14 @@ fn render_shot_to_png(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    let theme = text_scale.map_or_else(
+        || theme.clone(),
+        |scale| theme.clone().with_text_scale(scale),
+    );
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
@@ -331,4 +349,21 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("calendar: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shot_text_scale_is_bounded_and_accepts_both_flag_forms() {
+        let split = vec!["calendar".into(), "--text-scale".into(), "1.75".into()];
+        assert_eq!(parse_text_scale_arg(&split), Some(1.75));
+        let equals = vec!["calendar".into(), "--text-scale=2".into()];
+        assert_eq!(parse_text_scale_arg(&equals), Some(2.0));
+        for value in ["0.74", "2.01", "NaN", "bad"] {
+            let args = vec!["calendar".into(), format!("--text-scale={value}")];
+            assert_eq!(parse_text_scale_arg(&args), None, "rejected {value}");
+        }
+    }
 }

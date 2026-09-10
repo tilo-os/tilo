@@ -13,12 +13,19 @@
 //! │           location(Str), color(Int), rrule(Str), reminder(Int|absent),
 //! │           project(Str|""), notes(List of {kind,text})
 //! │         }
-//! └── "tasks"    (Map keyed by TaskId)
-//!       └── <id> (Map) {
-//!             title(Str), done(Bool), due(Str|""), priority(Int),
-//!             project(Str|""), parent(Str|""), notes(List of {kind,text})
-//!           }
+//! ├── "tasks"    (Map keyed by TaskId)
+//! │     └── <id> (Map) {
+//! │           title(Str), done(Bool), due(Str|""), priority(Int),
+//! │           project(Str|""), parent(Str|""), notes(List of {kind,text})
+//! │         }
+//! └── "tombstones" (Map keyed by `<kind>:<UUID>`) { value: Bool }
 //! ```
+//!
+//! Tombstones are deliberately separate from the entity maps.  Automerge map
+//! deletes and an older whole-object upsert can otherwise merge into an
+//! apparently live object again.  Keeping one permanent, per-resource marker
+//! makes delete-wins deterministic: stale create/import snapshots remain in
+//! history for convergence, but are never projected back into the Calendar.
 //!
 //! The in-memory [`Model`] stays authoritative for the UI; this module
 //! is the persistence/replication mirror. The one piece that is *read*
@@ -38,6 +45,41 @@ const DT_FMT: &str = "%Y-%m-%dT%H:%M";
 pub struct CalDoc;
 
 impl CalDoc {
+    const TOMBSTONES: &'static str = "tombstones";
+
+    fn tombstone_key(kind: &str, id: Id) -> String {
+        format!("{kind}:{id}")
+    }
+
+    fn is_tombstoned(doc: &AutoCommit, kind: &str, id: Id) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(&ROOT, Self::TOMBSTONES)
+        else {
+            return false;
+        };
+        get_bool(doc, &tombstones, &Self::tombstone_key(kind, id))
+    }
+
+    fn tombstone(doc: &mut AutoCommit, kind: &str, id: Id) {
+        let tombstones = Self::map_at(doc, Self::TOMBSTONES);
+        let _ = doc.put(&tombstones, Self::tombstone_key(kind, id), true);
+    }
+
+    /// A durable delete marker for an event. It is intentionally never
+    /// cleared: an explicit future recreate must use a fresh UUID.
+    pub fn event_tombstoned(doc: &AutoCommit, id: Id) -> bool {
+        Self::is_tombstoned(doc, "event", id)
+    }
+
+    /// A durable delete marker for a task.
+    pub fn task_tombstoned(doc: &AutoCommit, id: Id) -> bool {
+        Self::is_tombstoned(doc, "task", id)
+    }
+
+    /// A durable delete marker for a project.
+    pub fn project_tombstoned(doc: &AutoCommit, id: Id) -> bool {
+        Self::is_tombstoned(doc, "project", id)
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
@@ -66,6 +108,9 @@ impl CalDoc {
     pub fn seed(doc: &mut AutoCommit, model: &Model) {
         let projects = Self::map_at(doc, "projects");
         for p in &model.projects {
+            if Self::project_tombstoned(doc, p.id) {
+                continue;
+            }
             let m = Self::ensure_child(doc, &projects, &p.id.to_string());
             let _ = doc.put(&m, "name", p.name.as_str());
             let _ = doc.put(&m, "color", p.color.index() as i64);
@@ -74,6 +119,9 @@ impl CalDoc {
 
         let events = Self::map_at(doc, "events");
         for e in &model.events {
+            if Self::event_tombstoned(doc, e.id) {
+                continue;
+            }
             let m = Self::ensure_child(doc, &events, &e.id.to_string());
             Self::write_event_fields(doc, &m, e);
             Self::ensure_notes_list(doc, &m);
@@ -81,6 +129,9 @@ impl CalDoc {
 
         let tasks = Self::map_at(doc, "tasks");
         for t in &model.tasks {
+            if Self::task_tombstoned(doc, t.id) {
+                continue;
+            }
             let m = Self::ensure_child(doc, &tasks, &t.id.to_string());
             Self::write_task_fields(doc, &m, t);
             Self::ensure_notes_list(doc, &m);
@@ -130,6 +181,9 @@ impl CalDoc {
     /// Update just an event's scalar fields (after an inline edit) so the
     /// CRDT mirror tracks the in-memory change.
     pub fn update_event(doc: &mut AutoCommit, e: &Event) {
+        if Self::event_tombstoned(doc, e.id) {
+            return;
+        }
         let events = Self::map_at(doc, "events");
         let m = Self::ensure_child(doc, &events, &e.id.to_string());
         Self::write_event_fields(doc, &m, e);
@@ -139,6 +193,9 @@ impl CalDoc {
     /// edits should use [`Self::patch_project`] so independently changed
     /// registers converge without a stale snapshot clobbering them.
     pub fn update_project(doc: &mut AutoCommit, project: &Project) {
+        if Self::project_tombstoned(doc, project.id) {
+            return;
+        }
         let projects = Self::map_at(doc, "projects");
         let item = Self::ensure_child(doc, &projects, &project.id.to_string());
         Self::write_project_fields(doc, &item, project);
@@ -147,6 +204,9 @@ impl CalDoc {
     /// Apply just the named project registers. Missing/deleted projects never
     /// get recreated by a late field edit.
     pub fn patch_project(doc: &mut AutoCommit, id: Id, patch: &crate::actions::ProjectPatch) {
+        if Self::project_tombstoned(doc, id) {
+            return;
+        }
         let projects = Self::map_at(doc, "projects");
         let Ok(Some((Value::Object(ObjType::Map), item))) =
             doc.get(&projects, id.to_string().as_str())
@@ -172,6 +232,7 @@ impl CalDoc {
     /// scalar references stay validated at the action boundary, so this
     /// low-level helper is deliberately idempotent.
     pub fn delete_project(doc: &mut AutoCommit, id: Id) {
+        Self::tombstone(doc, "project", id);
         let projects = Self::map_at(doc, "projects");
         let _ = doc.delete(&projects, id.to_string().as_str());
     }
@@ -184,6 +245,9 @@ impl CalDoc {
         let Some(project) = project else {
             return true;
         };
+        if Self::project_tombstoned(doc, project) {
+            return false;
+        }
         matches!(
             doc.get(&ROOT, "projects"),
             Ok(Some((Value::Object(ObjType::Map), projects)))
@@ -196,6 +260,9 @@ impl CalDoc {
     /// event must already exist: a field edit racing a delete is a harmless
     /// no-op, never an accidental recreation with half a schema.
     pub fn patch_event(doc: &mut AutoCommit, id: Id, patch: &crate::actions::EventPatch) {
+        if Self::event_tombstoned(doc, id) {
+            return;
+        }
         let events = Self::map_at(doc, "events");
         let Ok(Some((Value::Object(ObjType::Map), item))) =
             doc.get(&events, id.to_string().as_str())
@@ -272,6 +339,9 @@ impl CalDoc {
 
     /// Update just a task's scalar fields (e.g. toggling `done`).
     pub fn update_task(doc: &mut AutoCommit, t: &Task) {
+        if Self::task_tombstoned(doc, t.id) {
+            return;
+        }
         let tasks = Self::map_at(doc, "tasks");
         let m = Self::ensure_child(doc, &tasks, &t.id.to_string());
         Self::write_task_fields(doc, &m, t);
@@ -281,6 +351,9 @@ impl CalDoc {
     /// field edit that races a delete is intentionally a no-op: it must never
     /// recreate a partial task.
     pub fn patch_task(doc: &mut AutoCommit, id: Id, patch: &crate::actions::TaskPatch) {
+        if Self::task_tombstoned(doc, id) {
+            return;
+        }
         let tasks = Self::map_at(doc, "tasks");
         let Ok(Some((Value::Object(ObjType::Map), item))) =
             doc.get(&tasks, id.to_string().as_str())
@@ -313,31 +386,32 @@ impl CalDoc {
         }
     }
 
-    /// Flip a task's `done` flag in place, deterministically against the current
-    /// document state — reading the stored value and writing its negation. A
-    /// task that isn't in the document is a no-op. This is the mutation an action
-    /// applies so a "toggle" replays byte-identically from a shared base state
-    /// (the same value is read on every replica) rather than baking in a boolean
-    /// that could disagree with a concurrently-changed row.
-    pub fn toggle_task_done(doc: &mut AutoCommit, id: Id) {
+    /// Set a task's `done` flag to a caller-resolved absolute value. A task
+    /// that isn't in the document is a no-op; action payloads never depend on
+    /// whichever completion state a receiving replica happens to observe.
+    pub fn set_task_done(doc: &mut AutoCommit, id: Id, done: bool) {
+        if Self::task_tombstoned(doc, id) {
+            return;
+        }
         let tasks = Self::map_at(doc, "tasks");
         let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&tasks, id.to_string().as_str())
         else {
             return;
         };
-        let cur = get_bool(doc, &m, "done");
-        let _ = doc.put(&m, "done", !cur);
+        let _ = doc.put(&m, "done", done);
     }
 
     /// Remove an event (and its notes) from the document. Idempotent — a
     /// missing id is a no-op.
     pub fn delete_event(doc: &mut AutoCommit, id: Id) {
+        Self::tombstone(doc, "event", id);
         let events = Self::map_at(doc, "events");
         let _ = doc.delete(&events, id.to_string().as_str());
     }
 
     /// Remove a task (and its notes) from the document. Idempotent.
     pub fn delete_task(doc: &mut AutoCommit, id: Id) {
+        Self::tombstone(doc, "task", id);
         let tasks = Self::map_at(doc, "tasks");
         let _ = doc.delete(&tasks, id.to_string().as_str());
     }
@@ -774,6 +848,9 @@ impl CalDoc {
         if let Ok(Some((Value::Object(ObjType::Map), projects))) = doc.get(&ROOT, "projects") {
             for key in doc.keys(&projects) {
                 let Ok(id) = key.parse::<Id>() else { continue };
+                if Self::project_tombstoned(doc, id) {
+                    continue;
+                }
                 let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&projects, key.as_str())
                 else {
                     continue;
@@ -791,6 +868,9 @@ impl CalDoc {
         if let Ok(Some((Value::Object(ObjType::Map), events))) = doc.get(&ROOT, "events") {
             for key in doc.keys(&events) {
                 let Ok(id) = key.parse::<Id>() else { continue };
+                if Self::event_tombstoned(doc, id) {
+                    continue;
+                }
                 let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&events, key.as_str())
                 else {
                     continue;
@@ -808,7 +888,8 @@ impl CalDoc {
                     color: Palette::from_index(get_int(doc, &m, "color") as usize),
                     recurrence: Recurrence::from_rrule(&get_str(doc, &m, "rrule")),
                     reminder_min: if reminder < 0 { None } else { Some(reminder) },
-                    project: parse_opt_id(&get_str(doc, &m, "project")),
+                    project: parse_opt_id(&get_str(doc, &m, "project"))
+                        .filter(|project| model.project(*project).is_some()),
                     calendar_id: {
                         let cal = get_str(doc, &m, "cal");
                         if cal.is_empty() { None } else { Some(cal) }
@@ -821,6 +902,9 @@ impl CalDoc {
         if let Ok(Some((Value::Object(ObjType::Map), tasks))) = doc.get(&ROOT, "tasks") {
             for key in doc.keys(&tasks) {
                 let Ok(id) = key.parse::<Id>() else { continue };
+                if Self::task_tombstoned(doc, id) {
+                    continue;
+                }
                 let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&tasks, key.as_str())
                 else {
                     continue;
@@ -832,7 +916,8 @@ impl CalDoc {
                     done: get_bool(doc, &m, "done"),
                     due: chrono::NaiveDate::parse_from_str(&due_s, "%Y-%m-%d").ok(),
                     priority: Priority::from_rank(get_int(doc, &m, "priority") as u8),
-                    project: parse_opt_id(&get_str(doc, &m, "project")),
+                    project: parse_opt_id(&get_str(doc, &m, "project"))
+                        .filter(|project| model.project(*project).is_some()),
                     parent: parse_opt_id(&get_str(doc, &m, "parent")),
                 });
             }
@@ -1140,6 +1225,47 @@ mod tests {
             !after.tasks.iter().any(|t| t.id == victim),
             "deleted task is gone"
         );
+    }
+
+    #[test]
+    fn tombstones_make_delete_win_over_a_concurrent_stale_upsert() {
+        // A map delete alone is not a durable semantic delete: a peer that
+        // still has a whole object snapshot can put the same key while
+        // offline. Tombstones keep the raw CRDT merge auditable while making
+        // every model projection converge on the deleted result.
+        let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        let event = model.events[0].clone();
+        let task = model.tasks[0].clone();
+        let mut deleted = AutoCommit::new();
+        CalDoc::seed(&mut deleted, &model);
+        deleted.commit();
+        let mut stale = AutoCommit::load(&deleted.save()).unwrap();
+
+        CalDoc::delete_event(&mut deleted, event.id);
+        CalDoc::delete_task(&mut deleted, task.id);
+
+        let mut stale_event = event.clone();
+        stale_event.title = "Late stale event snapshot".into();
+        let mut stale_task = task.clone();
+        stale_task.title = "Late stale task snapshot".into();
+        CalDoc::update_event(&mut stale, &stale_event);
+        CalDoc::update_task(&mut stale, &stale_task);
+
+        deleted.commit();
+        stale.commit();
+        deleted.merge(&mut stale).unwrap();
+        let merged = CalDoc::read_model(&deleted);
+        assert!(CalDoc::event_tombstoned(&deleted, event.id));
+        assert!(CalDoc::task_tombstoned(&deleted, task.id));
+        assert!(merged.event(event.id).is_none());
+        assert!(merged.task(task.id).is_none());
+
+        // A newly joined replica observes the same outcome, even if the
+        // underlying map still contains a concurrently-written object.
+        let joined = AutoCommit::load(&deleted.save()).unwrap();
+        let joined_model = CalDoc::read_model(&joined);
+        assert!(joined_model.event(event.id).is_none());
+        assert!(joined_model.task(task.id).is_none());
     }
 
     #[test]
