@@ -76,6 +76,15 @@ const GRID_CELL_W: f64 = 112.0;
 const GRID_CELL_H: f64 = 104.0;
 const GRID_ICON: f64 = 46.0;
 const GRID_GAP: f64 = 16.0;
+/// A two-column compact grid stays useful at phone width even when the user
+/// has increased item zoom.  Below this, one roomy tile is the more honest
+/// accessible layout; at or above it, two 44px-plus targets are preferable to
+/// wasting most of the pane with a single centred item.
+const COMPACT_GRID_MIN_CELL_W: f64 = 132.0;
+/// When a large-zoom tile is compacted to retain two columns, trim blank
+/// vertical space before shrinking previews or labels. This keeps the tap
+/// target comfortably above 44px while avoiding the old ~190px row cadence.
+const COMPACT_GRID_MAX_HEIGHT_RATIO: f64 = 0.9;
 /// Extra rows/cells painted around the clipped viewport to keep a partially
 /// visible boundary item alive through scroll settling.
 const VISIBLE_RANGE_OVERDRAW_ROWS: usize = 1;
@@ -273,11 +282,33 @@ impl FileView {
     fn header_h(&self) -> f64 {
         LIST_HEADER_H * self.scale
     }
+    /// Resolve grid geometry from the actual pane width. At large zoom a
+    /// phone pane can fit two slightly narrower tiles even though it cannot
+    /// fit two fully zoomed desktop tiles; use that compact geometry instead
+    /// of falling all the way back to one column.
+    fn grid_cell_size_for_width(&self, width: f64) -> (f64, f64) {
+        let desired_w = GRID_CELL_W * self.scale;
+        let desired_h = GRID_CELL_H * self.scale;
+        let gap = self.grid_gap();
+        let inner = (width - 2.0 * self.pad_x()).max(0.0);
+        let compact_w = ((inner - gap) / 2.0).max(0.0);
+        let width = if desired_w * 2.0 + gap > inner && compact_w >= COMPACT_GRID_MIN_CELL_W {
+            compact_w
+        } else {
+            desired_w
+        };
+        let height = if width < desired_w {
+            desired_h.min(width * COMPACT_GRID_MAX_HEIGHT_RATIO)
+        } else {
+            desired_h
+        };
+        (width, height)
+    }
     fn cell_w(&self) -> f64 {
-        GRID_CELL_W * self.scale
+        self.grid_cell_size_for_width(self.rect.width()).0
     }
     fn cell_h(&self) -> f64 {
-        GRID_CELL_H * self.scale
+        self.grid_cell_size_for_width(self.rect.width()).1
     }
     fn grid_gap(&self) -> f64 {
         GRID_GAP * self.scale
@@ -295,7 +326,7 @@ impl FileView {
     /// Grid columns that fit `width` (never zero).
     fn columns_for_width(&self, width: f64) -> usize {
         let inner = (width - 2.0 * self.pad_x()).max(0.0);
-        let stride = self.cell_w() + self.grid_gap();
+        let stride = self.grid_cell_size_for_width(width).0 + self.grid_gap();
         if stride <= 0.0 {
             return 1;
         }
@@ -310,13 +341,14 @@ impl FileView {
         }
     }
 
-    fn content_height(&self) -> f64 {
+    fn content_height(&self, width: f64) -> f64 {
         match self.mode {
             ViewMode::List => self.header_h() + self.entries.len() as f64 * self.row_h() + 6.0,
             ViewMode::Grid => {
                 let cols = self.columns.max(1);
                 let rows = self.grid_rows(cols);
-                self.pad_x() + rows as f64 * (self.cell_h() + self.grid_gap())
+                let cell_h = self.grid_cell_size_for_width(width).1;
+                self.pad_x() + rows as f64 * (cell_h + self.grid_gap())
             }
         }
     }
@@ -463,12 +495,15 @@ impl FileView {
 
     /// Responsive column visibility: hide the Modified column on a narrow pane
     /// and the Size column on a very narrow one, so the Name always has room
-    /// (like GNOME Files / Finder collapsing detail columns).
+    /// (like GNOME Files / Finder collapsing detail columns). The breakpoints
+    /// scale with the user's item zoom: retaining a fixed 340 px Size column
+    /// cutoff made a 390 px window waste most of a large-text row on a `—`
+    /// size placeholder and truncate the filename.
     fn show_size(&self) -> bool {
-        self.rect.width() > 340.0
+        self.rect.width() > 340.0 * self.scale
     }
     fn show_modified(&self) -> bool {
-        self.rect.width() > 560.0
+        self.rect.width() > 560.0 * self.scale
     }
     /// Whether list column `i` (0 name, 1 size, 2 modified) is currently shown.
     fn col_visible(&self, i: usize) -> bool {
@@ -1051,7 +1086,6 @@ impl FileView {
     ) {
         let tokens = &theme.tokens;
         let size = self.body_text(theme);
-        let icon_size_px = GRID_ICON * self.scale;
         let range = self.visible_range(vp);
         for (offset, entry) in self
             .entries
@@ -1080,12 +1114,18 @@ impl FileView {
             }
             // A preview tile centred in the upper portion — larger than the bare
             // glyph so a real thumbnail reads well; directories keep the glyph.
-            let preview_px = if entry.is_dir {
-                icon_size_px
+            let desired_preview_px = if entry.is_dir {
+                GRID_ICON * self.scale
             } else {
-                icon_size_px * 1.3
+                GRID_ICON * self.scale * 1.3
             };
-            let icon_x = cell.x0 + (self.cell_w() - preview_px) / 2.0;
+            // Reserve room for a single truncated label before choosing the
+            // preview size. This keeps labels inside compact tiles at large
+            // zoom rather than relying on paint clipping.
+            let max_preview_px =
+                (cell.height() - 12.0 * self.scale - f64::from(size) - 14.0 * self.scale).max(44.0);
+            let preview_px = desired_preview_px.min(max_preview_px);
+            let icon_x = cell.x0 + (cell.width() - preview_px) / 2.0;
             let icon_y = cell.y0 + 12.0 * self.scale;
             let icon_color = if selected {
                 Color::WHITE
@@ -1123,7 +1163,7 @@ impl FileView {
                 draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
             }
             // Label centred under the tile, truncated to the cell width.
-            let ly = icon_y + preview_px + 8.0 * self.scale;
+            let ly = icon_y + preview_px + 6.0 * self.scale;
             if self.renaming == Some(i) {
                 // Publish the label field's rect and omit the label; the host
                 // draws the in-place rename editor here.
@@ -1136,9 +1176,9 @@ impl FileView {
                     )));
                 }
             } else {
-                let label = truncate(tr, &entry.name, size, self.cell_w() - 10.0);
+                let label = truncate(tr, &entry.name, size, cell.width() - 10.0);
                 let (lw, _) = tr.measure(&label, size, None);
-                let lx = cell.x0 + (self.cell_w() - f64::from(lw)) / 2.0;
+                let lx = cell.x0 + (cell.width() - f64::from(lw)) / 2.0;
                 tr.draw_text(
                     scene,
                     &label,
@@ -1213,7 +1253,7 @@ impl Widget for FileView {
         }
         taffy::Size {
             width: width as f32,
-            height: self.content_height() as f32,
+            height: self.content_height(width) as f32,
         }
     }
 
@@ -1875,6 +1915,57 @@ mod tests {
     }
 
     #[test]
+    fn phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom() {
+        // A 390px window leaves a 358px FileView after the content gutter.
+        // Both regular and 160% item zoom must retain a compact two-column
+        // grid; high zoom is allowed to reduce preview whitespace, never the
+        // actual row target below the platform's 44px minimum.
+        for scale in [1.0, 1.6] {
+            let sink = new_sink();
+            let sel = SelectionModel::new();
+            let mut v = FileView::new(&items(6), &sel, &sink)
+                .mode(ViewMode::Grid)
+                .with_scale(scale);
+            v.rect = Rect::new(0.0, 0.0, 358.0, 600.0);
+            v.columns = v.columns_for_width(v.rect.width());
+
+            assert_eq!(v.columns, 2, "scale {scale} keeps two phone columns");
+            let first = v.cell_rect(0);
+            let second = v.cell_rect(1);
+            assert!(
+                first.width() >= 44.0 && first.height() >= 44.0,
+                "scale {scale} keeps a usable pointer/AT target: {first:?}"
+            );
+            assert!(
+                (first.y0 - second.y0).abs() < 1e-6 && second.x0 > first.x0,
+                "scale {scale} lays the first two entries side-by-side"
+            );
+            assert_eq!(
+                v.item_at(first.center()),
+                Some(0),
+                "the compact visual bounds remain the pointer target"
+            );
+            assert_eq!(
+                v.item_at(second.center()),
+                Some(1),
+                "the second compact target remains independently reachable"
+            );
+            let automation_bounds = v.test_rects();
+            assert_eq!(automation_bounds[0].1, first);
+            assert_eq!(automation_bounds[1].1, second);
+
+            v.set_focus(true);
+            let semantics = Widget::accessibility(&v).expect("grid exposes its list semantics");
+            assert!(semantics.state.focusable && semantics.state.focused);
+            assert_eq!(
+                semantics.children.len(),
+                6,
+                "all compact targets remain reachable through assistive technology"
+            );
+        }
+    }
+
+    #[test]
     fn image_cells_request_previews_through_the_shared_service() {
         // The file view must off-load decoding to the shared thumbnail service,
         // never decode per-app: a request for an image cell schedules work on the
@@ -2169,6 +2260,24 @@ mod tests {
         assert!(
             name.x1 >= v.rect.x1 - v.pad_x() - 1.0,
             "name fills the pane when both details hide"
+        );
+    }
+
+    #[test]
+    fn large_item_zoom_hides_detail_columns_earlier_on_narrow_windows() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(4), &sel, &sink).with_scale(1.6);
+        v.rect = Rect::new(0.0, 0.0, 390.0, 400.0);
+
+        assert!(
+            !v.show_size() && !v.show_modified(),
+            "large text at phone width reserves the row for the filename"
+        );
+        let name = v.header_col_rect(0);
+        assert!(
+            name.width() >= v.rect.width() - 2.0 * v.pad_x() - 1.0,
+            "the name column owns the usable row width at large zoom"
         );
     }
 
