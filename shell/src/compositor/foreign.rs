@@ -1747,7 +1747,7 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
         // mirror before syncing its label, otherwise the two trees can show
         // the same surface in different groups.
         if crate::compositor::tab_binding::app_id_for_surface(rendered, want.surface_id)
-            .is_some_and(|app_id| app_id.starts_with("anon-"))
+            .is_some_and(|app_id| app_id != want.app_id)
             && crate::compositor::tab_binding::rebind_toplevel_for_app_id(
                 rendered,
                 want.surface_id,
@@ -2566,6 +2566,52 @@ mod tests {
             .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
             .expect("mirrored surface group");
         assert_eq!(mirrored_group.id, target);
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    /// Satellite can give the rendered mirror a provisional non-anonymous
+    /// class before the protocol tree receives the final `WM_CLASS`. The
+    /// mirror must re-home on that identity transition too; restricting this
+    /// path to `anon-*` leaves protocol and chrome in different groups.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn reconcile_rehomes_provisional_x11_identity_to_final_launch_placement() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = source.clone();
+        let target = source.workspaces[0].strips[0].window_groups[0].id;
+        let surface = 0x502;
+        crate::shell::launcher::set_pending_placement_for_identities(
+            "chatgpt",
+            &["chatgpt".to_string()],
+            crate::compositor::tab_binding::Placement::NewGroup,
+        );
+
+        crate::compositor::tab_binding::adopt_toplevel_at(
+            &mut source,
+            surface,
+            Some("electron".into()),
+            crate::compositor::tab_binding::Placement::TabIn(target),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert!(crate::compositor::tab_binding::rebind_toplevel_for_app_id(
+            &mut source,
+            surface,
+            "Chatgpt".into(),
+            Some("ChatGPT"),
+        ));
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+
+        let mirrored = foreign_tabs_anywhere(&rendered);
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].app_id, "Chatgpt");
+        assert_eq!(mirrored[0].title, "ChatGPT");
+        let mirrored_group = rendered.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
+            .expect("mirrored provisional surface group");
+        assert_ne!(mirrored_group.id, target);
         crate::shell::launcher::clear_pending_placements();
     }
 

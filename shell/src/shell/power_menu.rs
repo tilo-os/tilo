@@ -10,9 +10,7 @@ use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::shell::overlay_host::{
-    MODAL_OPEN_ANIM_MS, MODAL_SCRIM_ALPHA, fill_scrim, modal_transition_curve,
-};
+use crate::shell::overlay_host::{MODAL_OPEN_ANIM_MS, modal_transition_curve};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PowerMenuClick {
@@ -28,7 +26,6 @@ pub(crate) enum PowerMenuClick {
 pub(crate) struct PowerMenu {
     open: bool,
     transition: ui::Transition,
-    armed: Option<usize>,
     selected: usize,
 }
 
@@ -37,7 +34,6 @@ impl Default for PowerMenu {
         Self {
             open: false,
             transition: ui::Transition::closed(),
-            armed: None,
             selected: 0,
         }
     }
@@ -50,7 +46,6 @@ impl PowerMenu {
 
     pub(crate) fn open(&mut self) {
         self.open = true;
-        self.armed = None;
         self.selected = 0;
         self.transition.set_open(
             true,
@@ -62,7 +57,6 @@ impl PowerMenu {
     pub(crate) fn close(&mut self) -> bool {
         let was_open = self.open;
         self.open = false;
-        self.armed = None;
         if was_open {
             self.transition.set_open(
                 false,
@@ -117,7 +111,6 @@ impl PowerMenu {
                     .selected
                     .checked_sub(1)
                     .unwrap_or(ACTIONS.len().saturating_sub(1));
-                self.armed = None;
                 PowerMenuClick::Consumed
             }
             Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
@@ -126,7 +119,6 @@ impl PowerMenu {
                 } else {
                     self.selected.saturating_add(1)
                 };
-                self.armed = None;
                 PowerMenuClick::Consumed
             }
             Key::Named(NamedKey::Tab) => {
@@ -142,7 +134,6 @@ impl PowerMenu {
                         self.selected.saturating_add(1)
                     };
                 }
-                self.armed = None;
                 PowerMenuClick::Consumed
             }
             Key::Named(NamedKey::Enter | NamedKey::Space) => self.activate(self.selected),
@@ -154,10 +145,6 @@ impl PowerMenu {
         let Some(action) = ACTIONS.get(index) else {
             return PowerMenuClick::Consumed;
         };
-        if action.0.requires_confirmation() && self.armed != Some(index) {
-            self.armed = Some(index);
-            return PowerMenuClick::Consumed;
-        }
         self.close();
         match action.0 {
             PowerMenuAction::Lock => PowerMenuClick::Lock,
@@ -181,14 +168,6 @@ impl PowerMenu {
         if !self.transition.is_visible(now) {
             return;
         }
-        let openness = self.transition.value(now);
-        fill_scrim(
-            scene,
-            transform,
-            viewport,
-            MODAL_SCRIM_ALPHA * openness,
-            theme,
-        );
         let (alpha, dy, scale) = modal_transition_curve(&self.transition, now, 0.94);
         let panel = panel_rect(viewport);
         scene.push_layer(
@@ -226,6 +205,10 @@ impl PowerMenu {
     ) {
         let panel = panel_rect(viewport);
         let colors = &theme.tokens.colors;
+        // This is a compact flyout rooted in the status area, not a modal
+        // task. Its bounds are the click-dismiss surface; the rest of the
+        // desktop stays visually present so the power button and result read
+        // as one continuous interaction.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -244,14 +227,11 @@ impl PowerMenu {
         );
         for (index, (_, label, detail, icon)) in ACTIONS.iter().enumerate() {
             let row = action_rect(viewport, index);
-            let armed = self.armed == Some(index);
             let selected = self.selected == index;
             scene.fill(
                 Fill::NonZero,
                 transform,
-                if armed {
-                    colors.semantic.danger.with_alpha_factor(0.18)
-                } else if selected {
+                if selected {
                     colors.accent[5].with_alpha_factor(0.16)
                 } else {
                     colors.neutral[2]
@@ -264,20 +244,12 @@ impl PowerMenu {
                 transform,
                 Rect::new(row.x0 + 14.0, row.y0 + 14.0, row.x0 + 36.0, row.y0 + 36.0),
                 *icon,
-                if armed {
-                    colors.semantic.danger
-                } else {
-                    colors.text_primary
-                },
+                colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             text_renderer.draw_text_weighted(
                 scene,
-                if armed {
-                    "Activate again to confirm"
-                } else {
-                    label
-                },
+                label,
                 theme.tokens.typography.scale.sm,
                 colors.text_primary,
                 at(transform, (row.x0 + 50.0, row.y0 + 8.0)),
@@ -300,19 +272,6 @@ impl PowerMenu {
 enum PowerMenuAction {
     Lock,
     External(os_actions::SessionAction),
-}
-
-impl PowerMenuAction {
-    const fn requires_confirmation(self) -> bool {
-        matches!(
-            self,
-            Self::External(
-                os_actions::SessionAction::Logout
-                    | os_actions::SessionAction::Restart
-                    | os_actions::SessionAction::ShutDown
-            )
-        )
-    }
 }
 
 const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
@@ -357,12 +316,18 @@ const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
 fn panel_rect(viewport: Rect) -> Rect {
     let width = 420.0_f64.min(viewport.width() - 48.0);
     let height = 446.0_f64.min(viewport.height() - 48.0);
-    let centre = viewport.center();
+    // This menu is launched from the top-right system status area. Keep the
+    // actions beside that origin instead of making the pointer cross the
+    // whole display to a modal in the centre. The same 24px edge inset is
+    // used on narrow displays, where the sheet naturally becomes nearly
+    // full-width without losing its anchor.
+    let right = viewport.x1 - 24.0;
+    let top = viewport.y0 + 60.0;
     Rect::new(
-        centre.x - width / 2.0,
-        centre.y - height / 2.0,
-        centre.x + width / 2.0,
-        centre.y + height / 2.0,
+        right - width,
+        top,
+        right,
+        (top + height).min(viewport.y1 - 24.0),
     )
 }
 
@@ -429,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn destructive_actions_require_two_clicks() {
+    fn every_visible_action_executes_on_first_click() {
         for (index, expected) in [
             (1, os_actions::SessionAction::Logout),
             (4, os_actions::SessionAction::Restart),
@@ -438,28 +403,12 @@ mod tests {
             let mut menu = PowerMenu::default();
             menu.open();
             let point = action_rect(VIEWPORT, index).center();
-            assert_eq!(menu.click(VIEWPORT, point), PowerMenuClick::Consumed);
-            assert!(menu.open);
             assert_eq!(
                 menu.click(VIEWPORT, point),
                 PowerMenuClick::Execute(expected)
             );
+            assert!(!menu.open);
         }
-    }
-
-    #[test]
-    fn switching_destructive_rows_rearms_confirmation() {
-        let mut menu = PowerMenu::default();
-        menu.open();
-        assert_eq!(
-            menu.click(VIEWPORT, action_rect(VIEWPORT, 4).center()),
-            PowerMenuClick::Consumed
-        );
-        assert_eq!(
-            menu.click(VIEWPORT, action_rect(VIEWPORT, 5).center()),
-            PowerMenuClick::Consumed
-        );
-        assert!(menu.open);
     }
 
     #[test]
@@ -471,7 +420,23 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_navigation_reaches_actions_and_keeps_confirmation() {
+    fn menu_is_anchored_below_the_top_right_status_area() {
+        for viewport in [VIEWPORT, Rect::new(0.0, 0.0, 960.0, 540.0)] {
+            let panel = panel_rect(viewport);
+            assert_eq!(panel.x1, viewport.x1 - 24.0);
+            assert_eq!(panel.y0, viewport.y0 + 60.0);
+            assert!(panel.y1 <= viewport.y1 - 24.0);
+            for index in 0..ACTIONS.len() {
+                assert!(
+                    panel.contains(action_rect(viewport, index).center()),
+                    "action {index} must remain inside the anchored menu at {viewport:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keyboard_navigation_reaches_actions_and_activates_once() {
         use winit::keyboard::{Key, NamedKey};
 
         let mut menu = PowerMenu::default();
@@ -482,21 +447,11 @@ mod tests {
         );
         assert_eq!(
             menu.key(&Key::Named(NamedKey::Enter), false),
-            PowerMenuClick::Consumed
-        );
-        assert!(menu.open, "first activation only arms Log out");
-        assert_eq!(
-            menu.key(&Key::Named(NamedKey::Enter), false),
             PowerMenuClick::Execute(os_actions::SessionAction::Logout)
         );
 
         menu.open();
         menu.selected = 5;
-        assert_eq!(
-            menu.key(&Key::Named(NamedKey::Space), false),
-            PowerMenuClick::Consumed
-        );
-        assert!(menu.open, "first activation only arms Shut down");
         assert_eq!(
             menu.key(&Key::Named(NamedKey::Space), false),
             PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)

@@ -2342,10 +2342,29 @@ fn pump_test_control_conn(
                                 desktop_id,
                                 display_name,
                             } => {
+                                // Mirror the production host-palette
+                                // transaction: it records the destination
+                                // against every desktop-entry window
+                                // identity before minting the optional
+                                // activation token. Without this, a real X11
+                                // client which maps through StartupWMClass but
+                                // does not bind xdg-activation can never
+                                // exercise the production placement path.
+                                let placement = crate::compositor::tab_binding::Placement::NewGroup;
+                                let identities = crate::shell::host_apps::find(&desktop_id)
+                                    .map_or_else(
+                                        || vec![desktop_id.clone()],
+                                        |app| app.window_identities,
+                                    );
+                                crate::shell::launcher::set_pending_placement_for_identities(
+                                    &desktop_id,
+                                    &identities,
+                                    placement,
+                                );
                                 let token = state.issue_host_launch_activation(
                                     desktop_id,
                                     display_name,
-                                    crate::compositor::tab_binding::Placement::NewGroup,
+                                    placement,
                                 );
                                 (
                                     test_control::Response::Answer(serde_json::json!({
@@ -3808,6 +3827,21 @@ fn bind_and_publish_wayland_socket() -> (
     (listening_socket, socket_name, display_file)
 }
 
+#[cfg(test)]
+fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
+    let Some(registration) = source.find(".insert_source(listening_socket") else {
+        return false;
+    };
+    let Some(dispatch) = source.find("event_loop.dispatch(park") else {
+        return false;
+    };
+    let Some(start) = source.find("xwayland = Some(super::xwayland::XwaylandSupervisor::start")
+    else {
+        return false;
+    };
+    registration < dispatch && dispatch < start
+}
+
 fn update_output_presentation_repaint_pending(
     pending: &mut bool,
     previous_surface_count: &mut usize,
@@ -4061,16 +4095,6 @@ pub fn run() -> ! {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
-    // The complete qOS image deliberately remains Wayland-only. A host
-    // desktop session is a different trust tier: it promises to keep the
-    // distro applications the person already installed usable, including
-    // legacy X11 software, and labels those launches as unconfined.
-    let mut xwayland =
-        if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args()) {
-            Some(super::xwayland::XwaylandSupervisor::start(&socket_name))
-        } else {
-            None
-        };
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -4103,6 +4127,27 @@ pub fn run() -> ! {
         );
         std::process::exit(1);
     }
+
+    // The complete qOS image deliberately remains Wayland-only. A host
+    // desktop session is a different trust tier: it promises to keep the
+    // distro applications the person already installed usable, including
+    // legacy X11 software, and labels those launches as unconfined.
+    //
+    // Register the public socket source before spawning satellite. Satellite
+    // is a Wayland client and Xwayland does not publish its X socket until
+    // that client has connected and created its private bridge. Starting it
+    // above `insert_source` leaves the worker waiting on a connection this
+    // event loop cannot accept yet; the readiness timeout then kills a
+    // healthy satellite/Xwayland pair on every host login.
+    let xwayland_enabled =
+        super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args());
+    // Do not launch satellite until calloop has had one chance to dispatch the
+    // public socket. Satellite is itself a Wayland client, and merely
+    // registering the listener does not accept its connection; the remaining
+    // startup work below can otherwise consume the whole five-second
+    // readiness budget on a slow host and produce a false X11-unavailable
+    // notification.
+    let mut xwayland: Option<super::xwayland::XwaylandSupervisor> = None;
 
     // A third display is the input-method trust boundary. The OSK package is
     // sandboxed exactly like any other app, but receives this one socket as
@@ -4442,6 +4487,14 @@ pub fn run() -> ! {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        // Logout is requested from an off-thread power-menu action. Exit the
+        // compositor through this normal cleanup path; its package wrapper
+        // then stops qOS's graphical targets and clears the shared user-manager
+        // environment before GDM admits the next desktop.
+        if os_actions::take_logout_request() {
+            close_requested = true;
+            continue;
+        }
         // The bridge is optional, but its published DISPLAY/XAUTHORITY pair
         // must track its child exactly. Poll before processing launch actions
         // so an X11/Electron launch in this tick either gets a live bridge or
@@ -6050,6 +6103,9 @@ pub fn run() -> ! {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
         }
+        if xwayland_enabled && xwayland.is_none() {
+            xwayland = Some(super::xwayland::XwaylandSupervisor::start(&socket_name));
+        }
         metrics.mark_sleep(t_sleep_start.elapsed());
         metrics.end_tick();
         if let Some(deadline) = run_deadline
@@ -7627,7 +7683,9 @@ mod vt_chord_tests {
 
 #[cfg(test)]
 mod gesture_wireup_tests {
-    use super::{apply_shell_gesture, refresh_mhz_of};
+    use super::{
+        apply_shell_gesture, refresh_mhz_of, xwayland_start_follows_public_socket_registration,
+    };
     use crate::compositor::backend::drm::gestures::GestureAction;
     use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
     use crate::compositor::frame::FrameBuilder;
@@ -7701,6 +7759,15 @@ mod gesture_wireup_tests {
         // 59.94 Hz must not round to 60 000 — the whole reason DRM derives its interval from raw mode timing.
         let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
         assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
+    }
+
+    #[test]
+    fn xwayland_starts_only_after_the_public_wayland_socket_can_accept_clients() {
+        let source = include_str!("native.rs");
+        assert!(
+            xwayland_start_follows_public_socket_registration(source),
+            "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
+        );
     }
 }
 

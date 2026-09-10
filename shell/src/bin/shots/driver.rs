@@ -52,6 +52,16 @@ pub struct ShellDriver {
     /// work; scenarios enable it only when they are explicitly verifying the
     /// production capture handoff.
     capture_executor: Option<CaptureExecutor>,
+    lock_visual: Option<LockVisualState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum LockVisualState {
+    Default,
+    Password,
+    Verifying,
+    Error,
+    Notifications,
 }
 
 impl ShellDriver {
@@ -78,6 +88,7 @@ impl ShellDriver {
             focus: None,
             last_cursor: Point::ORIGIN,
             capture_executor: None,
+            lock_visual: None,
         }
     }
 
@@ -131,6 +142,16 @@ impl ShellDriver {
             .enable_host_desktop_onboarding(std::path::PathBuf::from(
                 "/var/empty/qos-shots-identity",
             ));
+    }
+
+    pub fn set_onboarding_visual_state(
+        &mut self,
+        state: shell::onboarding_view::OnboardingVisualState,
+    ) {
+        self.fb
+            .host_mut()
+            .set_onboarding_visual_state_for_snapshot(state);
+        self.fb.relayout();
     }
     /// The palette's current query — what a scenario typed, read back
     /// through the same accessor the overlay uses.
@@ -320,6 +341,53 @@ impl ShellDriver {
     /// Render the current frame into a fresh Vello scene. Caller is
     /// responsible for passing it to a renderer (offscreen or live).
     pub fn paint(&mut self) -> Scene {
+        if let Some(state) = self.lock_visual {
+            let (width, height) = self.fb.viewport();
+            let output = shell::compositor::lock_screen::LockOutput {
+                origin: (0.0, 0.0),
+                size: (width, height),
+                scale: 1.0,
+            };
+            let view = match state {
+                LockVisualState::Default => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    ..Default::default()
+                },
+                LockVisualState::Password => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    password_len: 8,
+                    ..Default::default()
+                },
+                LockVisualState::Verifying => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    password_len: 8,
+                    verifying: true,
+                    ..Default::default()
+                },
+                LockVisualState::Error => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    error: Some(shell::compositor::lock_auth::INCORRECT_MSG),
+                    ..Default::default()
+                },
+                LockVisualState::Notifications => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    notification_count: 3,
+                    ..Default::default()
+                },
+            };
+            let theme = self.fb.theme().clone();
+            return shell::compositor::lock_screen::draw_lock_scene(
+                &[output],
+                &theme,
+                self.fb.text_renderer_mut(),
+                &view,
+            );
+        }
         let mut scene = self.fb.paint();
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
@@ -327,6 +395,10 @@ impl ShellDriver {
             self.fb.draw_capture_overlays(&mut scene);
         }
         scene
+    }
+
+    pub fn set_lock_visual_state(&mut self, state: LockVisualState) {
+        self.lock_visual = Some(state);
     }
 
     pub fn set_capture_execution_enabled(&mut self, enabled: bool) {
@@ -808,7 +880,7 @@ impl ShellDriver {
             "qs-bt-long-labels" => self.scene_qs_bt_long_labels(),
             "qs-vpn-long-labels" => self.scene_qs_vpn_long_labels(),
             "power-menu" => self.scene_power_menu(false),
-            "power-menu-confirm" => self.scene_power_menu(true),
+            "power-menu-keyboard" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
@@ -1063,10 +1135,10 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
-    fn scene_power_menu(&mut self, arm_shutdown: bool) {
+    fn scene_power_menu(&mut self, select_shutdown: bool) {
         self.fb
             .host_mut()
-            .force_power_menu_for_visual_test(arm_shutdown);
+            .force_power_menu_for_visual_test(select_shutdown);
     }
 
     fn scene_ws_settings_general(&mut self) {
@@ -1091,6 +1163,13 @@ impl ShellDriver {
             st.local_user_id.clone_from(&owner);
             if let Some(workspace) = st.tree_mut().active_workspace_mut() {
                 workspace.set_owner(owner);
+                workspace.collaborators.push(
+                    shell::shell::state::Collaborator::new(
+                        hex::encode(recipient_public.as_bytes()),
+                        "Morgan",
+                    )
+                    .as_invited(),
+                );
                 workspace.grant_capability(shell::shell::state::CapOverride::membership(
                     shell::shell::state::Subject::person(hex::encode(recipient_public.as_bytes())),
                     workspace.room.to_string(),
@@ -1651,7 +1730,7 @@ impl ShellDriver {
         "qs-bt-long-labels",
         "qs-vpn-long-labels",
         "power-menu",
-        "power-menu-confirm",
+        "power-menu-keyboard",
         "ws-settings-general",
         "ws-settings-members",
         "ws-settings-permissions",
