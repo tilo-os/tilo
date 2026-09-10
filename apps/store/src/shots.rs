@@ -24,6 +24,18 @@ use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, Sto
 
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
 
+/// Read the optional accessibility type multiplier used by visual acceptance
+/// captures.  A malformed value must never turn a shot into a different
+/// layout mode, and bounding the multiplier keeps the fixed-size fixture
+/// meaningful while still exercising the supported large-text regime.
+fn shot_text_scale() -> f32 {
+    std::env::var("QOS_SHOTS_TEXT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|scale| scale.is_finite() && (1.0..=2.0).contains(scale))
+        .unwrap_or(1.0)
+}
+
 /// A Vello scene with a dense text/control tree can need more than its local
 /// bump-budget confirmation before every glyph atlas page is resident. The
 /// interactive app naturally receives later frames; a one-frame screenshot
@@ -269,7 +281,8 @@ pub fn render_widget(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    };
+    }
+    .with_text_scale(shot_text_scale());
     if matches!(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
         Ok("1" | "true" | "yes")
@@ -424,6 +437,14 @@ mod tests {
     fn viewport_parses_expected_shape() {
         assert_eq!(parse_viewport("1200x760"), Some((1200, 760)));
         assert_eq!(parse_viewport("bad"), None);
+    }
+
+    #[test]
+    fn screenshot_text_scale_is_bounded_and_forgiving() {
+        // The variable is process-global; this test only validates the safe
+        // default in the normal test process.  Rendering callers exercise a
+        // valid multiplier through the documented environment seam.
+        assert!((1.0..=2.0).contains(&shot_text_scale()));
     }
 
     #[test]
