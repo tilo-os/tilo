@@ -9,7 +9,6 @@
 //!     └── <account-id> (Map)
 //!         ├── "issuer"    (Str)
 //!         ├── "label"     (Str)
-//!         ├── "secret"    (Str)   # base32, normalised
 //!         ├── "algorithm" (Str)   # SHA1 / SHA256 / SHA512
 //!         ├── "digits"    (Int)
 //!         ├── "period"    (Int)
@@ -19,9 +18,11 @@
 //!
 //! Every function takes the borrowed `&mut AutoCommit` (the app's shared
 //! `State::doc`) explicitly — the namespace is stateless. Fields are
-//! plain scalars (last-writer-wins on concurrent edits), which is the
-//! right semantics for credential parameters: you never want two halves
-//! of a merged secret.
+//! plain scalars (last-writer-wins on concurrent edits). **Secrets are never
+//! stored here.** This document is intentionally secret-free when replicated,
+//! inspected, indexed and retained in history. It still contains potentially
+//! private account identities, so normal collaboration access controls apply.
+//! The encrypted local vault owns the base32 key material.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -70,7 +71,11 @@ impl AuthDoc {
         let obj = Self::ensure_account(doc, acc.id);
         let _ = doc.put(&obj, "issuer", acc.issuer.clone());
         let _ = doc.put(&obj, "label", acc.label.clone());
-        let _ = doc.put(&obj, "secret", acc.secret.clone());
+        // A pre-privacy version stored `secret` in the shared document. Remove
+        // it during every metadata sync so opening an older vault performs a
+        // one-way, idempotent migration instead of preserving a credential in
+        // collaboration/history snapshots.
+        let _ = doc.delete(&obj, "secret");
         let _ = doc.put(&obj, "algorithm", acc.algorithm.as_str().to_string());
         let _ = doc.put(&obj, "digits", i64::from(acc.digits));
         let _ = doc.put(&obj, "period", i64::from(acc.period));
@@ -78,10 +83,39 @@ impl AuthDoc {
         let _ = doc.put(&obj, "order", i64::from(acc.order));
     }
 
-    /// Delete an account by id. Idempotent.
+    /// Tombstone an account by id. Tombstones make a concurrent field update
+    /// unable to resurrect a deleted credential; undo restores the preceding
+    /// document snapshot, as usual for the host action system.
     pub fn delete_account(doc: &mut AutoCommit, id: AccountId) {
         let accounts = Self::accounts_map(doc);
         let _ = doc.delete(&accounts, id.to_string().as_str());
+        let tombstones = Self::tombstones_map(doc);
+        let _ = doc.put(&tombstones, id.to_string().as_str(), true);
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "put_object on ROOT is infallible; see accounts_map"
+    )]
+    fn tombstones_map(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "account_tombstones") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "account_tombstones", ObjType::Map)
+                .expect("put_object tombstones on root never fails"),
+        }
+    }
+
+    fn is_tombstoned(doc: &AutoCommit, id: AccountId) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), tombstones))) =
+            doc.get(&ROOT, "account_tombstones")
+        else {
+            return false;
+        };
+        matches!(
+            doc.get(&tombstones, id.to_string().as_str()),
+            Ok(Some((Value::Scalar(value), _))) if value.to_bool() == Some(true)
+        )
     }
 
     /// The per-account Map for `id` **only if it already exists** — never
@@ -137,6 +171,9 @@ impl AuthDoc {
             let Ok(id) = key.parse::<AccountId>() else {
                 continue;
             };
+            if Self::is_tombstoned(doc, id) {
+                continue;
+            }
             let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&accounts, key.as_str())
             else {
                 continue;
@@ -144,7 +181,6 @@ impl AuthDoc {
 
             let issuer = str_field(doc, &obj, "issuer");
             let label = str_field(doc, &obj, "label");
-            let secret = str_field(doc, &obj, "secret");
             let algorithm = Algorithm::parse(&str_field(doc, &obj, "algorithm"));
             let digits = int_field(doc, &obj, "digits").unwrap_or(6).clamp(4, 10) as u8;
             let period = int_field(doc, &obj, "period").unwrap_or(30).clamp(5, 300) as u32;
@@ -155,7 +191,7 @@ impl AuthDoc {
                 id,
                 issuer,
                 label,
-                secret,
+                secret: String::new(),
                 algorithm,
                 digits,
                 period,
@@ -167,19 +203,11 @@ impl AuthDoc {
         out
     }
 
-    /// Mirror an entire in-memory vault into the document: upserts every
-    /// account and removes doc accounts that no longer exist locally.
-    /// Idempotent — safe to call every frame.
+    /// Mirror local *metadata* into the document. It only upserts; deleting a
+    /// remote account because this device has not stored its secret would be a
+    /// destructive collaboration bug. Explicit deletion goes through the
+    /// tombstoning action above.
     pub fn sync_vault(doc: &mut AutoCommit, accounts: &[Account]) {
-        use std::collections::HashSet;
-        let local: HashSet<AccountId> = accounts.iter().map(|a| a.id).collect();
-        // Remove deleted.
-        for existing in Self::list_accounts(doc) {
-            if !local.contains(&existing.id) {
-                Self::delete_account(doc, existing.id);
-            }
-        }
-        // Upsert current.
         for a in accounts {
             Self::upsert_account(doc, a);
         }
@@ -206,10 +234,10 @@ fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Algorithm, demo_accounts};
+    use crate::model::demo_accounts;
 
     #[test]
-    fn round_trips_a_full_account() {
+    fn round_trips_metadata_without_a_secret() {
         let mut doc = AutoCommit::new();
         let accounts = demo_accounts();
         AuthDoc::sync_vault(&mut doc, &accounts);
@@ -217,21 +245,42 @@ mod tests {
         assert_eq!(read.len(), accounts.len());
         // Order preserved.
         assert_eq!(read[0].issuer, accounts[0].issuer);
-        // A SHA256 account round-trips its algorithm.
-        let aws = read.iter().find(|a| a.issuer == "AWS").unwrap();
-        assert_eq!(aws.algorithm, Algorithm::Sha256);
+        assert!(
+            read.iter().all(|account| account.secret.is_empty()),
+            "the collaborative document contains metadata only"
+        );
     }
 
     #[test]
-    fn sync_vault_removes_deleted_accounts() {
+    fn sync_vault_never_deletes_an_account_missing_from_this_device() {
         let mut doc = AutoCommit::new();
         let mut accounts = demo_accounts();
         AuthDoc::sync_vault(&mut doc, &accounts);
-        let removed = accounts.remove(0);
+        let retained_remote = accounts.remove(0);
         AuthDoc::sync_vault(&mut doc, &accounts);
         let read = AuthDoc::list_accounts(&doc);
-        assert_eq!(read.len(), accounts.len());
-        assert!(read.iter().all(|a| a.id != removed.id));
+        assert_eq!(read.len(), accounts.len() + 1);
+        assert!(read.iter().any(|a| a.id == retained_remote.id));
+    }
+
+    #[test]
+    fn tombstone_wins_over_a_concurrent_metadata_update() {
+        let mut a = AutoCommit::new();
+        let account = demo_accounts().remove(0);
+        AuthDoc::upsert_account(&mut a, &account);
+        a.commit();
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+
+        AuthDoc::delete_account(&mut a, account.id);
+        AuthDoc::set_label(&mut b, account.id, "updated elsewhere");
+        a.merge(&mut b).unwrap();
+
+        assert!(
+            AuthDoc::list_accounts(&a)
+                .iter()
+                .all(|entry| entry.id != account.id),
+            "a concurrent field update cannot resurrect a deleted account"
+        );
     }
 
     #[test]
