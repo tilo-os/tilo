@@ -1,11 +1,10 @@
 //! Pure data model for the Authenticator vault.
 //!
 //! An [`Account`] is one 2FA entry: the issuer + account label shown in
-//! the list, plus the cryptographic parameters needed to derive a
-//! rotating TOTP code (secret, algorithm, digits, period). The list of
-//! accounts is the source of truth; it is mirrored into the Automerge
-//! document by [`crate::doc::AuthDoc`] so undo/redo and live
-//! collaboration come for free.
+//! the list, plus the cryptographic parameters needed to derive a rotating
+//! TOTP code (secret, algorithm, digits, period). Only secret-free account
+//! metadata is mirrored into Automerge for collaboration; the encrypted local
+//! vault remains the source of bearer keys and live code generation.
 //!
 //! This module is pure logic — no IO, no rendering, no crypto. Code
 //! generation lives in [`crate::totp`]; CRDT persistence in
@@ -367,6 +366,14 @@ pub fn normalise_secret(s: &str) -> String {
         .filter(|c| !c.is_whitespace() && *c != '=')
         .collect::<String>()
         .to_uppercase()
+}
+
+/// Reject obvious pasted TOTP material in a display identity before it can
+/// enter a searchable resource, action envelope or collaborative history.
+pub fn contains_secret_shaped_text(value: &str) -> bool {
+    value
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|run| run.len() >= 16 && run.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'2'..=b'7')))
 }
 
 /// The per-account colour palette, sourced entirely from the active

@@ -1,8 +1,8 @@
 //! Root widget for the Authenticator binary.
 //!
-//! Owns the in-memory [`Vault`] (the source of truth), mirrors it into
-//! the shared Automerge document every frame (so the vault replicates to
-//! collaborators and is captured by `ui::State` undo snapshots), and
+//! Owns the encrypted device-local [`Vault`] (including base32 secrets), and
+//! mirrors only account metadata into the shared Automerge document (so names,
+//! order and lifecycle collaborate without credentials entering history), and
 //! composes the three surfaces:
 //!
 //!  * a header (title, account count, search field, **+ Add** button),
@@ -47,9 +47,12 @@ use crate::totp;
 const OUTER_PAD: f64 = 24.0;
 const ADD_BTN_W: f64 = 168.0;
 const COMPACT_ADD_BTN_W: f64 = 112.0;
+const EDIT_BTN_W: f64 = 94.0;
+const COMPACT_EDIT_BTN_W: f64 = 64.0;
 const ADD_BTN_H: f64 = 40.0;
 const SEARCH_H: f64 = 44.0;
 const HEADER_H: f64 = 150.0;
+const PERSISTENCE_BANNER_H: f64 = 48.0;
 const TOAST_TTL: Duration = Duration::from_millis(1800);
 
 fn qr_image_request() -> PickRequest {
@@ -79,6 +82,7 @@ enum SeedMode {
     Empty,
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "independent UI/frame flags")]
 pub struct AuthenticatorApp {
     vault: Vault,
     search_provider: crate::search_provider::TotpSearchProvider,
@@ -97,6 +101,8 @@ pub struct AuthenticatorApp {
     header_rect: Rect,
     search_rect: Rect,
     add_btn_rect: Rect,
+    edit_btn_rect: Rect,
+    persistence_retry_rect: Rect,
     list_rect: Rect,
 
     last_mouse: Point,
@@ -111,7 +117,8 @@ pub struct AuthenticatorApp {
     /// live app loads/saves the real vault; the demo/empty shots roots use
     /// fixed data and never touch storage.
     seed_mode: SeedMode,
-    /// The vault changed and must be re-mirrored into the CRDT document.
+    /// Local account metadata changed and must be mirrored into the CRDT
+    /// document. Secrets are explicitly omitted by [`AuthDoc`].
     /// Gates the per-frame doc write so idle frames (and pointer moves) do
     /// no CRDT work.
     doc_dirty: bool,
@@ -121,6 +128,12 @@ pub struct AuthenticatorApp {
     /// Effective host motion preference. Normal mode uses a smooth countdown;
     /// reduced motion sleeps between whole-second updates.
     reduce_motion: bool,
+    /// A local encrypted-vault write failed. We retain the in-memory vault but
+    /// never retry in a frame loop; the user/agent explicitly invokes retry.
+    persistence_pending: bool,
+    /// Non-secret, human-readable durability detail shown in the dedicated
+    /// persistence banner. This replaces a competing transient error toast.
+    persistence_message: Option<String>,
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
     /// [`TotpAction`](crate::actions::TotpAction) through this: the host brackets
     /// the undo boundary, applies the action through the executor (so it replays
@@ -154,6 +167,39 @@ impl AuthenticatorApp {
         Self::with_mode(SeedMode::Empty)
     }
 
+    pub fn demo_provision() -> Self {
+        let mut app = Self::with_mode(SeedMode::Demo);
+        app.seed();
+        app.seeded = true;
+        if let Some(account) = app.vault.accounts.first_mut() {
+            account.secret.clear();
+        }
+        app.seed_open_selected_setup();
+        app
+    }
+
+    pub fn demo_persistence_error() -> Self {
+        let mut app = Self::demo();
+        app.seed();
+        app.seeded = true;
+        app.persistence_pending = true;
+        app.persistence_message = Some(
+            "Local vault changes aren't saved — restore keyring or storage access, then retry."
+                .into(),
+        );
+        app
+    }
+
+    pub fn demo_missing_secret() -> Self {
+        let mut app = Self::demo();
+        app.seed();
+        app.seeded = true;
+        if let Some(account) = app.vault.accounts.first_mut() {
+            account.secret.clear();
+        }
+        app
+    }
+
     fn with_mode(seed_mode: SeedMode) -> Self {
         Self {
             vault: Vault::new(),
@@ -167,6 +213,8 @@ impl AuthenticatorApp {
             header_rect: Rect::ZERO,
             search_rect: Rect::ZERO,
             add_btn_rect: Rect::ZERO,
+            edit_btn_rect: Rect::ZERO,
+            persistence_retry_rect: Rect::ZERO,
             list_rect: Rect::ZERO,
             last_mouse: Point::ZERO,
             selected: None,
@@ -177,6 +225,8 @@ impl AuthenticatorApp {
             doc_dirty: false,
             list_dirty: false,
             reduce_motion: false,
+            persistence_pending: false,
+            persistence_message: None,
             actions: ui::ActionHost::new(),
         }
     }
@@ -226,25 +276,69 @@ impl AuthenticatorApp {
         );
     }
 
-    /// Re-project the in-memory vault from the now-authoritative document, and —
-    /// when it actually changed — persist the encrypted vault (live only). Run
-    /// every frame from `sync` so palette dispatches and remote edits appear, and
-    /// right after an on-screen affordance action for immediate feedback. The
-    /// document is the source of truth; the vault is a pure projection of it.
-    fn reload_from_doc(&mut self, doc: &AutoCommit) {
-        let projected = AuthDoc::list_accounts(doc); // sorted by order
-        if projected == self.vault.ordered() {
-            return; // nothing changed
-        }
+    /// Merge shared metadata with this device's secret-bearing vault. A remote
+    /// account can appear here without a secret (the row stays deliberately
+    /// unavailable for copying until it is set up on this device); the document
+    /// never has authority to replace or reveal local key material.
+    fn reload_from_doc(&mut self, doc: &AutoCommit) -> bool {
+        let metadata = AuthDoc::list_accounts(doc); // sorted by order, no secrets
+        let next_accounts: Vec<_> = metadata
+            .into_iter()
+            .map(|mut shared| {
+                if let Some(local) = self.vault.get(shared.id) {
+                    shared.secret.clone_from(&local.secret);
+                }
+                shared
+            })
+            .collect();
         let next = Vault {
-            accounts: projected,
+            accounts: next_accounts,
         };
+        if next.ordered() == self.vault.ordered() {
+            return true; // nothing changed
+        }
         self.search_provider.update(&self.vault, &next);
         self.vault = next;
         self.list_dirty = true;
-        if self.seed_mode == SeedMode::Live {
-            storage::save(&self.vault);
+        self.persist_vault()
+    }
+
+    fn persist_vault(&mut self) -> bool {
+        let persisted = self.seed_mode != SeedMode::Live || storage::save(&self.vault);
+        self.persistence_pending = !persisted;
+        if persisted {
+            self.persistence_message = None;
+        } else if self.persistence_message.is_none() {
+            self.persistence_message = Some(
+                "Local vault changes aren't saved — restore keyring or storage access, then retry."
+                    .into(),
+            );
         }
+        persisted
+    }
+
+    fn describe_persistence_failure(&mut self, message: impl Into<String>) {
+        self.persistence_pending = true;
+        self.persistence_message = Some(message.into());
+        // A durable, actionable banner supersedes the transient toast. Keeping
+        // both is noisy and obscures the account list, especially on narrow
+        // windows.
+        self.toast = None;
+    }
+
+    fn retry_persist(&mut self) -> bool {
+        if !self.persistence_pending {
+            return true;
+        }
+        let persisted = self.persist_vault();
+        if persisted {
+            self.toast("Local vault saved", ToastKind::Success);
+        } else {
+            self.describe_persistence_failure(
+                "Local vault changes still aren't saved — restore keyring or storage access, then retry.",
+            );
+        }
+        persisted
     }
 
     /// Recompute the filtered/ordered visible set and push it to the list.
@@ -271,6 +365,13 @@ impl AuthenticatorApp {
 
     fn copy_account(&mut self, id: AccountId) {
         if let Some(acc) = self.vault.get(id).cloned() {
+            if !acc.secret_is_valid() {
+                self.toast(
+                    format!("No local secret for {}", acc.title()),
+                    ToastKind::Error,
+                );
+                return;
+            }
             let code = totp::current_code(&acc);
             ui::text_selection::clipboard_copy(&code);
             self.last_copied = Some(code);
@@ -289,6 +390,12 @@ impl AuthenticatorApp {
     /// Ctrl+K activation navigated.
     pub fn selected_account(&self) -> Option<AccountId> {
         self.selected
+    }
+
+    pub(crate) fn has_local_secret(&self, id: AccountId) -> bool {
+        self.vault
+            .get(id)
+            .is_some_and(crate::model::Account::secret_is_valid)
     }
 
     /// Apply one list interaction. Reorder and delete are document mutations, so
@@ -316,11 +423,17 @@ impl AuthenticatorApp {
             }
             ListEvent::Delete(id) => {
                 self.perform_action(state, &crate::actions::delete_account_action(id));
-                self.reload_from_doc(state);
+                let persisted = self.reload_from_doc(state);
                 if self.selected == Some(id) {
                     self.selected = self.vault.ordered().first().map(|a| a.id);
                 }
-                self.toast("Account removed", ToastKind::Success);
+                if persisted {
+                    self.toast("Account removed", ToastKind::Success);
+                } else {
+                    self.describe_persistence_failure(
+                        "Account was removed collaboratively, but this device's vault cleanup isn't saved. Restore access, then retry.",
+                    );
+                }
             }
         }
     }
@@ -339,10 +452,65 @@ impl AuthenticatorApp {
                 acc.color = (self.vault.len() % 7) as u8;
                 let order = self.vault.next_order();
                 let id = acc.id;
+                // The secret enters the encrypted local vault before the
+                // metadata-only action is broadcast. It is never part of the
+                // action envelope or shared document.
+                acc.order = order;
+                self.vault.upsert(acc.clone());
+                let persisted = self.persist_vault();
                 self.perform_action(state, &crate::actions::add_account_action(&acc, order));
                 self.reload_from_doc(state);
                 self.selected = Some(id);
-                self.toast("Account added", ToastKind::Success);
+                if persisted {
+                    self.toast("Account added", ToastKind::Success);
+                } else {
+                    self.describe_persistence_failure(
+                        "Account was added, but its local secret isn't saved. Keep this session open, restore access, then retry.",
+                    );
+                }
+            }
+            AddPanelEvent::Edit(mut acc) => {
+                let order = self
+                    .vault
+                    .get(acc.id)
+                    .map_or(acc.order, |existing| existing.order);
+                acc.order = order;
+                self.vault.upsert(acc.clone());
+                let persisted = self.persist_vault();
+                self.perform_action(state, &crate::actions::add_account_action(&acc, order));
+                self.reload_from_doc(state);
+                self.selected = Some(acc.id);
+                if persisted {
+                    self.toast("Account updated", ToastKind::Success);
+                } else {
+                    self.describe_persistence_failure(
+                        "Account changed in memory, but the local vault isn't saved. Restore access, then retry.",
+                    );
+                }
+            }
+            AddPanelEvent::Provision(mut acc) => {
+                let Some(existing) = self.vault.get(acc.id).cloned() else {
+                    self.toast("Account is no longer available", ToastKind::Error);
+                    self.list_dirty = true;
+                    return;
+                };
+                // Keep shared identity/order/color immutable during key setup;
+                // only the local secret is installed; TOTP parameters were
+                // validated against the immutable shared metadata in the form.
+                acc.issuer = existing.issuer;
+                acc.label = existing.label;
+                acc.color = existing.color;
+                acc.order = existing.order;
+                self.vault.upsert(acc);
+                let persisted = self.persist_vault();
+                self.list_dirty = true;
+                if persisted {
+                    self.toast("Secret set up on this device", ToastKind::Success);
+                } else {
+                    self.describe_persistence_failure(
+                        "Secret is available only for this session; the local vault isn't saved. Restore access, then retry.",
+                    );
+                }
             }
         }
         self.list_dirty = true;
@@ -360,6 +528,19 @@ impl AuthenticatorApp {
         }
     }
 
+    fn open_selected_for_edit(&mut self) -> bool {
+        let Some(account) = self.selected.and_then(|id| self.vault.get(id)).cloned() else {
+            return false;
+        };
+        if account.secret_is_valid() {
+            self.add_panel.open_for_edit(&account);
+        } else {
+            self.add_panel.open_for_provision(&account);
+        }
+        self.add_panel.layout(self.rect);
+        true
+    }
+
     /// Move the selected account through the same visible, filtered order the
     /// pointer list paints. This keeps keyboard selection in step with the
     /// list rather than introducing a second focus model.
@@ -373,7 +554,9 @@ impl AuthenticatorApp {
             .and_then(|id| visible.iter().position(|account| account.id == id))
             .unwrap_or(0);
         let next = (current as isize + delta).clamp(0, visible.len() as isize - 1) as usize;
-        self.selected = Some(visible[next].id);
+        if let Some(account) = visible.get(next) {
+            self.selected = Some(account.id);
+        }
         self.list.set_selected(self.selected);
         true
     }
@@ -403,6 +586,9 @@ impl AuthenticatorApp {
             }
             return false;
         }
+        if target == "totp.edit" {
+            return matches!(action, A11yAction::Activate) && self.open_selected_for_edit();
+        }
         if target == "totp.search" {
             if matches!(action, A11yAction::Activate | A11yAction::Focus) {
                 self.search.set_focus(true);
@@ -429,6 +615,18 @@ impl AuthenticatorApp {
         }
         if !matches!(action, A11yAction::Activate) {
             return false;
+        }
+        if verb == "totp.setup" {
+            let Some(account) = self.vault.get(id).cloned() else {
+                return false;
+            };
+            if account.secret_is_valid() {
+                return false;
+            }
+            self.selected = Some(id);
+            self.add_panel.open_for_provision(&account);
+            self.add_panel.layout(self.rect);
+            return true;
         }
         let event = match verb {
             "totp.select" => ListEvent::Select(id),
@@ -479,6 +677,13 @@ impl AuthenticatorApp {
             }
             if (mods.control_key() || mods.super_key()) && lc == "f" {
                 self.search.set_focus(true);
+                *handled = true;
+                return true;
+            }
+            if (mods.control_key() || mods.super_key())
+                && lc == "e"
+                && self.open_selected_for_edit()
+            {
                 *handled = true;
                 return true;
             }
@@ -544,6 +749,14 @@ impl AuthenticatorApp {
         if self.add_btn_rect.contains(self.last_mouse) {
             self.add_panel.open();
             self.add_panel.layout(self.rect);
+            *handled = true;
+            return true;
+        }
+        if self.persistence_retry_rect.contains(self.last_mouse) && self.retry_persist() {
+            *handled = true;
+            return true;
+        }
+        if self.edit_btn_rect.contains(self.last_mouse) && self.open_selected_for_edit() {
             *handled = true;
             return true;
         }
@@ -649,8 +862,17 @@ impl AuthenticatorApp {
         self.add_panel.open();
     }
 
+    pub(crate) fn seed_open_selected_setup(&mut self) {
+        self.selected = self.vault.ordered().first().map(|account| account.id);
+        let _ = self.open_selected_for_edit();
+    }
+
     // ---- header drawing ----------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the header uses shared rects for drawing and hit testing"
+    )]
     fn draw_header(
         &mut self,
         scene: &mut Scene,
@@ -677,6 +899,63 @@ impl AuthenticatorApp {
         );
 
         // Add button.
+        let can_edit = self.selected.is_some_and(|id| self.vault.get(id).is_some());
+        let edit_hovered = can_edit && self.edit_btn_rect.contains(self.last_mouse);
+        let edit_shape =
+            RoundedRect::from_rect(self.edit_btn_rect, f64::from(theme.tokens.radii.md));
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if edit_hovered {
+                theme.tokens.colors.lift(0.72)
+            } else {
+                theme.tokens.colors.surfaces.raised
+            },
+            None,
+            &edit_shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &edit_shape,
+        );
+        let selected_has_secret = self
+            .selected
+            .and_then(|id| self.vault.get(id))
+            .is_some_and(crate::model::Account::secret_is_valid);
+        let edit_label = if selected_has_secret {
+            if self.rect.width() < 420.0 {
+                "Edit"
+            } else {
+                "Edit selected"
+            }
+        } else if self.rect.width() < 420.0 {
+            "Set up"
+        } else {
+            "Set up selected"
+        };
+        let edit_color = if can_edit {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
+        };
+        let (edit_w, edit_h) =
+            text_renderer.measure_weighted(edit_label, 14.0, None, TextWeight::Medium);
+        text_renderer.draw_text_weighted(
+            scene,
+            edit_label,
+            14.0,
+            edit_color,
+            transform
+                * Affine::translate((
+                    self.edit_btn_rect.center().x - f64::from(edit_w) / 2.0,
+                    self.edit_btn_rect.center().y - f64::from(edit_h) / 2.0,
+                )),
+            None,
+            TextWeight::Medium,
+        );
         let hovered = self.add_btn_rect.contains(self.last_mouse);
         let shape = RoundedRect::from_rect(self.add_btn_rect, f64::from(theme.tokens.radii.md));
         let bg = if hovered {
@@ -840,6 +1119,17 @@ impl Widget for AuthenticatorApp {
             self.rect.x1 - OUTER_PAD,
             self.rect.y0 + 18.0 + ADD_BTN_H,
         );
+        let edit_width = if self.rect.width() < 420.0 {
+            COMPACT_EDIT_BTN_W
+        } else {
+            EDIT_BTN_W
+        };
+        self.edit_btn_rect = Rect::new(
+            self.add_btn_rect.x0 - 10.0 - edit_width,
+            self.add_btn_rect.y0,
+            self.add_btn_rect.x0 - 10.0,
+            self.add_btn_rect.y1,
+        );
         let sy = self.rect.y0 + 88.0;
         self.search_rect = Rect::new(
             self.rect.x0 + OUTER_PAD,
@@ -851,10 +1141,26 @@ impl Widget for AuthenticatorApp {
 
         self.list_rect = Rect::new(
             self.rect.x0 + 12.0,
-            self.rect.y0 + HEADER_H,
+            self.rect.y0
+                + HEADER_H
+                + if self.persistence_pending {
+                    PERSISTENCE_BANNER_H + 8.0
+                } else {
+                    0.0
+                },
             self.rect.x1 - 12.0,
             self.rect.y1 - 12.0,
         );
+        self.persistence_retry_rect = if self.persistence_pending {
+            Rect::new(
+                self.rect.x1 - OUTER_PAD - 92.0,
+                self.rect.y0 + HEADER_H + 8.0,
+                self.rect.x1 - OUTER_PAD,
+                self.rect.y0 + HEADER_H + 40.0,
+            )
+        } else {
+            Rect::ZERO
+        };
         self.list.set_viewport(self.list_rect);
 
         self.add_panel.layout(self.rect);
@@ -877,6 +1183,59 @@ impl Widget for AuthenticatorApp {
             &self.rect,
         );
         self.draw_header(scene, transform, text_renderer, theme);
+        if self.persistence_pending {
+            let banner = Rect::new(
+                self.rect.x0 + OUTER_PAD,
+                self.rect.y0 + HEADER_H + 8.0,
+                self.rect.x1 - OUTER_PAD,
+                self.rect.y0 + HEADER_H + 40.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.semantic.danger.with_alpha_factor(0.14),
+                None,
+                &RoundedRect::from_rect(banner, f64::from(theme.tokens.radii.md)),
+            );
+            let banner_message = if self.rect.width() < 480.0 {
+                "Vault not saved — retry"
+            } else {
+                self.persistence_message
+                    .as_deref()
+                    .unwrap_or("Local vault changes aren't saved — restore access, then retry.")
+            };
+            text_renderer.draw_text(
+                scene,
+                banner_message,
+                13.0,
+                theme.tokens.colors.semantic.danger,
+                transform * Affine::translate((banner.x0 + 12.0, banner.center().y - 8.0)),
+                Some((self.persistence_retry_rect.x0 - banner.x0 - 24.0) as f32),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.accent_primary,
+                None,
+                &RoundedRect::from_rect(
+                    self.persistence_retry_rect,
+                    f64::from(theme.tokens.radii.sm),
+                ),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Retry",
+                13.0,
+                Color::WHITE,
+                transform
+                    * Affine::translate((
+                        self.persistence_retry_rect.x0 + 23.0,
+                        self.persistence_retry_rect.center().y - 8.0,
+                    )),
+                None,
+                TextWeight::Semibold,
+            );
+        }
         // Hairline under the header.
         let line = Rect::new(
             self.rect.x0,
@@ -1006,12 +1365,20 @@ impl Widget for AuthenticatorApp {
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
     fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        crate::actions::provide_contextual_resources(&self.vault.accounts)
+        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
+        if self.persistence_pending
+            && let Some(root) = resources.first_mut()
+        {
+            *root = root
+                .clone()
+                .with_action(crate::actions::retry_persist_operation());
+        }
+        resources
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
         if id == "totp.vault" {
-            return crate::actions::provide_contextual_resources(&self.vault.accounts).pop();
+            return self.resources(doc).pop();
         }
         let raw_id = id.strip_prefix("totp.account:")?;
         let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
@@ -1019,9 +1386,14 @@ impl Widget for AuthenticatorApp {
         let index = ordered
             .iter()
             .position(|account| account.id == account_id)?;
-        ordered
-            .get(index)
-            .map(|account| crate::actions::provide_account_resource(account, index, ordered.len()))
+        ordered.get(index).map(|account| {
+            crate::actions::provide_account_resource(
+                account,
+                index,
+                ordered.len(),
+                account.secret_is_valid(),
+            )
+        })
     }
 
     fn invoke_resource_operation(
@@ -1039,6 +1411,36 @@ impl Widget for AuthenticatorApp {
             return Ok(false);
         };
         let (raw, expected_kind) = match operation {
+            crate::actions::TotpOperation::OpenAddAccount => {
+                if kind != OperationKind::View {
+                    return Err("Authenticator add screen requires a view broker route".into());
+                }
+                self.add_panel.open();
+                self.add_panel.layout(self.rect);
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::SetUpLocal { id } => {
+                if kind != OperationKind::View {
+                    return Err("Authenticator setup requires a view broker route".into());
+                }
+                let account_id = id
+                    .parse()
+                    .map_err(|_| "Invalid authenticator account id".to_string())?;
+                let Some(account) = self.vault.get(account_id).cloned() else {
+                    return Err("Authenticator account is no longer available".into());
+                };
+                self.selected = Some(account_id);
+                self.add_panel.open_for_provision(&account);
+                self.add_panel.layout(self.rect);
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::RetryPersist => {
+                if kind != OperationKind::Effect {
+                    return Err("Authenticator retry requires an effect broker route".into());
+                }
+                self.retry_persist();
+                return Ok(true);
+            }
             crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
             crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
         };
@@ -1087,7 +1489,19 @@ impl Widget for AuthenticatorApp {
         self.rect
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root publishes one coherent semantic tree"
+    )]
     fn accessibility(&self) -> Option<AccessNode> {
+        if self.add_panel.is_open() {
+            return Some(
+                AccessNode::new(Role::Window)
+                    .with_name("Authenticator")
+                    .with_bounds(self.rect)
+                    .with_children(vec![self.add_panel.accessibility()]),
+            );
+        }
         let visible = self.vault.search(self.search.value());
         let total = visible.len();
         let controls = vec![
@@ -1097,6 +1511,28 @@ impl Widget for AuthenticatorApp {
                 .with_state(AccessState::new().focusable(true))
                 .with_bounds(self.add_btn_rect)
                 .with_action_target("totp.add"),
+            AccessNode::new(Role::Button)
+                .with_name(
+                    if self.selected.is_some_and(|id| self.has_local_secret(id)) {
+                        "Edit selected account"
+                    } else {
+                        "Set up selected account"
+                    },
+                )
+                .with_description(
+                    if self.selected.is_some_and(|id| self.has_local_secret(id)) {
+                        "Edit the selected account; shortcut Control+E"
+                    } else {
+                        "Set up the selected account's local secret; shortcut Control+E"
+                    },
+                )
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .disabled(self.selected.is_none()),
+                )
+                .with_bounds(self.edit_btn_rect)
+                .with_action_target("totp.edit"),
             AccessNode::new(Role::TextInput)
                 .with_name("Search accounts")
                 .with_value(self.search.value())
@@ -1113,6 +1549,20 @@ impl Widget for AuthenticatorApp {
                 .with_name("Authenticator actions")
                 .with_children(controls),
         ];
+        if self.persistence_pending {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Retry saving local vault")
+                    .with_description(
+                        self.persistence_message
+                            .as_deref()
+                            .unwrap_or("Retry the failed encrypted local-vault save"),
+                    )
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.persistence_retry_rect)
+                    .with_action_target("totp.retry-persist"),
+            );
+        }
 
         let account_rows = visible
             .iter()
@@ -1121,11 +1571,19 @@ impl Widget for AuthenticatorApp {
                 let row = self.list.account_bounds(account.id)?;
                 let name = Self::accessible_account_name(account);
                 let id = account.id;
-                let row_children = vec![
+                let mut row_children = vec![
                     AccessNode::new(Role::Button)
                         .with_name(format!("Copy code for {name}"))
-                        .with_description("Copies the current one-time code to the clipboard")
-                        .with_state(AccessState::new().focusable(true))
+                        .with_description(if account.secret_is_valid() {
+                            "Copies the current one-time code to the clipboard"
+                        } else {
+                            "Set up this account's secret on this device before copying a code"
+                        })
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(!account.secret_is_valid()),
+                        )
                         .with_action_target(format!("totp.copy:{id}")),
                     AccessNode::new(Role::Button)
                         .with_name(format!("Move {name} up"))
@@ -1144,6 +1602,17 @@ impl Widget for AuthenticatorApp {
                         .with_state(AccessState::new().focusable(true))
                         .with_action_target(format!("totp.delete:{id}")),
                 ];
+                if !account.secret_is_valid() {
+                    row_children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(format!("Set up {name} on this device"))
+                            .with_description(
+                                "Paste or scan the local secret without sharing it with collaborators",
+                            )
+                            .with_state(AccessState::new().focusable(true))
+                            .with_action_target(format!("totp.setup:{id}")),
+                    );
+                }
                 // The rotating code is a credential. It is deliberately not
                 // exported as a value/live region; callers opt in by using
                 // the explicit Copy control.
@@ -1198,6 +1667,16 @@ impl Widget for AuthenticatorApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if self.add_panel.is_open() {
+            let handled = self.add_panel.perform_a11y_target(target, action);
+            if let Some(event) = self.add_panel.take_event() {
+                self.apply_add_panel_event(event, state);
+            }
+            return handled;
+        }
+        if target == "totp.retry-persist" {
+            return matches!(action, A11yAction::Activate) && self.retry_persist();
+        }
         self.perform_a11y_target(target, action, state)
     }
 
@@ -1334,12 +1813,119 @@ mod tests {
     }
 
     #[test]
+    fn modal_accessibility_is_modal_protected_and_routes_text_actions() {
+        let (mut app, mut state) = app_with_state();
+        let _ = layout_at(&mut app, 640.0, 700.0);
+        app.add_panel.open();
+        app.add_panel.layout(app.rect);
+        let tree = app.accessibility().expect("semantic root");
+        assert_eq!(tree.children.len(), 1, "background controls are inert");
+        let dialog = &tree.children[0];
+        assert_eq!(dialog.role, Role::Dialog);
+        assert!(dialog.state.modal);
+        let secret = dialog
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Secret key"))
+            .expect("protected secret field");
+        assert!(secret.state.protected);
+        assert!(secret.value.is_none());
+        assert!(app.perform_semantic_action(
+            "totp.dialog.issuer",
+            &A11yAction::SetValue("Acme".into()),
+            &mut state.doc,
+            &state.root
+        ));
+        assert_eq!(app.add_panel.field_snapshot().0, "Acme");
+        assert!(app.perform_semantic_action(
+            "totp.dialog.save",
+            &A11yAction::Activate,
+            &mut state.doc,
+            &state.root
+        ));
+        let dialog = &app
+            .accessibility()
+            .expect("still open on validation failure")
+            .children[0];
+        assert!(
+            dialog
+                .children
+                .iter()
+                .any(|node| node.live == Some(Politeness::Assertive))
+        );
+    }
+
+    #[test]
+    fn modal_a11y_exposes_advanced_algorithm_and_digit_choices() {
+        let (mut app, mut state) = app_with_state();
+        let _ = layout_at(&mut app, 640.0, 700.0);
+        app.add_panel.open();
+        app.add_panel.layout(app.rect);
+        assert!(app.perform_semantic_action(
+            "totp.dialog.advanced",
+            &A11yAction::Activate,
+            &mut state.doc,
+            &state.root
+        ));
+        assert!(app.perform_semantic_action(
+            "totp.dialog.algorithm:1",
+            &A11yAction::Activate,
+            &mut state.doc,
+            &state.root
+        ));
+        assert!(app.perform_semantic_action(
+            "totp.dialog.digits:8",
+            &A11yAction::Activate,
+            &mut state.doc,
+            &state.root
+        ));
+        let dialog = &app.accessibility().expect("dialog tree").children[0];
+        assert!(
+            dialog
+                .children
+                .iter()
+                .any(|node| { node.name.as_deref() == Some("SHA256") && node.state.selected })
+        );
+        assert!(
+            dialog
+                .children
+                .iter()
+                .any(|node| { node.name.as_deref() == Some("8 digits") && node.state.selected })
+        );
+    }
+
+    #[test]
     fn narrow_header_keeps_the_add_target_inside_the_window() {
         let (mut app, _state) = app_with_state();
         let _ = layout_at(&mut app, 320.0, 640.0);
         assert!(app.add_btn_rect.width() <= COMPACT_ADD_BTN_W);
         assert!(app.add_btn_rect.x0 >= app.rect.x0);
         assert!(app.add_btn_rect.x1 <= app.rect.x1);
+    }
+
+    #[test]
+    fn missing_key_narrow_root_starts_at_top_with_an_accessible_first_row() {
+        let mut app = AuthenticatorApp::demo_missing_secret();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let _ = layout_at(&mut app, 390.0, 844.0);
+        assert_eq!(
+            app.list.scroll_offset(),
+            0.0,
+            "shot roots never retain prior scrolling"
+        );
+        let tree = app.accessibility().expect("narrow root has semantics");
+        let list = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("account list stays exposed at the initial scroll position");
+        assert!(
+            list.children
+                .first()
+                .is_some_and(|row| row.bounds.is_some()),
+            "the first shared account is both visible and reachable to AT"
+        );
     }
 
     /// Run the app's real layout passes at a concrete window size, the same
@@ -1549,8 +2135,8 @@ mod tests {
             before + 1,
             "the account is added to the vault"
         );
-        // The save went through the AddAccount action, so it landed in the
-        // shared document (the real, replicated path — not just the local vault).
+        // The save broadcasts only metadata. The secret stays in the local,
+        // encrypted vault even though the account remains collaborative.
         let in_doc = AuthDoc::list_accounts(&state.doc);
         assert_eq!(
             in_doc.len(),
@@ -1561,11 +2147,197 @@ mod tests {
             in_doc.iter().any(|a| a.issuer == "Proton"),
             "the added account is present in the document by issuer"
         );
+        assert!(
+            in_doc.iter().all(|account| account.secret.is_empty()),
+            "the shared document never receives the setup secret"
+        );
         // And the host has one undo boundary to record for it.
         assert!(
             Widget::take_committed_action(&mut app).is_some(),
             "the add action registered exactly one undo boundary for the host"
         );
+    }
+
+    #[test]
+    fn missing_local_secret_exposes_honest_setup_then_attaches_to_the_same_id() {
+        use qos_actions::Availability;
+
+        let mut app = AuthenticatorApp::empty();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let remote = demo_accounts().remove(0);
+        let id = remote.id;
+        let secret = remote.secret.clone();
+        AuthDoc::upsert_account(&mut state.doc, &remote);
+        app.reload_from_doc(&state.doc);
+        let _ = layout_at(&mut app, 900.0, 700.0);
+
+        assert!(!app.has_local_secret(id));
+        let resource = Widget::resource(&app, &state.doc, &crate::actions::account_resource_id(id))
+            .expect("the shared account resolves locally");
+        let copy = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "copy-code")
+            .expect("copy action");
+        assert!(matches!(
+            copy.contract.availability,
+            Availability::Unavailable { ref code, .. } if code == "local_secret_required"
+        ));
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "set-up-local")
+        );
+
+        let encoded =
+            serde_json::to_vec(&crate::actions::TotpOperation::SetUpLocal { id: id.to_string() })
+                .unwrap();
+        assert!(
+            !encoded
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "the exact-account setup route carries an id, never a secret"
+        );
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                crate::actions::TOTP_OPERATION_TYPE,
+                &encoded,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert!(app.add_panel.is_open(), "setup opens the local form");
+        app.add_panel.apply_uri(
+            "otpauth://totp/GitHub:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
+        );
+        app.add_panel.save_for_test();
+        let event = app.add_panel.take_event().expect("setup save event");
+        assert!(matches!(event, AddPanelEvent::Provision(ref account) if account.id == id));
+        app.apply_add_panel_event(event, &mut state.doc);
+        assert!(app.has_local_secret(id));
+        assert_eq!(
+            app.vault.get(id).map(|account| account.secret.as_str()),
+            Some(secret.as_str())
+        );
+
+        // A subsequent metadata projection keeps the provisioned local key,
+        // while the CRDT remains deliberately credential-free.
+        app.reload_from_doc(&state.doc);
+        assert!(app.has_local_secret(id));
+        let bytes = state.doc.save();
+        assert!(
+            !bytes
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "setup never puts a bearer credential in collaboration/history"
+        );
+    }
+
+    #[test]
+    fn failed_persistence_exposes_a_bounded_retry_effect() {
+        let mut app = AuthenticatorApp::demo_persistence_error();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let root = Widget::resources(&app, &state.doc).remove(0);
+        let retry = root
+            .actions
+            .iter()
+            .find(|action| action.id == "retry-save")
+            .expect("unsaved local vault exposes one retry effect");
+        assert_eq!(retry.kind, OperationKind::Effect);
+        let encoded = match &retry.input {
+            qos_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            qos_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
+        };
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert!(
+            !app.persistence_pending,
+            "retry is user-triggered, never a frame loop"
+        );
+    }
+
+    #[test]
+    fn persistence_banner_has_its_own_bounded_click_and_a11y_retry() {
+        let mut app = AuthenticatorApp::demo_persistence_error();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let _ = layout_at(&mut app, 390.0, 720.0);
+        let selected = app.vault.ordered()[0].id;
+        app.selected = Some(selected);
+        assert!(
+            app.toast.is_none(),
+            "the durable banner replaces a duplicate toast"
+        );
+
+        assert!(app.persistence_retry_rect.x0 >= app.rect.x0);
+        assert!(app.persistence_retry_rect.x1 <= app.rect.x1);
+        assert!(app.persistence_retry_rect.y0 >= app.header_rect.y1);
+        assert!(
+            app.list_rect.y0 > app.header_rect.y1,
+            "banner reserves list space"
+        );
+
+        let tree = app
+            .accessibility()
+            .expect("persistence state has semantics");
+        let toolbar = tree
+            .children
+            .iter()
+            .find(|node| node.role == Role::Toolbar)
+            .expect("toolbar remains available");
+        assert!(toolbar.children.iter().any(|node| {
+            node.name.as_deref() == Some("Edit selected account")
+                && node.semantic_key.as_deref() == Some("totp.edit")
+        }));
+        let retry = tree
+            .children
+            .iter()
+            .find(|node| node.semantic_key.as_deref() == Some("totp.retry-persist"))
+            .expect("retry is a separate semantic control");
+        assert_eq!(
+            retry.bounds.map(ui::a11y::AccessBounds::to_rect),
+            Some(app.persistence_retry_rect)
+        );
+        assert!(retry.state.focusable);
+
+        assert!(app.perform_semantic_action(
+            "totp.retry-persist",
+            &A11yAction::Activate,
+            &mut state.doc,
+            &state.root,
+        ));
+        assert!(!app.persistence_pending);
+    }
+
+    #[test]
+    fn injected_save_failure_keeps_the_vault_dirty_and_advertises_retry() {
+        let mut app = AuthenticatorApp::demo();
+        app.seed();
+        app.seeded = true;
+        // Avoid touching a user's live vault: the injected failure returns
+        // before resolving a data directory or key custody.
+        app.seed_mode = SeedMode::Live;
+        crate::storage::force_save_failure_for_test(true);
+        assert!(!app.persist_vault());
+        crate::storage::force_save_failure_for_test(false);
+        assert!(app.persistence_pending);
+
+        let state = ui::State::new();
+        let root = Widget::resources(&app, &state.doc).remove(0);
+        assert!(root.actions.iter().any(|action| action.id == "retry-save"));
     }
 
     /// The primary "Scan a QR image" action must reach the **host** file

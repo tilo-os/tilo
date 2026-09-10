@@ -31,6 +31,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -46,6 +47,13 @@ use crate::model::{self, Account, Algorithm};
 pub enum AddPanelEvent {
     Cancel,
     Save(Account),
+    /// Replace an existing account's local secret and shared metadata. The
+    /// stable id is retained, so search links, collaboration references and
+    /// history all continue to identify the same account.
+    Edit(Account),
+    /// Attach a newly-entered local secret to an already-shared account id.
+    /// This does not create a CRDT/action-history mutation.
+    Provision(Account),
     /// The user asked to import a QR code from an image file. The app routes
     /// this to the **host** file chooser (the XDG Desktop Portal — the app
     /// never draws its own picker, HIG §5), then runs the decode and calls
@@ -112,6 +120,12 @@ pub struct AddAccountPanel {
     last_mouse: Point,
     error: String,
     event: Option<AddPanelEvent>,
+    /// The stable account identity being edited, if this panel is an edit
+    /// rather than a new-account flow. The secret remains only in this local
+    /// form and the encrypted vault; it is never copied to the CRDT.
+    editing: Option<crate::model::AccountId>,
+    /// Immutable identity guard for local setup of a shared account.
+    provisioning: Option<Account>,
 
     // Laid-out hit rects, recomputed in `layout`.
     image_card_rect: Rect,
@@ -160,6 +174,8 @@ impl AddAccountPanel {
             last_mouse: Point::ZERO,
             error: String::new(),
             event: None,
+            editing: None,
+            provisioning: None,
             image_card_rect: Rect::ZERO,
             link_card_rect: Rect::ZERO,
             uri_rect: Rect::ZERO,
@@ -185,6 +201,8 @@ impl AddAccountPanel {
     pub fn open(&mut self) {
         self.open = true;
         self.error.clear();
+        self.editing = None;
+        self.provisioning = None;
         self.scroll = 0.0;
         self.reveal_advanced = false;
         self.uri.set_text("");
@@ -213,8 +231,254 @@ impl AddAccountPanel {
         self.reveal_advanced = true;
     }
 
+    /// Open the same calm form for an existing account. This is intentionally
+    /// local: only this device's encrypted vault supplies the secret field.
+    pub fn open_for_edit(&mut self, account: &Account) {
+        self.open();
+        self.editing = Some(account.id);
+        self.issuer.set_text(&account.issuer);
+        self.label.set_text(&account.label);
+        self.secret.set_text(&account.secret);
+        self.period.set_text(&account.period.to_string());
+        self.algorithm = account.algorithm;
+        self.digits = account.digits;
+        self.advanced_open =
+            account.algorithm != Algorithm::Sha1 || account.digits != 6 || account.period != 30;
+        self.set_focus(Some(Field::Issuer));
+    }
+
+    /// Provision the secret for this exact existing resource. The form starts
+    /// with the shared identity, then accepts only local credential material.
+    pub fn open_for_provision(&mut self, account: &Account) {
+        self.open();
+        self.editing = Some(account.id);
+        self.provisioning = Some(account.clone());
+        self.issuer.set_text(&account.issuer);
+        self.label.set_text(&account.label);
+        self.period.set_text(&account.period.to_string());
+        self.algorithm = account.algorithm;
+        self.digits = account.digits;
+        self.set_focus(Some(Field::Secret));
+    }
+
+    fn is_editing(&self) -> bool {
+        self.editing.is_some()
+    }
+
+    fn is_provisioning(&self) -> bool {
+        self.provisioning.is_some()
+    }
+
     pub fn take_event(&mut self) -> Option<AddPanelEvent> {
         self.event.take()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "dialog semantics are kept with its controls"
+    )]
+    pub fn accessibility(&self) -> AccessNode {
+        let input =
+            |name: &str, value: &str, rect: Rect, focused: bool, protected: bool, target: &str| {
+                let node = AccessNode::new(Role::TextInput)
+                    .with_name(name)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(focused)
+                            .protected(protected),
+                    )
+                    .with_bounds(rect)
+                    .with_action_target(target);
+                if protected {
+                    node
+                } else {
+                    node.with_value(value)
+                }
+            };
+        let mut children = vec![
+            AccessNode::new(Role::Button)
+                .with_name("Scan a QR image")
+                .with_state(AccessState::new().focusable(true))
+                .with_bounds(self.image_card_rect)
+                .with_action_target("totp.dialog.scan"),
+            AccessNode::new(Role::Button)
+                .with_name("Paste a setup link")
+                .with_state(AccessState::new().focusable(true))
+                .with_bounds(self.link_card_rect)
+                .with_action_target("totp.dialog.link"),
+            input(
+                "Issuer",
+                self.issuer.value(),
+                self.issuer_rect,
+                self.focused == Some(Field::Issuer),
+                false,
+                "totp.dialog.issuer",
+            ),
+            input(
+                "Account name",
+                self.label.value(),
+                self.label_rect,
+                self.focused == Some(Field::Label),
+                false,
+                "totp.dialog.label",
+            ),
+            input(
+                "Secret key",
+                "",
+                self.secret_rect,
+                self.focused == Some(Field::Secret),
+                true,
+                "totp.dialog.secret",
+            ),
+            AccessNode::new(Role::Button)
+                .with_name("Advanced options")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(self.advanced_open),
+                )
+                .with_bounds(self.advanced_header_rect)
+                .with_action_target("totp.dialog.advanced"),
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_state(AccessState::new().focusable(true))
+                .with_bounds(self.cancel_rect)
+                .with_action_target("totp.dialog.cancel"),
+            AccessNode::new(Role::Button)
+                .with_name(if self.is_provisioning() {
+                    "Set up securely"
+                } else if self.is_editing() {
+                    "Save changes"
+                } else {
+                    "Add account"
+                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .disabled(self.secret.value().trim().is_empty()),
+                )
+                .with_bounds(self.save_rect)
+                .with_action_target("totp.dialog.save"),
+        ];
+        if self.uri_expanded {
+            children.push(input(
+                "Setup link",
+                self.uri.value(),
+                self.uri_rect,
+                self.focused == Some(Field::Uri),
+                true,
+                "totp.dialog.uri",
+            ));
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Fill from setup link")
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.parse_rect)
+                    .with_action_target("totp.dialog.fill"),
+            );
+        }
+        if self.advanced_open {
+            for (index, algorithm) in Algorithm::ALL.iter().enumerate() {
+                if let Some(rect) = self.alg_rects.get(index) {
+                    children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(algorithm.as_str())
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(*algorithm == self.algorithm),
+                            )
+                            .with_bounds(*rect)
+                            .with_action_target(format!("totp.dialog.algorithm:{index}")),
+                    );
+                }
+            }
+            for (index, digits) in [6_u8, 8].iter().enumerate() {
+                if let Some(rect) = self.digit_rects.get(index) {
+                    children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(format!("{digits} digits"))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(*digits == self.digits),
+                            )
+                            .with_bounds(*rect)
+                            .with_action_target(format!("totp.dialog.digits:{digits}")),
+                    );
+                }
+            }
+            children.push(input(
+                "Period seconds",
+                self.period.value(),
+                self.period_rect,
+                self.focused == Some(Field::Period),
+                false,
+                "totp.dialog.period",
+            ));
+        }
+        if !self.error.is_empty() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(&self.error)
+                    .with_live(Politeness::Assertive),
+            );
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name(if self.is_provisioning() {
+                "Set up account on this device"
+            } else if self.is_editing() {
+                "Edit account"
+            } else {
+                "Add account"
+            })
+            .with_state(AccessState::new().modal(true))
+            .with_bounds(self.modal)
+            .with_children(children)
+    }
+
+    pub fn perform_a11y_target(&mut self, target: &str, action: &A11yAction) -> bool {
+        let field = match target {
+            "totp.dialog.uri" => Some(Field::Uri),
+            "totp.dialog.issuer" => Some(Field::Issuer),
+            "totp.dialog.label" => Some(Field::Label),
+            "totp.dialog.secret" => Some(Field::Secret),
+            "totp.dialog.period" => Some(Field::Period),
+            _ => None,
+        };
+        if let Some(field) = field {
+            match action {
+                A11yAction::Focus | A11yAction::Activate => self.set_focus(Some(field)),
+                A11yAction::SetValue(value) => {
+                    self.field_mut(field).set_text(value);
+                    self.error.clear();
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if !matches!(action, A11yAction::Activate) {
+            return false;
+        }
+        match target {
+            "totp.dialog.scan" => self.event = Some(AddPanelEvent::PickImageForQr),
+            "totp.dialog.link" => self.expand_uri(),
+            "totp.dialog.fill" => self.parse_uri_field(),
+            "totp.dialog.advanced" => self.toggle_advanced(),
+            "totp.dialog.cancel" => {
+                self.close();
+                self.event = Some(AddPanelEvent::Cancel);
+            }
+            "totp.dialog.save" => self.try_save(),
+            "totp.dialog.algorithm:0" => self.algorithm = Algorithm::Sha1,
+            "totp.dialog.algorithm:1" => self.algorithm = Algorithm::Sha256,
+            "totp.dialog.algorithm:2" => self.algorithm = Algorithm::Sha512,
+            "totp.dialog.digits:6" => self.digits = 6,
+            "totp.dialog.digits:8" => self.digits = 8,
+            _ => return false,
+        }
+        true
     }
 
     /// Order text fields participate in Tab cycling, given the current
@@ -461,6 +725,10 @@ impl AddAccountPanel {
         }
         let issuer = self.issuer.value().trim().to_string();
         let label = self.label.value().trim().to_string();
+        if model::contains_secret_shaped_text(&issuer) || model::contains_secret_shaped_text(&label)
+        {
+            return Err("Account names must not include a secret key".to_string());
+        }
         if issuer.is_empty() && label.is_empty() {
             return Err("Add an issuer or account name".to_string());
         }
@@ -473,7 +741,7 @@ impl AddAccountPanel {
             .clamp(5, 300);
         let color = (issuer.len().wrapping_add(label.len()) % 7) as u8;
         Ok(Account {
-            id: Uuid::new_v4(),
+            id: self.editing.unwrap_or_else(Uuid::new_v4),
             issuer,
             label,
             secret,
@@ -522,8 +790,32 @@ impl AddAccountPanel {
 
     fn try_save(&mut self) {
         match self.build_account() {
-            Ok(acc) => {
-                self.event = Some(AddPanelEvent::Save(acc));
+            Ok(mut acc) => {
+                if let Some(existing) = &self.provisioning {
+                    if acc.issuer.trim() != existing.issuer.trim()
+                        || acc.label.trim() != existing.label.trim()
+                    {
+                        self.error = "This setup link names a different account. Edit shared details separately.".into();
+                        return;
+                    }
+                    if acc.algorithm != existing.algorithm
+                        || acc.digits != existing.digits
+                        || acc.period != existing.period
+                    {
+                        self.error = "This setup link uses different TOTP settings. Update shared settings first, then set up this device.".into();
+                        return;
+                    }
+                    acc.id = existing.id;
+                    acc.color = existing.color;
+                    acc.order = existing.order;
+                }
+                self.event = Some(if self.is_provisioning() {
+                    AddPanelEvent::Provision(acc)
+                } else if self.is_editing() {
+                    AddPanelEvent::Edit(acc)
+                } else {
+                    AddPanelEvent::Save(acc)
+                });
                 self.open = false;
             }
             Err(e) => self.error = e,
@@ -596,7 +888,13 @@ impl AddAccountPanel {
         // Title + calm subtitle.
         text_renderer.draw_text_weighted(
             scene,
-            "Add account",
+            if self.is_provisioning() {
+                "Set up on this device"
+            } else if self.is_editing() {
+                "Save changes"
+            } else {
+                "Add account"
+            },
             22.0,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((left, self.modal.y0 + 24.0)),
@@ -605,7 +903,13 @@ impl AddAccountPanel {
         );
         text_renderer.draw_text(
             scene,
-            "Scan an image, paste a link, or type the details",
+            if self.is_provisioning() {
+                "Paste or scan the secret for this exact account"
+            } else if self.is_editing() {
+                "Update the local secret or shared account details"
+            } else {
+                "Scan an image, paste a link, or type the details"
+            },
             13.0,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((left, self.modal.y0 + 50.0)),
@@ -634,7 +938,11 @@ impl AddAccountPanel {
             self.image_card_rect,
             Glyph::Image,
             "Scan a QR image",
-            "Read the code from a screenshot or photo",
+            if self.modal.width() < 400.0 {
+                "Screenshot or photo"
+            } else {
+                "Read the code from a screenshot or photo"
+            },
             img_hover,
             true,
         );
@@ -647,7 +955,11 @@ impl AddAccountPanel {
             self.link_card_rect,
             Glyph::Link,
             "Paste a setup link",
-            "Fill everything from an otpauth:// link",
+            if self.modal.width() < 400.0 {
+                "Paste an otpauth link"
+            } else {
+                "Fill everything from an otpauth:// link"
+            },
             link_hover,
             false,
         );
@@ -856,7 +1168,13 @@ impl AddAccountPanel {
             text_renderer,
             theme,
             self.save_rect,
-            "Add account",
+            if self.is_provisioning() {
+                "Set up securely"
+            } else if self.is_editing() {
+                "Save changes"
+            } else {
+                "Add account"
+            },
             save_hover,
             can_save,
         );
