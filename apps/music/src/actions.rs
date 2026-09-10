@@ -28,9 +28,9 @@
 //! ## Determinism contract
 //!
 //! Ids are minted at *authoring* time and carried in the payload;
-//! [`Action::apply`] never touches the RNG or the wall-clock. Toggles
-//! (like / saved-album / followed-artist) read the document's current membership
-//! and flip it, so two replicas at the same base heads land on the same result.
+//! [`Action::apply`] never touches the RNG or the wall-clock. Membership writes
+//! (like / saved-album / followed-artist) carry an explicit desired value, so
+//! delayed delivery cannot invert a user's intent.
 //! A malformed or stale payload is refused before it changes the document. This
 //! prevents an external caller from recording a successful-looking history
 //! entry that actually wrote a dangling library reference.
@@ -273,13 +273,12 @@ pub enum MusicAction {
     /// it is normalized into an HTTPS URL or bounded PNG data URL before this
     /// deterministic, replayable action is written to the shared document.
     SetPlaylistCover { playlist: String, cover: String },
-    /// Toggle a track's membership in "Liked Songs". Deterministic against the
-    /// replay base: the current membership is read from the document and flipped.
-    ToggleLiked { track: String },
-    /// Toggle an album's membership in the saved-to-library set.
-    ToggleSavedAlbum { album: String },
-    /// Toggle whether the user follows an artist.
-    ToggleFollowedArtist { artist: String },
+    /// Set a track's membership in "Liked Songs" to an explicit value.
+    SetLiked { track: String, liked: bool },
+    /// Set an album's saved-to-library membership to an explicit value.
+    SetSavedAlbum { album: String, saved: bool },
+    /// Set whether the user follows an artist to an explicit value.
+    SetFollowedArtist { artist: String, followed: bool },
 }
 
 /// Durable, browseable history metadata for a library mutation.
@@ -310,13 +309,32 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
             "music.playlist",
             playlist,
         ),
-        MusicAction::ToggleLiked { track } => ("Toggle liked song", track, "music.track", track),
-        MusicAction::ToggleSavedAlbum { album } => {
-            ("Toggle saved album", album, "music.album", album)
-        }
-        MusicAction::ToggleFollowedArtist { artist } => {
-            ("Toggle followed artist", artist, "music.artist", artist)
-        }
+        MusicAction::SetLiked { track, liked } => (
+            if *liked { "Like song" } else { "Unlike song" },
+            track,
+            "music.track",
+            track,
+        ),
+        MusicAction::SetSavedAlbum { album, saved } => (
+            if *saved {
+                "Save album"
+            } else {
+                "Remove saved album"
+            },
+            album,
+            "music.album",
+            album,
+        ),
+        MusicAction::SetFollowedArtist { artist, followed } => (
+            if *followed {
+                "Follow artist"
+            } else {
+                "Unfollow artist"
+            },
+            artist,
+            "music.artist",
+            artist,
+        ),
     };
     context.action_label = label.to_string();
     context.resource = Some(qos_actions::ActionResource {
@@ -400,26 +418,26 @@ impl Action for MusicAction {
                 )?;
                 mdoc::set_playlist_cover(doc, playlist, cover);
             }
-            MusicAction::ToggleLiked { track } => {
+            MusicAction::SetLiked { track, liked } => {
                 require(
                     mdoc::has_track(doc, track),
                     "track is no longer in the library",
                 )?;
-                mdoc::toggle_liked(doc, track);
+                mdoc::set_liked(doc, track, *liked);
             }
-            MusicAction::ToggleSavedAlbum { album } => {
+            MusicAction::SetSavedAlbum { album, saved } => {
                 require(
                     mdoc::has_album(doc, album),
                     "album is no longer in the library",
                 )?;
-                mdoc::toggle_saved_album(doc, album);
+                mdoc::set_saved_album(doc, album, *saved);
             }
-            MusicAction::ToggleFollowedArtist { artist } => {
+            MusicAction::SetFollowedArtist { artist, followed } => {
                 require(
                     mdoc::has_artist(doc, artist),
                     "artist is no longer in the library",
                 )?;
-                mdoc::toggle_followed_artist(doc, artist);
+                mdoc::set_followed_artist(doc, artist, *followed);
             }
         }
         Ok(())
@@ -564,21 +582,24 @@ pub fn set_cover_action(playlist: &str, cover: &str) -> MusicAction {
     }
 }
 
-pub fn toggle_liked_action(track: &str) -> MusicAction {
-    MusicAction::ToggleLiked {
+pub fn set_liked_action(track: &str, liked: bool) -> MusicAction {
+    MusicAction::SetLiked {
         track: track.to_string(),
+        liked,
     }
 }
 
-pub fn toggle_saved_album_action(album: &str) -> MusicAction {
-    MusicAction::ToggleSavedAlbum {
+pub fn set_saved_album_action(album: &str, saved: bool) -> MusicAction {
+    MusicAction::SetSavedAlbum {
         album: album.to_string(),
+        saved,
     }
 }
 
-pub fn toggle_followed_artist_action(artist: &str) -> MusicAction {
-    MusicAction::ToggleFollowedArtist {
+pub fn set_followed_artist_action(artist: &str, followed: bool) -> MusicAction {
+    MusicAction::SetFollowedArtist {
         artist: artist.to_string(),
+        followed,
     }
 }
 
@@ -1116,7 +1137,7 @@ fn playlist_track_resource(
         } else {
             "Like song"
         },
-        &toggle_liked_action(&track.id),
+        &set_liked_action(&track.id, !track.liked),
     ))
     .with_action(if index > 0 {
         immediate_spec(
@@ -1187,7 +1208,7 @@ pub(crate) fn catalog_track_resource(
         } else {
             "Like song"
         },
-        &toggle_liked_action(&track.id),
+        &set_liked_action(&track.id, !track.liked),
     ))
     .with_action({
         let mut queued = playback.clone();
@@ -1252,7 +1273,7 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
         } else {
             "Save album to library"
         },
-        &toggle_saved_album_action(&album.id),
+        &set_saved_album_action(&album.id, !album.saved),
     ))
 }
 
@@ -1277,7 +1298,7 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
         } else {
             "Follow artist"
         },
-        &toggle_followed_artist_action(&artist.id),
+        &set_followed_artist_action(&artist.id, !artist.followed),
     ))
 }
 
@@ -1751,10 +1772,10 @@ mod tests {
         }
     }
 
-    /// A deterministic toggle (like) also converges byte-identically — each
-    /// replica reads the shared membership and flips it.
+    /// An absolute like write replays byte-identically, regardless of the
+    /// membership visible on the receiver when it arrives.
     #[test]
-    fn toggle_liked_replays_byte_identical() {
+    fn set_liked_replays_byte_identical() {
         let (_app, seeded_doc) = seeded();
         let mut a = seeded_doc;
         a.commit();
@@ -1767,16 +1788,19 @@ mod tests {
             .next()
             .unwrap()
             .clone();
-        let before = crate::doc::load_library(&a).is_liked(&track);
-        let action = toggle_liked_action(&track);
+        let action = set_liked_action(&track, true);
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
 
-        assert_eq!(a.get_heads(), b.get_heads(), "toggle replayed identically");
-        assert_eq!(crate::doc::load_library(&a).is_liked(&track), !before);
-        assert_eq!(crate::doc::load_library(&b).is_liked(&track), !before);
+        assert_eq!(
+            a.get_heads(),
+            b.get_heads(),
+            "set write replayed identically"
+        );
+        assert!(crate::doc::load_library(&a).is_liked(&track));
+        assert!(crate::doc::load_library(&b).is_liked(&track));
     }
 
     /// Single source of truth: the palette's "Delete playlist" spec and the
