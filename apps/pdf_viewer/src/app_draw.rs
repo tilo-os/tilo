@@ -17,12 +17,16 @@ struct CommentMetrics {
 /// the draw pass and a test can assert the pieces never collide.
 struct CommentHeader {
     avatar_c: Point,
+    avatar_radius: f64,
     name_x: f64,
     /// Baseline (top) y for the author name.
     name_y: f64,
     /// Max text width for the author name before the resolve chip.
     name_max: f32,
     chip: Rect,
+    /// Tight overlay rails use a short visible chip label while keeping the
+    /// full resolve action in the semantic tree.
+    compact_chip: bool,
     del: Rect,
     /// Top y where the card body should begin, clear of the header row.
     body_top: f64,
@@ -120,7 +124,11 @@ impl PdfApp {
         let fit = place(fitw, &mut rx);
         rx -= 10.0;
         let zoom_in = place(28.0, &mut rx);
-        let zoom_label = if compact {
+        // The percentage is useful confirmation at normal scale, but its
+        // fixed toolbar slot is not a viable control at enlarged text. The
+        // fit state remains visible/actionable and the accessible document
+        // value still announces the current zoom.
+        let zoom_label = if compact || self.text_scale > 1.25 {
             Rect::ZERO
         } else {
             place(46.0, &mut rx)
@@ -257,18 +265,19 @@ impl PdfApp {
         const FIELD_MAX: f64 = 520.0;
 
         let s = self.search_rect;
-        let pad = 16.0;
-        let gap = 8.0;
+        let scale = f64::from(tr.text_scale()).clamp(1.0, 2.0);
+        let pad = 16.0 * scale;
+        let gap = 8.0 * scale;
         let cy = f64::midpoint(s.y0, s.y1);
-        let field_top = s.y0 + 8.0;
-        let field_bot = s.y1 - 8.0;
+        let field_top = s.y0 + 8.0 * scale;
+        let field_bot = s.y1 - 8.0 * scale;
         let field_left = s.x0 + pad;
-        let chip_h = 22.0;
+        let chip_h = 22.0 * scale;
         let chip = |w: f64, x1: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
 
         // Right cluster: [Case] [Whole word], packed against the right edge.
-        let case_w = f64::from(tr.measure("Case", 11.0, None).0) + 22.0;
-        let ww_w = f64::from(tr.measure("Whole word", 11.0, None).0) + 22.0;
+        let case_w = f64::from(tr.measure("Case", 11.0, None).0) + 22.0 * scale;
+        let ww_w = f64::from(tr.measure("Whole word", 11.0, None).0) + 22.0 * scale;
         let whole_word = chip(ww_w, s.x1 - pad);
         let case = chip(case_w, whole_word.x0 - gap);
         let chips_left = case.x0;
@@ -290,20 +299,20 @@ impl PdfApp {
 
         // Show the hint only when the field + full counter still clear the
         // toggles with room to spare.
-        let block_min = FIELD_MIN
+        let block_min = FIELD_MIN * scale
             + if counter_full_w > 0.0 {
                 gap + counter_full_w
             } else {
                 0.0
             };
-        let avail_no_hint = (chips_left - 12.0) - field_left;
-        let show_hint = avail_no_hint - block_min >= hint_w + 26.0;
+        let avail_no_hint = (chips_left - 12.0 * scale) - field_left;
+        let show_hint = avail_no_hint - block_min >= hint_w + 26.0 * scale;
         let (hint, right_cluster_left) = if show_hint {
-            let hx1 = chips_left - 14.0;
+            let hx1 = chips_left - 14.0 * scale;
             let hx0 = hx1 - hint_w;
-            (Some(Rect::new(hx0, s.y0, hx1, s.y1)), hx0 - 12.0)
+            (Some(Rect::new(hx0, s.y0, hx1, s.y1)), hx0 - 12.0 * scale)
         } else {
-            (None, chips_left - 12.0)
+            (None, chips_left - 12.0 * scale)
         };
 
         // Field (left, capped) + counter (just right of it). Reflow the counter
@@ -311,9 +320,9 @@ impl PdfApp {
         let span_right = right_cluster_left;
         let room = (span_right - field_left).max(0.0);
         let (counter_w, counter_str) =
-            if counter_full_w > 0.0 && room >= FIELD_MIN + gap + counter_full_w {
+            if counter_full_w > 0.0 && room >= FIELD_MIN * scale + gap + counter_full_w {
                 (counter_full_w, Some(full))
-            } else if counter_short_w > 0.0 && room >= FIELD_MIN + gap + counter_short_w {
+            } else if counter_short_w > 0.0 && room >= FIELD_MIN * scale + gap + counter_short_w {
                 (counter_short_w, Some(short))
             } else {
                 (0.0, None)
@@ -323,9 +332,9 @@ impl PdfApp {
         } else {
             0.0
         };
-        let field_right = (field_left + FIELD_MAX)
+        let field_right = (field_left + FIELD_MAX * scale)
             .min(span_right - reserve)
-            .max(field_left + FIELD_MIN.min(room));
+            .max(field_left + (FIELD_MIN * scale).min(room));
         let field = Rect::new(field_left, field_top, field_right, field_bot);
         let counter = counter_str.map(|t| {
             let cx0 = field.x1 + gap;
@@ -379,7 +388,7 @@ impl PdfApp {
 
     fn sidebar_tab_rects(&self) -> [(SidebarTab, Rect); 3] {
         let sb = self.sidebar_rect;
-        let h = 38.0;
+        let h = 38.0 * self.text_scale;
         let w = sb.width() / 3.0;
         [
             (
@@ -425,6 +434,14 @@ impl PdfApp {
         // Whole-window backdrop.
         scene.fill(Fill::NonZero, base, c.surfaces.base, None, &self.rect);
 
+        // A PDF page is a fixed-layout document: accessibility text scale
+        // enlarges the reader chrome, not the page's coordinates. Rendering
+        // its stored glyph positions at the chrome scale makes headings,
+        // annotations and signatures collide instead of preserving the
+        // document users are reviewing. Screen readers still get the complete
+        // document semantics; zoom remains the explicit visual magnifier.
+        let chrome_text_scale = tr.text_scale();
+        tr.set_text_scale(1.0);
         // In text mode, refresh the page-point text-line cache for visible
         // pages so the smart highlight tool can snap to exactly the glyphs
         // being drawn. (Raster pages carry no toolkit text geometry.)
@@ -436,6 +453,7 @@ impl PdfApp {
         } else {
             self.refresh_text_lines(tr, theme);
         }
+        tr.set_text_scale(chrome_text_scale);
 
         // Resolve which toolbar button (if any) the pointer is hovering and
         // advance the tooltip reveal timer before the toolbar paints.
@@ -468,7 +486,9 @@ impl PdfApp {
         // Rasterise the pages + thumbnails on screen once, up front.
         let (page_imgs, thumb_imgs) = self.rasterize_visible();
 
+        tr.set_text_scale(1.0);
         self.draw_canvas(scene, base, tr, theme, &page_imgs);
+        tr.set_text_scale(chrome_text_scale);
 
         // The floating selection HUD over the page (shared `ui` component).
         self.draw_selection_hud(scene, base, tr, theme);
@@ -1823,6 +1843,7 @@ impl PdfApp {
     ) {
         let c = &theme.tokens.colors;
         let field = lay.field;
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         let field_shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, base, c.surfaces.base, None, &field_shape);
         scene.stroke(
@@ -1835,11 +1856,16 @@ impl PdfApp {
         draw_search_glyph(
             scene,
             base,
-            Rect::new(field.x0, field.y0, field.x0 + 30.0, field.y1),
+            Rect::new(field.x0, field.y0, field.x0 + 30.0 * scale, field.y1),
             theme.text_dim,
         );
 
-        let input = Rect::new(field.x0 + 32.0, field.y0, field.x1 - 5.0, field.y1);
+        let input = Rect::new(
+            field.x0 + 32.0 * scale,
+            field.y0,
+            field.x1 - 5.0 * scale,
+            field.y1,
+        );
         self.search_input.apply_layout_external(input);
         if self.search_input.value().is_empty() {
             tr.draw_text(
@@ -1847,7 +1873,7 @@ impl PdfApp {
                 "Search document…",
                 13.0,
                 theme.text_dim,
-                base * Affine::translate((input.x0, vcenter(input, 13.0))),
+                base * Affine::translate((input.x0, vcenter(input, 13.0 * scale as f32))),
                 Some(input.width() as f32),
             );
         }
@@ -1871,7 +1897,10 @@ impl PdfApp {
                 text,
                 12.0,
                 theme.text_dim,
-                base * Affine::translate((rect.x0, vcenter(self.search_rect, 12.0))),
+                base * Affine::translate((
+                    rect.x0,
+                    vcenter(self.search_rect, 12.0 * theme.text_scale),
+                )),
                 None,
             );
         }
@@ -1928,7 +1957,7 @@ impl PdfApp {
                 txt,
                 base * Affine::translate((
                     f64::midpoint(r.x0, r.x1) - f64::from(lw) / 2.0,
-                    vcenter(r, 11.0),
+                    vcenter(r, 11.0 * theme.text_scale),
                 )),
                 None,
             );
@@ -1951,7 +1980,10 @@ impl PdfApp {
                 SEARCH_HINT,
                 10.5,
                 theme.text_dim,
-                base * Affine::translate((hint.x0, vcenter(self.search_rect, 10.5))),
+                base * Affine::translate((
+                    hint.x0,
+                    vcenter(self.search_rect, 10.5 * theme.text_scale),
+                )),
                 None,
             );
         }
@@ -1983,10 +2015,20 @@ impl PdfApp {
         let rects: Vec<Rect> = tab_rects.iter().map(|(_, r)| *r).collect();
         let labels: Vec<&str> = tab_rects
             .iter()
-            .map(|(tab, _)| match tab {
-                SidebarTab::Comments => "Comments",
-                SidebarTab::Outline => "Contents",
-                SidebarTab::Signatures => "Signatures",
+            .map(|(tab, _)| {
+                if self.text_scale > 1.25 {
+                    match tab {
+                        SidebarTab::Comments => "Notes",
+                        SidebarTab::Outline => "TOC",
+                        SidebarTab::Signatures => "Sign",
+                    }
+                } else {
+                    match tab {
+                        SidebarTab::Comments => "Comments",
+                        SidebarTab::Outline => "Contents",
+                        SidebarTab::Signatures => "Signatures",
+                    }
+                }
             })
             .collect();
         let selected = tab_rects
@@ -2006,10 +2048,11 @@ impl PdfApp {
         for (tab, r) in tab_rects {
             hits.push((SidebarHit::Tab(tab), r));
         }
-        let tabs_hair = Rect::new(sb.x0, sb.y0 + 38.0 - 1.0, sb.x1, sb.y0 + 38.0);
+        let tab_h = 38.0 * self.text_scale;
+        let tabs_hair = Rect::new(sb.x0, sb.y0 + tab_h - 1.0, sb.x1, sb.y0 + tab_h);
         scene.fill(Fill::NonZero, base, c.border_standard, None, &tabs_hair);
 
-        let body = Rect::new(sb.x0, sb.y0 + 38.0, sb.x1, sb.y1);
+        let body = Rect::new(sb.x0, sb.y0 + tab_h, sb.x1, sb.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &body);
         match self.sidebar_tab {
             SidebarTab::Comments => self.draw_comments(
@@ -2043,7 +2086,7 @@ impl PdfApp {
     /// The scrollable body rect of the sidebar (below the tab strip).
     fn sidebar_body(&self) -> Rect {
         let sb = self.sidebar_rect;
-        Rect::new(sb.x0, sb.y0 + 38.0, sb.x1, sb.y1)
+        Rect::new(sb.x0, sb.y0 + 38.0 * self.text_scale, sb.x1, sb.y1)
     }
 
     /// Measured heights for one comment card. Computed once and shared by the
@@ -2053,36 +2096,52 @@ impl PdfApp {
     /// chip and delete button never overlap regardless of name length. The name
     /// is clamped to the space left of the chip (with an 8px gap), and the body
     /// starts below the header band.
-    fn comment_header_layout(card: Rect) -> CommentHeader {
+    fn comment_header_layout(card: Rect, text_scale: f64) -> CommentHeader {
+        // TextRenderer scales glyph metrics, but this hand-drawn header owns
+        // its own controls. Scale the whole header band with type so the
+        // author, resolve state and delete affordance remain separate at 2×.
+        let s = text_scale.clamp(1.0, 2.0);
+        let edge = 10.0 * s;
+        let del_side = (18.0 * s).max(24.0);
         let del = Rect::new(
-            card.x1 - 10.0 - 18.0,
-            card.y0 + 6.0,
-            card.x1 - 10.0,
-            card.y0 + 24.0,
+            card.x1 - edge - del_side,
+            card.y0 + 6.0 * s,
+            card.x1 - edge,
+            card.y0 + 6.0 * s + del_side,
         );
-        let chip_w = 54.0;
+        let avatar_radius = 9.0 * s;
+        let avatar_c = Point::new(
+            card.x0 + 12.0 * s + avatar_radius,
+            card.y0 + 6.0 * s + avatar_radius,
+        );
+        let name_x = avatar_c.x + 5.0 * s + avatar_radius;
+        let chip_right = del.x0 - 8.0 * s;
+        // Keep an author column even in the narrow overlay. The chip gives up
+        // width first; its paint pass then uses the short Fix/Done label.
+        let chip_w = (54.0 * s).min((chip_right - (name_x + 24.0 + 16.0 * s)).max(36.0));
         let chip = Rect::new(
-            del.x0 - 8.0 - chip_w,
-            card.y0 + 6.0,
-            del.x0 - 8.0,
-            card.y0 + 22.0,
+            chip_right - chip_w,
+            card.y0 + 6.0 * s,
+            chip_right,
+            card.y0 + 6.0 * s + 16.0 * s,
         );
-        let avatar_c = Point::new(card.x0 + 12.0 + 9.0, card.y0 + 15.0);
-        let name_x = avatar_c.x + 14.0;
         // Stop 8px short of the chip so a long name truncates cleanly.
-        let name_max = ((chip.x0 - 8.0) - name_x).max(24.0) as f32;
+        let name_max = ((chip.x0 - 8.0 * s) - name_x).max(0.0) as f32;
         CommentHeader {
             avatar_c,
+            avatar_radius,
             name_x,
-            name_y: card.y0 + 9.0,
+            name_y: card.y0 + 8.0 * s,
             name_max,
             chip,
+            compact_chip: chip_w < 54.0 * s - 0.5,
             del,
-            body_top: card.y0 + 30.0,
+            body_top: card.y0 + 30.0 * s,
         }
     }
 
     fn comment_metrics(&self, tr: &mut TextRenderer, cm: &Comment, inner_w: f64) -> CommentMetrics {
+        let s = f64::from(tr.text_scale()).clamp(1.0, 2.0);
         // The body shows the live edit buffer while this comment is focused.
         let editing_body = self
             .editing
@@ -2093,12 +2152,12 @@ impl PdfApp {
         let (_, bh) = tr.measure(body_probe, 12.0, Some(inner_w as f32 - 16.0));
         // Header band (avatar + name + chips) is 24px, then a 6px gap, the body,
         // and a 12px bottom pad. Mirrors `comment_header_layout`'s `body_top`.
-        let mut card_h = 24.0 + 6.0 + f64::from(bh) + 12.0;
+        let mut card_h = 24.0 * s + 6.0 * s + f64::from(bh) + 12.0 * s;
         let mut reply_heights = Vec::with_capacity(cm.replies.len());
         for r in &cm.replies {
             let (_, rh) = tr.measure(&r.body, 11.0, Some(inner_w as f32 - 36.0));
             reply_heights.push(f64::from(rh));
-            card_h += 16.0 + f64::from(rh) + 8.0;
+            card_h += 16.0 * s + f64::from(rh) + 8.0 * s;
         }
         // Reply-compose row: a slim "Reply" affordance, or the open field.
         let composing = self
@@ -2108,9 +2167,9 @@ impl PdfApp {
         let compose_h = if let Some(e) = composing {
             let probe = if e.text().is_empty() { "M" } else { e.text() };
             let (_, fh) = tr.measure(probe, 11.5, Some(inner_w as f32 - 40.0));
-            8.0 + f64::from(fh).max(15.0) + 16.0
+            8.0 * s + f64::from(fh).max(15.0 * s) + 16.0 * s
         } else {
-            8.0 + 24.0
+            8.0 * s + 24.0 * s
         };
         card_h += compose_h;
         CommentMetrics {
@@ -2127,16 +2186,17 @@ impl PdfApp {
     /// scroll offset is applied, so the reveal math lines up exactly.
     fn sidebar_item_layout(&self, tr: &mut TextRenderer) -> (Vec<(String, f64, f64)>, f64) {
         let body = self.sidebar_body();
-        let pad = 14.0;
+        let s = f64::from(tr.text_scale()).clamp(1.0, 2.0);
+        let pad = 14.0 * s;
         let inner_w = body.width() - 2.0 * pad;
         let mut items = Vec::new();
         match self.sidebar_tab {
             SidebarTab::Comments => {
-                let mut y = body.y0 + 12.0 + 22.0;
+                let mut y = body.y0 + 12.0 * s + 22.0 * s;
                 for cm in &self.comments {
                     let card_h = self.comment_metrics(tr, cm, inner_w).card_h;
                     items.push((cm.id.clone(), y, card_h));
-                    y += card_h + 12.0;
+                    y += card_h + 12.0 * s;
                 }
                 (items, y - (body.y0 + 12.0 + 22.0))
             }
@@ -2165,7 +2225,8 @@ impl PdfApp {
             return;
         }
         let body = self.sidebar_body();
-        let viewport = (body.height() - 24.0).max(0.0);
+        let s = f64::from(tr.text_scale()).clamp(1.0, 2.0);
+        let viewport = (body.height() - 24.0 * s).max(0.0);
         let (items, content_h) = self.sidebar_item_layout(tr);
         let max_scroll = (content_h - viewport).max(0.0);
 
@@ -2175,7 +2236,7 @@ impl PdfApp {
             // `top` is content-relative-from-list-origin; bring it just
             // inside the viewport.
             let list_origin = match self.sidebar_tab {
-                SidebarTab::Comments => body.y0 + 12.0 + 22.0,
+                SidebarTab::Comments => body.y0 + 12.0 * s + 22.0 * s,
                 SidebarTab::Signatures => body.y0 + 12.0 + 70.0 + 52.0 + 20.0,
                 SidebarTab::Outline => body.y0,
             };
@@ -2199,11 +2260,12 @@ impl PdfApp {
         body: Rect,
         out: &mut SidebarHits,
     ) {
-        let pad = 14.0;
+        let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let pad = 14.0 * s;
         let inner_w = body.width() - 2.0 * pad;
-        let header_y = body.y0 + 12.0;
+        let header_y = body.y0 + 12.0 * s;
         // Scrollable region starts below the fixed header line.
-        let mut y = body.y0 + 12.0 + 22.0 - self.sidebar_scroll;
+        let mut y = body.y0 + 12.0 * s + 22.0 * s - self.sidebar_scroll;
         // Snapshot the comment cache so the loop can borrow `self.editing`
         // mutably (to draw the inline editor) without aliasing `self.comments`.
         let comments = self.comments.clone();
@@ -2236,7 +2298,7 @@ impl PdfApp {
             // Cull cards scrolled out of the body, but keep advancing `y`.
             if card.y1 < body.y0 || card.y0 > body.y1 {
                 out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
-                y += card_h + 12.0;
+                y += card_h + 12.0 * s;
                 continue;
             }
 
@@ -2270,7 +2332,7 @@ impl PdfApp {
             // Header row: avatar + author name (bounded so it never runs under
             // the chips) + resolve chip + delete button, laid out so nothing
             // overlaps regardless of the name's length.
-            let hdr = Self::comment_header_layout(card);
+            let hdr = Self::comment_header_layout(card, s);
             self.draw_comment_header_row(scene, base, tr, theme, cm, &hdr, out);
             let yy =
                 self.draw_comment_body(scene, base, tr, theme, card, cm, &hdr, &m, inner_w, out);
@@ -2278,7 +2340,7 @@ impl PdfApp {
             self.draw_comment_composer(scene, base, tr, theme, card, cm, &m, yy, out);
 
             out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
-            y += card_h + 12.0;
+            y += card_h + 12.0 * s;
         }
     }
 
@@ -2300,7 +2362,15 @@ impl PdfApp {
         out: &mut SidebarHits,
     ) {
         let c = &theme.tokens.colors;
-        draw_avatar(scene, base, tr, theme, &cm.author, hdr.avatar_c, 9.0);
+        draw_avatar(
+            scene,
+            base,
+            tr,
+            theme,
+            &cm.author,
+            hdr.avatar_c,
+            hdr.avatar_radius,
+        );
         let name = truncate_to_width(tr, &cm.author, 11.5, hdr.name_max);
         tr.draw_text_weighted(
             scene,
@@ -2329,19 +2399,26 @@ impl PdfApp {
         } else {
             theme.text_dim
         };
+        let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
         scene.stroke(
-            &Stroke::new(1.5),
+            &Stroke::new(1.5 * s),
             base,
             dcol,
             None,
-            &Line::new((dc.x - 4.0, dc.y - 4.0), (dc.x + 4.0, dc.y + 4.0)),
+            &Line::new(
+                (dc.x - 4.0 * s, dc.y - 4.0 * s),
+                (dc.x + 4.0 * s, dc.y + 4.0 * s),
+            ),
         );
         scene.stroke(
-            &Stroke::new(1.5),
+            &Stroke::new(1.5 * s),
             base,
             dcol,
             None,
-            &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)),
+            &Line::new(
+                (dc.x - 4.0 * s, dc.y + 4.0 * s),
+                (dc.x + 4.0 * s, dc.y - 4.0 * s),
+            ),
         );
         out.hits
             .push((SidebarHit::DeleteComment(cm.id.clone()), del));
@@ -2349,12 +2426,16 @@ impl PdfApp {
         let chip = hdr.chip;
         let (chip_label, chip_fill, chip_text) = if cm.resolved {
             (
-                "Resolved",
+                if hdr.compact_chip { "Done" } else { "Resolved" },
                 c.semantic.success,
                 theme.on_surface(c.semantic.success).ink,
             )
         } else {
-            ("Resolve", c.lift(0.72), theme.text_dim)
+            (
+                if hdr.compact_chip { "Fix" } else { "Resolve" },
+                c.lift(0.72),
+                theme.text_dim,
+            )
         };
         scene.fill(
             Fill::NonZero,
@@ -2371,7 +2452,7 @@ impl PdfApp {
             chip_text,
             base * Affine::translate((
                 f64::midpoint(chip.x0, chip.x1) - f64::from(cw2) / 2.0,
-                vcenter(chip, 9.5),
+                vcenter(chip, 9.5 * s as f32),
             )),
             None,
         );
@@ -2398,15 +2479,16 @@ impl PdfApp {
         inner_w: f64,
         out: &mut SidebarHits,
     ) -> f64 {
-        let body_x = card.x0 + 12.0;
+        let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let body_x = card.x0 + 12.0 * s;
         let body_top = hdr.body_top;
         let body_wrap = inner_w as f32 - 16.0;
         let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
         let body_hit = Rect::new(
-            body_x - 4.0,
-            body_top - 4.0,
-            card.x1 - 10.0,
-            body_top + m.body_h + 6.0,
+            body_x - 4.0 * s,
+            body_top - 4.0 * s,
+            card.x1 - 10.0 * s,
+            body_top + m.body_h + 6.0 * s,
         );
         if editing_body {
             scene.stroke(
@@ -2453,7 +2535,7 @@ impl PdfApp {
         }
         out.hits
             .push((SidebarHit::EditComment(cm.id.clone()), body_hit));
-        body_top + m.body_h + 10.0
+        body_top + m.body_h + 10.0 * s
     }
 
     /// A comment card's reply thread — one entry per stored reply, each
@@ -2474,12 +2556,13 @@ impl PdfApp {
         mut yy: f64,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
         for (r, reply_h) in cm.replies.iter().zip(m.reply_heights.iter()) {
             let rail = Rect::new(
-                card.x0 + 14.0,
-                yy - 2.0,
-                card.x0 + 15.5,
-                yy + reply_h + 10.0,
+                card.x0 + 14.0 * s,
+                yy - 2.0 * s,
+                card.x0 + 15.5 * s,
+                yy + reply_h + 10.0 * s,
             );
             scene.fill(Fill::NonZero, base, c.border_standard, None, &rail);
             tr.draw_text_weighted(
@@ -2487,20 +2570,20 @@ impl PdfApp {
                 &r.author,
                 10.0,
                 theme.text_dim,
-                base * Affine::translate((card.x0 + 24.0, yy)),
+                base * Affine::translate((card.x0 + 24.0 * s, yy)),
                 None,
                 TextWeight::Semibold,
             );
-            yy += 14.0;
+            yy += 14.0 * s;
             tr.draw_text(
                 scene,
                 &r.body,
                 11.0,
                 theme.tokens.colors.text_primary,
-                base * Affine::translate((card.x0 + 24.0, yy)),
-                Some(inner_w as f32 - 36.0),
+                base * Affine::translate((card.x0 + 24.0 * s, yy)),
+                Some(inner_w as f32 - 36.0 * s as f32),
             );
-            yy += reply_h + 10.0;
+            yy += reply_h + 10.0 * s;
         }
         yy
     }
@@ -2525,13 +2608,14 @@ impl PdfApp {
     ) {
         let c = &theme.tokens.colors;
         let composing = self.is_editing(&EditTarget::Reply(cm.id.clone()));
-        let compose_top = yy + 8.0;
+        let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let compose_top = yy + 8.0 * s;
         if composing {
             let field_h = m.compose_h - 8.0;
             let field = Rect::new(
-                card.x0 + 12.0,
+                card.x0 + 12.0 * s,
                 compose_top,
-                card.x1 - 12.0,
+                card.x1 - 12.0 * s,
                 compose_top + field_h,
             );
             scene.fill(
@@ -2549,9 +2633,9 @@ impl PdfApp {
                 &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm)),
             );
             *out.edit_rect = field;
-            let rwrap = (field.width() - 20.0) as f32;
-            let tx = field.x0 + 10.0;
-            let ty = field.y0 + 8.0;
+            let rwrap = (field.width() - 20.0 * s) as f32;
+            let tx = field.x0 + 10.0 * s;
+            let ty = field.y0 + 8.0 * s;
             // The shared TextInput draws the reply text + caret + selection.
             if let Some(editing) = self.editing.as_mut() {
                 draw_inline_editor(
@@ -2561,17 +2645,17 @@ impl PdfApp {
                     tr,
                     theme,
                     Point::new(tx, ty),
-                    (rwrap, field.height() - 16.0),
+                    (rwrap, field.height() - 16.0 * s),
                 );
             }
             out.hits
                 .push((SidebarHit::ReplyField(cm.id.clone()), field));
         } else {
             let btn = Rect::new(
-                card.x0 + 12.0,
+                card.x0 + 12.0 * s,
                 compose_top,
-                card.x1 - 12.0,
-                compose_top + 22.0,
+                card.x1 - 12.0 * s,
+                compose_top + 22.0 * s,
             );
             let hot = btn.contains(self.last_mouse);
             if hot {
@@ -2592,7 +2676,7 @@ impl PdfApp {
                 } else {
                     theme.text_dim
                 },
-                base * Affine::translate((btn.x0 + 6.0, vcenter(btn, 11.0))),
+                base * Affine::translate((btn.x0 + 6.0 * s, vcenter(btn, 11.0 * s as f32))),
                 None,
             );
             out.hits.push((SidebarHit::ReplyField(cm.id.clone()), btn));
