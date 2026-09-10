@@ -35,7 +35,7 @@ use ui::widget::page_palette::PageJumpPalette;
 use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
 use crate::main_panel::MainPanel;
-use crate::model::{PageId, Workspace};
+use crate::model::{PageId, TagAssignment, TagId, Workspace};
 use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{NoteTreeView, OutEvent};
@@ -178,6 +178,13 @@ pub struct NotesApp {
     /// which must be removed locally too. Without it the unconditional local→doc
     /// mirror would resurrect an undone page every frame.
     known_in_doc: std::collections::HashSet<PageId>,
+    /// Equivalent provenance tracking for the keyed tag map. It prevents an
+    /// undone/deleted tag from being silently pushed back by a stale local
+    /// snapshot on the next collaboration sync.
+    known_tags_in_doc: std::collections::HashSet<TagId>,
+    /// Local-only current tag browse/filter. It is deliberately not persisted
+    /// or replicated: collaborators may inspect different tag slices.
+    active_tag_filter: Option<TagId>,
     /// A block reveal requested by a brokered view operation. Re-applied after
     /// the selected page binds to its collaborative block list, because binding
     /// rebuilds the editor and otherwise resets focus to block zero.
@@ -192,6 +199,10 @@ pub struct NotesApp {
     /// Retained complete catalogue; Ctrl+K receives a cheap handle instead of
     /// rebuilding/cloning every page and block at open time.
     search_provider: crate::search_provider::NoteSearchProvider,
+    /// Last theme text scale, captured during layout. Responsive chrome uses
+    /// it for width/height reservations so 200% text switches to the drawer
+    /// before page labels or the title stack can collide.
+    text_scale: f64,
 }
 
 impl NotesApp {
@@ -307,12 +318,27 @@ impl NotesApp {
             content_rect: Rect::ZERO,
             actions: ui::ActionHost::new(),
             known_in_doc: std::collections::HashSet::new(),
+            known_tags_in_doc: std::collections::HashSet::new(),
+            active_tag_filter: None,
             pending_block_reveal: None,
             search_blocks: HashMap::new(),
             search_heads: None,
             search_provider,
+            text_scale: 1.0,
         };
         app.refresh_link_pages();
+        let visible_tags = app
+            .workspace
+            .selected()
+            .map(|page| {
+                app.workspace
+                    .tags_for_page(page)
+                    .into_iter()
+                    .map(|tag| tag.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        app.main.set_tags(visible_tags);
         app.refresh_status();
         Ok(app)
     }
@@ -450,10 +476,12 @@ impl NotesApp {
         chain.join(" / ")
     }
 
-    /// Sync the page list into both the editor's [[link popover]] and
-    /// the Cmd-K palette so they always see the latest set of titles.
+    /// Sync pages into the editor's `[[link]]` popover, then extend the
+    /// Cmd-K palette with reusable tags. Tags deliberately stay out of link
+    /// completion — a link resolves a note identity — while the palette can
+    /// browse either durable resource by its stable UUID.
     fn refresh_link_pages(&mut self) {
-        let entries: Vec<PageEntry> = self
+        let page_entries: Vec<PageEntry> = self
             .workspace
             .pages()
             .iter()
@@ -462,8 +490,13 @@ impl NotesApp {
                 title: p.title.clone(),
             })
             .collect();
-        self.main.editor_mut().set_link_pages(entries.clone());
-        self.palette.set_items(entries);
+        self.main.editor_mut().set_link_pages(page_entries.clone());
+        let mut palette_entries = page_entries;
+        palette_entries.extend(self.workspace.tags().iter().map(|tag| PageEntry {
+            id: tag.id,
+            title: format!("# {}", tag.name),
+        }));
+        self.palette.set_items(palette_entries);
     }
 
     /// Test accessor: the currently selected page id.
@@ -538,14 +571,14 @@ impl NotesApp {
         }
         let cx = self.menu_btn_rect.center().x;
         let cy = self.menu_btn_rect.center().y;
-        let bar_w = 18.0;
-        let bar_h = 2.0;
+        let bar_w = 18.0 * self.text_scale;
+        let bar_h = 2.0 * self.text_scale;
         for dy in [-6.0f64, 0.0, 6.0] {
             let bar = vello::kurbo::RoundedRect::new(
                 cx - bar_w / 2.0,
-                cy + dy - bar_h / 2.0,
+                cy + dy * self.text_scale - bar_h / 2.0,
                 cx + bar_w / 2.0,
-                cy + dy + bar_h / 2.0,
+                cy + dy * self.text_scale + bar_h / 2.0,
                 1.0,
             );
             scene.fill(
@@ -564,7 +597,9 @@ impl NotesApp {
             .selected()
             .and_then(|id| self.workspace.get(id))
             .map_or_else(|| "Notes".to_string(), |m| m.title.clone());
-        let size = tokens.typography.scale.base;
+        // Base size plus the renderer's global scale; using the already
+        // scaled token here would make the compact mobile bar grow twice.
+        let size = 14.0;
         let text_x = self.menu_btn_rect.x1 + 4.0;
         let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
         let avail = num::f32_of_f64((self.topbar_rect.x1 - text_x - 12.0).max(0.0));
@@ -721,6 +756,71 @@ impl NotesApp {
         }
     }
 
+    /// Reconcile tags after the page tree. Tags and membership edges are
+    /// independent CRDT keys, but an edge is only meaningful when both its
+    /// endpoints survive; filtering here makes delete-wins deterministic even
+    /// when a stale peer replays an assignment after a tombstone arrived.
+    fn sync_tags(&mut self, state: &mut AutoCommit) {
+        if !self.adopted {
+            return;
+        }
+        let before_tags = self.workspace.data.tags.clone();
+        let before_assignments = self.workspace.data.tag_assignments.clone();
+        let doc_tags = NotesDoc::list_tags(state);
+        let doc_tag_ids = doc_tags
+            .iter()
+            .map(|tag| tag.id)
+            .collect::<std::collections::HashSet<_>>();
+        let doc_page_ids = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|page| page.id)
+            .collect::<std::collections::HashSet<_>>();
+
+        // Authoritative pull for tags the document has seen. A newly-created
+        // local tag is dispatched immediately, so it is either visible here or
+        // remains an explicitly unknown local value to push below.
+        self.workspace.data.tags.retain(|tag| {
+            doc_tag_ids.contains(&tag.id) || !self.known_tags_in_doc.contains(&tag.id)
+        });
+        for tag in &doc_tags {
+            self.known_tags_in_doc.insert(tag.id);
+            match self
+                .workspace
+                .data
+                .tags
+                .iter_mut()
+                .find(|candidate| candidate.id == tag.id)
+            {
+                Some(local) => *local = tag.clone(),
+                None => self.workspace.data.tags.push(tag.clone()),
+            }
+        }
+        for tag in self.workspace.tags().to_vec() {
+            if !doc_tag_ids.contains(&tag.id) {
+                self.perform_action(state, &actions::upsert_tag_action(&tag));
+                self.known_tags_in_doc.insert(tag.id);
+            }
+        }
+        self.workspace.data.tag_assignments = NotesDoc::list_tag_assignments(state)
+            .into_iter()
+            .filter(|(page, tag)| doc_page_ids.contains(page) && doc_tag_ids.contains(tag))
+            .map(|(page, tag)| TagAssignment { page, tag })
+            .collect();
+        if self
+            .active_tag_filter
+            .is_some_and(|tag| !doc_tag_ids.contains(&tag))
+        {
+            self.active_tag_filter = None;
+        }
+        if self.workspace.data.tags != before_tags
+            || self.workspace.data.tag_assignments != before_assignments
+        {
+            self.refresh_link_pages();
+        }
+    }
+
     /// Ensure a page is selected and the `MainPanel` editor is bound to
     /// that page's `blocks` List in the shared doc, so its text syncs.
     fn ensure_editor_bound(&mut self, state: &mut AutoCommit) {
@@ -841,6 +941,14 @@ impl NotesApp {
             // resources. ResourceProvider::resource resolves a requested
             // stable block id from the durable document, after stale checks.
             blocks: HashMap::new(),
+            tags: self.workspace.tags().to_vec(),
+            tag_assignments: self
+                .workspace
+                .data
+                .tag_assignments
+                .iter()
+                .map(|edge| (edge.page, edge.tag))
+                .collect(),
         }
     }
 
@@ -1086,6 +1194,26 @@ impl NotesApp {
                 if let Some(block_id) = block_id {
                     self.pending_block_reveal = Some((page, block_id));
                 }
+                Ok(())
+            }
+            actions::NotesOperation::OpenTag { tag } => {
+                if self.workspace.get_tag(tag).is_none() {
+                    return Err("tag no longer exists".into());
+                }
+                self.active_tag_filter = Some(tag);
+                // A tag is a navigable collection. Preserve the current note
+                // when it already belongs to the collection; otherwise land
+                // on a deterministic first tagged note (page UUID order).
+                let pages = self.workspace.pages_for_tag(tag);
+                if let Some(first) = pages.first().copied()
+                    && !self
+                        .workspace
+                        .selected()
+                        .is_some_and(|page| pages.contains(&page))
+                {
+                    self.navigate_to(first);
+                }
+                self.self_dirty = true;
                 Ok(())
             }
         }
@@ -1615,8 +1743,21 @@ impl Widget for NotesApp {
         // seed/adopt the page tree, then bind the editor to the selected
         // page so its text syncs between instances.
         self.sync_workspace_tree(state);
+        self.sync_tags(state);
         self.drain_title_rename(state);
         self.ensure_editor_bound(state);
+        let visible_tags = self
+            .workspace
+            .selected()
+            .map(|page| {
+                self.workspace
+                    .tags_for_page(page)
+                    .into_iter()
+                    .map(|tag| tag.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.main.set_tags(visible_tags);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
         // Synthetic accessibility buttons do not pass through handle_event;
@@ -1705,13 +1846,20 @@ impl Widget for NotesApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
+        self.drawer
+            .set_breakpoint(NARROW_BREAKPOINT * self.text_scale);
+        self.drawer
+            .set_docked_width(SIDEBAR_WIDTH * self.text_scale);
+        self.drawer
+            .set_overlay_width(DRAWER_WIDTH * self.text_scale);
         // Commit the mode the tree is built with so draw/event routing
         // stays in lock-step with the live taffy structure.
         self.built_narrow = self.want_narrow;
         let narrow = self.built_narrow;
 
         let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(sidebar_node, Self::sidebar_style(narrow));
+        let _ = taffy.set_style(sidebar_node, Self::sidebar_style(narrow, self.text_scale));
         self.sidebar_node = Some(sidebar_node);
 
         let main_node = self.main.build_layout(taffy, theme, node_map);
@@ -1858,7 +2006,7 @@ impl Widget for NotesApp {
             self.menu_btn_rect = Rect::new(
                 self.topbar_rect.x0,
                 self.topbar_rect.y0,
-                self.topbar_rect.x0 + TOPBAR_HEIGHT,
+                self.topbar_rect.x0 + TOPBAR_HEIGHT * self.text_scale,
                 self.topbar_rect.y1,
             );
         } else {
@@ -2107,7 +2255,7 @@ impl NotesApp {
     /// edge of the content row, full height, taken out of flow so the
     /// editor keeps the whole width underneath it. Wide: a fixed-width
     /// column so the split is deterministic (no flexbox squeezing).
-    fn sidebar_style(narrow: bool) -> Style {
+    fn sidebar_style(narrow: bool, text_scale: f64) -> Style {
         if narrow {
             Style {
                 position: taffy::Position::Absolute,
@@ -2118,7 +2266,7 @@ impl NotesApp {
                     bottom: length(0.0_f32),
                 },
                 size: Size {
-                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH)),
+                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH * text_scale)),
                     height: Dimension::percent(1.0),
                 },
                 flex_shrink: 0.0,
@@ -2127,11 +2275,11 @@ impl NotesApp {
         } else {
             Style {
                 size: Size {
-                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH)),
+                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH * text_scale)),
                     height: Dimension::percent(1.0),
                 },
                 min_size: Size {
-                    width: Dimension::length(160.0),
+                    width: Dimension::length(num::f32_of_f64(160.0 * text_scale)),
                     height: Dimension::auto(),
                 },
                 flex_shrink: 0.0,
@@ -2161,7 +2309,7 @@ impl NotesApp {
                 .new_leaf(Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT)),
+                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT * self.text_scale)),
                     },
                     flex_shrink: 0.0,
                     ..Default::default()
@@ -2352,9 +2500,13 @@ impl NotesApp {
         let consumed = self.palette.handle_key(event);
         if let Some(entry) = self.palette.take_selection()
             && let Err(error) = self.open_notes_operation(
-                actions::NotesOperation::OpenPage {
-                    page: entry.id,
-                    block_id: None,
+                if self.workspace.get(entry.id).is_some() {
+                    actions::NotesOperation::OpenPage {
+                        page: entry.id,
+                        block_id: None,
+                    }
+                } else {
+                    actions::NotesOperation::OpenTag { tag: entry.id }
                 },
                 state,
             )
