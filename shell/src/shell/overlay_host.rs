@@ -93,6 +93,30 @@ fn notification_severity_label(severity: NotificationSeverity) -> &'static str {
     }
 }
 
+/// Screen-reader description for one retained notification card. Kept beside
+/// the visual card's source/age helpers so both presentations expose the same
+/// hierarchy even when a busy compositor crosses a relative-time boundary.
+fn notification_history_accessible_description(
+    notification: &Notification,
+    now: Instant,
+) -> String {
+    let source = notification
+        .app_name
+        .as_deref()
+        .or(notification.app_id.as_deref())
+        .unwrap_or("System");
+    let severity = notification_severity_label(notification.severity);
+    let relative_time = notification_history_relative_time(notification, now);
+    if notification.body.is_empty() {
+        format!("{severity}. From {source}. {relative_time}")
+    } else {
+        format!(
+            "{severity}. From {source}. {relative_time}. {}",
+            notification.body
+        )
+    }
+}
+
 /// Resolve only addresses the action explicitly declared. Semantic resource
 /// ids such as `notes.page:abc` are labels within an app, not record ids or
 /// URIs; treating them as either would make History's Open control navigate
@@ -1340,6 +1364,14 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
 /// butting into content.
 const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
 
+/// Left edge at which full-size workspace content clears both the floating
+/// rail and the wallpaper/shadow gutter that separates it from app content.
+/// Widgets that paint against the full desktop rect use this instead of
+/// duplicating a rail width.
+pub(crate) fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
+    f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(viewport_h))) + WHEEL_TO_STRIP_GAP_PX
+}
+
 /// Wallpaper gutter at the far edge of a display, matching
 /// [`WHEEL_TO_STRIP_GAP_PX`] — without it a full-width group's border,
 /// corners and shadow fall off screen at the bezel.
@@ -1817,6 +1849,16 @@ impl ShellOverlayHost {
             Some(crate::onboarding_view::OnboardingView::new_for_host_desktop(identity_dir));
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
+    }
+
+    #[doc(hidden)]
+    pub fn set_onboarding_visual_state_for_snapshot(
+        &mut self,
+        state: crate::onboarding_view::OnboardingVisualState,
+    ) {
+        if let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.set_visual_state_for_snapshot(state);
+        }
     }
 
     /// Whether first-login chrome is still withholding the desktop.
@@ -6070,14 +6112,13 @@ impl ShellOverlayHost {
     /// Open the real session menu and optionally arm Shut down, then pin its
     /// entrance animation so deterministic screenshots capture the resting
     /// production surface rather than a wall-clock-dependent intermediate.
-    pub fn force_power_menu_for_visual_test(&mut self, arm_shutdown: bool) {
+    pub fn force_power_menu_for_visual_test(&mut self, select_shutdown: bool) {
         self.power_menu.open();
-        if arm_shutdown {
+        if select_shutdown {
             use winit::keyboard::{Key, NamedKey};
             for _ in 0..5 {
                 let _ = self.power_menu.key(&Key::Named(NamedKey::ArrowDown), false);
             }
-            let _ = self.power_menu.key(&Key::Named(NamedKey::Enter), false);
         }
         self.power_menu.force_settled_for_visual_test();
     }
@@ -6323,8 +6364,10 @@ impl ShellOverlayHost {
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
     fn quick_settings_rect(&self) -> Rect {
-        let popover_w = if self.rect.width() >= 720.0 {
+        let popover_w = if self.rect.width() >= 1200.0 {
             400.0
+        } else if self.rect.width() >= 720.0 {
+            360.0
         } else {
             320.0
         };
@@ -8064,6 +8107,8 @@ impl ShellOverlayHost {
         }
         let configured_action = self.configured_shortcut_action(logical_key, modifiers);
         let shortcut_pressed = |action| configured_action == Some(action);
+        // F1 is the fixed, hardware-neutral desktop help key. The configured
+        // shortcut is a second route to the exact same guide.
         let help_chord = matches!(logical_key, Key::Named(NamedKey::F1))
             || shortcut_pressed(settings_store::hardware::ShortcutAction::ShortcutHelp);
         if help_chord {
@@ -9634,20 +9679,16 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                if crate::shell::search::providers::applications::launch_installed_app(
+                let _ = crate::shell::search::providers::applications::launch_installed_app(
                     chrome,
                     "dev.qos.settings",
                     "Settings",
-                )
-                .is_err()
-                {
-                    // The settings package is optional in small/headless
-                    // sessions. Keep the affordance usable by falling back
-                    // to the in-shell workspace settings surface.
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.ws_settings = true;
-                    st.bump();
-                }
+                );
+                // A missing Settings package is already reported by the
+                // ordinary launcher as an actionable failure notification.
+                // Workspace settings controls sharing, members and room
+                // policy; opening it as a fallback would silently change the
+                // meaning of this personal/device-settings action.
             }
             RootAction::Privacy | RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
@@ -10494,7 +10535,10 @@ fn shortcut_reference_rows(
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
         ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
-        ("This guide", chord(ShortcutAction::ShortcutHelp)),
+        (
+            "Shortcut guide",
+            format!("F1  /  {}", chord(ShortcutAction::ShortcutHelp)),
+        ),
         ("Workspace wheel", "Super+S".into()),
         ("Wireless display", "Super+P".into()),
         ("Capture screenshot", "Super+Shift+S".into()),
@@ -10917,9 +10961,7 @@ impl Widget for ShellOverlayHost {
         // room for the wheel and a wallpaper gutter beside it. No sidebar
         // means no gutter to reserve.
         let wheel_w = if self.sidebar.is_some() {
-            f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(
-                self.rect.height(),
-            ))) + WHEEL_TO_STRIP_GAP_PX
+            workspace_rail_clearance_for_viewport(self.rect.height())
         } else {
             0.0
         };
@@ -11511,6 +11553,12 @@ impl Widget for ShellOverlayHost {
                                     start.saturating_add(shown),
                                 )
                             };
+                            // One semantic snapshot has one clock edge. Calling
+                            // `Instant::now()` independently for each card can
+                            // label adjacent rows differently when a loaded
+                            // compositor crosses a relative-time boundary while
+                            // constructing the accessibility tree.
+                            let now = Instant::now();
                             let items = state
                                 .notification_history()
                                 .iter()
@@ -11519,28 +11567,14 @@ impl Widget for ShellOverlayHost {
                                 .take(shown)
                                 .enumerate()
                                 .map(|(index, notification)| {
-                                    let source = notification
-                                        .app_name
-                                        .as_deref()
-                                        .or(notification.app_id.as_deref())
-                                        .unwrap_or("System");
-                                    let severity =
-                                        notification_severity_label(notification.severity);
-                                    let relative_time = notification_history_relative_time(
-                                        notification,
-                                        Instant::now(),
-                                    );
-                                    let item_description = if notification.body.is_empty() {
-                                        format!("{severity}. From {source}. {relative_time}")
-                                    } else {
-                                        format!(
-                                            "{severity}. From {source}. {relative_time}. {}",
-                                            notification.body
-                                        )
-                                    };
                                     AccessNode::new(Role::ListItem)
                                         .with_name(notification.title.clone())
-                                        .with_description(item_description)
+                                        .with_description(
+                                            notification_history_accessible_description(
+                                                notification,
+                                                now,
+                                            ),
+                                        )
                                         .with_position(index.saturating_add(1), shown)
                                 })
                                 .collect();
@@ -12848,7 +12882,7 @@ impl ShellOverlayHost {
             &RoundedRect::from_rect(rect, rect.height() / 2.0),
         );
         let size = theme.tokens.typography.scale.sm;
-        let label = "Keyboard shortcuts  F1";
+        let label = "Help  F1 · Super+?";
         let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text_weighted(
             scene,
@@ -12920,7 +12954,7 @@ impl ShellOverlayHost {
         let title_size = theme.tokens.typography.scale.xl;
         text_renderer.draw_text_weighted(
             scene,
-            "Move around your desktop",
+            "Desktop help",
             title_size,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 28.0, panel.y0 + 22.0).into()),
@@ -12929,7 +12963,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "Windows stay in horizontal strips. Focus moves the viewport; nothing needs to overlap.",
+            "F1 opens this desktop guide anywhere. Super+? is the configurable shortcut for the same guide.",
             theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 28.0, panel.y0 + 58.0).into()),
@@ -12981,11 +13015,12 @@ impl ShellOverlayHost {
             .interaction
             .controller
             .unwrap_or(ui::ControllerFamily::Generic);
+        let compact_panel = panel.height() < 560.0;
         let body = Rect::new(
             panel.x0 + 28.0,
-            panel.y0 + 112.0,
+            panel.y0 + if compact_panel { 104.0 } else { 112.0 },
             panel.x1 - 28.0,
-            panel.y1 - 28.0,
+            panel.y1 - if compact_panel { 36.0 } else { 28.0 },
         );
         self.shortcut_binding_rects.clear();
         self.shortcut_reset_rects.clear();
@@ -13202,7 +13237,7 @@ impl ShellOverlayHost {
                 // comfortably readable; the full reference remains available at normal height
                 // and through command search.
                 let reference_columns = if compact { 2 } else { 4 };
-                let navigation_step = if compact { 50.0 } else { 62.0 };
+                let navigation_step = if compact { 47.0 } else { 62.0 };
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
                     let row = index / 2;
@@ -13299,7 +13334,7 @@ impl ShellOverlayHost {
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
-                let essentials_y = body.y0 + if compact { 158.0 } else { 196.0 };
+                let essentials_y = body.y0 + if compact { 148.0 } else { 196.0 };
                 text_renderer.draw_text_weighted(
                     scene,
                     "Essential desktop actions",
@@ -13315,8 +13350,14 @@ impl ShellOverlayHost {
                 } else {
                     references.as_slice()
                 };
-                let reference_step = if compact { 32.0 } else { 38.0 };
-                let reference_offset = if compact { 24.0 } else { 28.0 };
+                // A compact guide still needs a full line for the action
+                // name plus its keycap row. At the 130% accessibility text
+                // scale the former 30 px cadence put the next action name
+                // over the preceding keycap; retain a small visual gap
+                // rather than shrinking the text that makes the guide
+                // useful in the first place.
+                let reference_step = if compact { 42.0 } else { 38.0 };
+                let reference_offset = if compact { 22.0 } else { 28.0 };
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
                     let reference_columns = reference_columns.max(1);
                     let column = index.checked_rem(reference_columns).unwrap_or_default();
@@ -13364,7 +13405,7 @@ impl ShellOverlayHost {
                     + reference_offset
                     + usize_to_f64_lossy(reference_rows) * reference_step
                     + 6.0;
-                if pointer_y + 34.0 < body.y1 {
+                if pointer_y + 30.0 <= body.y1 {
                     scene.fill(
                         Fill::NonZero,
                         transform,
@@ -13377,7 +13418,7 @@ impl ShellOverlayHost {
                         "Mouse · click a window · drag tabs or groups to reorder · drag an edge to resize · horizontal scroll moves the view",
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
-                        transform.pre_translate((body.x0, pointer_y + 20.0).into()),
+                        transform.pre_translate((body.x0, pointer_y + 18.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
                     if settings_store::hardware::DesktopControlsConfig::load().vim_mode
@@ -17211,7 +17252,7 @@ mod palette_dispatch_tests {
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
-            "This guide:Super+/",
+            "Shortcut guide:F1  /  Super+/",
             "Workspace wheel:Super+S",
             "Wireless display:Super+P",
             "Capture screenshot:Super+Shift+S",
@@ -17245,7 +17286,7 @@ mod palette_dispatch_tests {
         let body_height = 360.0;
         let essentials_y = 158.0;
         let reference_offset = 24.0;
-        let reference_step = 32.0;
+        let reference_step = 42.0;
         let visible = &rows[..rows.len().min(8)];
         let final_row = visible.len().div_ceil(2).saturating_sub(1);
         let final_pill_bottom =
@@ -17390,6 +17431,46 @@ mod palette_dispatch_tests {
         assert!(description.contains("workspaces with"));
         assert!(description.contains("move groups with"));
         assert!(description.contains("Screenshot: Print Screen"));
+        assert!(description.contains("Shortcut guide: F1  /  Super+/"));
+    }
+
+    #[test]
+    fn f1_and_configured_global_help_both_open_the_same_desktop_guide() {
+        use settings_store::hardware::ShortcutAction;
+
+        let (mut host, chrome) = host_with_chrome();
+        let mut handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.shortcut_help);
+
+        chrome.borrow_mut().overlays.shortcut_help = false;
+        let chord = host
+            .shortcut_config
+            .bindings
+            .get(&ShortcutAction::ShortcutHelp)
+            .cloned()
+            .expect("default global help binding");
+        let key = Key::Character(chord.key.into());
+        let modifiers = Modifiers::from(ModifiersState::SUPER);
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &key,
+            modifiers,
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.shortcut_help);
     }
 
     #[test]
@@ -17552,6 +17633,47 @@ mod palette_dispatch_tests {
             std::env::remove_var("QOS_LAUNCHER_BIN");
         }
         crate::shell::launcher::set_wayland_socket_path(None);
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn missing_personal_settings_reports_launch_failure_without_opening_workspace_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An empty registry makes the personal Settings package genuinely
+        // unavailable; the ordinary launcher owns wording and notification
+        // lifetime for that error.
+        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
+        unsafe {
+            std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
+        }
+        crate::shell::launcher::invalidate_app_cache();
+        crate::shell::launcher::clear_pending_placements();
+
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
+
+        let state = chrome.borrow();
+        assert!(!state.overlays.quick_settings, "the source popover closes");
+        assert!(
+            !state.overlays.ws_settings,
+            "an unavailable personal Settings app must not redirect into workspace sharing"
+        );
+        assert!(
+            state
+                .notifications()
+                .iter()
+                .any(|notification| notification.title.contains("Settings")),
+            "the ordinary launch failure must remain visible to the user"
+        );
+        drop(state);
+
+        // SAFETY: restore the process-wide override before releasing the serial lock.
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+        }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
     }
@@ -19485,15 +19607,31 @@ mod overlay_event_absorb_tests {
             h.host.qs_notification_visible_rows().min(total),
             "screen readers receive every currently visible title/body card"
         );
-        assert!(
-            retained.children.iter().all(|item| {
-                item.description.as_deref().is_some_and(|description| {
-                    description.starts_with("Error. From System. just now.")
-                        && description.contains("Detailed recovery guidance")
-                })
-            }),
-            "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows"
-        );
+        let state = h.chrome.borrow();
+        let visible = h.host.qs_notification_visible_rows();
+        let start = h
+            .host
+            .qs_notification_history_start
+            .min(total.saturating_sub(visible));
+        for (item, notification) in retained.children.iter().zip(
+            state
+                .notification_history()
+                .iter()
+                .rev()
+                .skip(start)
+                .take(retained.children.len()),
+        ) {
+            let description = item
+                .description
+                .as_deref()
+                .expect("every retained card exposes its hierarchy");
+            assert!(
+                description.starts_with("Error. From System. ")
+                    && description.contains("Detailed recovery guidance")
+                    && description.contains(&notification.body),
+                "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows; got {description:?}"
+            );
+        }
     }
 
     #[test]
@@ -19623,7 +19761,7 @@ mod overlay_event_absorb_tests {
             .borrow_mut()
             .open_workspace_settings(WsTab::General);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x1, 1588.0, "lens docks to the right inset");
+        assert_eq!(lens.x1, 1580.0, "lens docks to the right inset");
         assert!(lens.x0 > 700.0, "workspace remains visible beside {lens:?}");
 
         let workspace_point = Point::new(120.0, 300.0);
@@ -19644,9 +19782,39 @@ mod overlay_event_absorb_tests {
     fn workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs() {
         let h = build_harness_sized(600.0, 700.0);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x0, 12.0);
-        assert_eq!(lens.x1, 588.0);
-        assert_eq!(lens.y1, 688.0);
+        assert_eq!(lens.x0, 20.0);
+        assert_eq!(lens.x1, 580.0);
+        assert_eq!(lens.y1, 680.0);
+    }
+
+    #[test]
+    fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
+        let h = build_harness_sized(960.0, 540.0);
+        let panel = h.host.shortcut_help_panel_rect();
+        let done = h.host.shortcut_help_done_rect();
+        assert_eq!(panel.y0, 20.0);
+        assert_eq!(panel.y1, 520.0);
+        assert!(done.y0 >= panel.y0 + 16.0);
+        assert!(done.y1 <= panel.y1 - 20.0);
+
+        let body_bottom = panel.y1 - 36.0;
+        let compact_final_pill_bottom = panel.y0 + 104.0 + 148.0 + 22.0 + 3.0 * 42.0 + 31.0;
+        assert!(
+            compact_final_pill_bottom <= body_bottom,
+            "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
+        );
+    }
+
+    #[test]
+    fn compact_persistent_help_affordance_keeps_a_safe_right_inset() {
+        let h = build_harness_sized(960.0, 540.0);
+        let help = h.host.shortcut_help_button_rect();
+        assert_eq!(help.x1, h.host.rect.x1 - 16.0);
+        assert!(
+            help.y1 <= h.host.rect.y1 - 16.0,
+            "persistent Help must clear the compact viewport edge: help={help:?}, host={:?}",
+            h.host.rect
+        );
     }
 
     #[test]

@@ -50,6 +50,13 @@ rustPlatform.buildRustPackage rec {
   cargoTestFlags = cargoBuildFlags;
   doCheck = false;
 
+  # The shell is a large monolithic binary. Nix builds run in a sanitized
+  # derivation environment, so the package-container profile overrides do not
+  # cross this boundary. Keep release optimisation while avoiding the
+  # multi-gigabyte fat-LTO rustc peak that exhausts the shared package runner.
+  CARGO_PROFILE_RELEASE_LTO = "thin";
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16";
+
   nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
   buildInputs = [
     libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus

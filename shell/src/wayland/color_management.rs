@@ -11,9 +11,10 @@
 //! `wp_color_management_surface_v1`. Deliberately unimplemented: ICC
 //! creators and Windows-scRGB (`unsupported_feature` error — the
 //! parametric path already unblocks HDR clients like `mpv --hdr`), and
-//! `get_information` on our own descriptions (`no_information` — they're
-//! surface-attach-only, not for round-tripping; feedback-surface
-//! descriptions do get info).
+//! `get_information` on client-created descriptions (`no_information` —
+//! they're surface-attach-only, not for round-tripping). Descriptions minted
+//! by output and surface-feedback requests are queryable and return the exact
+//! parametric values the compositor advertised.
 //!
 //! Per-surface attach is double-buffered per spec (pending on
 //! `set_image_description`, applied on `wl_surface.commit`); the
@@ -294,6 +295,7 @@ impl ParametricBuilder {
             colorimetry,
             hdr,
             identity: mint_identity(),
+            queryable: false,
         })
     }
 
@@ -386,6 +388,10 @@ pub struct ImageDescriptionData {
     /// Compositor-wide unique id number. Kept as u64 even though the
     /// currently advertised v1 protocol exposes only the low 32 bits.
     pub identity: u64,
+    /// Whether the compositor created this description from output/feedback
+    /// state and therefore must answer `get_information`. Client-created
+    /// parametric descriptions are deliberately attach-only.
+    pub queryable: bool,
 }
 
 impl ImageDescriptionData {
@@ -399,6 +405,54 @@ impl ImageDescriptionData {
     #[must_use]
     pub fn identity_hi(&self) -> u32 {
         (self.identity >> 32) as u32
+    }
+
+    fn information(&self) -> Option<(Option<Primaries>, Option<TransferFunction>)> {
+        self.queryable.then(|| {
+            let primaries = match self.colorimetry.primaries {
+                ColorPrimaries::Bt709 => Some(Primaries::Srgb),
+                ColorPrimaries::Bt2020 => Some(Primaries::Bt2020),
+                ColorPrimaries::DisplayP3 => Some(Primaries::DisplayP3),
+                ColorPrimaries::Unspecified => None,
+            };
+            let transfer = match self.colorimetry.transfer {
+                TransferCharacteristics::Bt709 => Some(TransferFunction::Bt1886),
+                TransferCharacteristics::Srgb => Some(TransferFunction::ExtSrgb),
+                TransferCharacteristics::SmpteSt2084 => Some(TransferFunction::St2084Pq),
+                TransferCharacteristics::AribStdB67 => Some(TransferFunction::Hlg),
+                TransferCharacteristics::Unspecified => None,
+            };
+            (primaries, transfer)
+        })
+    }
+
+    fn protocol_primaries(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
+        // Fixed CIE 1931 coordinates for the named primary sets we expose.
+        // The protocol requires the coordinate event even when the matching
+        // named event is also sent.
+        match self.colorimetry.primaries {
+            ColorPrimaries::Bt2020 => (
+                708_000, 292_000, 170_000, 797_000, 131_000, 46_000, 312_700, 329_000,
+            ),
+            ColorPrimaries::DisplayP3 => (
+                680_000, 320_000, 265_000, 690_000, 150_000, 60_000, 312_700, 329_000,
+            ),
+            // BT.709 and the conservative fallback are the sRGB primaries.
+            ColorPrimaries::Bt709 | ColorPrimaries::Unspecified => (
+                640_000, 330_000, 300_000, 600_000, 150_000, 60_000, 312_700, 329_000,
+            ),
+        }
+    }
+
+    fn protocol_luminances(&self) -> (u32, u32, u32) {
+        // BT.1886's protocol-defined defaults are 0.01/100/100 cd/m².
+        self.hdr.as_ref().map_or((100, 100, 100), |hdr| {
+            (
+                hdr.mastering.min_display_mastering_luminance,
+                hdr.mastering.max_display_mastering_luminance / 10_000,
+                203,
+            )
+        })
     }
 }
 
@@ -478,10 +532,11 @@ pub fn surface_current_colorimetry(
 /// colorimetry.
 #[derive(Debug, Clone)]
 pub struct ColorManagementOutputData {
-    // Retains the protocol object this descriptor belongs to. Color metadata
-    // is updated separately by the DRM output/profile path below.
+    // Retains the protocol object this descriptor belongs to. Tests of the
+    // pure descriptor contract use `None`; live output resources always use
+    // `Some`. Color metadata is updated separately by the DRM path below.
     #[allow(dead_code)]
-    output: WlOutput,
+    output: Option<WlOutput>,
     /// Colorimetry the compositor tells clients this output actually
     /// displays. `default_sdr` on winit / headless; populated from the
     /// EDID HDR block on DRM. Held by `Arc<Mutex>` so the DRM
@@ -491,15 +546,22 @@ pub struct ColorManagementOutputData {
 }
 
 impl ColorManagementOutputData {
+    fn from_color(color: Colorimetry, hdr: Option<Hdr10Metadata>) -> Self {
+        Self {
+            output: None,
+            color: Arc::new(Mutex::new(color)),
+            hdr: Arc::new(Mutex::new(hdr)),
+        }
+    }
+
     /// Attach a fresh output-side descriptor. Defaults to SDR BT.709;
     /// the DRM backend calls [`Self::set_display_color`] when an EDID
     /// arrives.
     #[must_use]
     pub fn new(output: WlOutput) -> Self {
         Self {
-            output,
-            color: Arc::new(Mutex::new(Colorimetry::sdr_bt709())),
-            hdr: Arc::new(Mutex::new(None)),
+            output: Some(output),
+            ..Self::from_color(Colorimetry::sdr_bt709(), None)
         }
     }
 
@@ -523,6 +585,7 @@ impl ColorManagementOutputData {
             colorimetry: color,
             hdr,
             identity: mint_identity(),
+            queryable: true,
         }
     }
 }
@@ -713,6 +776,7 @@ where
                     colorimetry: Colorimetry::sdr_bt709(),
                     hdr: None,
                     identity: 0,
+                    queryable: false,
                 };
                 let inited = data_init.init(image_description, desc);
                 let () = inited.failed(
@@ -949,20 +1013,33 @@ where
         _client: &Client,
         obj: &WpImageDescriptionV1,
         request: <WpImageDescriptionV1 as Resource>::Request,
-        _data: &ImageDescriptionData,
+        data: &ImageDescriptionData,
         _dh: &DisplayHandle,
-        _data_init: &mut DataInit<'_, D>,
+        data_init: &mut DataInit<'_, D>,
     ) {
         if let wp_image_description_v1::Request::GetInformation { information } = request {
-            // Parametric descriptions from our creator DO NOT
-            // permit get_information per spec (see the request's
-            // documentation in the XML). Follow the spec: post
-            // the `no_information` error.
-            let _ = information;
-            obj.post_error(
-                wp_image_description_v1::Error::NoInformation,
-                "get_information is not allowed on this image description",
-            );
+            let Some((primaries, transfer)) = data.information() else {
+                obj.post_error(
+                    wp_image_description_v1::Error::NoInformation,
+                    "get_information is not allowed on this image description",
+                );
+                return;
+            };
+            let info = data_init.init(information, data.clone());
+            let (r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y) = data.protocol_primaries();
+            info.primaries(r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+            if let Some(primaries) = primaries {
+                info.primaries_named(primaries);
+            }
+            if let Some(transfer) = transfer {
+                info.tf_named(transfer);
+            }
+            let (min_lum, max_lum, reference_lum) = data.protocol_luminances();
+            info.luminances(min_lum, max_lum, reference_lum);
+            // The target volume equals the primary volume for the profiles we
+            // currently mint, so target_primaries is intentionally omitted.
+            info.target_luminance(min_lum, max_lum);
+            let () = info.done();
         }
     }
 }
@@ -1082,6 +1159,7 @@ where
                     colorimetry: Colorimetry::sdr_bt709(),
                     hdr: None,
                     identity: mint_identity(),
+                    queryable: true,
                 };
                 let identity_lo = desc.identity_lo();
                 let obj = data_init.init(image_description, desc);
@@ -1118,10 +1196,8 @@ where
     }
 }
 
-// `wp_image_description_info_v1` is only reachable if we permit
-// `get_information` — which we don't (parametric descriptions raise
-// `no_information`). Still provide the dispatch impl so the type
-// system's delegation macros are satisfied.
+// The interface has no client requests other than object destruction; the
+// compositor emits its complete event sequence when get_information creates it.
 impl<D> Dispatch<WpImageDescriptionInfoV1, ImageDescriptionData, D> for ColorManagerState
 where
     D: Dispatch<WpImageDescriptionInfoV1, ImageDescriptionData> + 'static,
@@ -1272,5 +1348,30 @@ mod tests {
         }
         let desc = b.build().unwrap();
         assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
+    }
+
+    #[test]
+    fn compositor_descriptions_are_queryable_but_client_descriptions_are_not() {
+        let output =
+            ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();
+        assert_eq!(
+            output.information(),
+            Some((Some(Primaries::Srgb), Some(TransferFunction::Bt1886)))
+        );
+        assert_eq!(
+            output.protocol_primaries(),
+            (
+                640_000, 330_000, 300_000, 600_000, 150_000, 60_000, 312_700, 329_000
+            )
+        );
+        assert_eq!(output.protocol_luminances(), (100, 100, 100));
+
+        let builder = ParametricBuilder::default();
+        {
+            let mut inner = builder.inner.lock().unwrap();
+            inner.primaries_named = Some(Primaries::Bt2020);
+            inner.tf_named = Some(TransferFunction::St2084Pq);
+        }
+        assert_eq!(builder.build().unwrap().information(), None);
     }
 }
