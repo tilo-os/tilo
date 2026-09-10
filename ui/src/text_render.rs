@@ -1334,6 +1334,14 @@ impl TextRenderer {
         };
     }
 
+    /// The effective accessibility text scale used for both measurement and
+    /// drawing. Custom-drawn app chrome uses this to make its surrounding
+    /// geometry grow with the shared renderer rather than letting enlarged
+    /// type collide with fixed-size controls.
+    pub fn text_scale(&self) -> f32 {
+        self.text_scale
+    }
+
     fn scaled_style(&self, style: &TextStyle) -> TextStyle {
         if (self.text_scale - 1.0).abs() <= f32::EPSILON {
             return style.clone();
