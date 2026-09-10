@@ -150,6 +150,22 @@ impl ActionKind {
         }
     }
 
+    /// Present-progress verb for the one card action currently running.
+    /// This stays coupled to the actual action identity so a qOS `Open`
+    /// (which may fetch before launch) never misleadingly renders as a
+    /// Flatpak installation, and vice versa.
+    pub fn progress_label(self) -> &'static str {
+        match self {
+            Self::Open | Self::FlatpakOpen => "Starting",
+            Self::Remove | Self::FlatpakRemove => "Removing",
+            Self::Update | Self::FlatpakUpdate => "Updating",
+            Self::MarkInstalled => "Marking installed",
+            Self::Unmark => "Unmarking",
+            Self::FlatpakInstall => "Installing",
+            Self::NeedsFlatpakHost => "Preparing Flatpak",
+        }
+    }
+
     /// Whether this operation requires the host's Flatpak runtime. These are
     /// never merely view choices: each one eventually asks the host to invoke
     /// Flatpak or launch its independently-sandboxed desktop application.
@@ -513,6 +529,13 @@ mod tests {
             "removal moves to the secondary slot, and is Flatpak's own \
              removal rather than qos-install's"
         );
+    }
+
+    #[test]
+    fn progress_labels_name_the_offered_operation() {
+        assert_eq!(ActionKind::Open.progress_label(), "Starting");
+        assert_eq!(ActionKind::FlatpakInstall.progress_label(), "Installing");
+        assert_eq!(ActionKind::FlatpakRemove.progress_label(), "Removing");
     }
 
     /// The two sources remove differently, and the item is what knows

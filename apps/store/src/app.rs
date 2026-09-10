@@ -104,6 +104,11 @@ const PAGE_SIZE: usize = 48;
 /// document from allocating an unbounded action payload or layout paragraph.
 const MAX_REMOTE_NAME_CHARS: usize = 128;
 const MAX_REMOTE_URL_BYTES: usize = 2_048;
+/// The worker status can include a remote or host error. Keep the exact value
+/// in the operation record and live region, but bound the presentation copy
+/// so an untrusted server cannot turn the masthead into an unbounded layout.
+const MAX_VISIBLE_OPERATION_STATUS_CHARS: usize = 96;
+const UNKNOWN_OPERATION_STATUS: &str = "No additional details were provided.";
 /// The contextual action snapshot deliberately stays small. The retained
 /// global catalogue and `Widget::resource` resolve every omitted stable app
 /// on demand, so this never hides a catalogue entry from agents or Ctrl+K.
@@ -236,6 +241,28 @@ fn format_size(bytes: u64) -> String {
 /// layout width and corrupt the retained header scene.
 fn operation_error_summary() -> &'static str {
     "The last operation failed. Refresh the catalogue and try again."
+}
+
+/// A compact, printable status detail for the visible progress/error surface.
+///
+/// The worker's raw status is intentionally still retained for the operation
+/// history and assistive live region. This display copy collapses unusual
+/// whitespace and has a finite reading measure, while preserving enough of a
+/// useful error (for example, a failed signature verification) to make the
+/// next action clear without sending people to a separate task surface.
+fn visible_operation_status(status: &str) -> String {
+    let compact = status.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return UNKNOWN_OPERATION_STATUS.to_string();
+    }
+    let mut visible = compact
+        .chars()
+        .take(MAX_VISIBLE_OPERATION_STATUS_CHARS)
+        .collect::<String>();
+    if compact.chars().count() > MAX_VISIBLE_OPERATION_STATUS_CHARS {
+        visible.push('…');
+    }
+    visible
 }
 
 pub(crate) fn moderation_status_label(
@@ -659,6 +686,11 @@ pub struct StoreApp {
     /// counts stand in while it is empty.
     status_line: String,
     worker_busy: bool,
+    /// The one app mutation currently accepted by the serialized worker.
+    /// Keeping its stable app id and offered action locally lets the matching
+    /// card communicate progress and reject a second activation; it is a
+    /// backend observation, not shared document state.
+    active_operation: Option<(String, ActionKind)>,
     operation_error: Option<String>,
     /// Whether `flatpak` is available on the host — drives whether
     /// Flatpak items show "Install" or the "install flatpak first"
@@ -751,6 +783,7 @@ impl StoreApp {
             remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
             worker_busy: false,
+            active_operation: None,
             operation_error: None,
             flatpak_available: crate::flathub_client::flatpak_available(),
             focused_detail: None,
@@ -1063,10 +1096,19 @@ impl StoreApp {
     }
 
     pub fn set_worker_busy(&mut self, busy: bool) {
-        if self.worker_busy != busy {
+        if self.worker_busy != busy || (!busy && self.active_operation.is_some()) {
             self.worker_busy = busy;
+            if !busy {
+                self.active_operation = None;
+            }
             self.structure_dirty = true;
         }
+    }
+
+    /// Deterministic screenshot seam for the active-card progress treatment.
+    pub fn set_active_operation_for_shot(&mut self, id: &str, action: ActionKind) {
+        self.active_operation = Some((id.to_string(), action));
+        self.structure_dirty = true;
     }
 
     pub fn set_operation_error(&mut self, error: Option<String>) {
@@ -1262,6 +1304,20 @@ impl StoreApp {
     }
 
     fn catalogue_source_summary(&self) -> String {
+        // Reuse the catalogue's stable summary slot for progress rather than
+        // growing the masthead while a worker is busy. On a narrow window an
+        // extra header row can otherwise consume the scroll body's negotiated
+        // height and make the top controls appear to slide underneath it.
+        if self.worker_busy {
+            return format!(
+                "Status · {}",
+                if self.status_line.is_empty() {
+                    "Package operation in progress…".to_string()
+                } else {
+                    visible_operation_status(&self.status_line)
+                }
+            );
+        }
         let source_count = self
             .items
             .iter()
@@ -2214,22 +2270,26 @@ impl StoreApp {
                         .with_size(13.0)
                         .with_color(theme.text_tertiary),
                 ));
-            if self.worker_busy {
-                header = header.push(Box::new(
-                    // Keep the masthead's progress line bounded like its error
-                    // counterpart. The exact worker phrase stays in the polite
-                    // live region/operation record; arbitrary remote progress
-                    // text must not reshape or clip the navigation chrome.
-                    Text::new("Package operation in progress…")
-                        .with_size(13.0)
-                        .with_color(theme.text_dim),
-                ));
-            } else if self.operation_error.is_some() && !self.items.is_empty() {
+            if self.operation_error.is_some() && !self.items.is_empty() {
                 header = header.push(Box::new(
                     Container::new().with_background().with_child(Box::new(
-                        Text::new(operation_error_summary())
-                            .with_size(13.0)
-                            .with_color(theme.text_dim),
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(4.0)
+                            .push(Box::new(
+                                Text::new(operation_error_summary())
+                                    .with_size(13.0)
+                                    .with_color(theme.text_dim),
+                            ))
+                            .push(Box::new(
+                                Text::new(&format!(
+                                    "Status · {}",
+                                    visible_operation_status(&self.status_line)
+                                ))
+                                .with_size(12.0)
+                                .with_color(theme.text_tertiary),
+                            )),
                     )),
                 ));
             }
@@ -2284,18 +2344,26 @@ impl StoreApp {
         header = header.with_vertical_padding(24.0).with_gap(14.0);
         header = header.push(title_row);
         header = header.push(Box::new(search));
-        if self.worker_busy {
-            header = header.push(Box::new(
-                Text::new("Package operation in progress…")
-                    .with_size(13.0)
-                    .with_color(theme.text_dim),
-            ));
-        } else if self.operation_error.is_some() && !self.items.is_empty() {
+        if self.operation_error.is_some() && !self.items.is_empty() {
             header = header.push(Box::new(
                 Container::new().with_background().with_child(Box::new(
-                    Text::new(operation_error_summary())
-                        .with_size(13.0)
-                        .with_color(theme.text_dim),
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(4.0)
+                        .push(Box::new(
+                            Text::new(operation_error_summary())
+                                .with_size(13.0)
+                                .with_color(theme.text_dim),
+                        ))
+                        .push(Box::new(
+                            Text::new(&format!(
+                                "Status · {}",
+                                visible_operation_status(&self.status_line)
+                            ))
+                            .with_size(12.0)
+                            .with_color(theme.text_tertiary),
+                        )),
                 )),
             ));
         }
@@ -2344,7 +2412,10 @@ impl StoreApp {
         Box::new(
             Container::new()
                 .with_no_padding()
-                .with_width(214.0)
+                // Match the source picker so both controls plus the row gap
+                // fit inside the compact viewport instead of clipping the
+                // category affordance at the trailing edge.
+                .with_width(176.0)
                 .with_child(Box::new(dropdown)),
         )
     }
@@ -2358,22 +2429,33 @@ impl StoreApp {
         if visible.is_empty() {
             let (title, message) = if self.items.is_empty() {
                 if self.worker_busy {
-                    ("Loading apps…", "Checking your configured catalogues.")
+                    (
+                        "Loading apps…",
+                        "Checking your configured catalogues.".to_string(),
+                    )
                 } else if self.operation_error.is_some() {
                     (
                         "Catalogues unavailable",
-                        "Check your connection or configured source, then refresh.",
+                        // With no catalogue cards there is no separate error
+                        // masthead: this is the sole actionable failure
+                        // surface, paired with the Refresh catalogue CTA.
+                        // A bounded worker detail is more useful than a
+                        // second generic connection warning.
+                        visible_operation_status(&self.status_line),
                     )
                 } else {
                     (
                         "No apps available",
-                        "Add or enable a catalogue you trust, then refresh.",
+                        "Add or enable a catalogue you trust, then refresh.".to_string(),
                     )
                 }
             } else {
-                ("No apps found", "Try a different search or category.")
+                (
+                    "No apps found",
+                    "Try a different search or category.".to_string(),
+                )
             };
-            let empty = EmptyState::new(title).with_message(message);
+            let empty = EmptyState::new(title).with_message(&message);
             // An unavailable or genuinely empty catalogue is recoverable by
             // refreshing. Route the visible CTA through the same one-shot
             // canonical `store.refresh` resource action, so pointer, keyboard,
@@ -2436,6 +2518,10 @@ impl StoreApp {
         let group_by_availability = self.group_catalogue_by_availability();
         for item in visible.into_iter().skip(start).take(PAGE_SIZE) {
             let action = item.action_kind(self.flatpak_available);
+            let operation_active = self
+                .active_operation
+                .as_ref()
+                .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
             let click_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
             let select_key = format!("store.detail_select.{}", item.id);
             let card = crate::widgets::store_card(
@@ -2448,6 +2534,7 @@ impl StoreApp {
                 item_action_binding(item, action),
                 detail_binding(item),
                 self.compact_layout(),
+                operation_active,
             );
             if !group_by_availability {
                 search_cards.push(card);
@@ -2678,6 +2765,7 @@ impl StoreApp {
     ) {
         if self.worker_busy
             || self.operation_error.is_some()
+            || self.items.is_empty()
             || self.focused_detail.is_some()
             || self.safety_open
             || self.remotes_open
@@ -3696,6 +3784,13 @@ impl Widget for StoreApp {
                 "Flatpak is not installed on this host; no install operation can run".into(),
             );
         }
+        if self.active_operation.is_some() {
+            return Err("a package operation is already in progress".into());
+        }
+        self.active_operation = Some((id.clone(), action));
+        self.operation_error = None;
+        self.status_line = format!("{} {}…", action.progress_label(), item.name);
+        self.structure_dirty = true;
         self.pending_lifecycle_actions
             .push((id, action, invocation));
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
@@ -4407,6 +4502,45 @@ mod tests {
     }
 
     #[test]
+    fn app_operation_locks_the_target_card_until_the_worker_is_idle() {
+        let mut app = seeded_app();
+        let doc = AutoCommit::new();
+        let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
+        let first = app
+            .start_resource_operation(
+                qos_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "store.app",
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert_eq!(first, Some(ui::widget::ResourceOperationStart::Accepted));
+        assert_eq!(
+            app.active_operation,
+            Some(("id.notes".into(), ActionKind::Open))
+        );
+        assert_eq!(app.status_line(), "Starting Notes…");
+        assert_eq!(app.take_lifecycle_actions().len(), 1);
+        assert!(
+            app.start_resource_operation(
+                qos_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "store.app",
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err(),
+            "the card action cannot double-submit while the worker owns it"
+        );
+        app.set_worker_busy(true);
+        app.set_worker_busy(false);
+        assert!(app.active_operation.is_none());
+    }
+
+    #[test]
     fn stale_resource_action_cannot_escalate_to_an_unoffered_mutation() {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
@@ -4697,6 +4831,22 @@ mod tests {
         );
         assert!(operation_error_summary().chars().count() <= 72);
         assert!(!operation_error_summary().contains('\n'));
+    }
+
+    #[test]
+    fn visible_operation_status_is_printable_and_bounded() {
+        assert_eq!(visible_operation_status("\n\t"), UNKNOWN_OPERATION_STATUS);
+        assert_eq!(
+            visible_operation_status("Install failed\n\tpackage signature did not match"),
+            "Install failed package signature did not match"
+        );
+        let long = "x".repeat(MAX_VISIBLE_OPERATION_STATUS_CHARS + 1);
+        let visible = visible_operation_status(&long);
+        assert_eq!(
+            visible.chars().count(),
+            MAX_VISIBLE_OPERATION_STATUS_CHARS + 1
+        );
+        assert!(visible.ends_with('…'));
     }
 
     #[test]
