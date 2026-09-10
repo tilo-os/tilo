@@ -47,6 +47,7 @@ pub fn store_card(
     action_binding: Option<ui::qos_actions::ActionBinding<()>>,
     detail_binding: Option<ui::qos_actions::ActionBinding<()>>,
     compact: bool,
+    operation_active: bool,
 ) -> Box<dyn Widget> {
     // Left column: name + description. Secondary text reads its dim tone
     // from the live theme so it stays legible in light and dark.
@@ -81,7 +82,12 @@ pub fn store_card(
     // ghost buttons so the card has one clear primary action. They are direct
     // children of the row (fixed-width buttons) laid out as a horizontal
     // cluster on the right, not a vertical stack.
-    let mut action_btn = Button::new(action_click_key, action.label(), Some(action_click_key));
+    let action_label = if operation_active {
+        format!("{}…", action.progress_label())
+    } else {
+        action.label().to_string()
+    };
+    let mut action_btn = Button::new(action_click_key, &action_label, Some(action_click_key));
     if let Some(binding) = action_binding {
         action_btn = action_btn.on_action(binding);
     }
@@ -93,7 +99,12 @@ pub fn store_card(
         | ActionKind::FlatpakOpen => action_btn.primary(),
         _ => action_btn,
     }
-    .tooltip(format!("{} {}", action.label(), item.name));
+    .with_enabled(!operation_active)
+    .tooltip(if operation_active {
+        format!("{} {} is in progress", action.progress_label(), item.name)
+    } else {
+        format!("{} {}", action.label(), item.name)
+    });
 
     let mut details = Button::new(&format!("{select_key}.button"), "Details", Some(select_key));
     if let Some(binding) = detail_binding {
