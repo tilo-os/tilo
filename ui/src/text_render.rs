@@ -1239,6 +1239,10 @@ pub struct TextRenderer {
     shape_hits: u64,
     shape_misses: u64,
     shape_ns: u128,
+    /// App-provided accessibility text multiplier. Kept on the renderer so
+    /// custom canvas widgets that use the low-level text API can honour the
+    /// same scale as token-based controls without duplicating every draw call.
+    text_scale: f32,
 }
 
 impl Default for TextRenderer {
@@ -1312,7 +1316,32 @@ impl TextRenderer {
             shape_hits: 0,
             shape_misses: 0,
             shape_ns: 0,
+            text_scale: 1.0,
         }
+    }
+
+    /// Set the accessibility text multiplier used by subsequent measurement
+    /// and paint calls. Callers that custom-draw canvas text must set this from
+    /// the current theme before layout/painting; the renderer is retained
+    /// across frames and therefore keeps this value until it is replaced.
+    /// Invalid values fall back to 1× rather than poisoning the shaping cache
+    /// with NaN metrics.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = if scale.is_finite() {
+            scale.clamp(0.5, 4.0)
+        } else {
+            1.0
+        };
+    }
+
+    fn scaled_style(&self, style: &TextStyle) -> TextStyle {
+        if (self.text_scale - 1.0).abs() <= f32::EPSILON {
+            return style.clone();
+        }
+        let mut scaled = style.clone();
+        scaled.size *= self.text_scale;
+        scaled.letter_spacing *= self.text_scale;
+        scaled
     }
 
     /// Take-and-reset the per-frame shape-cache stats:
@@ -1417,6 +1446,8 @@ impl TextRenderer {
         if text.is_empty() {
             return (0.0, 0.0);
         }
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
 
         let key = self.make_measure_key(text, max_width, style);
         if let Some(cached) = self.measure_lookup(key) {
@@ -1781,6 +1812,8 @@ impl TextRenderer {
         if text.is_empty() {
             return;
         }
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
         let runs = self.shaped_runs(text, max_width, style);
         self.paint_runs(scene, &runs, style.size, color, transform);
     }
@@ -2993,5 +3026,57 @@ mod tests {
         let (hits, misses) = tr.cache_stats();
         assert_eq!(hits, 1);
         assert_eq!(misses, 2);
+    }
+
+    #[test]
+    fn text_scale_one_is_metric_identity_and_invalid_values_are_safe() {
+        let mut tr = TextRenderer::new();
+        let base = tr.measure("Accessible calendar", 18.0, None);
+        tr.set_text_scale(1.0);
+        assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
+
+        tr.set_text_scale(f32::NAN);
+        assert_eq!(tr.text_scale, 1.0, "NaN resets to the safe identity scale");
+        tr.set_text_scale(100.0);
+        assert_eq!(tr.text_scale, 4.0, "oversized scales are bounded");
+        tr.set_text_scale(0.0);
+        assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
+    }
+
+    #[test]
+    fn text_scale_changes_measure_and_shape_cache_together() {
+        let mut tr = TextRenderer::new();
+        let base = tr.measure("Calendar", 20.0, None);
+        tr.set_text_scale(2.0);
+        let doubled = tr.measure("Calendar", 20.0, None);
+        assert!(
+            (doubled.0 - base.0 * 2.0).abs() < 0.1 && (doubled.1 - base.1 * 2.0).abs() < 0.1,
+            "measurement uses the same scaled metrics that drawing receives: {base:?} -> {doubled:?}"
+        );
+
+        let mut scene = Scene::new();
+        let _ = tr.take_shape_stats();
+        tr.draw_text(
+            &mut scene,
+            "Calendar",
+            20.0,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+        );
+        tr.set_text_scale(1.0);
+        tr.draw_text(
+            &mut scene,
+            "Calendar",
+            20.0,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+        );
+        let (_hits, misses, _ns) = tr.take_shape_stats();
+        assert_eq!(
+            misses, 2,
+            "each scaled style owns a distinct shape-cache entry"
+        );
     }
 }
