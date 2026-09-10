@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
-use taffy::style_helpers::{length, percent};
+use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -31,6 +31,10 @@ pub struct Container {
     /// `Some(px)` switches the taffy width to `length(px)` and disables
     /// horizontal shrink, instead of the default `percent(1.0)` fill.
     fixed_width: Option<f32>,
+    /// Caps a normally fluid container and uses automatic horizontal margins
+    /// to keep it centred in a wider parent. Unlike [`Container::with_width`]
+    /// this remains responsive below the cap.
+    max_width: Option<f32>,
     /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
     /// Also implies `has_background`. `None` keeps the legacy `bg_primary`
@@ -61,6 +65,7 @@ impl Container {
             permission_scope: None,
             no_padding: false,
             fixed_width: None,
+            max_width: None,
             fixed_height: None,
             fill_color: None,
             flex_grow: false,
@@ -99,6 +104,15 @@ impl Container {
     #[must_use]
     pub fn with_width(mut self, px: f32) -> Self {
         self.fixed_width = Some(px);
+        self
+    }
+
+    /// Keeps the container fluid in narrow spaces, while centring it at no
+    /// more than `px` in a wider parent. This is useful for readable forms
+    /// and sparse settings panes without constraining data-dense layouts.
+    #[must_use]
+    pub fn with_centered_max_width(mut self, px: f32) -> Self {
+        self.max_width = Some(px);
         self
     }
 
@@ -206,6 +220,24 @@ impl Widget for Container {
                 bottom: length(pad),
             },
             size: taffy::Size { width, height },
+            max_size: taffy::Size {
+                width: self.max_width.map_or(taffy::Dimension::auto(), length),
+                height: taffy::Dimension::auto(),
+            },
+            margin: taffy::Rect {
+                left: if self.max_width.is_some() {
+                    auto()
+                } else {
+                    length(0.0_f32)
+                },
+                right: if self.max_width.is_some() {
+                    auto()
+                } else {
+                    length(0.0_f32)
+                },
+                top: length(0.0_f32),
+                bottom: length(0.0_f32),
+            },
             ..Default::default()
         };
 
@@ -479,6 +511,25 @@ mod tests {
             (rect.width() - 800.0).abs() < 0.5,
             "default container must fill the viewport width, got {}",
             rect.width()
+        );
+    }
+
+    #[test]
+    fn centered_max_width_caps_wide_parent_and_remains_fluid() {
+        let (wide, _) = lay_out(
+            Container::new().with_child(Box::new(Container::new().with_centered_max_width(480.0))),
+        );
+        let wide_child = wide.children()[0].get_rect();
+        assert!((wide_child.width() - 480.0).abs() < 0.5);
+        assert!(
+            (wide_child.x0 - 160.0).abs() < 0.5,
+            "capped child must be centred, got {wide_child:?}"
+        );
+
+        let (_narrow, narrow_rect) = lay_out(Container::new().with_centered_max_width(960.0));
+        assert!(
+            (narrow_rect.width() - 800.0).abs() < 0.5,
+            "cap above available width must remain fluid"
         );
     }
 
