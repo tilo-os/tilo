@@ -532,7 +532,7 @@ impl NetworkPane {
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(Button::new(
                         &format!("settings.network.vpn.studio.{}", v.name),
-                        "Advanced…",
+                        "Open VPN Studio",
                         Some(&Self::vpn_studio_key(&v.name)),
                     )))
                     .push(Box::new(Toggle::new(&id, &key))),
@@ -791,9 +791,9 @@ impl NetworkPane {
             Box::new(Button::new(
                 "settings.network.advanced",
                 if self.advanced_open {
-                    "Hide advanced"
+                    "Hide connection policy"
                 } else {
-                    "Advanced…"
+                    "Connection policy"
                 },
                 Some(ADVANCED_KEY),
             )),
@@ -837,8 +837,8 @@ impl NetworkPane {
         rows_out
     }
 
-    /// Appends the "Advanced" Wi-Fi profile editor rows (metered/MAC/proxy
-    /// policy) when the Advanced panel is open and a profile is selected.
+    /// Appends the Wi-Fi profile policy editor rows (metered/MAC/proxy
+    /// policy) when the Connection policy panel is open and a profile is selected.
     fn push_advanced_profile_rows(
         &self,
         wifi_profiles: &[&SavedNetworkProfile],
@@ -864,11 +864,11 @@ impl NetworkPane {
                 ));
             }
             rows_out.push(caption(&format!(
-                "Advanced policy for {}. NetworkManager remains the source of truth.",
+                "Connection policy for {}. NetworkManager remains the source of truth.",
                 profile.name
             )));
             let Some(_settings) = self.profile_settings.get(&profile.uuid) else {
-                rows_out.push(caption("Advanced values could not be read from NetworkManager, so Settings will not offer a destructive default editor."));
+                rows_out.push(caption("Policy values could not be read from NetworkManager, so Settings will not offer a destructive default editor."));
                 return;
             };
             rows_out.push(choice_row(
