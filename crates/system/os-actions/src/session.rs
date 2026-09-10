@@ -2,7 +2,18 @@
 //!
 //! Keeping these here means UI code cannot construct an arbitrary command.
 
+use std::fs::OpenOptions;
+use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::process::run;
+
+const LOGOUT_REQUEST_ENV: &str = "QOS_SESSION_LOGOUT_REQUEST";
+static LOGOUT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionAction {
@@ -23,7 +34,7 @@ pub enum SessionAction {
 pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     match action {
         SessionAction::Lock => run("loginctl", &["lock-session"]),
-        SessionAction::Logout => run("loginctl", &["terminate-session", "self"]),
+        SessionAction::Logout => request_wrapper_logout(),
         // A greeter is a display-manager session, not a magic logind session
         // id. Ask the active display manager to create/activate its greeter.
         // GDM deliberately permits this exact method to ordinary local users
@@ -44,6 +55,49 @@ pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     }
 }
 
+fn logout_request_path() -> Result<PathBuf, String> {
+    let path = std::env::var_os(LOGOUT_REQUEST_ENV).ok_or_else(|| {
+        "qOS session wrapper did not provide a logout request channel".to_string()
+    })?;
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err("qOS session logout request path is not absolute".into());
+    }
+    Ok(path)
+}
+
+fn request_wrapper_logout_at(path: &Path) -> Result<(), String> {
+    let mut request = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| format!("creating qOS logout request: {error}"))?;
+    request
+        .write_all(b"logout\n")
+        .map_err(|error| format!("writing qOS logout request: {error}"))
+}
+
+fn request_wrapper_logout() -> Result<(), String> {
+    request_wrapper_logout_at(&logout_request_path()?)?;
+    // The wrapper owns teardown, but it cannot observe the request until this
+    // compositor exits. Publish an in-process edge for the native frame loop;
+    // the request file remains the cross-process proof that this was an
+    // intentional logout rather than a compositor crash.
+    LOGOUT_REQUESTED.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Consume the process-local logout edge written by [`perform_session_action`].
+///
+/// The compositor calls this from its owning thread. Keeping the edge here
+/// avoids a per-frame filesystem poll while still letting the wrapper perform
+/// orderly target and activation-environment cleanup after the shell exits.
+#[must_use]
+pub fn take_logout_request() -> bool {
+    LOGOUT_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,10 +114,7 @@ mod tests {
                 binary: "loginctl",
                 args: &["lock-session"],
             },
-            SessionAction::Logout => Invocation {
-                binary: "loginctl",
-                args: &["terminate-session", "self"],
-            },
+            SessionAction::Logout => panic!("logout uses the wrapper request channel"),
             SessionAction::SwitchUser => Invocation {
                 binary: "busctl",
                 args: &[
@@ -95,5 +146,25 @@ mod tests {
         assert_eq!(call.binary, "busctl");
         assert_eq!(call.args.last(), Some(&"CreateTransientDisplay"));
         assert!(!call.args.contains(&"greeter"));
+    }
+
+    #[test]
+    fn logout_request_is_private_atomic_and_never_calls_loginctl() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("logout-request");
+        request_wrapper_logout_at(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "logout\n");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(request_wrapper_logout_at(&path).is_err());
+    }
+
+    #[test]
+    fn compositor_logout_edge_is_consumed_once() {
+        LOGOUT_REQUESTED.store(true, Ordering::Release);
+        assert!(take_logout_request());
+        assert!(!take_logout_request());
     }
 }

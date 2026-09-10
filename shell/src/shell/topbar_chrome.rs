@@ -2273,7 +2273,35 @@ impl TopBarChrome {
         } else {
             format!("{}  ·  {} new", headline, self.activity_unread)
         };
-        text_renderer.elide_to_width_weighted(&full, size, max_width, TextWeight::Medium)
+        let (full_width, _) = text_renderer.measure_weighted(&full, size, None, TextWeight::Medium);
+        if full_width <= max_width {
+            return full;
+        }
+
+        // The primary activity says what happened; the unread count already
+        // has a numeric badge, and clicking this pill opens the focused
+        // Room Activity detail. Prefer the entire primary sentence plus an
+        // explicit detail chevron over eliding its last words to preserve
+        // the trailing count in a compact top bar.
+        let detail = format!("{headline}  ›");
+        let (detail_width, _) =
+            text_renderer.measure_weighted(&detail, size, None, TextWeight::Medium);
+        if detail_width <= max_width {
+            return detail;
+        }
+        // Aggregate activity sometimes lists its examples after a colon
+        // (for example, the workspace names just recorded). Keep the
+        // complete event/count clause and make the detail route explicit
+        // instead of cutting it part-way through an example list.
+        if let Some((summary, _examples)) = headline.split_once(':') {
+            let compact = format!("{summary}  ›");
+            let (compact_width, _) =
+                text_renderer.measure_weighted(&compact, size, None, TextWeight::Medium);
+            if compact_width <= max_width {
+                return compact;
+            }
+        }
+        text_renderer.elide_to_width_weighted(headline, size, max_width, TextWeight::Medium)
     }
 
     fn draw_activity_badge(
@@ -3044,6 +3072,44 @@ mod tests {
         assert!(
             height <= TOPBAR_HEIGHT_PX - 4.0,
             "activity headline height {height} must fit in the 48px topbar"
+        );
+    }
+
+    #[test]
+    fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: Vec::new(),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        // The 960px chrome reserves a 360px centre selector; after its dots
+        // and breathing room, this is the usable activity lane.
+        bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
+        bar.activity_headline = Some("ada · 2 permission changes".into());
+        bar.activity_unread = 4;
+        let mut renderer = TextRenderer::new();
+        let theme = Theme::default().with_text_scale(1.3);
+        let size = theme.tokens.typography.scale.sm;
+        let max_width = bar.activity_content_width();
+        let label = bar.activity_display_label(&mut renderer, size, max_width);
+        let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
+        assert_eq!(label, "ada · 2 permission changes  ›");
+        assert!(width <= max_width + 0.5);
+
+        bar.activity_started = Some(Instant::now());
+        bar.last_cursor = Some(bar.center_rect.center());
+        let mut handled = false;
+        bar.handle_left_click(&mut handled);
+        assert!(handled);
+        assert!(
+            chrome.borrow().overlays.room_activity,
+            "the explicit chevron label points to the activity detail route"
         );
     }
 
