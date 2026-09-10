@@ -188,17 +188,16 @@ jobs:
           QOS_RPM_SIGNING_FINGERPRINT: ${{ vars.QOS_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
-          status=0
           while IFS='|' read -r distro image revision; do
             [[ -n $distro ]] || continue
             echo "::group::$distro / ${{ matrix.arch }}"
             if ! dist/ci/run-package-job.sh \
                 "$distro" "$image" "${{ matrix.arch }}" "$revision"; then
-              status=1
+              echo "::endgroup::"
+              exit 1
             fi
             echo "::endgroup::"
           done <<<"$QOS_LANE_TARGETS"
-          exit "$status"
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
