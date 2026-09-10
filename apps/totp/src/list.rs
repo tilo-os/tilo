@@ -34,6 +34,10 @@ use crate::ring::CountdownRing;
 use crate::totp;
 
 const ROW_HEIGHT: f64 = 76.0;
+/// Narrow cards deliberately give the code its own second line.  Shrinking a
+/// six/eight-digit credential beside the account identity makes both harder to
+/// scan, and at phone-ish widths the old single-line geometry overlapped them.
+const NARROW_ROW_HEIGHT: f64 = 108.0;
 const ROW_GAP: f64 = 10.0;
 const PAD: f64 = 16.0;
 const AVATAR_R: f64 = 24.0;
@@ -145,6 +149,11 @@ impl AccountList {
         self.accounts.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn scroll_offset(&self) -> f64 {
+        self.scroll
+    }
+
     /// The current painted bounds for an account row. The root uses this when
     /// exporting its virtual accessibility list, so assistive technology and
     /// pointer hit-testing describe the same scrolled geometry.
@@ -157,7 +166,7 @@ impl AccountList {
     }
 
     fn content_height(&self) -> f64 {
-        self.accounts.len() as f64 * (ROW_HEIGHT + ROW_GAP)
+        self.accounts.len() as f64 * (self.row_height() + ROW_GAP)
     }
 
     fn max_scroll(&self) -> f64 {
@@ -170,8 +179,21 @@ impl AccountList {
 
     /// Bounding rect of visible row `i` (in absolute coords, scrolled).
     fn row_rect(&self, i: usize) -> Rect {
-        let y0 = self.rect.y0 + ROW_GAP / 2.0 + i as f64 * (ROW_HEIGHT + ROW_GAP) - self.scroll;
-        Rect::new(self.rect.x0 + PAD, y0, self.rect.x1 - PAD, y0 + ROW_HEIGHT)
+        let row_height = self.row_height();
+        let y0 = self.rect.y0 + ROW_GAP / 2.0 + i as f64 * (row_height + ROW_GAP) - self.scroll;
+        Rect::new(self.rect.x0 + PAD, y0, self.rect.x1 - PAD, y0 + row_height)
+    }
+
+    fn is_narrow(&self) -> bool {
+        self.rect.width() < 480.0
+    }
+
+    fn row_height(&self) -> f64 {
+        if self.is_narrow() {
+            NARROW_ROW_HEIGHT
+        } else {
+            ROW_HEIGHT
+        }
     }
 
     /// Geometry landmarks within a row, derived once and shared by draw +
@@ -180,9 +202,16 @@ impl AccountList {
         let actions_x1 = r.x1 - 12.0;
         let actions_x0 = actions_x1 - ACTION_W;
         let ring_center_x = actions_x0 - 16.0 - RING_R;
-        let ring_center = Point::new(ring_center_x, r.center().y);
+        let narrow = r.width() < 480.0;
+        let ring_center = Point::new(
+            ring_center_x,
+            if narrow { r.y0 + 76.0 } else { r.center().y },
+        );
         let code_right = ring_center_x - RING_R - 18.0;
-        let avatar_c = Point::new(r.x0 + 18.0 + AVATAR_R, r.center().y);
+        let avatar_c = Point::new(
+            r.x0 + 18.0 + AVATAR_R,
+            if narrow { r.y0 + 37.0 } else { r.center().y },
+        );
         let text_x = avatar_c.x + AVATAR_R + 16.0;
         RowLayout {
             actions_x0,
@@ -217,9 +246,17 @@ impl AccountList {
                 };
                 return Some((i, zone));
             }
-            // Copy zone: the code area, just left of the ring.
-            let copy_x0 = (l.code_right - COPY_ZONE_W).max(l.text_x);
-            if p.x >= copy_x0 && p.x <= l.code_right + 8.0 {
+            // Copy zone: at narrow widths the code deliberately moves below
+            // the identity block, so tapping its lower line never steals a
+            // normal row-selection tap from the title/label.
+            let narrow = r.width() < 480.0;
+            let copy_x0 = if narrow {
+                l.text_x
+            } else {
+                (l.code_right - COPY_ZONE_W).max(l.text_x)
+            };
+            let in_code_line = !narrow || p.y >= r.y0 + 58.0;
+            if in_code_line && p.x >= copy_x0 && p.x <= l.code_right + 8.0 {
                 return Some((i, Zone::Copy));
             }
             return Some((i, Zone::Body));
@@ -315,6 +352,10 @@ impl AccountList {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "row geometry and its code/security state share one paint path"
+    )]
     fn draw_row(
         &mut self,
         scene: &mut Scene,
@@ -356,10 +397,17 @@ impl AccountList {
         // Issuer + label, vertically centred as a block. The available
         // text width shrinks with the row so a narrow window truncates
         // rather than colliding with the code.
-        let text_w = (l.code_right - COPY_ZONE_W - l.text_x).max(60.0) as f32;
+        let narrow = r.width() < 480.0;
+        let text_w = if narrow {
+            (l.actions_x0 - 12.0 - l.text_x).max(60.0)
+        } else {
+            (l.code_right - COPY_ZONE_W - l.text_x).max(60.0)
+        } as f32;
         let issuer = account.title().to_string();
         let has_label = !account.label.trim().is_empty();
-        let issuer_y = if has_label {
+        let issuer_y = if narrow {
+            r.y0 + 18.0
+        } else if has_label {
             r.center().y - 20.0
         } else {
             r.center().y - 10.0
@@ -379,25 +427,47 @@ impl AccountList {
                 &account.label,
                 13.0,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((l.text_x, r.center().y + 4.0)),
+                transform
+                    * Affine::translate((
+                        l.text_x,
+                        if narrow {
+                            r.y0 + 42.0
+                        } else {
+                            r.center().y + 4.0
+                        },
+                    )),
                 Some(text_w),
             );
         }
 
-        // The big rotating code, right-aligned to `code_right`.
-        let raw = totp::code_at(&account, now);
-        let grouped = totp::group_code(&raw);
-        let code_size = 30.0;
+        // The big rotating code, right-aligned to `code_right`. Shared account
+        // metadata can arrive before its device-local secret; make that state
+        // explicit instead of painting a plausible-looking (but unusable) code.
+        let has_local_secret = account.secret_is_valid();
+        let grouped = if has_local_secret {
+            totp::group_code(&totp::code_at(&account, now))
+        } else {
+            "Set up locally".to_string()
+        };
+        let code_size = if has_local_secret {
+            if narrow { 24.0 } else { 30.0 }
+        } else {
+            13.0
+        };
         let (code_w, code_h) =
             text_renderer.measure_styled(&grouped, code_size, None, TextWeight::Bold, false, true);
-        let copy_hot = is_hovered && self.hover_zone == Some(Zone::Copy);
+        let copy_hot = has_local_secret && is_hovered && self.hover_zone == Some(Zone::Copy);
         let code_color = if copy_hot {
             account_color(theme, account.color)
         } else {
             theme.tokens.colors.text_primary
         };
         let code_x = l.code_right - f64::from(code_w);
-        let code_y = r.center().y - f64::from(code_h) / 2.0;
+        let code_y = if narrow {
+            r.y0 + 63.0
+        } else {
+            r.center().y - f64::from(code_h) / 2.0
+        };
         text_renderer.draw_text_styled(
             scene,
             &grouped,
@@ -421,22 +491,23 @@ impl AccountList {
             );
         }
 
-        // Countdown ring.
-        let secs = totp::seconds_remaining(&account, now);
-        // Reduced motion retains useful expiry information without sweeping
-        // continuously: the ring advances in whole-second steps alongside its
-        // numeric label.
-        let frac = if theme.reduce_motion {
-            f64::from(secs) / f64::from(account.period.max(1))
-        } else {
-            totp::period_progress(&account, now)
-        };
-        self.ring
-            .place(l.ring_c, RING_R)
-            .set_fraction(frac)
-            .set_seconds(secs)
-            .set_color(account_color(theme, account.color));
-        self.ring.draw_arc(scene, transform, text_renderer, theme);
+        if has_local_secret {
+            // Reduced motion retains useful expiry information without sweeping
+            // continuously: the ring advances in whole-second steps alongside
+            // its numeric label.
+            let secs = totp::seconds_remaining(&account, now);
+            let frac = if theme.reduce_motion {
+                f64::from(secs) / f64::from(account.period.max(1))
+            } else {
+                totp::period_progress(&account, now)
+            };
+            self.ring
+                .place(l.ring_c, RING_R)
+                .set_fraction(frac)
+                .set_seconds(secs)
+                .set_color(account_color(theme, account.color));
+            self.ring.draw_arc(scene, transform, text_renderer, theme);
+        }
 
         // Hover action icons.
         if is_hovered {
@@ -632,6 +703,12 @@ impl Widget for AccountList {
                 {
                     let id = account.id;
                     let ev = match zone {
+                        // A peer can share an account identity without sharing
+                        // its bearer secret. Clicking its code area selects the
+                        // row rather than attempting a meaningless clipboard
+                        // write; assistive technology exposes the same disabled
+                        // Copy control from the root semantic tree.
+                        Zone::Copy if !account.secret_is_valid() => ListEvent::Select(id),
                         Zone::Copy => ListEvent::Copy(id),
                         Zone::Up => ListEvent::MoveUp(id),
                         Zone::Down => ListEvent::MoveDown(id),
@@ -717,6 +794,27 @@ mod tests {
             r.y1 - 6.0,
         );
         assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
+    }
+
+    #[test]
+    fn narrow_rows_put_codes_on_a_separate_copy_line() {
+        let mut l = AccountList::new();
+        l.set_viewport(Rect::new(0.0, 0.0, 390.0, 800.0));
+        l.set_accounts(demo_accounts());
+        let r = l.row_rect(0);
+        let layout = AccountList::row_layout(r);
+        assert_eq!(r.height(), NARROW_ROW_HEIGHT);
+        assert!(layout.ring_c.y > layout.avatar_c.y + AVATAR_R);
+        // Identity taps remain body selection; code taps are explicitly on the
+        // lower line and reach the same Copy event path as wide rows.
+        assert_eq!(
+            l.hit(Point::new(layout.text_x + 4.0, r.y0 + 36.0)),
+            Some((0, Zone::Body))
+        );
+        assert_eq!(
+            l.hit(Point::new(layout.code_right - 20.0, r.y0 + 74.0)),
+            Some((0, Zone::Copy))
+        );
     }
 
     #[test]

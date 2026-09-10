@@ -15,14 +15,14 @@
 //!   `otpauth://` URI parser, and the theme-derived account palette.
 //! * [`totp`] — RFC 6238 code generation on the `RustCrypto` HMAC/SHA
 //!   primitives, plus period timing for the ring.
-//! * [`doc`] — the Automerge mirror of the vault (CRDT-native state).
+//! * [`doc`] — the secret-free Automerge account-metadata mirror.
 //! * [`ring`] — the custom [`ring::CountdownRing`] widget (arc → Vello).
 //! * [`list`] — the [`list::AccountList`] main screen.
 //! * [`add_panel`] — the [`add_panel::AddAccountPanel`] modal.
 //! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.
 //! * [`app`] — the [`app::AuthenticatorApp`] root that ties them together.
-//! * [`storage`] — plaintext persistence today, with the documented
-//!   encrypted-at-rest plan.
+//! * [`storage`] — encrypted local vault persistence with explicit durability
+//!   status.
 //!
 //! [`app_root`] is the single integration point used by `main.rs` for
 //! both the live event loop and the `--shots` offscreen renderer.
@@ -122,4 +122,22 @@ pub fn app_root_add_picker_screen() -> Box<dyn Widget> {
     let mut app = AuthenticatorApp::demo();
     app.seed_open_add_picker();
     Box::new(app)
+}
+
+/// Deterministic secret-free shared-account state for visual/a11y review of
+/// the local provisioning flow. No real vault material is read or rendered.
+pub fn app_root_provision_screen() -> Box<dyn Widget> {
+    Box::new(AuthenticatorApp::demo_provision())
+}
+
+/// Deterministic durability-warning state for visual review. It contains only
+/// demo accounts and no real keyring/storage failure details.
+pub fn app_root_persistence_error() -> Box<dyn Widget> {
+    Box::new(AuthenticatorApp::demo_persistence_error())
+}
+
+/// Deterministic shared-account preview with one account lacking this
+/// device's secret, used to review the honest setup affordance.
+pub fn app_root_missing_secret() -> Box<dyn Widget> {
+    Box::new(AuthenticatorApp::demo_missing_secret())
 }
