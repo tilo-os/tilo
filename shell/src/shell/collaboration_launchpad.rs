@@ -141,8 +141,21 @@ impl CollaborationLaunchpad {
         reason = "bounded six-card renderer geometry uses f64 logical pixels"
     )]
     fn card_geometry(rect: Rect) -> ([Rect; 6], usize) {
-        let panel_w = (rect.width() - 48.0).clamp(280.0, 900.0);
-        let panel_x = rect.center().x - panel_w / 2.0;
+        // The workspace rail floats over the launchpad rather than shrinking
+        // its widget's layout rect. On desktop-sized outputs, centre the
+        // launchpad in the remaining canvas so its first heading/card never
+        // starts under that rail. Narrow layouts keep the full canvas: the
+        // rail is then already collapsed by the surrounding chrome.
+        let rail_clearance =
+            crate::shell::overlay_host::workspace_rail_clearance_for_viewport(rect.height());
+        let content_x0 = if rect.width() >= 720.0 {
+            rect.x0 + rail_clearance
+        } else {
+            rect.x0
+        };
+        let content_width = rect.x1 - content_x0;
+        let panel_w = (content_width - 48.0).clamp(280.0, 900.0);
+        let panel_x = content_x0 + (content_width - panel_w) / 2.0;
         let columns: usize = if panel_w >= 760.0 {
             3
         } else if panel_w >= 520.0 {
@@ -557,5 +570,17 @@ mod tests {
             );
             assert!(cards.windows(2).all(|pair| pair[0] != pair[1]));
         }
+    }
+
+    #[test]
+    fn desktop_launchpad_clears_the_workspace_rail() {
+        let rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        let (cards, _) = CollaborationLaunchpad::card_geometry(rect);
+        let rail_clearance =
+            crate::shell::overlay_host::workspace_rail_clearance_for_viewport(rect.height());
+        assert!(
+            cards.iter().all(|card| card.x0 >= rail_clearance),
+            "desktop launchpad cards must not start beneath the persistent workspace rail: {cards:?}"
+        );
     }
 }
