@@ -291,11 +291,15 @@ fn detail_section(
         .with_intrinsic_height()
         .with_gap(7.0)
         .push(Box::new(
-            Text::new(title).with_size(18.0).with_heading_level(2),
+            Text::new(title)
+                .with_scaled_size(18.0)
+                .with_heading_level(2),
         ));
     for line in lines {
         column = column.push(Box::new(
-            Text::new(&line).with_size(13.0).with_color(theme.text_dim),
+            Text::new(&line)
+                .with_scaled_size(13.0)
+                .with_color(theme.text_dim),
         ));
     }
     bounded_detail_card(Box::new(column), compact, roomy_desktop)
@@ -759,6 +763,10 @@ pub struct StoreApp {
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
     images: Option<ui::ImageStore>,
     reduce_motion: bool,
+    /// Sampled from the shared theme at layout time.  Store keeps its view
+    /// state local, but its responsive composition must still react to the
+    /// person's global readable-type preference.
+    text_scale: f32,
     layout_width_hint: f64,
 }
 
@@ -816,6 +824,7 @@ impl StoreApp {
             shots_status: false,
             images: None,
             reduce_motion: false,
+            text_scale: 1.0,
             layout_width_hint: 0.0,
         }
     }
@@ -995,6 +1004,19 @@ impl StoreApp {
             self.layout_width_hint
         };
         width > 0.0 && width < 620.0
+    }
+
+    /// Large text needs the same space as a narrow viewport even on a wide
+    /// monitor: a three-column fixed-height card grid would otherwise hide
+    /// the decision controls below enlarged descriptions.  This is only a
+    /// presentation choice; filters, selection, and every canonical resource
+    /// address remain unchanged.
+    fn readable_type_layout(&self) -> bool {
+        self.text_scale > 1.25
+    }
+
+    fn stacked_catalogue_layout(&self) -> bool {
+        self.compact_layout() || self.readable_type_layout()
     }
 
     pub fn set_remotes(&mut self, remotes: Vec<crate::flathub_client::Remote>) {
@@ -1202,7 +1224,7 @@ impl StoreApp {
                 .with_intrinsic_height()
                 .with_gap(8.0)
                 .push(header);
-            if self.compact_layout() {
+            if self.stacked_catalogue_layout() {
                 catalogue_controls = catalogue_controls.push(Box::new(
                     Row::new()
                         .no_wrap()
@@ -1228,7 +1250,7 @@ impl StoreApp {
                                         .with_flex_grow()
                                         .with_child(Box::new(
                                             Text::new(&self.catalogue_source_summary())
-                                                .with_size(13.0)
+                                                .with_scaled_size(13.0)
                                                 .with_color(theme.text_dim),
                                         )),
                                 )),
@@ -1481,10 +1503,10 @@ impl StoreApp {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&item.name).with_size(26.0)))
+                    .push(Box::new(Text::new(&item.name).with_scaled_size(26.0)))
                     .push(Box::new(
                         Text::new(&source)
-                            .with_size(12.0)
+                            .with_scaled_size(12.0)
                             .with_color(theme.text_dim),
                     )),
             )
@@ -1495,12 +1517,12 @@ impl StoreApp {
                     .with_fill_remaining_height()
                     .push(Box::new(
                         Text::new(&item.name)
-                            .with_size(32.0)
+                            .with_scaled_size(32.0)
                             .with_weight(TextWeight::Semibold),
                     ))
                     .push(Box::new(
                         Text::new(&source)
-                            .with_size(12.0)
+                            .with_scaled_size(12.0)
                             .with_color(theme.text_dim),
                     )),
             )
@@ -1529,7 +1551,9 @@ impl StoreApp {
                         Container::new().with_no_padding().with_height(14.0),
                     ))
                     .push(summary)
-                    .push(Box::new(Text::new(&item.description).with_size(14.0)))
+                    .push(Box::new(
+                        Text::new(&item.description).with_scaled_size(14.0),
+                    ))
                     .push(actions),
             )
         } else {
@@ -1561,7 +1585,7 @@ impl StoreApp {
                                                 .push(summary)
                                                 .push(Box::new(
                                                     Text::new(&item.description)
-                                                        .with_size(15.0)
+                                                        .with_scaled_size(15.0)
                                                         .with_color(theme.text_dim),
                                                 )),
                                         )),
@@ -1586,7 +1610,7 @@ impl StoreApp {
                                                         "Flathub distribution"
                                                     }
                                                 })
-                                                .with_size(12.0)
+                                                .with_scaled_size(12.0)
                                                 .with_color(theme.text_dim),
                                             )),
                                     )),
@@ -1633,12 +1657,14 @@ impl StoreApp {
                 .with_gap(5.0)
                 .push(Box::new(
                     Text::new(title)
-                        .with_size(14.0)
+                        .with_scaled_size(14.0)
                         .with_weight(TextWeight::Semibold),
                 ));
             for line in lines {
                 block = block.push(Box::new(
-                    Text::new(&line).with_size(13.0).with_color(theme.text_dim),
+                    Text::new(&line)
+                        .with_scaled_size(13.0)
+                        .with_color(theme.text_dim),
                 ));
             }
             // The encompassing decision surface supplies the visual boundary.
@@ -1652,7 +1678,7 @@ impl StoreApp {
             .with_gap(0.0)
             .push(Box::new(
                 Text::new("At a glance")
-                    .with_size(20.0)
+                    .with_scaled_size(20.0)
                     .with_heading_level(2),
             ))
             .push(Box::new(
@@ -1735,7 +1761,7 @@ impl StoreApp {
                 .with_gap(12.0)
                 .push(Box::new(
                     Text::new("Preview gallery")
-                        .with_size(18.0)
+                        .with_scaled_size(18.0)
                         .with_heading_level(2),
                 ))
                 .push(gallery);
@@ -1792,13 +1818,13 @@ impl StoreApp {
             .with_gap(8.0)
             .push(Box::new(
                 Text::new("Help keep the catalogue safe")
-                    .with_size(16.0)
+                    .with_scaled_size(16.0)
                     .with_weight(TextWeight::Semibold)
                     .with_heading_level(2),
             ))
             .push(Box::new(
                 Text::new("Report concerns collaboratively, or review how verified decisions and appeals work.")
-                    .with_size(13.0)
+                    .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ))
             .push(support_actions);
@@ -1836,13 +1862,15 @@ impl StoreApp {
             .push(Box::new(
                 Container::new().with_no_padding().with_height(6.0),
             ))
-            .push(Box::new(Text::new("Trust & moderation").with_size(24.0)))
+            .push(Box::new(
+                Text::new("Trust & moderation").with_scaled_size(24.0),
+            ))
             .push(Box::new(
                 Container::new().with_no_padding().with_height(6.0),
             ))
             .push(Box::new(
                 Text::new("Signed reports, accountable decisions and publisher appeals")
-                    .with_size(14.0)
+                    .with_scaled_size(14.0)
                     .with_color(theme.text_dim),
             ));
         if self.reports.is_empty() {
@@ -1855,7 +1883,7 @@ impl StoreApp {
                 .push(Box::new(
                     Container::new().with_no_padding().with_height(6.0),
                 ))
-                .push(Box::new(Text::new("Describe the concern").with_size(15.0)))
+                .push(Box::new(Text::new("Describe the concern").with_scaled_size(15.0)))
                 .push(Box::new(TextInput::new(vec![])
                     .with_id("store.report.note")
                     .with_on_change_path(REPORT_NOTE_KEY)
@@ -1864,7 +1892,7 @@ impl StoreApp {
                     Container::new().with_no_padding().with_height(6.0),
                 ))
                 .push(Box::new(Text::new("Saved collaboratively in this Store document. Submit sends the bounded note digest and summary to the app's registry; Export keeps a local evidence copy.")
-                    .with_size(11.0).with_color(theme.text_dim)))
+                    .with_scaled_size(11.0).with_color(theme.text_dim)))
                 .push(Box::new(
                     Container::new().with_no_padding().with_height(6.0),
                 ));
@@ -1951,10 +1979,10 @@ impl StoreApp {
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(8.0)
-                    .push(Box::new(Text::new(&report.app_id).with_size(16.0)))
+                    .push(Box::new(Text::new(&report.app_id).with_scaled_size(16.0)))
                     .push(Box::new(
                         Text::new(&report.status)
-                            .with_size(13.0)
+                            .with_scaled_size(13.0)
                             .with_color(theme.text_dim),
                     ))
                     .push(actions);
@@ -2010,13 +2038,13 @@ impl StoreApp {
             .push(Box::new(
                 Container::new().with_no_padding().with_height(8.0),
             ))
-            .push(Box::new(Text::new("Flatpak remotes").with_size(26.0)))
+            .push(Box::new(Text::new("Flatpak remotes").with_scaled_size(26.0)))
             .push(Box::new(
                 Container::new().with_no_padding().with_height(8.0),
             ))
             .push(Box::new(
                 Text::new("Repositories are machine-scoped and every change runs through the package worker.")
-                    .with_size(13.0)
+                    .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ))
             .push(Box::new(
@@ -2038,10 +2066,10 @@ impl StoreApp {
                             .with_no_padding()
                             .with_intrinsic_height()
                             .with_gap(6.0)
-                            .push(Box::new(Text::new(&remote.title).with_size(16.0)))
+                            .push(Box::new(Text::new(&remote.title).with_scaled_size(16.0)))
                             .push(Box::new(
                                 Text::new(&remote.url)
-                                    .with_size(13.0)
+                                    .with_scaled_size(13.0)
                                     .with_color(theme.text_dim),
                             ))
                             .push(Box::new(
@@ -2050,7 +2078,7 @@ impl StoreApp {
                                 } else {
                                     "Enabled"
                                 })
-                                .with_size(12.0)
+                                .with_scaled_size(12.0)
                                 .with_color(theme.text_dim),
                             ))
                             .push(remove),
@@ -2069,10 +2097,12 @@ impl StoreApp {
                                         .with_no_padding()
                                         .with_intrinsic_height()
                                         .with_gap(5.0)
-                                        .push(Box::new(Text::new(&remote.title).with_size(16.0)))
+                                        .push(Box::new(
+                                            Text::new(&remote.title).with_scaled_size(16.0),
+                                        ))
                                         .push(Box::new(
                                             Text::new(&remote.url)
-                                                .with_size(13.0)
+                                                .with_scaled_size(13.0)
                                                 .with_color(theme.text_dim),
                                         ))
                                         .push(Box::new(
@@ -2081,7 +2111,7 @@ impl StoreApp {
                                             } else {
                                                 "Enabled"
                                             })
-                                            .with_size(12.0)
+                                            .with_scaled_size(12.0)
                                             .with_color(theme.text_dim),
                                         )),
                                 )),
@@ -2130,12 +2160,12 @@ impl StoreApp {
             .with_gap(10.0)
             .push(Box::new(
                 Text::new("Add a remote")
-                    .with_size(18.0)
+                    .with_scaled_size(18.0)
                     .with_heading_level(2),
             ))
             .push(Box::new(
                 Text::new("Use a descriptive name and an HTTPS repository URL.")
-                    .with_size(13.0)
+                    .with_scaled_size(13.0)
                     .with_color(theme.text_dim),
             ))
             .push(remote_name)
@@ -2151,7 +2181,7 @@ impl StoreApp {
         ));
         column = column.push(Box::new(
             Text::new("Configured remotes")
-                .with_size(18.0)
+                .with_scaled_size(18.0)
                 .with_heading_level(2),
         ));
         for remote_row in remote_rows {
@@ -2186,7 +2216,8 @@ impl StoreApp {
         // its editorial subtitle gets squeezed beside the utility toolbar.
         // The catalogue itself can still retain its desktop grid at this
         // intermediate width.
-        let compact_header = self.compact_layout() || (0.0 < header_width && header_width < 980.0);
+        let compact_header =
+            self.stacked_catalogue_layout() || (0.0 < header_width && header_width < 980.0);
         // Search state belongs to this window. Agents still discover every
         // stable app through the Store search provider; typing never changes
         // a collaborator's view or document history.
@@ -2245,7 +2276,7 @@ impl StoreApp {
                 .with_gap(10.0)
                 .push(Box::new(
                     Text::new("Apps")
-                        .with_size(28.0)
+                        .with_scaled_size(28.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(1),
                 ))
@@ -2254,7 +2285,7 @@ impl StoreApp {
                 ))
                 .push(Box::new(
                     Text::new("Useful software from sources you choose.")
-                        .with_size(13.0)
+                        .with_scaled_size(13.0)
                         .with_color(theme.text_dim),
                 ))
                 .push(Box::new(search))
@@ -2267,7 +2298,7 @@ impl StoreApp {
                 ))
                 .push(Box::new(
                     Text::new(&self.catalogue_source_summary())
-                        .with_size(13.0)
+                        .with_scaled_size(13.0)
                         .with_color(theme.text_tertiary),
                 ));
             if self.operation_error.is_some() && !self.items.is_empty() {
@@ -2279,7 +2310,7 @@ impl StoreApp {
                             .with_gap(4.0)
                             .push(Box::new(
                                 Text::new(operation_error_summary())
-                                    .with_size(13.0)
+                                    .with_scaled_size(13.0)
                                     .with_color(theme.text_dim),
                             ))
                             .push(Box::new(
@@ -2287,7 +2318,7 @@ impl StoreApp {
                                     "Status · {}",
                                     visible_operation_status(&self.status_line)
                                 ))
-                                .with_size(12.0)
+                                .with_scaled_size(12.0)
                                 .with_color(theme.text_tertiary),
                             )),
                     )),
@@ -2315,7 +2346,7 @@ impl StoreApp {
                                 .with_gap(0.0)
                                 .push(Box::new(
                                     Text::new("App Store")
-                                        .with_size(29.0)
+                                        .with_scaled_size(29.0)
                                         .with_weight(TextWeight::Semibold)
                                         .with_heading_level(1),
                                 ))
@@ -2324,7 +2355,7 @@ impl StoreApp {
                                 ))
                                 .push(Box::new(
                                     Text::new("Useful software, with source and trust details before you act.")
-                                        .with_size(14.0)
+                                        .with_scaled_size(14.0)
                                         .with_color(theme.text_dim),
                                 )),
                         )),
@@ -2353,7 +2384,7 @@ impl StoreApp {
                         .with_gap(4.0)
                         .push(Box::new(
                             Text::new(operation_error_summary())
-                                .with_size(13.0)
+                                .with_scaled_size(13.0)
                                 .with_color(theme.text_dim),
                         ))
                         .push(Box::new(
@@ -2361,7 +2392,7 @@ impl StoreApp {
                                 "Status · {}",
                                 visible_operation_status(&self.status_line)
                             ))
-                            .with_size(12.0)
+                            .with_scaled_size(12.0)
                             .with_color(theme.text_tertiary),
                         )),
                 )),
@@ -2486,10 +2517,19 @@ impl StoreApp {
         let visible_count = visible.len();
         let page = self.catalog_page.min(page_count.saturating_sub(1));
         let start = page.saturating_mul(PAGE_SIZE);
-        // Scroll content owns a modest, intentional inset. `Column`'s
-        // default double gutter made the first result look detached from the
-        // filters and hid half the next row on ordinary laptop windows.
-        let mut column = Column::new().with_intrinsic_height().with_gap(8.0);
+        // The result area has its own deliberate breathing room.  Do not use
+        // `Column`'s default padding here: on a desktop it compounded the
+        // masthead inset into a large, accidental blank band between the
+        // browse controls and the first section.  A single explicit 28px
+        // transition reads as hierarchy without wasting a row of catalogue
+        // space on an ordinary 800px-tall window.
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(8.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(28.0),
+            ));
         if page_count > 1 {
             column = column.push(Box::new(
                 Container::new().with_child(Box::new(
@@ -2499,7 +2539,7 @@ impl StoreApp {
                         page_count,
                         visible.len()
                     ))
-                    .with_size(12.0)
+                    .with_scaled_size(12.0)
                     .with_color(theme.text_dim),
                 )),
             ));
@@ -2533,7 +2573,7 @@ impl StoreApp {
                 self.images.clone(),
                 item_action_binding(item, action),
                 detail_binding(item),
-                self.compact_layout(),
+                self.stacked_catalogue_layout(),
                 operation_active,
             );
             if !group_by_availability {
@@ -2544,7 +2584,7 @@ impl StoreApp {
                 discover_cards.push(card);
             }
         }
-        if self.compact_layout() {
+        if self.stacked_catalogue_layout() {
             column = column.push(Box::new(
                 Column::new()
                     .with_no_padding()
@@ -2556,13 +2596,13 @@ impl StoreApp {
                         } else {
                             "Search results"
                         })
-                        .with_size(20.0)
+                        .with_scaled_size(20.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(2),
                     ))
                     .push(Box::new(
                         Text::new(&format!("{visible_count} available apps"))
-                            .with_size(12.0)
+                            .with_scaled_size(12.0)
                             .with_color(theme.text_dim),
                     )),
             ));
@@ -2572,7 +2612,7 @@ impl StoreApp {
                 ));
                 column = column.push(Box::new(
                     Text::new(&format!("Ready to use · {}", ready_cards.len()))
-                        .with_size(16.0)
+                        .with_scaled_size(16.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(2),
                 ));
@@ -2586,7 +2626,7 @@ impl StoreApp {
                 ));
                 column = column.push(Box::new(
                     Text::new(&format!("Discover more · {}", discover_cards.len()))
-                        .with_size(16.0)
+                        .with_scaled_size(16.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(2),
                 ));
@@ -2600,7 +2640,13 @@ impl StoreApp {
                 column = column.push(card);
             }
         } else {
-            let mut recommended = Column::new().with_intrinsic_height().with_gap(0.0);
+            // This is nested in the deliberately inset scroll column above;
+            // inheriting `Column`'s default gutter here created a second,
+            // invisible desktop margin before every section heading.
+            let mut recommended = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(0.0);
             let make_section = |title: &str, caption: &str, cards: Vec<Box<dyn Widget>>| {
                 Box::new(
                     Column::new()
@@ -2609,7 +2655,7 @@ impl StoreApp {
                         .with_gap(0.0)
                         .push(Box::new(
                             Text::new(title)
-                                .with_size(17.0)
+                                .with_scaled_size(17.0)
                                 .with_weight(TextWeight::Semibold)
                                 .with_heading_level(2),
                         ))
@@ -2618,7 +2664,7 @@ impl StoreApp {
                         ))
                         .push(Box::new(
                             Text::new(caption)
-                                .with_size(12.0)
+                                .with_scaled_size(12.0)
                                 .with_color(theme.text_dim),
                         ))
                         .push(Box::new(
@@ -2627,7 +2673,11 @@ impl StoreApp {
                         .push(Box::new(
                             CardGrid::new(cards)
                                 .with_min_card_width(292.0)
-                                .with_card_height(198.0)
+                                // A 180px card keeps its action row in the
+                                // first desktop viewport while retaining a
+                                // calm, two-line description measure.  The
+                                // compact list keeps its natural height.
+                                .with_card_height(180.0)
                                 .with_gap(14.0),
                         )),
                 ) as Box<dyn Widget>
@@ -3844,6 +3894,7 @@ impl Widget for StoreApp {
     ) -> NodeId {
         self.structure_dirty = false;
         self.reduce_motion = theme.reduce_motion;
+        self.text_scale = theme.text_scale;
         let mut root = self.compose(theme);
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
@@ -4286,6 +4337,16 @@ mod tests {
             !app.group_catalogue_by_availability(),
             "search results remain a single relevance-ranked sequence"
         );
+    }
+
+    #[test]
+    fn large_text_uses_the_safe_stacked_catalogue_layout() {
+        let mut app = seeded_app();
+        app.set_layout_width_hint(1_280.0);
+        assert!(!app.stacked_catalogue_layout());
+
+        app.text_scale = 2.0;
+        assert!(app.stacked_catalogue_layout());
     }
 
     #[test]
