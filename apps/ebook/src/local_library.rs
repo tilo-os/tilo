@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 const SECTION: &str = "ebook_local_library";
 const BOOKS: &str = "books";
 const WATCHED: &str = "watched_folders";
+const SHORTCUTS: &str = "shortcuts";
 const MAX_ENTRIES: usize = 200;
 const MAX_PATH_BYTES: usize = 4096;
 
@@ -19,6 +20,9 @@ const MAX_PATH_BYTES: usize = 4096;
 pub(crate) struct LocalLibrary {
     pub(crate) books: HashMap<String, PathBuf>,
     pub(crate) watched_folders: Vec<PathBuf>,
+    /// Reader bindings are intentionally local: a collaborator's preferred
+    /// physical keys must never change another reader's device.
+    pub(crate) shortcuts: HashMap<String, String>,
 }
 
 impl LocalLibrary {
@@ -50,6 +54,31 @@ impl LocalLibrary {
         }
     }
 
+    pub(crate) fn shortcut(&self, action: &str, default: &str) -> String {
+        self.shortcuts
+            .get(action)
+            .filter(|key| valid_shortcut(key) && !reserved_reader_key(key))
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
+    }
+
+    /// Set one reader key. Duplicate bindings are refused so pressing a key
+    /// always has one predictable meaning in the reader.
+    pub(crate) fn set_shortcut(&mut self, action: &str, key: &str) -> bool {
+        if !valid_shortcut(key)
+            || reserved_reader_key(key)
+            || self
+                .shortcuts
+                .iter()
+                .any(|(other, bound)| other != action && bound.eq_ignore_ascii_case(key))
+        {
+            return false;
+        }
+        self.shortcuts
+            .insert(action.to_string(), key.to_lowercase());
+        true
+    }
+
     pub(crate) fn save(&self) {
         if let Err(error) = settings_store::update_section(SECTION, self.section()) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
@@ -58,15 +87,14 @@ impl LocalLibrary {
 
     fn from_section(section: &Map<String, Value>) -> Self {
         let mut out = Self::default();
-        let Some(Value::Object(books)) = section.get(BOOKS) else {
-            return out;
-        };
-        for (id, value) in books.iter().take(MAX_ENTRIES) {
-            let Some(path) = value.as_str().map(PathBuf::from) else {
-                continue;
-            };
-            if valid_book_id(id) && valid_path(&path) {
-                out.books.insert(id.clone(), path);
+        if let Some(Value::Object(books)) = section.get(BOOKS) {
+            for (id, value) in books.iter().take(MAX_ENTRIES) {
+                let Some(path) = value.as_str().map(PathBuf::from) else {
+                    continue;
+                };
+                if valid_book_id(id) && valid_path(&path) {
+                    out.books.insert(id.clone(), path);
+                }
             }
         }
         if let Some(Value::Array(watched)) = section.get(WATCHED) {
@@ -76,6 +104,21 @@ impl LocalLibrary {
                 };
                 if valid_path(&path) && !out.watched_folders.contains(&path) {
                     out.watched_folders.push(path);
+                }
+            }
+        }
+        if let Some(Value::Object(shortcuts)) = section.get(SHORTCUTS) {
+            for (action, value) in shortcuts.iter().take(MAX_ENTRIES) {
+                let Some(key) = value.as_str() else {
+                    continue;
+                };
+                if valid_shortcut(key)
+                    && !out
+                        .shortcuts
+                        .values()
+                        .any(|bound| bound.eq_ignore_ascii_case(key))
+                {
+                    out.shortcuts.insert(action.clone(), key.to_lowercase());
                 }
             }
         }
@@ -102,9 +145,17 @@ impl LocalLibrary {
             .take(MAX_ENTRIES)
             .map(|path| Value::String(path.to_string_lossy().into_owned()))
             .collect();
+        let shortcuts = self
+            .shortcuts
+            .iter()
+            .filter(|(_, key)| valid_shortcut(key))
+            .take(MAX_ENTRIES)
+            .map(|(action, key)| (action.clone(), Value::String(key.clone())))
+            .collect();
         [
             (BOOKS.to_string(), Value::Object(books)),
             (WATCHED.to_string(), Value::Array(watched_folders)),
+            (SHORTCUTS.to_string(), Value::Object(shortcuts)),
         ]
         .into_iter()
         .collect()
@@ -127,6 +178,17 @@ impl LocalLibrary {
     }
 }
 
+/// These reader commands deliberately remain fixed. They are either global
+/// mode controls or selection-sensitive actions, so allowing a configurable
+/// binding to shadow them would make the keyboard contract ambiguous.
+pub(crate) fn reserved_reader_key(key: &str) -> bool {
+    let lowered = key.to_ascii_lowercase();
+    matches!(
+        lowered.as_str(),
+        "t" | "n" | "f" | "c" | "+" | "=" | "-" | "_" | "−" | "[" | "]" | "1" | "2" | "3" | "4"
+    )
+}
+
 fn valid_book_id(id: &str) -> bool {
     id.strip_prefix("book:").is_some_and(|digest| {
         digest.len() == 32 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -141,6 +203,14 @@ fn valid_path(path: &Path) -> bool {
         && !path
             .components()
             .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn valid_shortcut(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(key) = chars.next() else {
+        return false;
+    };
+    chars.next().is_none() && !key.is_whitespace() && !key.is_control()
 }
 
 #[cfg(test)]
@@ -182,5 +252,22 @@ mod tests {
         let registry = LocalLibrary::from_section(section.as_object().unwrap());
         assert!(registry.books.is_empty());
         assert_eq!(registry.watched_folders, vec![PathBuf::from("/safe")]);
+    }
+
+    #[test]
+    fn shortcuts_are_local_validated_and_do_not_require_book_entries() {
+        let section = serde_json::json!({
+            SHORTCUTS: { "next-page": "J", "bookmark": "\n", "other": "j" },
+            WATCHED: ["/safe"]
+        });
+        let mut registry = LocalLibrary::from_section(section.as_object().unwrap());
+        assert_eq!(registry.watched_folders, vec![PathBuf::from("/safe")]);
+        assert_eq!(registry.shortcut("next-page", "."), "j");
+        assert_eq!(registry.shortcut("bookmark", "b"), "b");
+        assert!(!registry.set_shortcut("bookmark", "j"));
+        assert!(!registry.set_shortcut("bookmark", "t"));
+        assert!(!registry.set_shortcut("bookmark", "−"));
+        assert!(registry.set_shortcut("bookmark", "x"));
+        assert_eq!(registry.shortcut("bookmark", "b"), "x");
     }
 }
