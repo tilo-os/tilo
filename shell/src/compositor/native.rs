@@ -3832,10 +3832,14 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
     let Some(registration) = source.find(".insert_source(listening_socket") else {
         return false;
     };
-    let Some(start) = source.find("XwaylandSupervisor::start") else {
+    let Some(dispatch) = source.find("event_loop.dispatch(park") else {
         return false;
     };
-    registration < start
+    let Some(start) = source.find("xwayland = Some(super::xwayland::XwaylandSupervisor::start")
+    else {
+        return false;
+    };
+    registration < dispatch && dispatch < start
 }
 
 fn update_output_presentation_repaint_pending(
@@ -4135,12 +4139,15 @@ pub fn run() -> ! {
     // above `insert_source` leaves the worker waiting on a connection this
     // event loop cannot accept yet; the readiness timeout then kills a
     // healthy satellite/Xwayland pair on every host login.
-    let mut xwayland =
-        if super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args()) {
-            Some(super::xwayland::XwaylandSupervisor::start(&socket_name))
-        } else {
-            None
-        };
+    let xwayland_enabled =
+        super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args());
+    // Do not launch satellite until calloop has had one chance to dispatch the
+    // public socket. Satellite is itself a Wayland client, and merely
+    // registering the listener does not accept its connection; the remaining
+    // startup work below can otherwise consume the whole five-second
+    // readiness budget on a slow host and produce a false X11-unavailable
+    // notification.
+    let mut xwayland: Option<super::xwayland::XwaylandSupervisor> = None;
 
     // A third display is the input-method trust boundary. The OSK package is
     // sandboxed exactly like any other app, but receives this one socket as
@@ -6096,6 +6103,9 @@ pub fn run() -> ! {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
         }
+        if xwayland_enabled && xwayland.is_none() {
+            xwayland = Some(super::xwayland::XwaylandSupervisor::start(&socket_name));
+        }
         metrics.mark_sleep(t_sleep_start.elapsed());
         metrics.end_tick();
         if let Some(deadline) = run_deadline
@@ -7756,7 +7766,7 @@ mod gesture_wireup_tests {
         let source = include_str!("native.rs");
         assert!(
             xwayland_start_follows_public_socket_registration(source),
-            "satellite is itself a Wayland client; starting it before the public socket source is registered deadlocks readiness"
+            "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
         );
     }
 }
