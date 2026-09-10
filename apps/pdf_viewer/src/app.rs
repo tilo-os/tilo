@@ -584,6 +584,10 @@ pub struct PdfApp {
     /// Suppresses timed fades/reveal animation while preserving immediate
     /// state changes for users who request reduced motion.
     reduce_motion: bool,
+    /// Cached from the toolkit theme during layout. Bespoke PDF chrome uses
+    /// this only for surrounding geometry; glyph scaling remains owned by the
+    /// shared renderer.
+    text_scale: f64,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
     /// document (toolbar folder button, Ctrl+O, or the empty state's Open
@@ -948,6 +952,7 @@ impl PdfApp {
             tooltip_anchor: Rect::ZERO,
             tooltip_pending: false,
             reduce_motion: false,
+            text_scale: 1.0,
             portal_rx: None,
             overlay_mode: false,
             prev_overlay: None,
@@ -1252,10 +1257,14 @@ impl PdfApp {
         if !self.show_sidebar {
             return 0.0;
         }
+        // A docked review rail gets a modest width increase with enlarged
+        // type. This preserves real line length and tab labels instead of
+        // forcing every comment into a tall, hard-to-scan single word column.
+        let preferred = SIDEBAR_W * (1.0 + 0.25 * (self.text_scale - 1.0));
         if self.overlay_mode {
-            SIDEBAR_W.min((self.rect.width() - 56.0).max(200.0))
+            preferred.min((self.rect.width() - 56.0).max(200.0))
         } else {
-            SIDEBAR_W
+            preferred
         }
     }
 
@@ -1264,8 +1273,9 @@ impl PdfApp {
         self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
         let mut mid_top = r.y0 + TOOLBAR_H;
         if self.search_active {
-            self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + SEARCH_H);
-            mid_top += SEARCH_H;
+            let search_h = SEARCH_H * self.text_scale;
+            self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + search_h);
+            mid_top += search_h;
         } else {
             self.search_rect = Rect::ZERO;
         }
@@ -3967,9 +3977,10 @@ impl Widget for PdfApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -7572,7 +7583,7 @@ mod tests {
     fn comment_header_never_overlaps_even_with_a_long_name() {
         // A representative inner card rect for the 324px sidebar.
         let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
-        let hdr = PdfApp::comment_header_layout(card);
+        let hdr = PdfApp::comment_header_layout(card, 1.0);
 
         assert!(
             hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0,
@@ -7606,6 +7617,69 @@ mod tests {
         assert!(
             shown.chars().count() < long.chars().count(),
             "the long name was actually truncated"
+        );
+    }
+
+    /// Enlarged text must reflow the bespoke comment card instead of painting
+    /// the shared inline editor over its replies or the thread history. This
+    /// uses the exact production measurement/layout helpers at the supported
+    /// maximum accessibility scale.
+    #[test]
+    fn high_text_comment_editor_reply_and_history_do_not_overlap() {
+        let app = PdfApp::sample();
+        let mut tr = ui::text_render::TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let cm = Comment {
+            id: "high-text-thread".into(),
+            anno_id: None,
+            page: 1,
+            author: "An exceptionally long review author name".into(),
+            body: "A deliberately long comment body that wraps across the narrow review rail at two-times text size.".into(),
+            created: 1,
+            resolved: false,
+            replies: vec![
+                Reply {
+                    id: "high-text-reply-one".into(),
+                    author: "Bob".into(),
+                    body: "A long reply that also wraps, proving the history is allotted its own measured vertical space.".into(),
+                },
+                Reply {
+                    id: "high-text-reply-two".into(),
+                    author: "Alice".into(),
+                    body: "A second reply remains below the first rather than colliding with the editor.".into(),
+                },
+            ],
+        };
+        let scale = 2.0;
+        let inner_w = SIDEBAR_W - 28.0 * scale;
+        let metrics = app.comment_metrics(&mut tr, &cm, inner_w);
+        let card = Rect::new(0.0, 0.0, SIDEBAR_W - 28.0 * scale, metrics.card_h);
+        let hdr = PdfApp::comment_header_layout(card, scale);
+
+        assert!(hdr.body_top >= hdr.avatar_c.y + hdr.avatar_radius);
+        assert!(hdr.name_x + f64::from(hdr.name_max) <= hdr.chip.x0);
+        assert!(hdr.chip.x1 <= hdr.del.x0);
+
+        // This is the same running-y sequence used by draw_comment_body,
+        // draw_comment_replies and draw_comment_composer.
+        let editor_bottom = hdr.body_top + metrics.body_h + 8.0;
+        let replies_top = hdr.body_top + metrics.body_h + 10.0 * scale;
+        assert!(
+            editor_bottom <= replies_top,
+            "editor clears the first reply"
+        );
+        let replies_bottom = replies_top
+            + metrics
+                .reply_heights
+                .iter()
+                .map(|h| 14.0 * scale + h + 10.0 * scale)
+                .sum::<f64>();
+        let composer_top = replies_bottom + 8.0 * scale;
+        let composer_bottom = composer_top + metrics.compose_h - 8.0 * scale;
+        assert!(
+            composer_bottom <= card.y1 + 0.1,
+            "reply editor ({composer_bottom}) remains inside its measured card ({})",
+            card.y1
         );
     }
 

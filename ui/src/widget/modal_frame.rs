@@ -354,22 +354,25 @@ impl ModalFrame {
         theme: &Theme,
     ) -> ModalLayout {
         let tokens = &theme.tokens;
-        let body_size = tokens.typography.scale.sm.max(12.0);
+        let scale = f64::from(theme.text_scale);
+        // `TextRenderer` applies the accessibility multiplier. Theme type
+        // tokens already carry it too, so recover the design size for direct
+        // renderer calls and scale the surrounding geometry exactly once.
+        let body_size = (tokens.typography.scale.sm / theme.text_scale).max(12.0);
 
-        let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * 2.0).max(0.0);
-        let w = spec
-            .max_width
+        let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
+        let w = (spec.max_width * scale)
             .min(avail_w)
-            .max(MODAL_MIN_WIDTH.min(avail_w));
+            .max((MODAL_MIN_WIDTH * scale).min(avail_w));
 
         let action_h = if spec.actions.is_empty() {
             0.0
         } else {
-            MODAL_ACTION_ROW_H
+            MODAL_ACTION_ROW_H * scale
         };
-        let chrome_h = MODAL_TITLE_ROW_H + action_h + MODAL_PAD;
-        let wanted_h = chrome_h + spec.body_height.max(0.0);
-        let avail_h = (viewport.height() - MODAL_VIEWPORT_MARGIN * 2.0).max(0.0);
+        let chrome_h = MODAL_TITLE_ROW_H * scale + action_h + MODAL_PAD * scale;
+        let wanted_h = chrome_h + spec.body_height.max(0.0) * scale;
+        let avail_h = (viewport.height() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
         let h = wanted_h.min(avail_h);
         // The card never grows past the viewport: an action row nobody can
         // reach is worse than a body that scrolls.
@@ -380,40 +383,40 @@ impl ModalFrame {
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
 
         let close = if spec.closable {
-            let x1 = card.x1 - MODAL_PAD + 6.0;
-            let mid = card.y0 + MODAL_TITLE_ROW_H / 2.0;
+            let x1 = card.x1 - MODAL_PAD * scale + 6.0 * scale;
+            let mid = card.y0 + MODAL_TITLE_ROW_H * scale / 2.0;
             Some(Rect::new(
-                x1 - MODAL_CLOSE_SIZE,
-                mid - MODAL_CLOSE_SIZE / 2.0,
+                x1 - MODAL_CLOSE_SIZE * scale,
+                mid - MODAL_CLOSE_SIZE * scale / 2.0,
                 x1,
-                mid + MODAL_CLOSE_SIZE / 2.0,
+                mid + MODAL_CLOSE_SIZE * scale / 2.0,
             ))
         } else {
             None
         };
         // The title stops where the close control starts, so a long title
         // elides instead of running under the X.
-        let title_x1 = close.map_or(card.x1 - MODAL_PAD, |c| c.x0 - 10.0);
+        let title_x1 = close.map_or(card.x1 - MODAL_PAD * scale, |c| c.x0 - 10.0 * scale);
         let title = Rect::new(
-            card.x0 + MODAL_PAD,
+            card.x0 + MODAL_PAD * scale,
             card.y0,
-            title_x1.max(card.x0 + MODAL_PAD),
-            card.y0 + MODAL_TITLE_ROW_H,
+            title_x1.max(card.x0 + MODAL_PAD * scale),
+            card.y0 + MODAL_TITLE_ROW_H * scale,
         );
 
         let body = Rect::new(
-            card.x0 + MODAL_PAD,
-            card.y0 + MODAL_TITLE_ROW_H,
-            card.x1 - MODAL_PAD,
-            (card.y1 - action_h - MODAL_PAD).max(card.y0 + MODAL_TITLE_ROW_H),
+            card.x0 + MODAL_PAD * scale,
+            card.y0 + MODAL_TITLE_ROW_H * scale,
+            card.x1 - MODAL_PAD * scale,
+            (card.y1 - action_h - MODAL_PAD * scale).max(card.y0 + MODAL_TITLE_ROW_H * scale),
         );
 
         // Keep geometry indexed by the authored action while ordering its
         // visual positions from semantic emphasis and platform convention.
         let mut actions = vec![Rect::ZERO; spec.actions.len()];
         if !spec.actions.is_empty() {
-            let by = card.y1 - MODAL_PAD - ACTION_H;
-            let mut bx = card.x1 - MODAL_PAD;
+            let by = card.y1 - MODAL_PAD * scale - ACTION_H * scale;
+            let mut bx = card.x1 - MODAL_PAD * scale;
             let mut visual_order: Vec<usize> = (0..spec.actions.len()).collect();
             visual_order.sort_by_key(|&index| {
                 let primary = spec.actions.get(index).is_some_and(|action| {
@@ -432,13 +435,13 @@ impl ModalFrame {
                     continue;
                 };
                 let (tw, _) = text_renderer.measure(a.label, body_size, None);
-                let bw = (f64::from(tw) + ACTION_PAD_X).max(ACTION_MIN_W);
-                let r = Rect::new(bx - bw, by, bx, by + ACTION_H);
+                let bw = (f64::from(tw) + ACTION_PAD_X * scale).max(ACTION_MIN_W * scale);
+                let r = Rect::new(bx - bw, by, bx, by + ACTION_H * scale);
                 let Some(action_rect) = actions.get_mut(index) else {
                     continue;
                 };
                 *action_rect = r;
-                bx = r.x0 - ACTION_GAP;
+                bx = r.x0 - ACTION_GAP * scale;
             }
         }
 
@@ -475,7 +478,8 @@ impl ModalFrame {
 
         crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
 
-        let radius = f64::from(tokens.radii.lg);
+        let scale = f64::from(theme.text_scale);
+        let radius = f64::from(tokens.radii.lg) * scale;
         // Top of the elevation ramp: a modal is the one surface that is
         // unambiguously above everything, and reading as *lifted* is what
         // separates it from a panel that happens to be centred.
@@ -489,7 +493,7 @@ impl ModalFrame {
             &card,
         );
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(1.0 * scale),
             transform,
             colors.border_standard,
             None,
@@ -497,7 +501,7 @@ impl ModalFrame {
         );
 
         if !spec.title.is_empty() {
-            let size = tokens.typography.scale.base.max(14.0);
+            let size = (tokens.typography.scale.base / theme.text_scale).max(14.0);
             // Title-band width is a bounded screen dimension; the f64->f32
             // narrowing for the text layout call cannot lose meaningful
             // precision at UI scale.
@@ -535,7 +539,7 @@ impl ModalFrame {
             let face = ButtonFace::new(c, "")
                 .style(ButtonStyle::Ghost)
                 .icon(Icon::X)
-                .radius(f64::from(tokens.radii.sm))
+                .radius(f64::from(tokens.radii.sm) * scale)
                 .hovered(spec.close_hovered)
                 .focused(spec.close_focused)
                 .accessible_name("Close");
@@ -552,7 +556,7 @@ impl ModalFrame {
         layout: &ModalLayout,
         spec: &ModalSpec<'_>,
     ) {
-        let body_size = theme.tokens.typography.scale.sm.max(12.0);
+        let body_size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
         for (i, a) in spec.actions.iter().enumerate() {
             let Some(rect) = layout.actions.get(i).copied() else {
                 continue;
@@ -564,7 +568,7 @@ impl ModalFrame {
             };
             let face = ButtonFace::new(rect, a.label)
                 .style(style)
-                .radius(ACTION_H / 2.0)
+                .radius(ACTION_H * f64::from(theme.text_scale) / 2.0)
                 .text_size(body_size)
                 .weight(TextWeight::Medium)
                 .hovered(a.hovered && a.enabled)

@@ -141,6 +141,29 @@ impl PdfDoc {
         }
     }
 
+    /// Delete-wins markers for durable page occurrences. A stale peer may
+    /// still hold the old list object after a deletion; the keyed marker keeps
+    /// that occurrence hidden when the replicas merge instead of reviving it.
+    fn page_tombstoned(doc: &AutoCommit, id: &str) -> bool {
+        matches!(
+            doc.get(&ROOT, "page-plan-tombstones"),
+            Ok(Some((Value::Object(ObjType::Map), map)))
+                if doc.get(&map, id).ok().flatten().is_some()
+        )
+    }
+
+    fn tombstone_page(doc: &mut AutoCommit, id: &str) {
+        let map = match doc.get(&ROOT, "page-plan-tombstones") {
+            Ok(Some((Value::Object(ObjType::Map), map))) => Some(map),
+            _ => doc
+                .put_object(&ROOT, "page-plan-tombstones", ObjType::Map)
+                .ok(),
+        };
+        if let Some(map) = map {
+            let _ = doc.put(&map, id, true);
+        }
+    }
+
     // ---- meta -------------------------------------------------------
 
     /// The document's `meta` map, creating it if missing. `None` only if
@@ -240,6 +263,7 @@ impl PdfDoc {
                     None => None,
                 };
                 (source_page > 0
+                    && !Self::page_tombstoned(doc, &id)
                     && imported.as_ref().is_none_or(ImportedPage::valid)
                     && seen.insert(id.clone()))
                 .then_some(PagePlanEntry {
@@ -297,7 +321,7 @@ impl PdfDoc {
         let Some(list) = Self::list(doc, "page-plan") else {
             return;
         };
-        if Self::index_of(doc, &list, new_id).is_some() {
+        if Self::page_tombstoned(doc, new_id) || Self::index_of(doc, &list, new_id).is_some() {
             return;
         }
         let Some(index) = Self::index_of(doc, &list, id) else {
@@ -343,10 +367,9 @@ impl PdfDoc {
         let Some(list) = Self::list(doc, "page-plan") else {
             return;
         };
-        if pages
-            .iter()
-            .any(|entry| Self::index_of(doc, &list, &entry.id).is_some())
-        {
+        if pages.iter().any(|entry| {
+            Self::page_tombstoned(doc, &entry.id) || Self::index_of(doc, &list, &entry.id).is_some()
+        }) {
             return;
         }
         let mut seen = HashSet::new();
@@ -383,6 +406,7 @@ impl PdfDoc {
         if Self::list_page_plan(doc).len() <= 1 {
             return;
         }
+        Self::tombstone_page(doc, id);
         for index in (0..doc.length(&list)).rev() {
             let is_target = doc
                 .get(&list, index)
