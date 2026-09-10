@@ -464,6 +464,8 @@ impl CalculatorApp {
             self.perform_action(doc, &actions::add_graph_action(GraphKind::Surface3d, ""));
             self.model.active_surface = self.model.surfaces.len().saturating_sub(1);
             self.model_dirty = true;
+        } else if let Some(i) = self.g3.delete_at(p) {
+            self.delete_graph_row(GraphKind::Surface3d, i, doc);
         } else if let Some(i) = self.g3.vis_at(p) {
             if let Some(f) = self.model.surfaces.get_mut(i) {
                 f.visible = !f.visible;
@@ -563,6 +565,8 @@ impl CalculatorApp {
             self.perform_action(doc, &actions::add_graph_action(GraphKind::Curve2d, ""));
             self.model.active_fn = self.model.funcs.len().saturating_sub(1);
             self.model_dirty = true;
+        } else if let Some(i) = self.g2.delete_at(p) {
+            self.delete_graph_row(GraphKind::Curve2d, i, doc);
         } else if let Some(i) = self.g2.vis_at(p) {
             if let Some(f) = self.model.funcs.get_mut(i) {
                 f.visible = !f.visible;
@@ -601,6 +605,23 @@ impl CalculatorApp {
             field.on_press_cached(p, double);
             self.field_dragging = true;
         }
+    }
+
+    /// Delete one graph row through the same stable, tombstoned action used by
+    /// Ctrl+K. The model is deliberately not spliced optimistically: the action
+    /// reload gives this window the exact merged resource list a collaborator
+    /// sees, and keeps active-row clamping in one place (`doc::load_into`).
+    fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) {
+        let collection = match kind {
+            GraphKind::Curve2d => crate::doc::FUNCS,
+            GraphKind::Surface3d => crate::doc::SURFACES,
+        };
+        let action = crate::doc::row_id_at(doc, collection, index).map_or_else(
+            || actions::delete_graph_action(kind, index),
+            |id| actions::delete_graph_action(kind, id.as_str()),
+        );
+        self.perform_action(doc, &action);
+        self.model_dirty = true;
     }
 
     /// Extend a math-field drag-selection to the current pointer position.
@@ -721,6 +742,30 @@ impl CalculatorApp {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        // Escape first dismisses transient drawers. Clearing an expression is
+        // still available on a second Escape in Calculator mode, but an open
+        // overlay must never trap a keyboard user behind its scrim.
+        if matches!(key, WKey::Named(NamedKey::Escape)) {
+            let dismissed = match self.model.mode {
+                Mode::Calc if self.calc.sidebar_open() => {
+                    self.calc.close_sidebar();
+                    true
+                }
+                Mode::Graph2d if self.g2.panel_open() => {
+                    self.g2.close_panel();
+                    true
+                }
+                Mode::Graph3d if self.g3.panel_open() => {
+                    self.g3.close_panel();
+                    true
+                }
+                _ => false,
+            };
+            if dismissed {
+                return;
             }
         }
 
@@ -1286,13 +1331,16 @@ impl Widget for CalculatorApp {
         match self.model.mode {
             Mode::Calc => {
                 let mut controls = Vec::new();
-                let mut display = AccessNode::new(Role::Group)
-                    .with_name("Expression display")
+                let mut display = AccessNode::new(Role::TextInput)
+                    .with_name("Expression")
                     .with_value(if self.model.expr.trim().is_empty() {
                         "0".to_string()
                     } else {
                         self.model.expr.clone()
                     })
+                    .with_description("Type an expression, then activate Evaluate or press Enter.")
+                    .with_action_target("calculator.expression")
+                    .with_state(AccessState::new().focusable(true))
                     .with_hashed_key("calculator.display");
                 if !self.model.expr.trim().is_empty() {
                     let outcome = match engine::evaluate(&self.model.expr, &self.model.ctx()) {
@@ -1406,6 +1454,10 @@ impl Widget for CalculatorApp {
                 .with_children(children),
         )
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all custom-painted Calculator controls deliberately share one semantic activation router, preventing assistive technology from taking a different mutation path"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -1450,6 +1502,14 @@ impl Widget for CalculatorApp {
                         crate::doc::HISTORY,
                     )),
                 );
+                self.model_dirty = true;
+            }
+            "calculator.expression" if matches!(action, Action::SetValue(_)) => {
+                let Action::SetValue(expr) = action else {
+                    return false;
+                };
+                self.model.expr.clone_from(expr);
+                self.model.after_equals = false;
                 self.model_dirty = true;
             }
             "calculator.evaluate"
@@ -1598,13 +1658,17 @@ impl CalculatorApp {
         }
         if open {
             for (index, row) in rows.iter().enumerate() {
-                let (field_bounds, visible_bounds) = match kind {
-                    GraphKind::Curve2d => {
-                        (self.g2.field_rect(index), self.g2.visibility_rect(index))
-                    }
-                    GraphKind::Surface3d => {
-                        (self.g3.field_rect(index), self.g3.visibility_rect(index))
-                    }
+                let (field_bounds, visible_bounds, delete_bounds) = match kind {
+                    GraphKind::Curve2d => (
+                        self.g2.field_rect(index),
+                        self.g2.visibility_rect(index),
+                        self.g2.delete_rect(index),
+                    ),
+                    GraphKind::Surface3d => (
+                        self.g3.field_rect(index),
+                        self.g3.visibility_rect(index),
+                        self.g3.delete_rect(index),
+                    ),
                 };
                 let mut field = AccessNode::new(Role::TextInput)
                     .with_name(format!(
@@ -1629,12 +1693,24 @@ impl CalculatorApp {
                 if let Some(bounds) = visible_bounds {
                     visible = visible.with_bounds(bounds);
                 }
+                let mut delete = AccessNode::new(Role::Button)
+                    .with_name(format!(
+                        "Delete {} {}",
+                        title.trim_end_matches('s'),
+                        index + 1
+                    ))
+                    .with_action_target(format!("calculator.graph.delete:{slug}:{index}"))
+                    .with_description("Permanently removes this saved formula.")
+                    .with_state(AccessState::new().focusable(true));
+                if let Some(bounds) = delete_bounds {
+                    delete = delete.with_bounds(bounds);
+                }
                 children.push(
                     AccessNode::new(Role::ListItem)
                         .with_name(format!("{} {}", title.trim_end_matches('s'), index + 1))
                         .with_hashed_key(format!("calculator.graph.row:{slug}:{index}"))
                         .with_position(index + 1, rows.len())
-                        .with_children(vec![field, visible]),
+                        .with_children(vec![field, visible, delete]),
                 );
             }
             let mut add = AccessNode::new(Role::Button)
@@ -1729,6 +1805,16 @@ impl CalculatorApp {
                 );
                 self.perform_action(doc, &action);
                 self.model_dirty = true;
+            }
+            (Some("delete"), Some(index), Action::Activate) => {
+                let exists = match kind {
+                    GraphKind::Curve2d => index < self.model.funcs.len(),
+                    GraphKind::Surface3d => index < self.model.surfaces.len(),
+                };
+                if !exists {
+                    return false;
+                }
+                self.delete_graph_row(kind, index, doc);
             }
             (Some("field"), Some(index), Action::SetValue(expr)) => {
                 let changed = match kind {
@@ -1887,6 +1973,12 @@ mod tests {
             .iter()
             .find(|node| node.name.as_deref() == Some("Scientific keypad"))
             .expect("all painted keypad keys are exposed");
+        let expression = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Expression"))
+            .expect("expression is a semantic text input");
+        assert_eq!(expression.role, ui::a11y::Role::TextInput);
         let seven = keypad
             .children
             .iter()
@@ -1900,6 +1992,13 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(app.model.expr, "7");
+        assert!(app.perform_semantic_action(
+            expression.action_target.as_deref().unwrap_or_default(),
+            &Action::SetValue("sqrt(9)".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.model.expr, "sqrt(9)");
 
         app.set_mode(Mode::Graph2d);
         crate::doc::store(&mut doc, &app.model);
@@ -2519,6 +2618,33 @@ mod tests {
         );
         tap(&mut app, &mut st, dot);
         assert!(app.model.funcs[0].visible, "tapping again must show it");
+    }
+
+    #[test]
+    fn graph_row_delete_button_tombstones_the_stable_resource() {
+        // A directly visible delete button must use the same keyed action as
+        // the palette, so it cannot accidentally rebind after a peer changes
+        // list order.
+        let mut app = CalculatorApp::seeded();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+        app.layout_active();
+        let id = crate::doc::row_id_at(&st.doc, crate::doc::FUNCS, 0)
+            .expect("first formula has a durable id");
+        let delete = app
+            .g2
+            .delete_rect(0)
+            .expect("first formula has a visible delete control")
+            .center();
+        let before = app.model.funcs.len();
+        tap(&mut app, &mut st, delete);
+        assert_eq!(app.model.funcs.len(), before - 1);
+        assert!(
+            !crate::doc::visible_ids(&st.doc, crate::doc::FUNCS).contains(&id),
+            "the clicked stable row is tombstoned rather than a neighbouring index"
+        );
     }
 
     /// The calculator's half of the framework Ctrl+Z: a real edit through the
