@@ -90,6 +90,12 @@ struct ImportRequest {
 
 struct ImportResult {
     generation: u64,
+    /// The user-granted or watched source. This is used exclusively to decide
+    /// whether a worker result is still current and to de-duplicate watches;
+    /// it is never written to the collaborative document.
+    source_path: PathBuf,
+    /// The resolved shelf location: normally the content-addressed workspace
+    /// copy, otherwise the source when the host has no workspace capability.
     path: PathBuf,
     kind: ImportKind,
     result: Result<Book, String>,
@@ -141,11 +147,20 @@ impl ImportWorker {
                     let Some(request) = request else { continue };
                     #[cfg(test)]
                     thread::sleep(request.delay);
-                    let result = content::parse_path_detailed(&request.path);
+                    // The file is copied into the content-addressed workspace
+                    // on this worker before its collaborative library row is
+                    // written on the UI thread.  A peer therefore receives
+                    // bytes and metadata as one logical import, never a
+                    // dangling shared title/annotation record.
+                    let (path, result) = match content::parse_shared_path_detailed(&request.path) {
+                        Ok((book, shared_path)) => (shared_path, Ok(book)),
+                        Err(error) => (request.path.clone(), Err(error)),
+                    };
                     if result_tx
                         .send(ImportResult {
                             generation: request.generation,
-                            path: request.path,
+                            source_path: request.path,
+                            path,
                             kind: request.kind,
                             result,
                         })
@@ -209,6 +224,21 @@ struct LoadingImport {
     kind: ImportKind,
 }
 
+/// A materialised workspace copy awaiting the UI/document-owner commit. The
+/// filesystem effect happens before the CRDT advertises the shared book, so a
+/// successful resource job never leaves peers with a dangling shelf row.
+struct PendingShare {
+    book_id: String,
+    book: Book,
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResourceLifecycle {
+    Open,
+    Share,
+}
+
 fn book_open_request() -> PickRequest {
     PickRequest::open("Open a book", "Open")
         .thread_name("ebook-portal-open")
@@ -264,6 +294,60 @@ enum SettingsTab {
     Colours,
     /// Library management: the folders watched for new books.
     Library,
+    /// Device-local reader key bindings.
+    Shortcuts,
+}
+
+/// Reader commands whose single-character bindings can be tailored per
+/// device. Navigation keys (arrows/PageUp/PageDown) always remain available,
+/// so changing a binding can never strand a keyboard reader.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ReaderShortcut {
+    PreviousPage,
+    NextPage,
+    Bookmark,
+    Highlight,
+    AddNote,
+}
+
+impl ReaderShortcut {
+    const ALL: [Self; 5] = [
+        Self::PreviousPage,
+        Self::NextPage,
+        Self::Bookmark,
+        Self::Highlight,
+        Self::AddNote,
+    ];
+
+    const fn id(self) -> &'static str {
+        match self {
+            Self::PreviousPage => "previous-page",
+            Self::NextPage => "next-page",
+            Self::Bookmark => "bookmark",
+            Self::Highlight => "highlight",
+            Self::AddNote => "add-note",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PreviousPage => "Previous page",
+            Self::NextPage => "Next page",
+            Self::Bookmark => "Bookmark page",
+            Self::Highlight => "Highlight selection",
+            Self::AddNote => "Add note",
+        }
+    }
+
+    const fn default_key(self) -> &'static str {
+        match self {
+            Self::PreviousPage => ",",
+            Self::NextPage => ".",
+            Self::Bookmark => "b",
+            Self::Highlight => "h",
+            Self::AddNote => "m",
+        }
+    }
 }
 
 /// An in-progress inline rename (font display name or scheme name), backed by
@@ -467,16 +551,17 @@ enum Action {
     OpenViaPortal,
     /// Copy a local book (by library index) into the collaborative workspace
     /// so the workspace's peers can read it too.
-    ShareToWorkspace(usize),
+    ShareToWorkspace(String),
     /// Remove a book (by library index) from the shelf. Its annotations +
     /// progress are kept, keyed by content id, so re-adding the file restores them.
-    RemoveFromLibrary(usize),
+    RemoveFromLibrary(String),
     ToggleWatchFolder(PathBuf),
 
     // --- settings screen: navigation -------------------------------------
     OpenSettings,
     CloseSettings,
     SetSettingsTab(SettingsTab),
+    BeginShortcutCapture(ReaderShortcut),
 
     // --- settings screen: colour schemes ---------------------------------
     /// Apply a custom colour scheme by id (built-ins go via `SetReadTheme`).
@@ -559,6 +644,7 @@ pub struct BooksApp {
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
     resource_invocation: Option<qos_actions::InvocationId>,
+    resource_lifecycle: Option<ResourceLifecycle>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
     /// The sole background parser. It owns no document state; completed books
     /// are committed only by [`Self::drain_import_worker`] on the UI thread.
@@ -568,6 +654,7 @@ pub struct BooksApp {
     import_worker_error: Option<String>,
     import_generation: u64,
     import_loading: Option<LoadingImport>,
+    pending_share: Option<PendingShare>,
     /// Empty-state message when opening a book failed.
     load_error: Option<String>,
 
@@ -730,8 +817,19 @@ pub struct BooksApp {
     default_font_menu: bool,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
+    /// Local source paths already handed off by a watched-folder scan, keyed
+    /// by the imported book identity. A successful collaborative import
+    /// replaces `library_paths` with the workspace path, so this separate
+    /// registry prevents re-queuing the original local file forever while
+    /// still allowing removal of one book to re-enable only its own source.
+    watched_sources: HashMap<PathBuf, String>,
     /// Device-local portal grants, persisted outside the collaborative doc.
     local_library: LocalLibrary,
+    /// The command currently awaiting a one-key local binding in Settings.
+    shortcut_capture: Option<ReaderShortcut>,
+    /// A short, local capture error announced through the row's accessible
+    /// name as well as the visible settings UI.
+    shortcut_capture_error: Option<String>,
     /// Library shelf sort/filter cluster. Owns dropdown state, drawing, and
     /// its topmost hit stack; the app persists emitted preference actions.
     shelf_controls: ShelfControls,
@@ -850,11 +948,13 @@ impl BooksApp {
             pending_open_path: None,
             portal_rx: None,
             resource_invocation: None,
+            resource_lifecycle: None,
             completed_resource_invocation: None,
             import_worker,
             import_worker_error,
             import_generation: 0,
             import_loading: None,
+            pending_share: None,
             load_error: None,
             rect: Rect::ZERO,
             dirty: true,
@@ -927,7 +1027,10 @@ impl BooksApp {
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders,
+            watched_sources: HashMap::new(),
             local_library,
+            shortcut_capture: None,
+            shortcut_capture_error: None,
             shelf_controls: ShelfControls::default(),
             editing_scheme: None,
             font_picker: false,
@@ -1311,6 +1414,16 @@ impl BooksApp {
                     ..Settings::default()
                 });
             }
+            "large-text" => {
+                // Maximum supported scale is a first-class visual/a11y
+                // regression state.  It must use the normal settings path so
+                // pagination and all responsive chrome are exercised too.
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings {
+                    font_scale: Settings::FONT_MAX,
+                    ..Settings::default()
+                });
+            }
             "reduced-motion" => {
                 // The headless renderer has no preference service, so stage
                 // the same app-owned motion policy the live host supplies.
@@ -1386,6 +1499,10 @@ impl BooksApp {
                     target: RenameTarget::Font("font1".into()),
                     field,
                 });
+            }
+            "settings-shortcuts" => {
+                self.view = View::Settings;
+                self.settings_tab = SettingsTab::Shortcuts;
             }
             "scheme-editor" => {
                 // The per-colour scheme editor open on a custom scheme.
@@ -1633,6 +1750,28 @@ impl BooksApp {
     /// render caches. Idempotent; called from `sync` and after every handled
     /// event so the next `draw` is always consistent.
     fn refresh_from_doc(&mut self, doc: &AutoCommit) {
+        // A resource/remote document action can tombstone a shelf row without
+        // passing through this window's hover control. Reconcile that durable
+        // membership state before deriving reader and shelf caches.
+        let removed_ids: Vec<String> = self
+            .library
+            .iter()
+            .filter(|book| BooksDoc::library_is_removed(doc, &book.id))
+            .map(|book| book.id.clone())
+            .collect();
+        if !removed_ids.is_empty() {
+            self.library
+                .retain(|book| !removed_ids.iter().any(|id| id == &book.id));
+            self.library_paths
+                .retain(|id, _| !removed_ids.iter().any(|removed| removed == id));
+            self.watched_sources
+                .retain(|_, id| !removed_ids.iter().any(|removed| removed == id));
+            self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
+            if self.library.is_empty() {
+                self.view = View::Library;
+            }
+            self.layout = None;
+        }
         let new_settings = BooksDoc::read_settings(doc);
         if new_settings != self.settings {
             self.settings = new_settings;
@@ -1939,8 +2078,9 @@ impl BooksApp {
                 }
             };
             let current = self.import_loading.as_ref().is_some_and(|loading| {
+                let source_matches = loading.path == completed.source_path;
                 loading.generation == completed.generation
-                    && loading.path == completed.path
+                    && source_matches
                     && loading.kind == completed.kind
             });
             if !current {
@@ -1974,6 +2114,7 @@ impl BooksApp {
                     // A watched-folder refresh advances one book at a time.
                     // A failed file is not immediately retried in a loop.
                     if completed.kind == ImportKind::Watch {
+                        self.watched_sources.insert(completed.source_path, id);
                         self.rescan_watched(doc);
                     }
                 }
@@ -2057,8 +2198,12 @@ impl BooksApp {
         if self.import_loading.is_some() {
             return;
         }
-        let known: std::collections::HashSet<PathBuf> =
-            self.library_paths.values().cloned().collect();
+        let known: std::collections::HashSet<PathBuf> = self
+            .library_paths
+            .values()
+            .cloned()
+            .chain(self.watched_sources.keys().cloned())
+            .collect();
         if let Some(path) = content::watched_epub_paths(&self.watched_folders)
             .into_iter()
             .find(|path| !known.contains(path))
@@ -2123,14 +2268,18 @@ impl BooksApp {
             Action::EditComment(id) => self.on_edit_comment(id),
             Action::DeleteComment(id) => self.on_delete_comment(id, doc),
             Action::OpenViaPortal => self.request_open_via_portal(),
-            Action::ShareToWorkspace(i) => self.on_share_to_workspace(i, doc),
-            Action::RemoveFromLibrary(i) => self.on_remove_from_library(i, doc),
+            Action::ShareToWorkspace(id) => self.on_share_to_workspace(&id, doc),
+            Action::RemoveFromLibrary(id) => self.on_remove_from_library(&id, doc),
             Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
 
             // --- settings screen: navigation -----------------------------
             Action::OpenSettings => self.on_open_settings(),
             Action::CloseSettings => self.on_close_settings(doc),
             Action::SetSettingsTab(tab) => self.on_set_settings_tab(tab, doc),
+            Action::BeginShortcutCapture(shortcut) => {
+                self.shortcut_capture = Some(shortcut);
+                self.shortcut_capture_error = None;
+            }
 
             // --- settings screen: colour schemes -------------------------
             Action::SetScheme(id) => self.bump_setting(doc, |s| s.scheme_id = id),
@@ -2447,32 +2596,92 @@ impl BooksApp {
         self.perform_action(doc, &crate::actions::delete_annotation_action(id));
     }
 
-    fn on_share_to_workspace(&mut self, i: usize, doc: &mut AutoCommit) {
-        let Some(book) = self.library.get(i) else {
-            return;
-        };
-        let id = book.id.clone();
-        let Some(src) = self.library_paths.get(&id).cloned() else {
-            return;
-        };
-        if let Some((_, dest)) = content::share_to_workspace(doc, &src) {
-            // Same content id, new (shared) home: the shelf now reads it
-            // as shared and its annotations/progress carry over untouched.
-            self.library_paths.insert(id, dest);
-            self.dirty = true;
+    fn begin_share_book(&mut self, id: &str) -> Result<(), String> {
+        if self.pending_share.is_some() || self.resource_invocation.is_some() {
+            return Err("another book lifecycle operation is in progress".into());
         }
+        let Some(src) = self.library_paths.get(id).cloned() else {
+            return Err("this book is unavailable on this device".into());
+        };
+        if is_shared(&src) {
+            return Err("this book is already shared with the workspace".into());
+        }
+        let (book, path) = content::parse_shared_path_detailed(&src)?;
+        if book.id != id {
+            return Err("the local source no longer matches this book".into());
+        }
+        if !is_shared(&path) {
+            return Err("a collaborative workspace is unavailable on this device".into());
+        }
+        self.pending_share = Some(PendingShare {
+            book_id: id.to_string(),
+            book,
+            path,
+        });
+        Ok(())
     }
 
-    fn on_remove_from_library(&mut self, i: usize, doc: &mut AutoCommit) {
-        if i >= self.library.len() {
+    fn commit_pending_share(&mut self, doc: &mut AutoCommit) {
+        let Some(pending) = self.pending_share.take() else {
+            return;
+        };
+        let book = content::record_imported_book(doc, &pending.path, pending.book);
+        if book.id == pending.book_id {
+            self.local_library
+                .remember_book(&pending.book_id, &pending.path);
+            self.library_paths.insert(pending.book_id, pending.path);
+            self.local_library.save();
+            self.load_error = None;
+        } else {
+            self.load_error = Some("The shared copy no longer matches this book.".into());
+        }
+        if let Some(invocation) = self.resource_invocation.take() {
+            self.completed_resource_invocation = Some(if self.load_error.is_none() {
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: qos_actions::ActionOutput::default(),
+                }
+            } else {
+                qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "ebook.share_failed".into(),
+                        message: self.load_error.clone().unwrap_or_default(),
+                        details: None,
+                        retryable: true,
+                    },
+                }
+            });
+        }
+        self.dirty = true;
+    }
+
+    fn on_share_to_workspace(&mut self, id: &str, doc: &mut AutoCommit) {
+        if let Err(error) = self.begin_share_book(id) {
+            self.load_error = Some(error);
             return;
         }
+        self.commit_pending_share(doc);
+    }
+
+    fn on_remove_from_library(&mut self, id: &str, doc: &mut AutoCommit) {
+        let Some(i) = self.library.iter().position(|book| book.id == id) else {
+            return;
+        };
         let removed = self.library.remove(i);
         self.library_paths.remove(&removed.id);
+        // A removed watched book is eligible to be discovered again. Keep the
+        // watch registry an optimisation, never a hidden permanent exclusion;
+        // importantly, do not discard deduplication for every other watched
+        // source when a single shelf row is removed.
+        self.watched_sources.retain(|_, id| id != &removed.id);
         self.local_library.forget_book(&removed.id);
         self.local_library.save();
         self.cover_cache.remove(&removed.id);
-        BooksDoc::remove_library_entry(doc, &removed.id);
+        self.perform_action(
+            doc,
+            &crate::actions::remove_library_book_action(&removed.id),
+        );
         // Keep the reader pointed at a valid book after the shelf shrinks.
         self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
         self.shelf_cursor = self.shelf_cursor.min(self.library.len().saturating_sub(1));
@@ -2500,6 +2709,8 @@ impl BooksApp {
         self.default_font_menu = false;
         self.editing_scheme = None;
         self.renaming = None;
+        self.shortcut_capture = None;
+        self.shortcut_capture_error = None;
         self.settings_scroll = 0.0;
     }
 
@@ -2509,6 +2720,8 @@ impl BooksApp {
         self.color_picker.cancel();
         self.default_font_menu = false;
         self.editing_scheme = None;
+        self.shortcut_capture = None;
+        self.shortcut_capture_error = None;
         self.view = if self.library.is_empty() {
             View::Library
         } else {
@@ -2520,6 +2733,8 @@ impl BooksApp {
         self.commit_rename(doc);
         self.default_font_menu = false;
         self.color_picker.cancel();
+        self.shortcut_capture = None;
+        self.shortcut_capture_error = None;
         self.settings_tab = tab;
         self.settings_scroll = 0.0;
     }
@@ -3565,12 +3780,8 @@ impl BooksApp {
     fn semantic_target(&self, action: &Action) -> Option<String> {
         let target = match action {
             Action::OpenBook(index) => format!("book.open:{}", self.library.get(*index)?.id),
-            Action::ShareToWorkspace(index) => {
-                format!("book.share:{}", self.library.get(*index)?.id)
-            }
-            Action::RemoveFromLibrary(index) => {
-                format!("book.remove:{}", self.library.get(*index)?.id)
-            }
+            Action::ShareToWorkspace(id) => format!("book.share:{id}"),
+            Action::RemoveFromLibrary(id) => format!("book.remove:{id}"),
             Action::Back => "reader.back".into(),
             Action::PrevPage => "reader.previous-page".into(),
             Action::NextPage => "reader.next-page".into(),
@@ -3607,6 +3818,9 @@ impl BooksApp {
             Action::OpenSettings => "settings.open".into(),
             Action::CloseSettings => "settings.close".into(),
             Action::SetSettingsTab(tab) => format!("settings.tab:{tab:?}"),
+            Action::BeginShortcutCapture(shortcut) => {
+                format!("settings.shortcut:{}", shortcut.id())
+            }
             Action::SetScheme(id) => format!("settings.scheme.select:{id}"),
             Action::ToggleSchemeEnabled(id) => format!("settings.scheme.enabled:{id}"),
             Action::DuplicateScheme(id) => format!("settings.scheme.duplicate:{id}"),
@@ -3631,20 +3845,28 @@ impl BooksApp {
         Some(format!("books.{target}"))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive action-to-accessible-label mapping is intentionally co-located"
+    )]
     fn semantic_label(&self, action: &Action) -> String {
         match action {
             Action::OpenBook(index) => self
                 .library
                 .get(*index)
                 .map_or_else(|| "Open book".into(), |book| format!("Open {}", book.title)),
-            Action::ShareToWorkspace(index) => self.library.get(*index).map_or_else(
-                || "Share book with workspace".into(),
-                |book| format!("Share {} with workspace", book.title),
-            ),
-            Action::RemoveFromLibrary(index) => self.library.get(*index).map_or_else(
-                || "Remove book from library".into(),
-                |book| format!("Remove {} from library", book.title),
-            ),
+            Action::ShareToWorkspace(id) => {
+                self.library.iter().find(|book| book.id == *id).map_or_else(
+                    || "Share book with workspace".into(),
+                    |book| format!("Share {} with workspace", book.title),
+                )
+            }
+            Action::RemoveFromLibrary(id) => {
+                self.library.iter().find(|book| book.id == *id).map_or_else(
+                    || "Remove book from library".into(),
+                    |book| format!("Remove {} from library", book.title),
+                )
+            }
             Action::Back | Action::CloseSettings => "Back to library".into(),
             Action::PrevPage => "Previous page".into(),
             Action::NextPage => "Next page".into(),
@@ -3690,6 +3912,22 @@ impl BooksApp {
             Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
             Action::SetSettingsTab(SettingsTab::Colours) => "Colour themes".into(),
             Action::SetSettingsTab(SettingsTab::Library) => "Library folders".into(),
+            Action::SetSettingsTab(SettingsTab::Shortcuts) => "Keyboard shortcuts".into(),
+            Action::BeginShortcutCapture(shortcut) => {
+                if self.shortcut_capture == Some(*shortcut) {
+                    self.shortcut_capture_error.clone().map_or_else(
+                        || format!("Press a key for {}; Escape cancels", shortcut.label()),
+                        |error| format!("{}: {error}", shortcut.label()),
+                    )
+                } else {
+                    format!(
+                        "Change {} shortcut, currently {}",
+                        shortcut.label(),
+                        self.local_library
+                            .shortcut(shortcut.id(), shortcut.default_key())
+                    )
+                }
+            }
             Action::SetScheme(id) => self.scheme_name(id),
             Action::ToggleSchemeEnabled(id) => format!("Show {} in reader", self.scheme_name(id)),
             Action::DuplicateScheme(id) => format!("Duplicate {}", self.scheme_name(id)),
@@ -3898,12 +4136,22 @@ impl BooksApp {
         border: Color,
     ) {
         let r = self.rect;
-        let width = r.width().clamp(220.0, 460.0);
+        // Keep the surface wholly on-screen at phone widths.  The previous
+        // `clamp(220, 460)` could choose the full viewport width, putting its
+        // left edge beyond the window and clipping a two-line failure.
+        let width = (r.width() - 36.0).clamp(160.0, 460.0);
         let x1 = r.x1 - 18.0;
-        let toast = Rect::new(x1 - width, r.y0 + TOP_BAR + 14.0, x1, r.y0 + TOP_BAR + 62.0);
+        let text: String = message.chars().take(180).collect();
+        let (_, text_h) = tr.measure(&text, 12.5, Some((width - 28.0) as f32));
+        let height = (f64::from(text_h) + 24.0).clamp(48.0, 92.0);
+        let toast = Rect::new(
+            x1 - width,
+            r.y0 + TOP_BAR + 14.0,
+            x1,
+            r.y0 + TOP_BAR + 14.0 + height,
+        );
         paint::fill_round(scene, t, toast, 10.0, theme.tokens.colors.surfaces.raised);
         paint::stroke_round(scene, t, toast, 10.0, border.with_alpha_factor(0.8), 1.0);
-        let text: String = message.chars().take(180).collect();
         tr.draw_text(
             scene,
             &text,
@@ -4059,6 +4307,9 @@ impl Widget for BooksApp {
             EbookOperation::OpenBook => {
                 return Err("book open requires the lifecycle-capable operation host".into());
             }
+            EbookOperation::ShareBook { .. } => {
+                return Err("book sharing requires the lifecycle-capable operation host".into());
+            }
         }
         Ok(true)
     }
@@ -4087,11 +4338,19 @@ impl Widget for BooksApp {
                     return Err("another book open is in progress".into());
                 }
                 self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Open);
                 self.request_open_via_portal();
                 if self.portal_rx.is_none() {
                     self.resource_invocation = None;
+                    self.resource_lifecycle = None;
                     return Err("book picker could not be started".into());
                 }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::EbookOperation::ShareBook { book_id } => {
+                self.begin_share_book(&book_id)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Share);
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
             _ => self
@@ -4116,6 +4375,11 @@ impl Widget for BooksApp {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
             self.portal_rx = None;
+            self.pending_share = None;
+            let message = match self.resource_lifecycle.take() {
+                Some(ResourceLifecycle::Share) => "book sharing cancelled",
+                Some(ResourceLifecycle::Open) | None => "book open cancelled",
+            };
             // Parsing cannot be safely interrupted mid-ZIP member, but its
             // eventual result is no longer authoritative and will be rejected
             // by the missing loading generation.
@@ -4123,7 +4387,7 @@ impl Widget for BooksApp {
             self.dirty = true;
             return Some(qos_actions::InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("book open cancelled".into()),
+                message: Some(message.into()),
             });
         }
         if self
@@ -4131,6 +4395,7 @@ impl Widget for BooksApp {
             .as_ref()
             .is_some_and(|update| update.invocation() == invocation)
         {
+            self.resource_lifecycle = None;
             return self.completed_resource_invocation.take();
         }
         None
@@ -4158,12 +4423,17 @@ impl Widget for BooksApp {
         ))]
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
+    )]
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.drain_portal();
         self.drain_import_worker(doc);
+        self.commit_pending_share(doc);
         if let Some(s) = self.shot_settings.take() {
             BooksDoc::write_settings(doc, &s);
         }
@@ -5377,11 +5647,56 @@ impl BooksApp {
         }
     }
 
+    fn reader_shortcut_matches(&self, shortcut: ReaderShortcut, pressed: &str) -> bool {
+        self.local_library
+            .shortcut(shortcut.id(), shortcut.default_key())
+            .eq_ignore_ascii_case(pressed)
+    }
+
+    /// The shortcut recorder lives above all other keyboard routing, so a
+    /// captured `b`, `m`, or `Esc` cannot accidentally annotate the book while
+    /// its settings row says it is waiting for a key.
+    fn handle_shortcut_capture_key(&mut self, key: &Key) -> bool {
+        let Some(shortcut) = self.shortcut_capture else {
+            return false;
+        };
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.shortcut_capture = None;
+                self.shortcut_capture_error = None;
+            }
+            Key::Character(character) => {
+                if self
+                    .local_library
+                    .set_shortcut(shortcut.id(), character.as_str())
+                {
+                    self.local_library.save();
+                    self.shortcut_capture = None;
+                    self.shortcut_capture_error = None;
+                } else if crate::local_library::reserved_reader_key(character.as_str()) {
+                    self.shortcut_capture_error = Some(format!(
+                        "{} is reserved for a built-in reader command. Choose another key.",
+                        character.to_uppercase()
+                    ));
+                } else {
+                    self.shortcut_capture_error =
+                        Some("Choose one unused printable key.".to_string());
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
     /// Keyboard handling. Returns `true` if the key was consumed (so the App's
     /// focus-navigation fallback doesn't also steal the arrows).
     fn handle_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
         // An in-progress inline rename owns the keyboard through its embedded
         // field via `handle_event`; no key handling for it belongs here.
+
+        if self.shortcut_capture.is_some() {
+            return self.handle_shortcut_capture_key(key);
+        }
 
         if matches!(key, Key::Named(NamedKey::Tab)) && self.composing.is_none() {
             self.focus_next_semantic(mods.shift_key());
@@ -5534,29 +5849,37 @@ impl BooksApp {
                 true
             }
             Key::Character(c) => {
-                let action = match c.as_str() {
-                    "b" | "B" => Some(Action::ToggleBookmark),
-                    "t" | "T" => Some(Action::ToggleToc),
-                    "n" | "N" => Some(Action::ToggleNotes),
-                    "f" | "F" => Some(Action::CycleFont),
-                    "+" | "=" => Some(Action::FontInc),
-                    "-" | "_" => Some(Action::FontDec),
-                    "[" => Some(Action::SpacingDec),
-                    "]" => Some(Action::SpacingInc),
-                    "1" => Some(Action::SetReadTheme(ReadTheme::Light)),
-                    "2" => Some(Action::SetReadTheme(ReadTheme::Sepia)),
-                    "3" => Some(Action::SetReadTheme(ReadTheme::Dark)),
-                    "4" => Some(Action::SetReadTheme(ReadTheme::HighContrast)),
-                    "h" | "H" => self
-                        .sel
+                let action = if self.reader_shortcut_matches(ReaderShortcut::PreviousPage, c) {
+                    Some(Action::PrevPage)
+                } else if self.reader_shortcut_matches(ReaderShortcut::NextPage, c) {
+                    Some(Action::NextPage)
+                } else if self.reader_shortcut_matches(ReaderShortcut::Bookmark, c) {
+                    Some(Action::ToggleBookmark)
+                } else if self.reader_shortcut_matches(ReaderShortcut::Highlight, c) {
+                    self.sel
                         .filter(|s| !s.is_empty())
-                        .map(|_| Action::SetColor(self.hi_color)),
-                    "c" | "C" => self
-                        .sel
-                        .filter(|s| !s.is_empty())
-                        .map(|_| Action::CopySelection),
-                    "m" | "M" => Some(Action::AddNote),
-                    _ => None,
+                        .map(|_| Action::SetColor(self.hi_color))
+                } else if self.reader_shortcut_matches(ReaderShortcut::AddNote, c) {
+                    Some(Action::AddNote)
+                } else {
+                    match c.as_str() {
+                        "t" | "T" => Some(Action::ToggleToc),
+                        "n" | "N" => Some(Action::ToggleNotes),
+                        "f" | "F" => Some(Action::CycleFont),
+                        "+" | "=" => Some(Action::FontInc),
+                        "-" | "_" => Some(Action::FontDec),
+                        "[" => Some(Action::SpacingDec),
+                        "]" => Some(Action::SpacingInc),
+                        "1" => Some(Action::SetReadTheme(ReadTheme::Light)),
+                        "2" => Some(Action::SetReadTheme(ReadTheme::Sepia)),
+                        "3" => Some(Action::SetReadTheme(ReadTheme::Dark)),
+                        "4" => Some(Action::SetReadTheme(ReadTheme::HighContrast)),
+                        "c" | "C" => self
+                            .sel
+                            .filter(|s| !s.is_empty())
+                            .map(|_| Action::CopySelection),
+                        _ => None,
+                    }
                 };
                 if let Some(a) = action {
                     self.dispatch(a, doc);
@@ -6050,11 +6373,12 @@ impl BooksApp {
 
         // The primary "Open book" action is always present, so there is always a
         // way in that doesn't depend on any folder — right-aligned, accent-filled.
+        let compact = r.width() < 560.0;
         let btn_cy = r.y0 + (TOP_BAR - 34.0) / 2.0;
-        let open_label = "Open book";
+        let open_label = if compact { "Open" } else { "Open book" };
         let (olw, _) = tr.measure_weighted(open_label, 14.0, None, TextWeight::Semibold);
         let open_w = f64::from(olw) + 25.0 + 32.0;
-        let open_x = r.x1 - 22.0 - open_w;
+        let open_x = r.x1 - if compact { 16.0 } else { 22.0 } - open_w;
         self.accent_button(
             scene,
             t,
@@ -6108,11 +6432,20 @@ impl BooksApp {
     fn shelf_grid_geometry(&mut self, r: Rect, book_count: usize) -> ShelfGrid {
         let margin = 40.0;
         let gap = 28.0;
-        let card_w = 196.0;
-        let cover_h = 232.0;
+        // Keep a short shelf intentional on a wide display: a centred,
+        // bounded reading-library row is easier to scan than a tiny cluster
+        // marooned in the upper-left of a 1440px canvas. Cards gain only a
+        // modest desktop size bump rather than stretching to fill columns.
+        let desktop = r.width() >= 960.0;
+        let card_w = if desktop { 212.0 } else { 196.0 };
+        let cover_h = if desktop { 248.0 } else { 232.0 };
         let card_h = cover_h + 78.0;
-        let avail = (r.width() - 2.0 * margin + gap).max(card_w);
-        let cols = (avail / (card_w + gap)).floor().max(1.0) as usize;
+        let max_grid_w = (r.width() - 2.0 * margin).min(1200.0).max(card_w);
+        let max_cols = ((max_grid_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
+        // Reserve the trailing add tile while choosing columns, then centre
+        // the actual used row. Large libraries still grow into the bounded
+        // grid; a small shelf reads as a deliberate collection.
+        let cols = max_cols.min(book_count.saturating_add(1)).max(1);
         // Publish the column count so keyboard up/down can step a whole row.
         self.shelf_cols = cols;
         self.shelf_cursor = self.shelf_cursor.min(book_count.saturating_sub(1));
@@ -6512,7 +6845,9 @@ impl BooksApp {
         // Share/Remove cluster over the cover foot on hover. Pushed after the
         // whole-card hit so they win the click where they overlap.
         if hover && y >= self.rect.y0 + TOP_BAR {
-            self.draw_book_card_hover_actions(scene, t, tr, theme, x, y, w, cover_h, idx, shared);
+            self.draw_book_card_hover_actions(
+                scene, t, tr, theme, x, y, w, cover_h, &book.id, shared,
+            );
         }
     }
 
@@ -6750,7 +7085,7 @@ impl BooksApp {
         y: f64,
         w: f64,
         cover_h: f64,
-        idx: usize,
+        book_id: &str,
         shared: bool,
     ) {
         let sh = 26.0;
@@ -6779,7 +7114,7 @@ impl BooksApp {
                 None,
                 TextWeight::Semibold,
             );
-            self.push_hit(sr, Action::ShareToWorkspace(idx));
+            self.push_hit(sr, Action::ShareToWorkspace(book_id.to_string()));
             right = sx - 8.0;
         }
         // Remove — a small dark disc with a trash glyph.
@@ -6795,7 +7130,7 @@ impl BooksApp {
         );
         self.push_hit(
             Rect::new(rc.x - rr, rc.y - rr, rc.x + rr, rc.y + rr),
-            Action::RemoveFromLibrary(idx),
+            Action::RemoveFromLibrary(book_id.to_string()),
         );
     }
 
@@ -7219,7 +7554,12 @@ impl BooksApp {
             let paper_y = body_y0;
             let paper_w = center_w;
             let paper_h = (body_y1 - body_y0).max(120.0);
-            (paper_x, paper_y, paper_w, paper_h, 22.0, 24.0, 30.0)
+            // Accessibility text needs a little extra horizontal breathing
+            // room on an edge-to-edge phone page. The layout width follows
+            // this inset, so words reflow before reaching the viewport edge.
+            let pad_x = (22.0 + f64::from((self.settings.font_scale - 1.0).max(0.0)) * 11.0)
+                .clamp(22.0, 36.0);
+            (paper_x, paper_y, paper_w, paper_h, pad_x, 24.0, 30.0)
         };
         let full_content_x = paper_x + pad_x;
         let full_content_w = (paper_w - 2.0 * pad_x).max(60.0) as f32;
@@ -7646,6 +7986,7 @@ impl BooksApp {
             content_x,
             content_w,
             pane,
+            self.rect.width() < FRAME_MIN_W,
         );
 
         (sel_anchor, comment_box)
@@ -8031,7 +8372,21 @@ impl BooksApp {
         content_x: f64,
         content_w: f32,
         pane: &Pane,
+        clip_to_narrow_page: bool,
     ) {
+        // The layout engine guarantees line bounds, while this paint clip is
+        // the final containment guard for font backends with generous glyph
+        // overhang. Leave a small left allowance for list bullets/quote
+        // ornament, but never let body glyphs escape the page on the right.
+        if clip_to_narrow_page {
+            let paint_bounds = Rect::new(
+                content_x - 24.0,
+                pane.y,
+                content_x + f64::from(content_w),
+                pane.y + f64::from(pane.win_end - pane.win_start),
+            );
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &paint_bounds);
+        }
         for b in &layout.blocks {
             Self::draw_pane_block_decoration(scene, t, palette, content_x, content_w, pane, b);
             if let Some(math) = &b.math
@@ -8073,6 +8428,9 @@ impl BooksApp {
                 pane,
                 b,
             );
+        }
+        if clip_to_narrow_page {
+            scene.pop_layer();
         }
     }
 
@@ -9198,6 +9556,9 @@ impl BooksApp {
             SettingsTab::Colours => {
                 self.draw_schemes_manager(scene, t, tr, theme, &c, col_x, col_w, start_y)
             }
+            SettingsTab::Shortcuts => {
+                self.draw_shortcuts_settings(scene, t, tr, theme, &c, col_x, col_w, start_y)
+            }
         };
         scene.pop_layer();
         let content_h = end_y - start_y;
@@ -9262,7 +9623,7 @@ impl BooksApp {
         );
     }
 
-    /// The underline-indicator tab bar (Library/Fonts/Colours). Returns the
+    /// The underline-indicator tab bar. Returns the
     /// tab row's height.
     #[allow(clippy::too_many_arguments)]
     fn draw_settings_tabs(
@@ -9281,6 +9642,7 @@ impl BooksApp {
             (SettingsTab::Library, "Library"),
             (SettingsTab::Fonts, "Fonts"),
             (SettingsTab::Colours, "Colour schemes"),
+            (SettingsTab::Shortcuts, "Shortcuts"),
         ] {
             let active = self.settings_tab == tab;
             let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
@@ -9328,6 +9690,134 @@ impl BooksApp {
             1.0,
         );
         tab_h
+    }
+
+    /// Device-local keyboard binding editor. Each row records one printable
+    /// key directly; bindings are deliberately not part of the Automerge
+    /// document because another reader's keyboard layout is not shared book
+    /// state. Arrow/Page navigation remains available as a reliable fallback.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the compact shortcut settings row keeps its visual, hit-target, and accessible capture state together"
+    )]
+    fn draw_shortcuts_settings(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        x: f64,
+        w: f64,
+        mut y: f64,
+    ) -> f64 {
+        tr.draw_text_weighted(
+            scene,
+            "KEYBOARD SHORTCUTS",
+            11.0,
+            c.text_dim,
+            t * Affine::translate((x, y)),
+            None,
+            TextWeight::Semibold,
+        );
+        y += 20.0;
+        tr.draw_text(
+            scene,
+            "Choose a row, then press one printable key. These bindings stay on this device; Arrow and Page keys always navigate.",
+            12.5,
+            c.text_dim,
+            t * Affine::translate((x, y)),
+            Some(w as f32),
+        );
+        y += 54.0;
+
+        if let Some(error) = &self.shortcut_capture_error {
+            tr.draw_text_weighted(
+                scene,
+                error,
+                12.0,
+                c.semantic.danger,
+                t * Affine::translate((x, y - 24.0)),
+                Some(w as f32),
+                TextWeight::Medium,
+            );
+        }
+
+        for shortcut in ReaderShortcut::ALL {
+            let row = Rect::new(x, y, x + w, y + 58.0);
+            let capturing = self.shortcut_capture == Some(shortcut);
+            let hovered = self.is_hover(row);
+            let background = if capturing {
+                theme.accent_primary.with_alpha_factor(0.16)
+            } else if hovered {
+                theme.bg_hover
+            } else {
+                c.surfaces.raised
+            };
+            paint::fill_round(scene, t, row, f64::from(theme.tokens.radii.md), background);
+            paint::stroke_round(
+                scene,
+                t,
+                row,
+                f64::from(theme.tokens.radii.md),
+                if capturing {
+                    theme.accent_primary
+                } else {
+                    c.border_standard
+                },
+                if capturing { 2.0 } else { 1.0 },
+            );
+            tr.draw_text_weighted(
+                scene,
+                shortcut.label(),
+                14.0,
+                c.text_primary,
+                t * Affine::translate((x + 16.0, y + 14.0)),
+                None,
+                TextWeight::Semibold,
+            );
+            let binding = if capturing {
+                "Press a key…".to_string()
+            } else {
+                self.local_library
+                    .shortcut(shortcut.id(), shortcut.default_key())
+                    .to_uppercase()
+            };
+            let (binding_w, _) = tr.measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
+            let pill_w = (f64::from(binding_w) + 24.0).max(42.0);
+            let pill = Rect::new(x + w - pill_w - 14.0, y + 13.0, x + w - 14.0, y + 45.0);
+            paint::fill_round(
+                scene,
+                t,
+                pill,
+                7.0,
+                if capturing {
+                    theme.accent_primary
+                } else {
+                    c.surfaces.overlay
+                },
+            );
+            tr.draw_text_weighted(
+                scene,
+                &binding,
+                13.0,
+                if capturing {
+                    Color::from_rgb8(250, 250, 252)
+                } else {
+                    c.text_primary
+                },
+                t * Affine::translate((
+                    pill.x0 + (pill.width() - f64::from(binding_w)) / 2.0,
+                    y + 22.0,
+                )),
+                None,
+                TextWeight::Semibold,
+            );
+            self.push_hit(row, Action::BeginShortcutCapture(shortcut));
+            y += 68.0;
+        }
+        y
     }
 
     /// The Library settings pane: manage the folders watched for new books,
@@ -12908,6 +13398,23 @@ mod interaction_tests {
         );
     }
 
+    #[test]
+    fn short_desktop_shelf_uses_a_centred_bounded_grid() {
+        let mut app = app_with_sample();
+        let viewport = Rect::new(0.0, 0.0, 1440.0, 900.0);
+        let grid = app.shelf_grid_geometry(viewport, 3);
+        assert_eq!(grid.cols, 4, "three books plus Add form one centred row");
+        let grid_w = grid.card_w * 4.0 + grid.gap * 3.0;
+        assert!(
+            (grid.start_x - (viewport.width() - grid_w) / 2.0).abs() < 0.01,
+            "the compact shelf is centred instead of pinned to the left"
+        );
+        assert!(
+            grid.card_w < 240.0,
+            "desktop cards remain compact, not stretched"
+        );
+    }
+
     // ---- library: open-from-anywhere, import, share ------------------------
 
     #[test]
@@ -13188,10 +13695,122 @@ mod interaction_tests {
         app.import_and_open_for_test(&mut doc, &src);
         assert!(!app.book_is_shared(0), "starts local");
 
-        app.dispatch(Action::ShareToWorkspace(0), &mut doc);
+        let id = app.library[0].id.clone();
+        app.dispatch(Action::ShareToWorkspace(id), &mut doc);
         assert!(
             app.book_is_shared(0),
             "sharing puts the book on the workspace"
+        );
+        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
+    }
+
+    #[test]
+    #[serial]
+    fn canonical_share_operation_materialises_before_reporting_success() {
+        let workspace = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", workspace.path()) };
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("local.epub");
+        std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.import_and_open_for_test(&mut doc, &source);
+        let id = app.library[0].id.clone();
+        let payload =
+            serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
+        let invocation = qos_actions::InvocationId::new();
+
+        assert!(matches!(
+            Widget::start_resource_operation(
+                &mut app,
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        assert!(
+            !BooksDoc::read_library_entries(&doc)[0].shared,
+            "the shared row is not advertised before materialisation commits"
+        );
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.book_is_shared(0));
+        assert!(BooksDoc::read_library_entries(&doc)[0].shared);
+        assert!(matches!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT,),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
+    }
+
+    #[test]
+    fn canonical_share_operation_refuses_a_missing_local_capability() {
+        let mut app = app_with_sample();
+        let doc = AutoCommit::new();
+        let id = app.library[0].id.clone();
+        app.library_paths.remove(&id);
+        let payload =
+            serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
+        let error = Widget::start_resource_operation(
+            &mut app,
+            qos_actions::InvocationId::new(),
+            qos_actions::OperationKind::Effect,
+            crate::actions::EBOOK_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap_err();
+        assert!(error.contains("unavailable on this device"));
+    }
+
+    #[test]
+    #[serial]
+    fn cancellable_share_operation_reports_its_own_lifecycle_status() {
+        let workspace = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", workspace.path()) };
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("cancel.epub");
+        std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.import_and_open_for_test(&mut doc, &source);
+        let payload = serde_json::to_vec(&crate::actions::EbookOperation::ShareBook {
+            book_id: app.library[0].id.clone(),
+        })
+        .unwrap();
+        let invocation = qos_actions::InvocationId::new();
+        Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            qos_actions::OperationKind::Effect,
+            crate::actions::EBOOK_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            Widget::poll_resource_operation(
+                &mut app,
+                invocation,
+                true,
+                &doc,
+                &automerge::ROOT,
+            ),
+            Some(qos_actions::InvocationUpdate::Cancelled {
+                message: Some(ref message),
+                ..
+            }) if message == "book sharing cancelled"
+        ));
+        assert!(
+            !BooksDoc::read_library_entries(&doc)[0].shared,
+            "cancelling before the UI commit never advertises a shared copy"
         );
         unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
     }
@@ -13208,11 +13827,38 @@ mod interaction_tests {
         assert_eq!(app.library.len(), 1);
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
 
-        app.dispatch(Action::RemoveFromLibrary(0), &mut doc);
+        let id = app.library[0].id.clone();
+        app.dispatch(Action::RemoveFromLibrary(id), &mut doc);
         assert!(app.library.is_empty(), "removed from the shelf");
         assert!(
             BooksDoc::read_library_entries(&doc).is_empty(),
             "and from the registry"
+        );
+    }
+
+    #[test]
+    fn removing_one_watched_book_preserves_other_source_deduplication() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let removed_id = app.library[0].id.clone();
+        let retained_id = app.library[1].id.clone();
+        let removed_source = PathBuf::from("/watched/removed.epub");
+        let retained_source = PathBuf::from("/watched/retained.epub");
+        app.watched_sources
+            .insert(removed_source.clone(), removed_id);
+        app.watched_sources
+            .insert(retained_source.clone(), retained_id);
+
+        let id = app.library[0].id.clone();
+        app.dispatch(Action::RemoveFromLibrary(id), &mut doc);
+
+        assert!(
+            !app.watched_sources.contains_key(&removed_source),
+            "only the removed book becomes eligible for watch retry"
+        );
+        assert!(
+            app.watched_sources.contains_key(&retained_source),
+            "unrelated watched books stay deduplicated"
         );
     }
 
@@ -13504,6 +14150,79 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(key_char(&mut app, &mut doc, "b"), "'b' consumed");
         assert_eq!(bookmarks(&doc), 0, "'b' removed the bookmark");
+    }
+
+    #[test]
+    fn device_local_bookmark_shortcut_rebinds_reader_routing() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(app.local_library.set_shortcut("bookmark", "z"));
+
+        assert!(key_char(&mut app, &mut doc, "z"), "custom key is consumed");
+        assert_eq!(
+            BooksDoc::list_annotations(&doc)
+                .into_iter()
+                .filter(|annotation| annotation.kind == AnnoKind::Bookmark)
+                .count(),
+            1,
+            "custom key dispatches the same bookmark action"
+        );
+        assert!(
+            !key_char(&mut app, &mut doc, "b"),
+            "the replaced default no longer has a hidden second meaning"
+        );
+    }
+
+    #[test]
+    fn shortcut_capture_rejects_reserved_reader_commands_accessibly() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Shortcuts;
+        app.dispatch(
+            Action::BeginShortcutCapture(ReaderShortcut::Bookmark),
+            &mut doc,
+        );
+
+        assert!(
+            key_char(&mut app, &mut doc, "t"),
+            "capture consumes the key"
+        );
+        assert_eq!(app.shortcut_capture, Some(ReaderShortcut::Bookmark));
+        assert_eq!(
+            app.local_library.shortcut(
+                ReaderShortcut::Bookmark.id(),
+                ReaderShortcut::Bookmark.default_key()
+            ),
+            "b",
+            "the fixed contents shortcut cannot be shadowed"
+        );
+        let label = app.semantic_label(&Action::BeginShortcutCapture(ReaderShortcut::Bookmark));
+        assert!(
+            label.contains("reserved"),
+            "screen readers receive the refusal"
+        );
+    }
+
+    #[test]
+    fn narrow_max_text_scale_keeps_rendered_runs_inside_the_page_box() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        let mut settings = BooksDoc::read_settings(&doc);
+        settings.font_scale = Settings::FONT_MAX;
+        BooksDoc::write_settings(&mut doc, &settings);
+
+        frame(&mut app, &mut doc, 390.0, 844.0);
+        let geom = app.reader_page_geometry(app.rect, app.settings.mode);
+        let right = geom.full_content_x + f64::from(geom.full_content_w);
+        assert!(right <= app.rect.x1 + 0.01, "content box fits the viewport");
+        assert!(
+            app.sel_runs
+                .iter()
+                .all(|run| { run.x0 >= geom.full_content_x - 0.5 && run.x1 <= right + 0.5 }),
+            "every measured painted text run reflows inside the narrow page box"
+        );
     }
 
     // ---- note authoring: type / backspace / done ----------------------------

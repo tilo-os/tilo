@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, ResultSpec,
+    Action, ActionArgs, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::BooksDoc;
@@ -51,6 +52,12 @@ pub enum EbookOperation {
     /// carries no path: an action can originate from search, an agent, or a
     /// peer and must not turn that authority into arbitrary local file access.
     OpenBook,
+    /// Materialise the exact already-imported book into this device's shared
+    /// workspace. The operation carries only its stable content id, never a
+    /// device path or a peer's local capability grant.
+    ShareBook {
+        book_id: String,
+    },
 }
 
 pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
@@ -61,7 +68,7 @@ pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
         | EbookOperation::ToggleNotes
         | EbookOperation::OpenSettings
         | EbookOperation::Reveal { .. } => OperationKind::View,
-        EbookOperation::OpenBook => OperationKind::Effect,
+        EbookOperation::OpenBook | EbookOperation::ShareBook { .. } => OperationKind::Effect,
     }
 }
 
@@ -155,6 +162,39 @@ fn open_book_operation() -> ActionSpec {
     })
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "EbookOperation contains only JSON-representable strings"
+)]
+fn share_book_operation(book_id: &str) -> ActionSpec {
+    ActionSpec::typed_operation(
+        "share",
+        "Share with workspace",
+        "copy this book into the collaborative workspace",
+        OperationKind::Effect,
+        EBOOK_OPERATION_TYPE,
+        Vec::new(),
+        {
+            let book_id = book_id.to_string();
+            move |_args: &ActionArgs| EncodedAction {
+                type_id: EBOOK_OPERATION_TYPE.into(),
+                payload: serde_json::to_vec(&EbookOperation::ShareBook {
+                    book_id: book_id.clone(),
+                })
+                .expect("EbookOperation serializes"),
+            }
+        },
+    )
+    .with_contract(qos_actions::ActionContract {
+        risk: RiskLevel::Low,
+        retry: RetryPolicy::Idempotent,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        tags: vec!["workspace".into(), "materialize".into()],
+        ..qos_actions::ActionContract::default()
+    })
+}
+
 /// One per-block piece of a ranged highlight. A selection that spans several
 /// paragraphs is stored as one highlight row per touched block, all sharing the
 /// highlight's `group`. Every id is minted at *authoring* time and carried here
@@ -177,6 +217,10 @@ pub struct HiPiece {
 /// error, so a bad replay can't wedge a peer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EbookAction {
+    /// Tombstone one library membership row by stable content id. The book's
+    /// annotations and progress remain intact, so an explicit re-import can
+    /// restore the shelf row without losing collaborative reading state.
+    RemoveLibraryBook { book_id: String },
     /// Persist one book's reading position. This is intentionally separate
     /// from the reader's transient page animation and open rails: the
     /// position is the durable, collaborative part of navigation.
@@ -343,6 +387,16 @@ impl EbookAction {
                 opened,
             },
         );
+    }
+
+    fn apply_remove_library_book(doc: &mut Doc, book_id: &str) -> Result<(), ActionError> {
+        if !book_id.starts_with("book:") {
+            return Err(Self::refused("book id is invalid"));
+        }
+        // Repeating an already-tombstoned removal is a successful convergence
+        // operation, not a stale mutation failure.
+        BooksDoc::remove_library_entry(doc, book_id);
+        Ok(())
     }
 
     fn apply_edit_note(doc: &mut Doc, id: &str, note: &str) -> Result<(), ActionError> {
@@ -618,6 +672,9 @@ impl Action for EbookAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            EbookAction::RemoveLibraryBook { book_id } => {
+                Self::apply_remove_library_book(doc, book_id)
+            }
             EbookAction::SetProgress {
                 book_id,
                 chapter,
@@ -744,6 +801,12 @@ pub fn encode(action: &EbookAction) -> EncodedAction {
 
 // --- Action builders: single source of truth shared by the on-page
 // affordances (see `crate::app`) and the Ctrl+K resource tree below. --------
+
+pub fn remove_library_book_action(book_id: &str) -> EbookAction {
+    EbookAction::RemoveLibraryBook {
+        book_id: book_id.to_string(),
+    }
+}
 
 pub fn edit_note_action(id: Uuid, note: &str) -> EbookAction {
     EbookAction::EditAnnotationNote {
@@ -1252,6 +1315,23 @@ fn book_resource(
         progress.page,
         None,
     ));
+    let root = root
+        .with_action(share_book_operation(&book.id))
+        .with_action(
+            encode_spec(
+                "remove-from-library",
+                "Remove from library",
+                &remove_library_book_action(&book.id),
+            )
+            .with_contract(qos_actions::ActionContract {
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                retry: RetryPolicy::Idempotent,
+                reversible: true,
+                tags: vec!["library".into(), "tombstone".into()],
+                ..qos_actions::ActionContract::default()
+            }),
+        );
     let mut root = match current {
         Some(ctx) if ctx.book_id == book.id => book_level_actions(root, ctx),
         _ => root,
@@ -1442,6 +1522,10 @@ mod tests {
     /// book owns its chapter and annotation resources, with highlight →
     /// comments nested beneath it.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this end-to-end canonical resource assertion intentionally verifies each nested action contract"
+    )]
     fn ctrl_k_publishes_the_full_nested_tree() {
         let (app, doc, book_id, _group) = open_with_annotations();
         let resources = Widget::resources(&app, &doc);
@@ -1479,6 +1563,41 @@ mod tests {
             "{book_actions:?}"
         );
         assert!(book_actions.contains(&"add-note"), "{book_actions:?}");
+        assert!(book_actions.contains(&"share"), "{book_actions:?}");
+        assert!(
+            book_actions.contains(&"remove-from-library"),
+            "{book_actions:?}"
+        );
+        let share = book
+            .actions
+            .iter()
+            .find(|action| action.id == "share")
+            .expect("book share operation");
+        assert!(matches!(
+            share.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        ));
+        assert_eq!(share.contract.result, ResultSpec::Job);
+        let share_encoded = immediate_encode(share);
+        assert_eq!(
+            decode_operation(&share_encoded.type_id, &share_encoded.payload).unwrap(),
+            Some(EbookOperation::ShareBook {
+                book_id: book_id.clone()
+            })
+        );
+        let remove = book
+            .actions
+            .iter()
+            .find(|action| action.id == "remove-from-library")
+            .expect("book remove action");
+        assert_eq!(remove.contract.risk, RiskLevel::Destructive);
+        assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(remove.contract.retry, RetryPolicy::Idempotent);
+        let remove_encoded = immediate_encode(remove);
+        assert_eq!(
+            serde_json::from_slice::<EbookAction>(&remove_encoded.payload).unwrap(),
+            remove_library_book_action(&book_id)
+        );
 
         // Highlight resource with its nested comment, plus bookmark + note.
         let hl = book
@@ -1556,6 +1675,33 @@ mod tests {
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
             Some(EbookOperation::OpenBook)
         );
+    }
+
+    #[test]
+    fn remove_library_action_replays_as_a_keyed_tombstone() {
+        use crate::model::LibraryEntry;
+
+        let entry = LibraryEntry {
+            id: "book:0123456789abcdef0123456789abcdef".into(),
+            shared: true,
+            title: "Shared title".into(),
+            author: "A. Reader".into(),
+            subject: String::new(),
+            added: 7,
+        };
+        let mut a = AutoCommit::new();
+        BooksDoc::upsert_library_entry(&mut a, &entry);
+        let mut b = AutoCommit::load(&a.save()).unwrap();
+        let action = remove_library_book_action(&entry.id);
+        let encoded = encode(&action);
+        let envelope = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
+        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+
+        for peer in [&a, &b] {
+            assert!(BooksDoc::library_is_removed(peer, &entry.id));
+            assert!(BooksDoc::read_library_entries(peer).is_empty());
+        }
+        assert_eq!(a.get_heads(), b.get_heads(), "replay converges exactly");
     }
 
     /// Deleting the highlight through its action removes the highlight *and*
