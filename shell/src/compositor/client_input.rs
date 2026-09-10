@@ -1584,12 +1584,49 @@ fn foreign_tab_title(app_id: &str) -> String {
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);
-    let candidate = state.focused_output_presentation_surface().or_else(|| {
-        let chrome = fb.chrome();
-        let tree = chrome.tree();
-        active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
-    });
+    // Overlay clicks assign focus directly because they are not represented in
+    // the workspace tree. Preserve that assignment across the next tick while
+    // the surface is still mapped; otherwise this reconciliation immediately
+    // steals focus back for the active tiled tab. A dismissed popup/floating
+    // surface falls through to the ordinary presentation/tree focus below.
+    let current_focus = state.client_input.keyboard_focus();
+    let overlay_focus = retain_live_overlay_focus(
+        current_focus,
+        current_focus.filter(|id| {
+            state.is_floating_toplevel(*id) && fb.floating_surface_rect(*id).is_some()
+        }),
+        current_focus.filter(|id| {
+            state.is_transient_surface(*id) && fb.transient_surface_rect(*id).is_some()
+        }),
+        current_focus.filter(|id| {
+            fb.fullscreen_surface_rect()
+                .is_some_and(|(fullscreen_id, _)| fullscreen_id == *id)
+        }),
+    );
+    let candidate = state
+        .focused_output_presentation_surface()
+        .or(overlay_focus)
+        .or_else(|| {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            active_foreign_surface(&tree).filter(|id| state.client_input.surfaces.contains_key(id))
+        });
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
+}
+
+/// Keep the current seat focus only when the same surface is still represented
+/// by one of the mapped overlay layers. The three layer-specific options are
+/// computed from live compositor state by [`sync_keyboard_focus`], while this
+/// small pure join keeps stale/dismissed overlays from winning the fallback.
+fn retain_live_overlay_focus(
+    current: Option<u64>,
+    floating: Option<u64>,
+    transient: Option<u64>,
+    fullscreen: Option<u64>,
+) -> Option<u64> {
+    let current = current?;
+    (floating == Some(current) || transient == Some(current) || fullscreen == Some(current))
+        .then_some(current)
 }
 
 /// Advance the compositor seat's keyboard state while a trusted shell
@@ -2545,6 +2582,35 @@ mod tests {
             active_foreign_surface(&tree),
             None,
             "focus must not leak across workspaces"
+        );
+    }
+
+    #[test]
+    fn mapped_overlay_focus_survives_reconciliation_for_every_overlay_kind() {
+        for (name, id, floating, transient, fullscreen) in [
+            ("floating", 11, Some(11), None, None),
+            ("transient", 22, None, Some(22), None),
+            ("fullscreen", 33, None, None, Some(33)),
+        ] {
+            assert_eq!(
+                retain_live_overlay_focus(Some(id), floating, transient, fullscreen),
+                Some(id),
+                "a mapped {name} surface must retain keyboard focus across a tick"
+            );
+        }
+    }
+
+    #[test]
+    fn dismissed_overlay_focus_is_released_to_the_tree_fallback() {
+        assert_eq!(
+            retain_live_overlay_focus(Some(41), None, None, None),
+            None,
+            "a surface that disappeared from every overlay layer must not retain stale focus"
+        );
+        assert_eq!(
+            retain_live_overlay_focus(Some(41), Some(99), Some(99), Some(99)),
+            None,
+            "only the currently focused overlay id may be preserved"
         );
     }
 
