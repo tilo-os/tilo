@@ -1909,9 +1909,8 @@ mod tests {
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
         let _ = layout_at(&mut app, 390.0, 844.0);
-        assert_eq!(
-            app.list.scroll_offset(),
-            0.0,
+        assert!(
+            app.list.scroll_offset().abs() <= f64::EPSILON,
             "shot roots never retain prior scrolling"
         );
         let tree = app.accessibility().expect("narrow root has semantics");
