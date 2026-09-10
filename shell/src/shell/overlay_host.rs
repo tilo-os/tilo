@@ -1364,6 +1364,14 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
 /// butting into content.
 const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
 
+/// Left edge at which full-size workspace content clears both the floating
+/// rail and the wallpaper/shadow gutter that separates it from app content.
+/// Widgets that paint against the full desktop rect use this instead of
+/// duplicating a rail width.
+pub(crate) fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
+    f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(viewport_h))) + WHEEL_TO_STRIP_GAP_PX
+}
+
 /// Wallpaper gutter at the far edge of a display, matching
 /// [`WHEEL_TO_STRIP_GAP_PX`] — without it a full-width group's border,
 /// corners and shadow fall off screen at the bezel.
@@ -10953,9 +10961,7 @@ impl Widget for ShellOverlayHost {
         // room for the wheel and a wallpaper gutter beside it. No sidebar
         // means no gutter to reserve.
         let wheel_w = if self.sidebar.is_some() {
-            f64::from(sidebar_width_for_viewport(f64_to_f32_lossy(
-                self.rect.height(),
-            ))) + WHEEL_TO_STRIP_GAP_PX
+            workspace_rail_clearance_for_viewport(self.rect.height())
         } else {
             0.0
         };
@@ -13344,7 +13350,13 @@ impl ShellOverlayHost {
                 } else {
                     references.as_slice()
                 };
-                let reference_step = if compact { 30.0 } else { 38.0 };
+                // A compact guide still needs a full line for the action
+                // name plus its keycap row. At the 130% accessibility text
+                // scale the former 30 px cadence put the next action name
+                // over the preceding keycap; retain a small visual gap
+                // rather than shrinking the text that makes the guide
+                // useful in the first place.
+                let reference_step = if compact { 42.0 } else { 38.0 };
                 let reference_offset = if compact { 22.0 } else { 28.0 };
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
                     let reference_columns = reference_columns.max(1);
@@ -17274,7 +17286,7 @@ mod palette_dispatch_tests {
         let body_height = 360.0;
         let essentials_y = 158.0;
         let reference_offset = 24.0;
-        let reference_step = 32.0;
+        let reference_step = 42.0;
         let visible = &rows[..rows.len().min(8)];
         let final_row = visible.len().div_ceil(2).saturating_sub(1);
         let final_pill_bottom =
@@ -19786,11 +19798,22 @@ mod overlay_event_absorb_tests {
         assert!(done.y1 <= panel.y1 - 20.0);
 
         let body_bottom = panel.y1 - 36.0;
-        let compact_pointer_footer_bottom =
-            panel.y0 + 104.0 + 148.0 + 22.0 + 4.0 * 30.0 + 6.0 + 30.0;
+        let compact_final_pill_bottom = panel.y0 + 104.0 + 148.0 + 22.0 + 3.0 * 42.0 + 31.0;
         assert!(
-            compact_pointer_footer_bottom <= body_bottom,
-            "compact help footer must fit without clipping or scrolling: footer={compact_pointer_footer_bottom}, body={body_bottom}"
+            compact_final_pill_bottom <= body_bottom,
+            "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
+        );
+    }
+
+    #[test]
+    fn compact_persistent_help_affordance_keeps_a_safe_right_inset() {
+        let h = build_harness_sized(960.0, 540.0);
+        let help = h.host.shortcut_help_button_rect();
+        assert_eq!(help.x1, h.host.rect.x1 - 16.0);
+        assert!(
+            help.y1 <= h.host.rect.y1 - 16.0,
+            "persistent Help must clear the compact viewport edge: help={help:?}, host={:?}",
+            h.host.rect
         );
     }
 
