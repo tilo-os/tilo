@@ -59,6 +59,7 @@ impl Harness {
     /// so a caller can prove drawing happened at all.
     fn frame(&mut self) -> Scene {
         let (w, h) = self.size;
+        self.text.set_text_scale(self.theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -919,6 +920,78 @@ fn library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes() {
                     "{w}x{h}: neighboring cards overlap: {card:?} and {other:?}"
                 );
             }
+        }
+    }
+}
+
+/// 200% text has a deliberately compact overflow toolbar and a two-row
+/// library shelf.  Keep both the actual touch targets and their measured card
+/// bounds honest: screenshot review alone cannot catch a later geometry tweak
+/// that puts a scaled label back through a neighboring card action.
+#[test]
+fn large_text_library_keeps_toolbar_and_card_actions_separate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+    let mut hz = Harness::new(1440.0, 900.0);
+    hz.theme = Theme::high_contrast().with_text_scale(2.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    let mut library = PhotosDoc::library(&hz.state.doc);
+    let seed = library.photos[0].clone();
+    for suffix in ["dusk", "trail", "museum", "market"] {
+        let mut extra = seed.clone();
+        extra.id = format!("{}:{suffix}", seed.id);
+        extra.image.name = format!("{suffix}-photograph-with-a-long-name.png");
+        extra.tags = vec!["a deliberately long but bounded metadata label".into()];
+        library.add_photo(extra);
+    }
+    PhotosDoc::set_library(&mut hz.state.doc, &library);
+    hz.app.show_library();
+    hz.frame();
+    hz.frame();
+
+    let toolbar = hz.app.toolbar_item_rects();
+    assert_eq!(
+        toolbar.len(),
+        5,
+        "large text must use its labelled More menu"
+    );
+    for (name, rect) in toolbar {
+        assert!(
+            rect.x0 >= 0.0 && rect.x1 <= 1440.0 && rect.y0 >= 0.0 && rect.y1 <= 900.0,
+            "large-text toolbar control `{name}` escaped the viewport: {rect:?}"
+        );
+    }
+    let cards = hz.app.library_card_action_rects();
+    assert_eq!(
+        cards.len(),
+        2,
+        "large-text layout must keep two readable cards per row"
+    );
+    assert!(
+        cards.iter().all(|(card, ..)| card.width() >= 600.0),
+        "large-text cards lost the minimum reading measure: {cards:?}"
+    );
+    for (card, details, remove, favorite) in &cards {
+        for control in [details, remove, favorite] {
+            assert!(
+                control.x0 >= card.x0
+                    && control.x1 <= card.x1
+                    && control.y0 >= card.y0
+                    && control.y1 <= card.y1
+                    && control.height() >= 44.0,
+                "large-text action {control:?} is not a contained 44px target in {card:?}"
+            );
+        }
+    }
+    for (index, (card, ..)) in cards.iter().enumerate() {
+        for (other, ..) in cards.iter().skip(index + 1) {
+            assert!(
+                card.x1 <= other.x0
+                    || other.x1 <= card.x0
+                    || card.y1 <= other.y0
+                    || other.y1 <= card.y0,
+                "large-text cards overlap: {card:?} and {other:?}"
+            );
         }
     }
 }

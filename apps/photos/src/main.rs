@@ -102,7 +102,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .and_then(parse_size)
         .or(args.viewport)
         .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    render_scenario(scenario, viewport, out)
+    render_scenario(scenario, viewport, args.text_scale, out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -117,6 +117,7 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -126,6 +127,11 @@ fn render_scenario(
         _ => Theme::dark(),
     }
     .with_reduce_motion(shot_motion_reduced());
+    let theme = if let Some(scale) = text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
+    };
     photos::strings::install();
 
     // The generated pattern is written beside the output, so a shot run
@@ -141,6 +147,7 @@ fn render_scenario(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut widget = app;
 
     // Two ordinary frames settle responsive toolbar labels: the first gets the
