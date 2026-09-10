@@ -21,11 +21,11 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     if [[ $arch == arm64 && $(uname -m) != aarch64 ]]; then
         emulated=1
     fi
-    if [[ $arch == arm64 ]]; then
-        cargo_jobs=2
-    else
-        cargo_jobs=4
-    fi
+    # Release links use fat LTO and peak at several GiB per rustc process.
+    # Four jobs exhausted the shared generic runner during the Arch shell link,
+    # even with distribution userspaces serialized. Use the safe ceiling for
+    # both architectures.
+    cargo_jobs=2
     cache_env=()
     if [[ ${QOS_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then
         # sccache hashes compiler identity, flags and native headers into every
