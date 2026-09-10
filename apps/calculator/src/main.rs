@@ -105,8 +105,13 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         Box::new(app)
     };
-    render_shot_to_png(root, args.viewport.unwrap_or_else(shots_viewport), out)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        root,
+        args.viewport.unwrap_or_else(shots_viewport),
+        out,
+        args.text_scale,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Parse the optional click count after `--bench-clicks`.
@@ -407,15 +412,29 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
+    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    // The app has a custom shot handler, so it must apply the common launcher
+    // text-scale argument itself (the default handler does this for us). Keep
+    // the environment form too: it is useful for the per-app visual harness
+    // and matches the other first-party app renderers.
+    let shot_scale = text_scale.or_else(|| {
+        std::env::var("QOS_SHOTS_TEXT_SCALE")
+            .ok()
+            .and_then(|raw| raw.parse::<f32>().ok())
+            .filter(|scale| scale.is_finite())
+    });
+    if let Some(scale) = shot_scale {
+        theme = theme.with_text_scale(scale);
+    }
     let mut presence = PresenceCtx::empty();
     // Shots-only: seed a remote collaborator's cursor at `x,y` so the headless
     // frame shows a peer caret mapped into the active math field's 2D layout.

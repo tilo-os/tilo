@@ -34,12 +34,25 @@ pub fn series_color(theme: &Theme, i: usize) -> Color {
 const PANEL_DOCK_MIN_W: f64 = 720.0;
 /// Overlay drawer width when the panel floats over the canvas.
 const PANEL_OVERLAY_W: f64 = 300.0;
+/// Every graph-row action gets a finger-sized semantic/hit target, while the
+/// painted icon inside remains compact and unobtrusive.
+const ROW_ACTION_TARGET: f64 = 44.0;
+const ROW_ACTION_GAP: f64 = 4.0;
+const ROW_ACTION_ICON: f64 = 22.0;
 
 pub struct Graph2dScreen {
     pub panel: Rect,
     pub canvas: Rect,
     row_rects: Vec<Rect>,
+    /// Compact visibility marks painted in the row.
     vis_rects: Vec<Rect>,
+    /// Minimum 44×44 targets for visibility actions and a11y bounds.
+    vis_hit_rects: Vec<Rect>,
+    /// Direct delete affordance for each saved formula. Keeping this alongside
+    /// the visibility dot means graph management is not hidden in Ctrl+K.
+    delete_rects: Vec<Rect>,
+    /// Minimum 44×44 targets for delete actions and a11y bounds.
+    delete_hit_rects: Vec<Rect>,
     edit_rects: Vec<Rect>,
     add_rect: Rect,
     /// Panel is an overlay drawer (narrow) rather than docked (wide).
@@ -77,6 +90,9 @@ impl Default for Graph2dScreen {
             canvas: Rect::ZERO,
             row_rects: Vec::new(),
             vis_rects: Vec::new(),
+            vis_hit_rects: Vec::new(),
+            delete_rects: Vec::new(),
+            delete_hit_rects: Vec::new(),
             edit_rects: Vec::new(),
             add_rect: Rect::ZERO,
             overlay: false,
@@ -131,6 +147,16 @@ fn bits(x: f64) -> u64 {
     x.to_bits()
 }
 
+fn centered_square(center: Point, side: f64) -> Rect {
+    let radius = side / 2.0;
+    Rect::new(
+        center.x - radius,
+        center.y - radius,
+        center.x + radius,
+        center.y + radius,
+    )
+}
+
 impl CurveKey {
     fn build(model: &CalcModel, canvas: Rect) -> Self {
         CurveKey {
@@ -172,7 +198,9 @@ impl Graph2dScreen {
         }
 
         if can_dock && self.panel_open {
-            let panel_w = (area.width() * 0.27).clamp(260.0, 360.0);
+            // The 300 px minimum leaves formula text enough room even after
+            // reserving two adjacent 44 px graph actions.
+            let panel_w = (area.width() * 0.27).clamp(300.0, 360.0);
             self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
             self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
             self.scrim_rect = Rect::ZERO;
@@ -209,6 +237,9 @@ impl Graph2dScreen {
 
         self.row_rects.clear();
         self.vis_rects.clear();
+        self.vis_hit_rects.clear();
+        self.delete_rects.clear();
+        self.delete_hit_rects.clear();
         self.edit_rects.clear();
         if self.panel == Rect::ZERO {
             // Panel hidden (collapsed overlay): no rows to place.
@@ -222,22 +253,35 @@ impl Graph2dScreen {
         for i in 0..model.funcs.len() {
             let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
             let r = Rect::new(self.panel.x0 + 12.0, y, self.panel.x1 - 12.0, y + card_h);
-            let vis = Rect::new(
-                r.x1 - 34.0,
-                r.center().y - 11.0,
-                r.x1 - 12.0,
-                r.center().y + 11.0,
+            // Keep the two durable actions separate for touch, mouse, and AT.
+            // The compact marks are centered inside their 44 px target boxes.
+            let vis_hit = Rect::new(
+                r.x1 - ROW_ACTION_TARGET,
+                r.center().y - ROW_ACTION_TARGET / 2.0,
+                r.x1,
+                r.center().y + ROW_ACTION_TARGET / 2.0,
             );
+            let delete_hit = Rect::new(
+                vis_hit.x0 - ROW_ACTION_GAP - ROW_ACTION_TARGET,
+                r.center().y - ROW_ACTION_TARGET / 2.0,
+                vis_hit.x0 - ROW_ACTION_GAP,
+                r.center().y + ROW_ACTION_TARGET / 2.0,
+            );
+            let vis = centered_square(vis_hit.center(), ROW_ACTION_ICON);
+            let delete = centered_square(delete_hit.center(), ROW_ACTION_ICON);
             // Editor area: a "y =" label sits at the left, the math field fills
             // the rest up to the visibility dot. Its height is the grown card
             // minus the padding, so the field viewport grows with the card.
             let edit = Rect::new(
                 r.x0 + 60.0,
                 r.y0 + CARD_PAD_Y,
-                vis.x0 - 8.0,
+                delete_hit.x0 - 8.0,
                 r.y1 - CARD_PAD_Y,
             );
             self.vis_rects.push(vis);
+            self.vis_hit_rects.push(vis_hit);
+            self.delete_rects.push(delete);
+            self.delete_hit_rects.push(delete_hit);
             self.edit_rects.push(edit);
             self.row_rects.push(r);
             y += card_h + ROW_GAP;
@@ -256,10 +300,11 @@ impl Graph2dScreen {
     /// also runs on the event path without a renderer — can place variable-height
     /// cards from the cached measurements. A formula taller than the card max
     /// clamps to the max height and then scrolls within its field.
-    fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer) {
+    fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer, text_scale: f32) {
         self.sync_fields(model);
         self.card_heights.clear();
         for field in &mut self.fields {
+            field.set_text_scale(text_scale);
             let content_h = if field.is_empty() {
                 crate::mathfield::CARD_MIN_H
             } else {
@@ -342,9 +387,10 @@ impl Graph2dScreen {
         area: Rect,
         trace: Option<Point>,
     ) {
+        draw::set_text_scale(theme.text_scale);
         // Measure formulas → grow cards, then place the (now variable-height)
         // rows before painting anything that depends on their rects.
-        self.measure_cards(model, tr);
+        self.measure_cards(model, tr, theme.text_scale);
         self.layout(area, model);
 
         // Advance the smooth-zoom ease one frame toward the model target. The
@@ -466,7 +512,7 @@ impl Graph2dScreen {
     }
 
     /// One row per saved function: background, colour swatch, "y =" prefix,
-    /// the math editor (or its placeholder), and the visibility dot.
+    /// the math editor (or its placeholder), visibility dot, and delete button.
     /// Editors are already reconciled + measured by `measure_cards`.
     fn draw_function_rows(
         &mut self,
@@ -478,10 +524,11 @@ impl Graph2dScreen {
     ) {
         let c = &theme.tokens.colors;
         for i in 0..model.funcs.len() {
-            let (Some(f), Some(&r), Some(&edit), Some(&vr)) = (
+            let (Some(f), Some(&r), Some(&edit), Some(&dr), Some(&vr)) = (
                 model.funcs.get(i),
                 self.row_rects.get(i),
                 self.edit_rects.get(i),
+                self.delete_rects.get(i),
                 self.vis_rects.get(i),
             ) else {
                 continue;
@@ -558,6 +605,20 @@ impl Graph2dScreen {
                 let fld_col = if visible { txt_col } else { c.text_dim };
                 field.draw(scene, t, tr, theme, fld_col, active);
             }
+            // Direct deletion remains available beside every formula; Ctrl+K
+            // offers the same durable DeleteGraph action to agents and search.
+            draw::fill_rrect(scene, t, dr, 5.0, c.neutral[2]);
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                dr,
+                "×",
+                16.0,
+                c.text_dim,
+                Align::Center,
+                TextWeight::Semibold,
+            );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
             draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
@@ -776,7 +837,11 @@ impl Graph2dScreen {
         self.edit_rects.get(i).copied()
     }
     pub fn visibility_rect(&self, i: usize) -> Option<Rect> {
-        self.vis_rects.get(i).copied()
+        self.vis_hit_rects.get(i).copied()
+    }
+    /// Geometry for the direct formula-delete button.
+    pub fn delete_rect(&self, i: usize) -> Option<Rect> {
+        self.delete_hit_rects.get(i).copied()
     }
     /// Center of function row `i`'s visibility dot, once laid out (test helper).
     #[doc(hidden)]
@@ -1136,7 +1201,11 @@ impl Graph2dScreen {
         self.row_rects.iter().position(|r| r.contains(p))
     }
     pub fn vis_at(&self, p: Point) -> Option<usize> {
-        self.vis_rects.iter().position(|r| r.contains(p))
+        self.vis_hit_rects.iter().position(|r| r.contains(p))
+    }
+    /// The formula row whose direct delete button contains `p`.
+    pub fn delete_at(&self, p: Point) -> Option<usize> {
+        self.delete_hit_rects.iter().position(|r| r.contains(p))
     }
     pub fn add_at(&self, p: Point) -> bool {
         self.add_rect.contains(p)
@@ -1305,6 +1374,33 @@ mod tests {
     }
 
     #[test]
+    fn row_actions_have_non_overlapping_44px_targets() {
+        let mut s = Graph2dScreen::default();
+        let m = CalcModel::seeded();
+        // 390-wide overlay is the tightest production presentation.
+        let area = Rect::new(0.0, 60.0, 390.0, 844.0);
+        s.layout(area, &m);
+        s.toggle_panel();
+        s.layout(area, &m);
+        let delete = s.delete_rect(0).expect("delete target");
+        let visible = s.visibility_rect(0).expect("visibility target");
+        assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
+        assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
+        assert!(delete.x1 <= visible.x0, "row actions must not overlap");
+        assert_eq!(s.delete_at(delete.center()), Some(0));
+        assert_eq!(s.vis_at(visible.center()), Some(0));
+        assert_eq!(
+            s.delete_at(s.delete_rect(1).expect("second delete target").center()),
+            Some(1),
+            "a delete hit must not target the adjacent row"
+        );
+        assert!(
+            s.edit_rects[0].x1 <= delete.x0,
+            "math editing must not steal the delete target"
+        );
+    }
+
+    #[test]
     fn first_draw_samples_visible_functions() {
         let (mut s, _) = screen_with_canvas();
         let m = CalcModel::seeded();
@@ -1386,7 +1482,7 @@ mod tests {
         }];
         m.active_fn = 0;
         let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        s.measure_cards(&m, &mut tr);
+        s.measure_cards(&m, &mut tr, 1.0);
         s.layout(area, &m);
         assert!(
             s.card_heights[0] > BASE_ROW_H + 8.0,
@@ -1420,7 +1516,7 @@ mod tests {
         }];
         m.active_fn = 0;
         let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        s.measure_cards(&m, &mut tr);
+        s.measure_cards(&m, &mut tr, 1.0);
         s.layout(area, &m);
         let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
         assert!(
@@ -1454,7 +1550,7 @@ mod tests {
             visible: true,
         }];
         m.active_fn = 0;
-        s.measure_cards(&m, &mut tr);
+        s.measure_cards(&m, &mut tr, 1.0);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
         assert!(
             (s.card_heights[0] - BASE_ROW_H).abs() < 1e-6,
@@ -1482,7 +1578,7 @@ mod tests {
                 visible: true,
             },
         ];
-        s.measure_cards(&m, &mut tr);
+        s.measure_cards(&m, &mut tr, 1.0);
         s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
         assert!(
             s.row_rects[1].y0 >= s.row_rects[0].y1 - 0.01,

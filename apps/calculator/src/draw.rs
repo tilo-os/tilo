@@ -8,6 +8,23 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
+std::thread_local! {
+    /// Calculator is custom-painted, so its literal type ramp does not pass
+    /// through the toolkit's retained text widgets. The root refreshes this
+    /// once per paint from `Theme::text_scale`; keeping it module-local means
+    /// it cannot affect another app or a shared widget.
+    static TEXT_SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// Set the type scale for Calculator's custom-painted text for this paint pass.
+pub fn set_text_scale(scale: f32) {
+    TEXT_SCALE.with(|current| current.set(scale.clamp(0.5, 4.0)));
+}
+
+fn scaled_size(size: f32) -> f32 {
+    TEXT_SCALE.with(|scale| size * scale.get())
+}
+
 /// Horizontal text alignment for [`text_in`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Align {
@@ -57,6 +74,7 @@ pub fn text_in(
     if text.is_empty() {
         return;
     }
+    let size = scaled_size(size);
     let (w, _h) = tr.measure_weighted(text, size, None, weight);
     let line_h = f64::from(size) * 1.25;
     let x = match align {
@@ -94,7 +112,7 @@ pub fn text_at(
     tr.draw_text_weighted(
         scene,
         text,
-        size,
+        scaled_size(size),
         color,
         t * Affine::translate((pos.x, pos.y)),
         None,
