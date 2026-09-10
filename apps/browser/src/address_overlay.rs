@@ -68,6 +68,10 @@ pub struct AddressSuggestions {
     width: f32,
     /// Last cursor position (mouse-move carries it; mouse-press doesn't).
     last_cursor: Point,
+    /// Current UI text scale. The overlay is painted outside the normal
+    /// widget tree, so it must retain this to give scaled two-line rows their
+    /// matching hit targets and avoid overlapping text.
+    text_scale: f32,
 }
 
 impl Default for AddressSuggestions {
@@ -88,6 +92,7 @@ impl AddressSuggestions {
             anchor: None,
             width: DEFAULT_WIDTH,
             last_cursor: Point::ZERO,
+            text_scale: 1.0,
         }
     }
 
@@ -156,6 +161,20 @@ impl AddressSuggestions {
         self.relayout(top_left);
     }
 
+    /// Match the live theme's text scale. At accessibility scales a fixed
+    /// 46px row made the title and URL collide while pointer hit testing
+    /// still assumed unscaled geometry.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        let scale = scale.clamp(1.0, 2.0);
+        if (self.text_scale - scale).abs() <= f32::EPSILON {
+            return;
+        }
+        self.text_scale = scale;
+        if let Some(anchor) = self.anchor {
+            self.relayout(anchor);
+        }
+    }
+
     /// Take the entry the user committed via Enter or a row click, if any.
     /// Returns `Some` exactly once per commit, then `None`.
     pub fn take_chosen(&mut self) -> Option<HistoryEntry> {
@@ -167,8 +186,12 @@ impl AddressSuggestions {
         if self.items.is_empty() {
             0.0
         } else {
-            PAD * 2.0 + self.items.len() as f64 * ROW_H
+            PAD * 2.0 + self.items.len() as f64 * self.row_height()
         }
+    }
+
+    fn row_height(&self) -> f64 {
+        ROW_H * f64::from(self.text_scale)
     }
 
     /// Recompute `self.rect` from the anchor (or a fallback origin) and the
@@ -192,7 +215,7 @@ impl AddressSuggestions {
         if rel < 0.0 {
             return None;
         }
-        let idx = (rel / ROW_H) as usize;
+        let idx = (rel / self.row_height()) as usize;
         (idx < self.items.len()).then_some(idx)
     }
 
@@ -231,8 +254,9 @@ impl AddressSuggestions {
         let url_size = theme.tokens.typography.scale.xs;
         let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
 
+        let row_height = self.row_height();
         for (idx, entry) in self.items.iter().enumerate() {
-            let row_top = self.rect.y0 + PAD + idx as f64 * ROW_H;
+            let row_top = self.rect.y0 + PAD + idx as f64 * row_height;
             let is_selected = idx == self.selected;
             let is_hovered = self.hovered == Some(idx);
 
@@ -247,7 +271,7 @@ impl AddressSuggestions {
                     self.rect.x0 + 3.0,
                     row_top + 1.0,
                     self.rect.x1 - 3.0,
-                    row_top + ROW_H - 1.0,
+                    row_top + row_height - 1.0,
                 );
                 let shape = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
@@ -256,7 +280,7 @@ impl AddressSuggestions {
                         self.rect.x0 + 3.0,
                         row_top + 6.0,
                         self.rect.x0 + 3.0 + SEL_BAR_W,
-                        row_top + ROW_H - 6.0,
+                        row_top + row_height - 6.0,
                     );
                     scene.fill(
                         vello::peniko::Fill::NonZero,
@@ -362,6 +386,7 @@ impl Widget for AddressSuggestions {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.set_text_scale(theme.text_scale);
         self.render(scene, transform, text_renderer, theme);
     }
 
@@ -521,6 +546,22 @@ mod tests {
         w.move_selection(2); // now on row 2
         w.set_suggestions(three()); // fresh list
         assert_eq!(w.selected_index(), Some(0), "a new list resets to the top");
+    }
+
+    #[test]
+    fn enlarged_text_expands_rows_and_pointer_hit_targets_together() {
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        w.set_anchor(Point::new(20.0, 40.0), 320.0);
+        let normal_height = w.rect.height();
+
+        w.set_text_scale(1.5);
+        assert!(w.rect.height() > normal_height);
+        assert_eq!(
+            w.row_at(Point::new(40.0, w.rect.y0 + PAD + w.row_height() + 1.0)),
+            Some(1),
+            "hit testing follows the larger visual row rather than the old 46px grid"
+        );
     }
 
     #[test]
