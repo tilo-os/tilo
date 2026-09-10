@@ -11,6 +11,12 @@ The layout is responsive: on a narrow window the page tree collapses
 into an overlay drawer reached from a top-bar button, and the editor
 takes the full width.
 
+Tags are reusable workspace metadata, shown as chips below a note title. Use
+Cmd-K / Ctrl-K to open a page's **Create and add tag** command, or choose an
+existing **Add tag …** action; the **Tags** resource lets keyboard and agent
+workflows browse, rename, or delete tags. Opening a tag changes only your
+local browse selection, never a collaborator's view.
+
 ## Running it
 
 ```bash
@@ -29,6 +35,8 @@ For headless visual review, render one offscreen frame to a PNG:
 ```bash
 cargo run -p notes --release -- --shots out.png --viewport 800x600
 # add `--scenario drawer` to show the open page drawer on a narrow width
+# add `--text-scale 1.5` to review the real large-text layout
+# add `--scenario shortcuts` to review the shared keyboard-help dialog
 ```
 
 ## Storage layout
@@ -42,9 +50,9 @@ Everything lives under one workspace root (default `~/notes/`):
     └── {uuid}.md              # one markdown body per page
 ```
 
-The workspace file holds the JSON-encoded `WorkspaceData` inside an
-automerge `Text` field — picked for forward-compat with a per-field
-automerge migration in a future phase. Page bodies are plain markdown:
+The workspace file is a local JSON snapshot of page metadata, tags and keyed
+tag memberships. In collaboration, those records instead live as independent
+keyed Automerge maps (with deletion tombstones), while page bodies are plain markdown:
 crack one open with any editor and you'll get your work back even if
 the notes binary disappears.
 
@@ -146,9 +154,10 @@ sidebar tests; they are deliberately not listed as missing features.
 - **No simultaneous independent carets.** A single user can make a free-form
   selection across blocks, but the editor does not expose multiple local
   carets/selections at once. Remote collaborator carets are still shown.
-- **No custom tag or comment model yet.** Pages, blocks, page links and inline
-  formatting are durable collaborative resources/actions today. Tags and
-  comments are deliberately not presented as half-finished local-only data.
+- **No comments yet.** Pages, folders (the page tree), tags, blocks, page links
+  and inline formatting are durable collaborative resources/actions. Tags are
+  separate keyed records with keyed note memberships; their current browse
+  filter is intentionally local to each person.
 
 ## Architecture
 

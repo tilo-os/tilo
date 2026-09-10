@@ -41,7 +41,7 @@ use qos_actions::{
 };
 
 use crate::doc::NotesDoc;
-use crate::model::{PageId, PageMeta};
+use crate::model::{PageId, PageMeta, TagId, TagMeta};
 use crate::num;
 use ui::widget::BlockEditOp;
 use ui::widget::marks::{Mark, MarkSpan};
@@ -56,6 +56,10 @@ pub fn page_resource_id(page: PageId) -> String {
 
 pub fn block_resource_id(page: PageId, block_id: &str) -> String {
     format!("notes.block:{page}:{block_id}")
+}
+
+pub fn tag_resource_id(tag: TagId) -> String {
+    format!("notes.tag:{tag}")
 }
 
 /// Parse an opaque stable block resource id without accepting a nearby page
@@ -86,6 +90,10 @@ pub enum NotesOperation {
         #[serde(default)]
         block_id: Option<String>,
     },
+    /// Local view state only: filter/browse notes carrying this tag. The tag
+    /// graph itself remains document data; a collaborator never has their
+    /// current browse filter changed by someone else.
+    OpenTag { tag: TagId },
 }
 
 /// Decode an operation payload owned by Notes.
@@ -115,6 +123,34 @@ pub struct PageData {
     /// Parent page uuid (string form), or `""` for a root page.
     pub parent: String,
     pub order: u32,
+}
+
+/// Wire-stable representation of a tag. Its UUID is minted before dispatch,
+/// never inside `Action::apply`, so replay is absolute and deterministic.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagData {
+    pub id: String,
+    pub name: String,
+}
+
+impl TagData {
+    pub fn from_meta(tag: &TagMeta) -> Self {
+        Self {
+            id: tag.id.to_string(),
+            name: tag.name.clone(),
+        }
+    }
+
+    fn to_meta(&self) -> Option<TagMeta> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        Some(TagMeta {
+            id: self.id.parse().ok()?,
+            name: name.to_string(),
+        })
+    }
 }
 
 impl PageData {
@@ -175,6 +211,21 @@ pub enum NotesAction {
         block_id: String,
         marks: Vec<InlineMarkSpan>,
     },
+    /// Create or rename one independently keyed tag.
+    UpsertTag(TagData),
+    /// Tombstone a tag plus every keyed membership edge currently known for it.
+    DeleteTag { id: String },
+    /// Set one membership edge to an absolute state. This is deliberately not
+    /// a toggle: retries and out-of-order replays stay idempotent.
+    SetTagAssignment {
+        page: String,
+        tag: String,
+        assigned: bool,
+    },
+    /// One atomic convenience action for the normal "add a new tag to this
+    /// note" path. Both ids are authored up front, so it is as replayable as
+    /// the lower-level upsert + absolute membership operations.
+    CreateAndAssignTag { page: String, tag: TagData },
 }
 
 /// Serializable inline formatting stored in a Notes block's native Automerge
@@ -234,24 +285,78 @@ impl InlineMarkSpan {
 /// Durable, browseable history metadata for a Notes mutation.
 pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
     let mut context = qos_actions::ActionContext::for_action("org.qos.Notes", "Notes", action);
-    let (label, id, title) = match action {
-        NotesAction::UpsertPage(page) => ("Update page", page.id.as_str(), page.title.as_str()),
-        NotesAction::DeletePage { id } => ("Delete page", id.as_str(), "Page"),
-        NotesAction::ApplyBlockOps { page, .. } => ("Edit note", page.as_str(), "Note"),
-        NotesAction::SetBlockMarks { page, block_id, .. } => {
-            ("Format note", page.as_str(), block_id.as_str())
-        }
+    let (label, resource_id, kind, title) = match action {
+        NotesAction::UpsertPage(page) => (
+            "Update page",
+            format!("notes.page:{}", page.id),
+            "notes.page",
+            page.title.clone(),
+        ),
+        NotesAction::DeletePage { id } => (
+            "Delete page",
+            format!("notes.page:{id}"),
+            "notes.page",
+            "Page".to_string(),
+        ),
+        NotesAction::ApplyBlockOps { page, .. } => (
+            "Edit note",
+            format!("notes.page:{page}"),
+            "notes.page",
+            "Note".to_string(),
+        ),
+        NotesAction::SetBlockMarks { page, block_id, .. } => (
+            "Format note",
+            format!("notes.block:{page}:{block_id}"),
+            "notes.block",
+            block_id.clone(),
+        ),
+        NotesAction::UpsertTag(tag) => (
+            "Update tag",
+            format!("notes.tag:{}", tag.id),
+            "notes.tag",
+            tag.name.clone(),
+        ),
+        NotesAction::DeleteTag { id } => (
+            "Delete tag",
+            format!("notes.tag:{id}"),
+            "notes.tag",
+            "Tag".to_string(),
+        ),
+        NotesAction::SetTagAssignment {
+            page,
+            tag,
+            assigned,
+        } => (
+            if *assigned {
+                "Assign tag"
+            } else {
+                "Unassign tag"
+            },
+            format!("notes.page:{page}"),
+            "notes.page",
+            format!("Tag {tag}"),
+        ),
+        NotesAction::CreateAndAssignTag { page, tag } => (
+            "Create and assign tag",
+            format!("notes.page:{page}"),
+            "notes.page",
+            tag.name.clone(),
+        ),
     };
     context.action_label = label.to_string();
     context.resource = Some(qos_actions::ActionResource {
-        id: format!("notes.page:{id}"),
-        kind: "notes.page".to_string(),
-        label: title.to_string(),
+        id: resource_id,
+        kind: kind.to_string(),
+        label: title,
     });
     context
 }
 
 impl Action for NotesAction {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the canonical action dispatcher keeps every durable Notes mutation in one exhaustive replay boundary"
+    )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
             NotesAction::UpsertPage(data) => {
@@ -333,6 +438,51 @@ impl Action for NotesAction {
                     .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
                 NotesDoc::set_block_marks(doc, page, block_id, marks)
                     .map_err(ActionError::Refused)?;
+            }
+            NotesAction::UpsertTag(data) => {
+                if let Some(tag) = data.to_meta() {
+                    NotesDoc::upsert_tag(doc, &tag);
+                }
+            }
+            NotesAction::DeleteTag { id } => {
+                if let Ok(id) = id.parse::<TagId>() {
+                    NotesDoc::delete_tag(doc, id);
+                }
+            }
+            NotesAction::SetTagAssignment {
+                page,
+                tag,
+                assigned,
+            } => {
+                let (Ok(page), Ok(tag)) = (page.parse::<PageId>(), tag.parse::<TagId>()) else {
+                    return Ok(());
+                };
+                // A deleted endpoint wins over a stale assignment. The action
+                // remains a harmless no-op instead of making a dangling edge.
+                if NotesDoc::list_pages(doc)
+                    .iter()
+                    .any(|candidate| candidate.id == page)
+                    && NotesDoc::list_tags(doc)
+                        .iter()
+                        .any(|candidate| candidate.id == tag)
+                {
+                    NotesDoc::set_tag_assignment(doc, page, tag, *assigned);
+                }
+            }
+            NotesAction::CreateAndAssignTag { page, tag } => {
+                let Ok(page) = page.parse::<PageId>() else {
+                    return Ok(());
+                };
+                let Some(tag) = tag.to_meta() else {
+                    return Ok(());
+                };
+                if NotesDoc::list_pages(doc)
+                    .iter()
+                    .any(|candidate| candidate.id == page)
+                {
+                    NotesDoc::upsert_tag(doc, &tag);
+                    NotesDoc::set_tag_assignment(doc, page, tag.id, true);
+                }
             }
         }
         Ok(())
@@ -423,6 +573,46 @@ pub fn set_block_marks_action(
     }
 }
 
+pub fn upsert_tag_action(tag: &TagMeta) -> NotesAction {
+    NotesAction::UpsertTag(TagData::from_meta(tag))
+}
+
+pub fn new_tag_action(id: TagId, name: &str) -> NotesAction {
+    NotesAction::UpsertTag(TagData {
+        id: id.to_string(),
+        name: name.trim().to_string(),
+    })
+}
+
+pub fn rename_tag_action(tag: &TagMeta, name: &str) -> NotesAction {
+    NotesAction::UpsertTag(TagData {
+        id: tag.id.to_string(),
+        name: name.trim().to_string(),
+    })
+}
+
+pub fn delete_tag_action(id: TagId) -> NotesAction {
+    NotesAction::DeleteTag { id: id.to_string() }
+}
+
+pub fn set_tag_assignment_action(page: PageId, tag: TagId, assigned: bool) -> NotesAction {
+    NotesAction::SetTagAssignment {
+        page: page.to_string(),
+        tag: tag.to_string(),
+        assigned,
+    }
+}
+
+pub fn create_and_assign_tag_action(page: PageId, tag: TagId, name: &str) -> NotesAction {
+    NotesAction::CreateAndAssignTag {
+        page: page.to_string(),
+        tag: TagData {
+            id: tag.to_string(),
+            name: name.trim().to_string(),
+        },
+    }
+}
+
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -435,6 +625,8 @@ pub fn set_block_marks_action(
 pub struct NotesResourceCtx {
     pub pages: Vec<PageMeta>,
     pub blocks: std::collections::HashMap<PageId, Vec<NoteBlockResource>>,
+    pub tags: Vec<TagMeta>,
+    pub tag_assignments: Vec<(PageId, TagId)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -681,8 +873,136 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         }
         notebook = notebook.with_child(page_resource_from_index(root, &index, 0, &mut remaining));
     }
+    decorate_tag_actions(&mut notebook, ctx);
 
-    vec![notebook]
+    // Tags are sibling resources, not a page-tree hack. Assignment edges are
+    // exposed as absolute assign/unassign actions on each page, while tag
+    // records publish their own stable open/rename/delete identities.
+    let mut tags_root = Resource::new("notes.tags", "notes.tags", "Tags");
+    tags_root = tags_root.with_action(ActionSpec::prompted(
+        "new-tag",
+        "New tag",
+        "Name",
+        "tag name…",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| {
+            let name = if name.trim().is_empty() {
+                "Untitled tag"
+            } else {
+                name
+            };
+            encode(&new_tag_action(Uuid::new_v4(), name))
+        },
+    ));
+    for tag in &ctx.tags {
+        let tag_id = tag.id;
+        let tag_name = if tag.name.trim().is_empty() {
+            "Untitled tag"
+        } else {
+            tag.name.trim()
+        };
+        let mut tag_res = Resource::new(tag_resource_id(tag_id), "notes.tag", tag_name);
+        if let Some(open) = view_operation_spec(
+            "open",
+            "Browse tagged notes",
+            &NotesOperation::OpenTag { tag: tag_id },
+        ) {
+            tag_res = tag_res.with_action(open);
+        }
+        let original = tag.clone();
+        tag_res = tag_res.with_action(ActionSpec::prompted(
+            "rename",
+            "Rename tag",
+            "Name",
+            "tag name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&rename_tag_action(&original, name)),
+        ));
+        tag_res = tag_res.with_action(immediate_spec(
+            "delete",
+            "Delete tag",
+            &delete_tag_action(tag_id),
+        ));
+        // Give agents/context menus a browseable, stable view of the linked
+        // notes without duplicating their whole descendants here.
+        let mut tagged_pages = ctx
+            .tag_assignments
+            .iter()
+            .filter(|(_, assigned)| *assigned == tag_id)
+            .filter_map(|(page, _)| ctx.pages.iter().find(|candidate| candidate.id == *page))
+            .collect::<Vec<_>>();
+        tagged_pages.sort_by_key(|page| page.id);
+        for page in tagged_pages {
+            let mut page_ref =
+                Resource::new(page_resource_id(page.id), "notes.page", page_label(page));
+            if let Some(open) = view_operation_spec(
+                "open",
+                "Open page",
+                &NotesOperation::OpenPage {
+                    page: page.id,
+                    block_id: None,
+                },
+            ) {
+                page_ref = page_ref.with_action(open);
+            }
+            tag_res = tag_res.with_child(page_ref);
+        }
+        tags_root = tags_root.with_child(tag_res);
+    }
+
+    vec![notebook, tags_root]
+}
+
+/// Add membership controls to each published page resource. The action id
+/// includes the immutable tag id, so a tag rename never changes an address an
+/// agent, history item or accessibility node may already hold.
+fn decorate_tag_actions(resource: &mut Resource, ctx: &NotesResourceCtx) {
+    if let Some(raw) = resource.id.as_str().strip_prefix("notes.page:")
+        && let Ok(page) = raw.parse::<PageId>()
+    {
+        let assigned = ctx
+            .tag_assignments
+            .iter()
+            .filter(|(candidate, _)| *candidate == page)
+            .map(|(_, tag)| *tag)
+            .collect::<HashSet<_>>();
+        for tag in &ctx.tags {
+            let is_assigned = assigned.contains(&tag.id);
+            let action_id = if is_assigned {
+                format!("unassign-tag:{}", tag.id)
+            } else {
+                format!("assign-tag:{}", tag.id)
+            };
+            let label = if is_assigned {
+                format!("Remove tag {}", tag.name)
+            } else {
+                format!("Add tag {}", tag.name)
+            };
+            resource.actions.push(immediate_spec(
+                &action_id,
+                &label,
+                &set_tag_assignment_action(page, tag.id, !is_assigned),
+            ));
+        }
+        resource.actions.push(ActionSpec::prompted(
+            "new-and-assign-tag",
+            "Create and add tag",
+            "Name",
+            "tag name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let name = if name.trim().is_empty() {
+                    "Untitled tag"
+                } else {
+                    name
+                };
+                encode(&create_and_assign_tag_action(page, Uuid::new_v4(), name))
+            },
+        ));
+    }
+    for child in &mut resource.children {
+        decorate_tag_actions(child, ctx);
+    }
 }
 
 impl ResourceProvider for crate::app::NotesApp {
@@ -695,11 +1015,29 @@ impl ResourceProvider for crate::app::NotesApp {
         if id == "notes.notebook" {
             return provide_resources(&ctx, doc).into_iter().next();
         }
+        if id == "notes.tags" {
+            return provide_resources(&ctx, doc).into_iter().nth(1);
+        }
+        if let Some(tag_id) = id.strip_prefix("notes.tag:")
+            && let Ok(tag_id) = tag_id.parse::<TagId>()
+            && ctx.tags.iter().any(|tag| tag.id == tag_id)
+        {
+            return provide_resources(&ctx, doc)
+                .into_iter()
+                .nth(1)
+                .and_then(|root| {
+                    root.children
+                        .into_iter()
+                        .find(|tag| tag.id.as_str() == tag_resource_id(tag_id))
+                });
+        }
         if let Some(page_id) = id.strip_prefix("notes.page:")
             && let Ok(page_id) = page_id.parse::<PageId>()
             && let Some(page) = ctx.pages.iter().find(|page| page.id == page_id)
         {
-            return Some(page_resource(page, &ctx.pages));
+            let mut resource = page_resource(page, &ctx.pages);
+            decorate_tag_actions(&mut resource, &ctx);
+            return Some(resource);
         }
         let (page, block_id) = parse_block_resource_id(id)?;
         ctx.pages
@@ -798,6 +1136,8 @@ mod tests {
         NotesResourceCtx {
             pages: NotesDoc::list_pages(doc),
             blocks: std::collections::HashMap::new(),
+            tags: NotesDoc::list_tags(doc),
+            tag_assignments: NotesDoc::list_tag_assignments(doc),
         }
     }
 
@@ -809,7 +1149,7 @@ mod tests {
     fn ctrl_k_publishes_the_nested_page_tree() {
         let (doc, _projects, _a, _b, _inbox) = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
-        assert_eq!(resources.len(), 1, "one notebook root");
+        assert_eq!(resources.len(), 2, "notebook + stable tags root");
         let notebook = &resources[0];
         assert_eq!(notebook.kind, "notes.notebook");
         let nb_actions: Vec<&str> = notebook.actions.iter().map(|a| a.id.as_str()).collect();
@@ -950,6 +1290,8 @@ mod tests {
         let ctx = NotesResourceCtx {
             pages: pages.clone(),
             blocks: HashMap::new(),
+            tags: Vec::new(),
+            tag_assignments: Vec::new(),
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
         assert!(
@@ -1176,6 +1518,14 @@ mod tests {
             }
             NotesAction::SetBlockMarks { .. } => {
                 panic!("new-child built the wrong action: SetBlockMarks")
+            }
+            NotesAction::UpsertTag(_) => panic!("new-child built the wrong action: UpsertTag"),
+            NotesAction::DeleteTag { .. } => panic!("new-child built the wrong action: DeleteTag"),
+            NotesAction::SetTagAssignment { .. } => {
+                panic!("new-child built the wrong action: SetTagAssignment")
+            }
+            NotesAction::CreateAndAssignTag { .. } => {
+                panic!("new-child built the wrong action: CreateAndAssignTag")
             }
         }
     }
@@ -1404,5 +1754,92 @@ mod tests {
                 }],
             ),
         );
+    }
+
+    #[test]
+    fn tag_actions_replay_byte_identically_and_delete_tombstones_edges() {
+        let (seeded_doc, projects, _a, _b, _inbox) = seeded();
+        let mut first = seeded_doc;
+        first.commit();
+        let mut second = AutoCommit::load(&first.save()).unwrap();
+        let tag = Uuid::from_u128(0x5555);
+        for action in [
+            new_tag_action(tag, "Release"),
+            set_tag_assignment_action(projects, tag, true),
+        ] {
+            let envelope = qos_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+            qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        }
+        assert_eq!(
+            first.get_heads(),
+            second.get_heads(),
+            "keyed tag graph replays exactly"
+        );
+        assert_eq!(
+            NotesDoc::list_tag_assignments(&second),
+            vec![(projects, tag)]
+        );
+
+        let remove = delete_tag_action(tag);
+        let envelope = qos_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
+        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        assert_eq!(
+            first.get_heads(),
+            second.get_heads(),
+            "tag tombstone replays exactly"
+        );
+        assert!(NotesDoc::list_tags(&second).is_empty());
+        assert!(
+            NotesDoc::list_tag_assignments(&second).is_empty(),
+            "edge tombstones were removed too"
+        );
+    }
+
+    #[test]
+    fn tags_publish_stable_browseable_resources() {
+        let (mut doc, projects, _a, _b, _inbox) = seeded();
+        let tag = Uuid::from_u128(0x6666);
+        NotesDoc::upsert_tag(
+            &mut doc,
+            &TagMeta {
+                id: tag,
+                name: "Research".into(),
+            },
+        );
+        NotesDoc::set_tag_assignment(&mut doc, projects, tag, true);
+        let resources = provide_resources(&ctx_from(&doc), &doc);
+        let tags = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "notes.tags")
+            .expect("tags root");
+        let resource = tags
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == tag_resource_id(tag))
+            .expect("stable tag resource");
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
+        assert!(resource.actions.iter().any(|action| action.id == "rename"));
+        assert!(resource.actions.iter().any(|action| action.id == "delete"));
+        assert_eq!(resource.children[0].id.as_str(), page_resource_id(projects));
+
+        let page = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == page_resource_id(projects))
+            .expect("tagged page resource");
+        assert!(
+            page.actions
+                .iter()
+                .any(|action| action.id == format!("unassign-tag:{tag}"))
+        );
+        let create = page
+            .actions
+            .iter()
+            .find(|action| action.id == "new-and-assign-tag")
+            .expect("normal create-and-assign workflow");
+        assert!(matches!(
+            serde_json::from_slice::<NotesAction>(&prompted_encode(create, "Planning").payload),
+            Ok(NotesAction::CreateAndAssignTag { page, tag: TagData { name, .. } }) if page == projects.to_string() && name == "Planning"
+        ));
     }
 }

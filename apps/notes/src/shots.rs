@@ -57,6 +57,14 @@ fn seed_sample_workspace(root: &Path) -> Result<(), Box<dyn std::error::Error>> 
     let formulas = ws.create_page(None);
     ws.rename(formulas, "Formula notebook");
 
+    // Tags are workspace metadata rather than syntax hidden in the note body.
+    // The sample keeps the chips visible in ordinary visual review while the
+    // resource/action tests exercise their collaborative behavior.
+    let release = ws.create_tag("Release");
+    let writing = ws.create_tag("Writing");
+    let _ = ws.set_tag_assignment(launch, release, true);
+    let _ = ws.set_tag_assignment(launch, writing, true);
+
     ws.set_selected(Some(launch));
 
     let bodies: [(uuid::Uuid, &str); 6] = [
@@ -249,6 +257,8 @@ fn settle_layout(
 /// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
 /// - `Some("formula")` — select the formula notebook with TeX and Typst previews.
+/// - `Some("shortcuts")` — open the shared, focus-trapping shortcuts dialog.
+/// - `Some("tag_palette")` — show Cmd-K narrowed to the stable Release tag.
 ///
 /// # Errors
 ///
@@ -258,6 +268,7 @@ pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
     scenario: Option<&str>,
+    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Hermetic workspace root — unique per process so parallel shots
     // don't collide, cleaned up on exit.
@@ -276,7 +287,14 @@ pub fn render_to_path(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    };
+    }
+    // `LaunchSpec` normally threads these preferences into a generic shot
+    // root. Notes owns a custom shot renderer so it has to preserve that same
+    // contract itself: a `--text-scale` review must change both measurement
+    // and drawing, and reduced-motion shots must use the production theme
+    // policy rather than a private approximation.
+    .with_text_scale(text_scale.unwrap_or(1.0))
+    .with_reduce_motion(reduced_motion_requested());
     // The `presence` scenario seeds two simulated peers so the shot shows
     // the live presence layer — labeled carets, a fading typing swipe,
     // a peer name pill, sidebar presence-in-nav mist, and an off-screen
@@ -288,6 +306,7 @@ pub fn render_to_path(
     };
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
 
     let mut state = ui::State::new();
     app.sync(&mut state.doc, &state.root);
@@ -598,12 +617,35 @@ fn dispatch_scenario(
         Some("title_edit") => dispatch_title_edit(app, send),
         Some("recipes") => dispatch_recipes(app, send),
         Some("formula") => dispatch_formula(app, send),
+        Some("shortcuts") => app.shortcuts_mut().set_visible(true),
+        Some("tag_palette") => {
+            app.palette_mut().set_anchor(Point::new(400.0, 80.0));
+            app.palette_mut().set_visible(true);
+            for s in ["R", "e", "l", "e", "a", "s", "e"] {
+                send(app, &char_key_event(s));
+            }
+        }
         // Force the floating status bubble fully visible for the still.
         Some("status") => app.arm_status_bubble_for_shots(),
         Some("saving") => app.set_save_status_for_shots(storage::SaveStatus::Saving),
         Some("save_error") => app.set_save_status_for_shots(storage::SaveStatus::Failed),
         _ => {}
     }
+}
+
+/// Keep the custom Notes renderer in lockstep with `ui::App` and the generic
+/// `LaunchSpec` screenshot path. Invalid values are intentionally ignored,
+/// matching the live app's preference parser.
+fn reduced_motion_requested() -> bool {
+    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 /// Dispatch the events that drive `app` into the requested interaction

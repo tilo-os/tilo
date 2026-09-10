@@ -63,6 +63,9 @@ const TITLE_TO_EDITOR_GAP: f64 = 14.0;
 /// Title row height (~ `TITLE_SIZE` * 1.4) — enough for the editable field's
 /// caret band without clipping descenders.
 const TITLE_HEIGHT: f64 = 44.0;
+/// A compact metadata row beneath the title. Tags stay out of the document
+/// body, so they are scannable without stealing the first editable block.
+const TAG_ROW_HEIGHT: f64 = 28.0;
 
 fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
     use ui::widget::BlockKind;
@@ -98,6 +101,10 @@ pub struct MainPanel {
     /// Rising-edge: a committed title edit that should rename the page. The
     /// host drains it via [`take_title_rename`](Self::take_title_rename).
     pending_rename: Option<String>,
+    /// Durable tags assigned to the open page, rendered as quiet chips. The
+    /// selection/filter around them belongs to the app and is intentionally
+    /// local; this view only receives the document-derived labels.
+    tags: Vec<String>,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: BlockEditor,
@@ -139,6 +146,9 @@ pub struct MainPanel {
     /// event. The app drains these through `NotesAction::ApplyBlockOps` before
     /// the next sync; the widget itself never owns a document mutation.
     pending_block_ops: Vec<BlockEditOp>,
+    /// Mirrors the renderer's global text scale so title and tag geometry
+    /// reserves the same physical height as the glyphs it contains.
+    text_scale: f64,
 }
 
 impl MainPanel {
@@ -152,6 +162,7 @@ impl MainPanel {
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
+            tags: Vec::new(),
             editor: BlockEditor::new(),
             body: String::new(),
             rect: Rect::ZERO,
@@ -164,6 +175,7 @@ impl MainPanel {
             empty_action_requested: false,
             empty_action_focused: false,
             pending_block_ops: Vec::new(),
+            text_scale: 1.0,
         }
     }
 
@@ -344,6 +356,35 @@ impl MainPanel {
             self.title_label.set_value(&t);
             self.dirty = true;
         }
+    }
+
+    /// Replace the visible metadata-chip labels. Sorting/deduplication is done
+    /// by the model; this cheap presentation diff avoids needless redraws on
+    /// an otherwise idle collaboration sync.
+    pub fn set_tags(&mut self, tags: Vec<String>) {
+        if self.tags != tags {
+            self.tags = tags;
+            self.dirty = true;
+        }
+    }
+
+    fn title_height(&self) -> f64 {
+        TITLE_HEIGHT * self.text_scale
+    }
+
+    fn tag_row_height(&self) -> f64 {
+        if self.tags.is_empty() {
+            0.0
+        } else {
+            TAG_ROW_HEIGHT * self.text_scale
+        }
+    }
+
+    fn editor_top_inset(&self) -> f64 {
+        PADDING_PX
+            + self.title_height()
+            + TITLE_TO_EDITOR_GAP * self.text_scale
+            + self.tag_row_height()
     }
 
     /// Currently displayed page id, if any.
@@ -550,6 +591,7 @@ impl Widget for MainPanel {
         // node, but we hide that by giving the editor `position:
         // Absolute` — so taffy doesn't push the panel's size from the
         // editor's content extent.
+        self.text_scale = f64::from(theme.text_scale);
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
             let _ = taffy.set_style(
@@ -567,9 +609,7 @@ impl Widget for MainPanel {
                     inset: taffy::Rect {
                         left: length(num::f32_of_f64(PADDING_PX)),
                         right: length(num::f32_of_f64(PADDING_PX)),
-                        top: length(num::f32_of_f64(
-                            PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
-                        )),
+                        top: length(num::f32_of_f64(self.editor_top_inset())),
                         bottom: taffy::LengthPercentageAuto::auto(),
                     },
                     ..existing
@@ -634,7 +674,7 @@ impl Widget for MainPanel {
             self.rect.x0 + PADDING_PX,
             self.rect.y0 + PADDING_PX,
             (self.rect.x1 - PADDING_PX).max(self.rect.x0 + PADDING_PX),
-            self.rect.y0 + PADDING_PX + TITLE_HEIGHT,
+            self.rect.y0 + PADDING_PX + self.title_height(),
         );
         self.title_label.apply_layout_external(self.title_rect);
         // Lay the editor out at the unshifted origin first so we can
@@ -651,9 +691,7 @@ impl Widget for MainPanel {
             // for flex-column overflow (same kludge ui::Scrollable uses
             // in its apply_layout).
             let content_h = (last_block_bottom - editor_rect.y0).max(0.0);
-            let viewport_h =
-                (self.rect.height() - 2.0 * PADDING_PX - TITLE_HEIGHT - TITLE_TO_EDITOR_GAP)
-                    .max(0.0);
+            let viewport_h = (self.rect.height() - PADDING_PX - self.editor_top_inset()).max(0.0);
             let max_scroll = (content_h - viewport_h).max(0.0);
             // A layout pass can land before the editor's text has been shaped.
             // Every block rect is then degenerate, `content_h` collapses, and
@@ -712,11 +750,52 @@ impl Widget for MainPanel {
             self.title_label
                 .draw(scene, transform, text_renderer, theme, presence);
 
+            if !self.tags.is_empty() {
+                let mut x = self.title_rect.x0;
+                let y = self.title_rect.y1 + 4.0 * self.text_scale;
+                // Keep this a base size: `TextRenderer` applies the global
+                // accessibility scale. Passing an already-scaled theme token
+                // here would multiply large-text chips twice.
+                let font = 12.0;
+                for tag in &self.tags {
+                    let label = format!("# {tag}");
+                    let (text_w, _) = text_renderer.measure(&label, font, None);
+                    let width = f64::from(text_w) + 16.0 * self.text_scale;
+                    if x + width > self.title_rect.x1 {
+                        break;
+                    }
+                    let chip = RoundedRect::from_rect(
+                        Rect::new(x, y, x + width, y + 22.0 * self.text_scale),
+                        11.0 * self.text_scale,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.neutral[3],
+                        None,
+                        &chip,
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        &label,
+                        font,
+                        tokens.colors.text_dim,
+                        transform
+                            * Affine::translate((
+                                x + 8.0 * self.text_scale,
+                                y + 4.0 * self.text_scale,
+                            )),
+                        None,
+                    );
+                    x += width + 6.0 * self.text_scale;
+                }
+            }
+
             // Clip the editor body to the panel's scrollable viewport so
             // blocks past the bottom don't bleed onto the status bar.
             let body_clip = Rect::new(
                 self.rect.x0,
-                self.rect.y0 + PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
+                self.rect.y0 + self.editor_top_inset(),
                 self.rect.x1,
                 self.rect.y1 - PADDING_PX,
             );
@@ -1120,5 +1199,24 @@ mod tests {
         p.clear();
         assert!(p.page_id().is_none());
         assert!(p.title().is_none());
+    }
+
+    #[test]
+    fn high_text_title_tags_and_first_block_have_separate_bands() {
+        let mut panel = MainPanel::new();
+        panel.text_scale = 2.0;
+        panel.set_tags(vec!["Release".into(), "Writing".into()]);
+
+        let title_top = PADDING_PX;
+        let title_bottom = title_top + panel.title_height();
+        let tags_top = title_bottom + 4.0 * panel.text_scale;
+        let tags_bottom = tags_top + 22.0 * panel.text_scale;
+        let first_block_top = panel.editor_top_inset();
+
+        assert!(title_bottom < tags_top, "title must not overlap tag chips");
+        assert!(
+            tags_bottom <= first_block_top,
+            "tag chips must clear the first block"
+        );
     }
 }

@@ -1,11 +1,11 @@
 //! Pure data + serde representation of the notes workspace.
 //!
-//! The on-wire format used inside the automerge `Text` blob is the JSON
-//! serialisation of [`WorkspaceData`]. Phase 1 doesn't yet replicate the
-//! tree as individual automerge fields — concurrent editing isn't a
-//! real concern this phase. When it becomes one (Phase 5) we can flip
-//! the storage to per-field automerge with a compatible-enough JSON
-//! migration path.
+//! [`WorkspaceData`] is the local disk snapshot: serde defaults keep old
+//! workspaces readable as tags evolve. Live collaboration deliberately does
+//! **not** mirror this blob as one Automerge value; [`crate::doc::NotesDoc`]
+//! publishes pages, tags and note↔tag edges as independent keyed CRDT data.
+//! The model is therefore pure convenience logic for the local projection,
+//! while its stable UUIDs remain the same identities used on the wire.
 
 use std::collections::HashMap;
 
@@ -17,6 +17,9 @@ use uuid::Uuid;
 /// file name (`{uuid}.md`) and every cross-reference in the workspace
 /// tree.
 pub type PageId = Uuid;
+/// Stable identity for a reusable workspace tag. Like pages, ids are minted
+/// once at authoring time and never derived from a display name.
+pub type TagId = Uuid;
 
 /// Per-page metadata. Title is mutable, parent + order define the tree.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,12 +33,33 @@ pub struct PageMeta {
     pub order: u32,
 }
 
+/// A named, reusable tag. Assignments live separately so a concurrent rename
+/// only edits this one record rather than rewriting every tagged note.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagMeta {
+    pub id: TagId,
+    pub name: String,
+}
+
+/// One keyed edge in the note↔tag graph. The pair is unique; keeping it as a
+/// value rather than a nested map leaves the persisted JSON deterministic and
+/// makes old workspaces forward-compatible through serde defaults.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagAssignment {
+    pub page: PageId,
+    pub tag: TagId,
+}
+
 /// Top-level state for one notes workspace. The `pages` list is the
 /// flat source of truth; the tree structure is derived from `parent`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkspaceData {
     pub pages: Vec<PageMeta>,
     pub selected: Option<PageId>,
+    #[serde(default)]
+    pub tags: Vec<TagMeta>,
+    #[serde(default)]
+    pub tag_assignments: Vec<TagAssignment>,
 }
 
 /// Convenience wrapper around [`WorkspaceData`] with the runtime ops
@@ -60,6 +84,97 @@ impl Workspace {
 
     pub fn set_selected(&mut self, id: Option<PageId>) {
         self.data.selected = id;
+    }
+
+    pub fn tags(&self) -> &[TagMeta] {
+        &self.data.tags
+    }
+
+    pub fn get_tag(&self, id: TagId) -> Option<&TagMeta> {
+        self.data.tags.iter().find(|tag| tag.id == id)
+    }
+
+    /// Mint a tag identity once. The caller dispatches the matching action,
+    /// so replicas receive this exact id instead of generating their own.
+    pub fn create_tag(&mut self, name: &str) -> TagId {
+        let id = Uuid::new_v4();
+        self.data.tags.push(TagMeta {
+            id,
+            name: name.trim().to_string(),
+        });
+        id
+    }
+
+    pub fn rename_tag(&mut self, id: TagId, name: &str) -> bool {
+        let Some(tag) = self.data.tags.iter_mut().find(|tag| tag.id == id) else {
+            return false;
+        };
+        tag.name = name.trim().to_string();
+        true
+    }
+
+    /// Remove a tag and every keyed assignment to it. The corresponding
+    /// document action writes Automerge map tombstones for both the tag and
+    /// edges, so stale replicas cannot display dangling chips after sync.
+    pub fn delete_tag(&mut self, id: TagId) -> bool {
+        let before = self.data.tags.len();
+        self.data.tags.retain(|tag| tag.id != id);
+        self.data.tag_assignments.retain(|edge| edge.tag != id);
+        before != self.data.tags.len()
+    }
+
+    /// Absolute membership update — repeated assign/unassign calls are
+    /// idempotent, which is essential for retry/replay and collaboration.
+    pub fn set_tag_assignment(&mut self, page: PageId, tag: TagId, assigned: bool) -> bool {
+        if self.get(page).is_none() || self.get_tag(tag).is_none() {
+            return false;
+        }
+        let existing = self
+            .data
+            .tag_assignments
+            .iter()
+            .position(|edge| edge.page == page && edge.tag == tag);
+        match (assigned, existing) {
+            (true, None) => {
+                self.data.tag_assignments.push(TagAssignment { page, tag });
+                true
+            }
+            (false, Some(index)) => {
+                self.data.tag_assignments.remove(index);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn tags_for_page(&self, page: PageId) -> Vec<&TagMeta> {
+        let mut tags = self
+            .data
+            .tag_assignments
+            .iter()
+            .filter(|edge| edge.page == page)
+            .filter_map(|edge| self.get_tag(edge.tag))
+            .collect::<Vec<_>>();
+        tags.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.id.cmp(&b.id))
+        });
+        tags
+    }
+
+    pub fn pages_for_tag(&self, tag: TagId) -> Vec<PageId> {
+        let mut pages = self
+            .data
+            .tag_assignments
+            .iter()
+            .filter(|edge| edge.tag == tag)
+            .map(|edge| edge.page)
+            .collect::<Vec<_>>();
+        pages.sort();
+        pages.dedup();
+        pages
     }
 
     /// Look a page up by id. None if unknown.
@@ -138,6 +253,9 @@ impl Workspace {
         }
 
         self.data.pages.retain(|p| !removed_set.contains(&p.id));
+        self.data
+            .tag_assignments
+            .retain(|edge| !removed_set.contains(&edge.page));
         if self.data.selected.is_some_and(|s| removed_set.contains(&s)) {
             self.data.selected = None;
         }
@@ -407,6 +525,29 @@ impl Workspace {
         {
             return Err(format!("selected {sel} does not exist"));
         }
+        let tag_ids: std::collections::HashSet<TagId> =
+            self.data.tags.iter().map(|tag| tag.id).collect();
+        if tag_ids.len() != self.data.tags.len() {
+            return Err("duplicate tag id".to_string());
+        }
+        if self.data.tags.iter().any(|tag| tag.name.trim().is_empty()) {
+            return Err("tag name is empty".to_string());
+        }
+        let mut edges = std::collections::HashSet::new();
+        for edge in &self.data.tag_assignments {
+            if !ids.contains(&edge.page) || !tag_ids.contains(&edge.tag) {
+                return Err(format!(
+                    "tag assignment {}:{} has a missing endpoint",
+                    edge.page, edge.tag
+                ));
+            }
+            if !edges.insert((edge.page, edge.tag)) {
+                return Err(format!(
+                    "duplicate tag assignment {}:{}",
+                    edge.page, edge.tag
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -613,5 +754,24 @@ mod tests {
         w.set_selected(Some(id));
         w.delete_page(id);
         assert!(w.selected().is_none());
+    }
+
+    #[test]
+    fn tags_are_keyed_idempotent_and_cleanup_with_their_endpoint() {
+        let mut w = Workspace::new();
+        let page = w.create_page(None);
+        let tag = w.create_tag("Release");
+        assert!(w.set_tag_assignment(page, tag, true));
+        assert!(
+            !w.set_tag_assignment(page, tag, true),
+            "assign is absolute/idempotent"
+        );
+        assert_eq!(w.tags_for_page(page)[0].name, "Release");
+        assert!(w.set_tag_assignment(page, tag, false));
+        assert!(!w.set_tag_assignment(page, tag, false));
+        assert!(w.set_tag_assignment(page, tag, true));
+        assert!(w.delete_tag(tag));
+        assert!(w.tags_for_page(page).is_empty());
+        w.check_invariants().unwrap();
     }
 }
