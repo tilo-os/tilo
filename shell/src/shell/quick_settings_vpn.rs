@@ -199,6 +199,7 @@ mod tests {
     fn profile(active: bool) -> os_actions::VpnConnectionInfo {
         os_actions::VpnConnectionInfo {
             name: "Work".into(),
+            uuid: "test-work-vpn-uuid".into(),
             active,
             kind: "wireguard".into(),
         }
