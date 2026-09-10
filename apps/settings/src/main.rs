@@ -39,8 +39,14 @@ fn root() -> Box<dyn Widget> {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let result = args.viewport.map_or_else(
-        || settings::shots::render_for_path(out),
-        |viewport| settings::shots::render_responsive_to_path(viewport, out),
+        || settings::shots::render_for_path_with_text_scale(out, args.text_scale),
+        |viewport| {
+            settings::shots::render_responsive_to_path_with_text_scale(
+                viewport,
+                out,
+                args.text_scale,
+            )
+        },
     );
     result.map_err(|error| LaunchError::Operation(format!("settings screenshot failed: {error}")))
 }
