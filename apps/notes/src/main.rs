@@ -58,6 +58,8 @@ const SHOT_SCENARIOS: &[&str] = &[
     "saving",
     "save_error",
     "presence",
+    "shortcuts",
+    "tag_palette",
 ];
 
 /// # Errors
@@ -111,6 +113,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
         out,
         args.scenario.as_deref(),
+        args.text_scale,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }

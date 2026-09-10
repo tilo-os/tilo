@@ -30,7 +30,7 @@ use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
 use crate::actions::{InlineMark, InlineMarkSpan};
-use crate::model::{PageId, PageMeta};
+use crate::model::{PageId, PageMeta, TagId, TagMeta};
 use crate::num;
 
 /// Namespace for the workspace document helpers. Stateless — every
@@ -38,6 +38,147 @@ use crate::num;
 pub struct NotesDoc;
 
 impl NotesDoc {
+    /// Tags are an independent keyed map. A page/tag association is another
+    /// keyed map entry (`page:tag`), so peers changing unrelated memberships
+    /// never contend on one aggregate array.
+    ///
+    /// # Panics
+    ///
+    /// Never in normal use: `ROOT` is permanent. A panic would indicate a
+    /// corrupt Automerge document that cannot create a root-owned map.
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is permanent, so a fresh tags map cannot fail absent document corruption"
+    )]
+    pub fn tags_map(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "tags") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "tags", ObjType::Map)
+                .expect("put_object tags on root never fails"),
+        }
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "ROOT is permanent, so a fresh tag-assignment map cannot fail absent document corruption"
+    )]
+    /// # Panics
+    ///
+    /// Never in normal use: `ROOT` is permanent. A panic would indicate a
+    /// corrupt Automerge document that cannot create a root-owned map.
+    pub fn assignments_map(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "tag_assignments") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "tag_assignments", ObjType::Map)
+                .expect("put_object tag assignments on root never fails"),
+        }
+    }
+
+    pub fn assignment_key(page: PageId, tag: TagId) -> String {
+        format!("{page}:{tag}")
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "tags is a live map fetched or created immediately above"
+    )]
+    /// # Panics
+    ///
+    /// Never in normal use: this method fetches or creates the live `tags`
+    /// map before creating a single child record.
+    pub fn upsert_tag(doc: &mut AutoCommit, tag: &TagMeta) {
+        let tags = Self::tags_map(doc);
+        let key = tag.id.to_string();
+        let entry = match doc.get(&tags, key.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&tags, key.as_str(), ObjType::Map)
+                .expect("put_object tag map never fails"),
+        };
+        put_text_diffed(doc, &entry, "name", &tag.name);
+    }
+
+    /// Delete the tag and all known assignment edges in stable key order.
+    /// Automerge retains these deletes as tombstones; readers additionally
+    /// ignore any edge whose tag/page endpoint no longer exists.
+    pub fn delete_tag(doc: &mut AutoCommit, id: TagId) {
+        let tags = Self::tags_map(doc);
+        let _ = doc.delete(&tags, id.to_string().as_str());
+        let assignments = Self::assignments_map(doc);
+        let suffix = format!(":{id}");
+        let mut keys = doc
+            .keys(&assignments)
+            .filter(|key| key.ends_with(&suffix))
+            .collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            let _ = doc.delete(&assignments, key.as_str());
+        }
+    }
+
+    pub fn set_tag_assignment(doc: &mut AutoCommit, page: PageId, tag: TagId, assigned: bool) {
+        let assignments = Self::assignments_map(doc);
+        let key = Self::assignment_key(page, tag);
+        if assigned {
+            put_if_changed(doc, &assignments, key.as_str(), true);
+        } else {
+            let _ = doc.delete(&assignments, key.as_str());
+        }
+    }
+
+    pub fn list_tags(doc: &AutoCommit) -> Vec<TagMeta> {
+        let Ok(Some((Value::Object(ObjType::Map), tags))) = doc.get(&ROOT, "tags") else {
+            return Vec::new();
+        };
+        let mut out = doc
+            .keys(&tags)
+            .filter_map(|key| {
+                let id = key.parse::<TagId>().ok()?;
+                let (Value::Object(ObjType::Map), entry) = doc.get(&tags, key.as_str()).ok()??
+                else {
+                    return None;
+                };
+                let (Value::Object(ObjType::Text), name) = doc.get(&entry, "name").ok()?? else {
+                    return None;
+                };
+                Some(TagMeta {
+                    id,
+                    name: doc.text(&name).unwrap_or_default(),
+                })
+            })
+            .filter(|tag| !tag.name.trim().is_empty())
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.id.cmp(&b.id))
+        });
+        out
+    }
+
+    pub fn list_tag_assignments(doc: &AutoCommit) -> Vec<(PageId, TagId)> {
+        let Ok(Some((Value::Object(ObjType::Map), assignments))) =
+            doc.get(&ROOT, "tag_assignments")
+        else {
+            return Vec::new();
+        };
+        let mut out = doc
+            .keys(&assignments)
+            .filter_map(|key| {
+                let (page, tag) = key.split_once(':')?;
+                let page = page.parse().ok()?;
+                let tag = tag.parse().ok()?;
+                let present = matches!(doc.get(&assignments, key.as_str()).ok()?, Some((Value::Scalar(value), _)) if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true)));
+                present.then_some((page, tag))
+            })
+            .collect::<Vec<_>>();
+        out.sort();
+        out.dedup();
+        out
+    }
     /// Get-or-create the top-level `pages` Map.
     ///
     /// # Panics
@@ -111,6 +252,20 @@ impl NotesDoc {
     pub fn remove_page(doc: &mut AutoCommit, id: PageId) {
         let pages = Self::pages_map(doc);
         let _ = doc.delete(&pages, id.to_string().as_str());
+        // The note endpoint owns its membership edges too. Delete in a stable
+        // lexical order so a recursive DeletePage action produces the same
+        // operation sequence on every replica, while Automerge retains the
+        // removals as tombstones for stale peers.
+        let assignments = Self::assignments_map(doc);
+        let prefix = format!("{id}:");
+        let mut keys = doc
+            .keys(&assignments)
+            .filter(|key| key.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            let _ = doc.delete(&assignments, key.as_str());
+        }
     }
 
     /// Read every page's metadata out of the document, sorted by

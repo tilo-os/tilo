@@ -70,6 +70,9 @@ pub struct PageJumpPalette {
     /// opening the palette — typically `(window_width/2 - WIDTH/2,
     /// 80.0)` for a fullscreen-ish appearance.
     anchor: Point,
+    /// Cached from the current theme so the card's row bands grow with its
+    /// shaped query text and result labels.
+    text_scale: f64,
     pending: Option<PageEntry>,
 }
 
@@ -90,6 +93,7 @@ impl PageJumpPalette {
             query_composition: QueryComposition::new(),
             visible_flag: false,
             anchor: Point::ZERO,
+            text_scale: 1.0,
             pending: None,
         }
     }
@@ -142,7 +146,7 @@ impl PageJumpPalette {
 
     pub fn height(&self) -> f64 {
         let rows = row_f64(self.visible.len().clamp(1, MAX_VISIBLE_ROWS));
-        PADDING * 2.0 + INPUT_HEIGHT + PADDING + ROW_HEIGHT * rows
+        (PADDING * 3.0 + INPUT_HEIGHT + ROW_HEIGHT * rows) * self.text_scale
     }
 
     pub fn rect(&self) -> Rect {
@@ -257,6 +261,7 @@ impl PageJumpPalette {
         if !self.visible_flag {
             return;
         }
+        self.text_scale = f64::from(theme.text_scale);
         let rect = self.rect();
         Self::draw_card_chrome(scene, transform, theme, rect);
         let input_rect = self.draw_input_field(scene, transform, text_renderer, theme, rect);
@@ -265,7 +270,8 @@ impl PageJumpPalette {
 
     /// The palette card's background fill and border.
     fn draw_card_chrome(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-        let shape = RoundedRect::from_rect(rect, 12.0);
+        let scale = f64::from(theme.text_scale);
+        let shape = RoundedRect::from_rect(rect, 12.0 * scale);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -274,7 +280,7 @@ impl PageJumpPalette {
             &shape,
         );
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(1.0 * scale),
             transform,
             theme.tokens.colors.border_standard,
             None,
@@ -293,11 +299,12 @@ impl PageJumpPalette {
         rect: Rect,
     ) -> Rect {
         let tokens = &theme.tokens;
+        let scale = f64::from(theme.text_scale);
         let input_rect = Rect::new(
-            rect.x0 + PADDING,
-            rect.y0 + PADDING,
-            rect.x1 - PADDING,
-            rect.y0 + PADDING + INPUT_HEIGHT,
+            rect.x0 + PADDING * scale,
+            rect.y0 + PADDING * scale,
+            rect.x1 - PADDING * scale,
+            rect.y0 + (PADDING + INPUT_HEIGHT) * scale,
         );
         let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.md));
         scene.fill(
@@ -308,7 +315,7 @@ impl PageJumpPalette {
             &input_shape,
         );
         scene.stroke(
-            &Stroke::new(1.0),
+            &Stroke::new(1.0 * scale),
             transform,
             tokens.colors.border_focus,
             None,
@@ -323,9 +330,9 @@ impl PageJumpPalette {
             &self.query_selection,
             "Jump to page…",
             Rect::new(
-                input_rect.x0 + 12.0,
+                input_rect.x0 + 12.0 * scale,
                 input_rect.y0,
-                input_rect.x1 - 12.0,
+                input_rect.x1 - 12.0 * scale,
                 input_rect.y1,
             ),
             &tokens.typography.style(TextRole::Body),
@@ -350,18 +357,22 @@ impl PageJumpPalette {
         input_rect: Rect,
     ) {
         let tokens = &theme.tokens;
+        let scale = f64::from(theme.text_scale);
         let selected_ink = tokens.colors.on_accent(ON_FILL_MIN_CONTRAST);
-        let list_top = input_rect.y1 + PADDING;
-        let row_size = tokens.typography.scale.sm;
+        let list_top = input_rect.y1 + PADDING * scale;
+        // Result rows use `TextRenderer`, which owns the global accessibility
+        // multiplier. Keep the requested size at the unscaled design token so
+        // it isn't enlarged twice while the row band scales once.
+        let row_size = 14.0;
         if self.visible.is_empty() {
             let label = "No pages match";
-            let y = list_top + (ROW_HEIGHT - f64::from(row_size)) / 2.0;
+            let y = list_top + (ROW_HEIGHT * scale - f64::from(row_size) * scale) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
                 row_size,
                 tokens.colors.text_dim,
-                translated(transform, rect.x0 + PADDING + 12.0, y),
+                translated(transform, rect.x0 + (PADDING + 12.0) * scale, y),
                 None,
             );
             return;
@@ -382,8 +393,13 @@ impl PageJumpPalette {
             let Some(row) = self.items.get(idx) else {
                 continue;
             };
-            let y0 = list_top + row_f64(slot) * ROW_HEIGHT;
-            let row_rect = Rect::new(rect.x0 + PADDING, y0, rect.x1 - PADDING, y0 + ROW_HEIGHT);
+            let y0 = list_top + row_f64(slot) * ROW_HEIGHT * scale;
+            let row_rect = Rect::new(
+                rect.x0 + PADDING * scale,
+                y0,
+                rect.x1 - PADDING * scale,
+                y0 + ROW_HEIGHT * scale,
+            );
             if visible_index == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(
@@ -394,7 +410,7 @@ impl PageJumpPalette {
                     &hl,
                 );
             }
-            let ty = row_rect.y0 + (row_rect.height() - f64::from(row_size)) / 2.0;
+            let ty = row_rect.y0 + (row_rect.height() - f64::from(row_size) * scale) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -404,7 +420,7 @@ impl PageJumpPalette {
                 } else {
                     tokens.colors.text_primary
                 },
-                translated(transform, row_rect.x0 + 12.0, ty),
+                translated(transform, row_rect.x0 + 12.0 * scale, ty),
                 None,
             );
         }
@@ -681,6 +697,16 @@ mod tests {
         assert_eq!(p.cursor, 12);
         assert_eq!(p.window_start(), 3);
         assert!(p.cursor < p.window_start() + MAX_VISIBLE_ROWS);
+    }
+
+    #[test]
+    fn high_text_palette_scales_input_and_result_bands() {
+        let mut p = seed_two();
+        p.text_scale = 2.0;
+        assert_eq!(p.height(), 304.0);
+        let rect = p.rect();
+        assert_eq!(rect.height(), 304.0);
+        assert!(ROW_HEIGHT * p.text_scale >= 72.0);
     }
 
     #[test]
