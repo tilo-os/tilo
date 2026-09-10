@@ -18,7 +18,7 @@
 # here as a tarball, and refuses to package anything it did not just build.
 
 %global qos_summary qOS compositor as a Wayland session
-%{!?qos_version:%global qos_version 0.1.5}
+%{!?qos_version:%global qos_version 0.1.9}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would just fail the
@@ -213,6 +213,21 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %{_datadir}/wayland-sessions/qos-dev.desktop
 
 %changelog
+* Tue Sep 08 2026 qOS <qos@code.podesta.ai> - 0.1.9-1
+- Preserve requested placement across provisional Xwayland identities.
+- Persist workspace creation at its mutation boundary.
+- Refine compact onboarding, help, settings, and lock-screen layouts.
+
+* Mon Sep 07 2026 qOS <qos@code.podesta.ai> - 0.1.8-1
+- Rebase the host-session fixes onto current main for laptop retesting.
+
+* Mon Sep 07 2026 qOS <qos@code.podesta.ai> - 0.1.7-1
+- Expand production-rendered onboarding and lock-screen acceptance coverage.
+- Harden German AltGr, Quick Settings, and real lock lifecycle regressions.
+
+* Mon Sep 07 2026 qOS <qos@code.podesta.ai> - 0.1.6-1
+- Restore host-session Xwayland, ordered logout, and desktop UX.
+
 * Sat Sep 05 2026 qOS <qos@code.podesta.ai> - 0.1.5-1
 - Keep ARM64 packaging available behind a native-runner capability switch.
 

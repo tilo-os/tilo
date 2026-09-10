@@ -2,7 +2,7 @@ name: Release / desktop
 
 # Native builds are intentional: the compositor links the distribution's
 # graphics/input stack and cannot be safely produced by a generic cross image.
-# The amd64 package set runs serially on an available generic runner.
+# Each amd64 distribution runs in its own isolated job on the generic runner.
 # Release tags add the native ARM64 runner only when the explicit capability
 # switch below is enabled; ordinary changes retain one amd64 lane. Pull
 # requests build and install-test the affected release payload.
@@ -139,11 +139,11 @@ jobs:
     # full-native runs retain their architecture-specific runner.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
-    # Each architecture is one sequential lane so the five userspaces reuse
-    # compiler objects without overcommitting its native host.
+    # One architecture job runs all five native userspaces serially. Forgejo
+    # does not enforce matrix max-parallel or job-level concurrency groups, so
+    # splitting distros into jobs overcommits the shared fat-LTO builder.
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -188,17 +188,16 @@ jobs:
           QOS_RPM_SIGNING_FINGERPRINT: ${{ vars.QOS_RPM_SIGNING_FINGERPRINT }}
         shell: bash
         run: |
-          status=0
           while IFS='|' read -r distro image revision; do
             [[ -n $distro ]] || continue
             echo "::group::$distro / ${{ matrix.arch }}"
             if ! dist/ci/run-package-job.sh \
                 "$distro" "$image" "${{ matrix.arch }}" "$revision"; then
-              status=1
+              echo "::endgroup::"
+              exit 1
             fi
             echo "::endgroup::"
           done <<<"$QOS_LANE_TARGETS"
-          exit "$status"
       # Forgejo's native artifact service implements the v3 protocol. Upstream
       # v4 targets GitHub's Artifact API v2 and fails on this Forgejo instance.
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3

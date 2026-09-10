@@ -150,6 +150,25 @@ fn run_fs_authority_publication_queue() {
     }
 }
 
+#[cfg(test)]
+fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> bool {
+    let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
+        return false;
+    };
+    loop {
+        if fs_authority_publication_queue()
+            .lock()
+            .is_ok_and(|queue| !queue.running && queue.pending.is_none())
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Monotonic workspace identifier, newtype-wrapped over `u64`.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
@@ -223,6 +242,10 @@ mod identity_fs_tests {
         assert!(arguments.contains("publish-authority"));
         assert!(arguments.contains(cache.to_str().unwrap()));
         assert!(arguments.contains(acl.to_str().unwrap()));
+        assert!(
+            wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
+            "the publisher worker must retire before its fixture is removed"
+        );
 
         // SAFETY: guarded by the process_env serial group.
         unsafe {
@@ -292,6 +315,10 @@ mod identity_fs_tests {
                 .parse::<u8>()
                 .expect("numeric attempt count")
                 > 3
+        );
+        assert!(
+            wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
+            "the retry worker must retire before its fixture is removed"
         );
 
         // SAFETY: guarded by the process_env serial group.
@@ -6655,6 +6682,11 @@ impl WorkspaceTree {
         // the identity in the same change that tells it the workspace
         // exists, or it hydrates one it can't address.
         let _ = self.doc.put(&entry, "room", room.to_string());
+        // A newly-created workspace is local session state as well as a
+        // collaboration-document change. Persist it at the mutation boundary:
+        // otherwise a compositor crash before the next unrelated edit silently
+        // loses the room the person just created.
+        self.flush_to_disk();
         ws_id
     }
 
@@ -9917,9 +9949,9 @@ mod active_group_tests {
     }
 
     fn group_order(tree: &WorkspaceTree, strip_id: StripId) -> Vec<u64> {
-        tree.workspaces[0]
-            .strips
+        tree.workspaces
             .iter()
+            .flat_map(|workspace| &workspace.strips)
             .find(|s| s.id == strip_id)
             .unwrap()
             .window_groups
@@ -10095,6 +10127,118 @@ mod active_group_tests {
             group_order(&reloaded, strip_id),
             vec![2, 3, 1],
             "a normal restart must retain the reordered group list"
+        );
+    }
+
+    /// Exercise layout edits as one long-lived desktop does, checking the
+    /// durable file after every operation rather than only at the end. This
+    /// catches an edit that happens to be repaired by a later, unrelated
+    /// flush (the exact shape that made closed windows and widths appear to
+    /// restore themselves in a real session).
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn mixed_layout_edits_survive_every_restart_boundary() {
+        use crate::compositor::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
+        use crate::shell::persist::load_tree_from;
+
+        let state_dir = tempfile::tempdir().expect("state dir");
+        let state_path = state_dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.persist_path = Some(state_path.clone());
+
+        let second = tree.append_empty_workspace("Project");
+        let reloaded = load_tree_from(&state_path).expect("workspace creation persisted");
+        assert!(
+            reloaded
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == second),
+            "a crash immediately after workspace creation must not lose it"
+        );
+
+        tree.set_active(second);
+        let second_strip = tree.active_strip[&second];
+        let first_tab = adopt_toplevel_at(
+            &mut tree,
+            101,
+            Some("org.example.First".into()),
+            Placement::NewGroup,
+        );
+        // Foreign adoption is process-local until the first durable layout
+        // edit. Re-seed to model the symbolic launch record that a normal
+        // compositor checkpoint carries across restart.
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+        let first_group = tree.active_group_for(second_strip).expect("first group");
+        let second_tab = adopt_toplevel_at(
+            &mut tree,
+            202,
+            Some("org.example.Second".into()),
+            Placement::NewGroup,
+        );
+        tree.seed_doc_from_cache();
+        tree.flush_to_disk();
+        let second_group = tree.active_group_for(second_strip).expect("second group");
+
+        assert!(tree.reorder_group_within_strip(second_strip, second_group, 0));
+        let reloaded = load_tree_from(&state_path).expect("group reorder persisted");
+        assert_eq!(
+            group_order(&reloaded, second_strip),
+            vec![second_group, first_group],
+            "group order must survive immediately, without a later flush"
+        );
+
+        assert!(tree.move_tab_across_strips(
+            second_strip,
+            tree.active_strip[&tree.workspaces[0].id],
+            first_tab,
+            90_001,
+            0,
+        ));
+        let reloaded = load_tree_from(&state_path).expect("cross-strip move persisted");
+        let first_tab_locations = reloaded
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .filter(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .flat_map(|group| &group.tabs)
+                    .any(|tab| tab.id == first_tab)
+            })
+            .map(|strip| strip.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            first_tab_locations,
+            vec![tree.active_strip[&tree.workspaces[0].id]],
+            "a moved tab must exist exactly once in its destination after restart"
+        );
+
+        assert!(remove_tab(&mut tree, second_tab));
+        tree.flush_to_disk();
+        let reloaded = load_tree_from(&state_path).expect("close persisted");
+        assert!(
+            reloaded
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .all(|tab| tab.id != second_tab),
+            "a closed tab must remain absent at the immediate restart boundary"
+        );
+        assert!(
+            reloaded
+                .active_group
+                .get(&second_strip)
+                .is_none_or(|group| reloaded
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .find(|strip| strip.id == second_strip)
+                    .is_some_and(|strip| strip.window_groups.iter().any(|item| item.id == *group))),
+            "mixed moves and closes must not leave a dangling active-group pointer"
         );
     }
 }

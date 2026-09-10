@@ -21,11 +21,11 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     if [[ $arch == arm64 && $(uname -m) != aarch64 ]]; then
         emulated=1
     fi
-    if [[ $arch == arm64 ]]; then
-        cargo_jobs=2
-    else
-        cargo_jobs=4
-    fi
+    # Release links use fat LTO and peak at several GiB per rustc process.
+    # Four jobs exhausted the shared generic runner during the Arch shell link,
+    # even with distribution userspaces serialized. Use the safe ceiling for
+    # both architectures.
+    cargo_jobs=2
     cache_env=()
     if [[ ${QOS_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then
         # sccache hashes compiler identity, flags and native headers into every
@@ -84,6 +84,19 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     }
     trap cleanup_container EXIT
 
+    docker_health_log=$log_dir/docker-health.log
+    set +e
+    docker info >"$docker_health_log" 2>&1
+    docker_status=$?
+    set -e
+    if (( docker_status != 0 )); then
+        {
+            printf 'stage=docker-health status=%s\n' "$docker_status"
+            tail -n 8 "$docker_health_log"
+        } > "$output/CI_FAILURE"
+        exit "$docker_status"
+    fi
+
     inner_command='
         set -eu
         PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -107,6 +120,8 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
             --env GITHUB_SHA="$source_revision" \
             --env CARGO_INCREMENTAL=0 \
             --env CARGO_BUILD_JOBS="$cargo_jobs" \
+            --env CARGO_PROFILE_RELEASE_LTO=thin \
+            --env CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
             --env CARGO_TERM_COLOR=never \
             "${signing_env[@]}" \
             "${cache_env[@]}" \
@@ -219,6 +234,7 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         export QOS_EMULATED=1
         export QOS_DEB_REVISION="$revision"
         export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS="$cargo_jobs" CARGO_TERM_COLOR=never
+        export CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
         export QOS_QEMU_BINARY="/host-rootfs$tools_dir/qemu-aarch64"
         proot_package_binds=()
         if [[ $distro == arch ]]; then
@@ -386,11 +402,17 @@ arch)
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
+    # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
+    # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
+    # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid
+    # the crash. BLAKE3's supported `pure` feature removes every native archive
+    # in this userspace while retaining its portable Rust implementation.
+    export QOS_BLAKE3_PURE=1
     stage=prepare-arch-builder
     useradd --create-home builder
     chown -R builder:builder /workspace
     stage=build-arch
-    su builder -c 'cd /workspace && dist/arch/build-arch.sh'
+    su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$QOS_BLAKE3_PURE" dist/arch/build-arch.sh'
     stage=inspect-arch
     pacman -Qip dist/arch/build/qos-session-*.pkg.tar.*
     stage=lint-arch
