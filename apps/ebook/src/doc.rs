@@ -5,6 +5,7 @@
 //! root
 //! ├── "settings"        (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
 //! ├── "library"         (Map keyed by book-id)  { title, author, subject, shared, added }
+//! ├── "library_tombstones" (Map keyed by book-id) true
 //! ├── "progress"        (Map keyed by book-id)  { chapter, page, fraction }
 //! ├── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
 //! │                                               start, end, excerpt, note,
@@ -16,7 +17,7 @@
 //! Library, progress and annotations are all keyed by the content-hash book
 //! id, so a book's shelf entry, reading position, and every annotation
 //! travel together across devices and to anyone it's shared with. Annotation
-//! and highlight tombstones are monotonic: a delete wins over an offline
+//! Library, annotation and highlight tombstones are monotonic: a delete wins over an offline
 //! edit/add that arrives later, rather than allowing a removed row to be
 //! resurrected by a concurrent map write. Raw source
 //! locations and watched folders are local capability state, never document
@@ -273,6 +274,11 @@ impl BooksDoc {
     /// "added" time. Source paths are device-private capability grants and
     /// must never be written to the shared document.
     pub fn upsert_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
+        // Only an explicit, user-consented import may restore a removed shelf
+        // row. Ordinary delayed metadata upserts must not resurrect it.
+        if Self::library_is_removed(doc, &e.id) {
+            return;
+        }
         let lib = Self::root_map(doc, "library");
         let existing_added = match doc.get(&lib, e.id.as_str()) {
             Ok(Some((Value::Object(ObjType::Map), id))) => Self::scalar_i64(doc, &id, "added")
@@ -297,8 +303,26 @@ impl BooksDoc {
     /// Drop a book from the library. Its annotations + progress are left in place
     /// (keyed by content id) so re-adding the same file restores them.
     pub fn remove_library_entry(doc: &mut AutoCommit, id: &str) {
+        let tombstones = Self::root_map(doc, "library_tombstones");
+        let _ = doc.put(&tombstones, id, true);
         let lib = Self::root_map(doc, "library");
         let _ = doc.delete(&lib, id);
+    }
+
+    /// A fresh, user-consented import is the sole restore path for a shelf
+    /// tombstone. This keeps delayed metadata writes from reviving a removed
+    /// book while retaining the intentional "remove then re-add" workflow.
+    pub fn restore_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
+        if let Ok(Some((Value::Object(ObjType::Map), tombstones))) =
+            doc.get(&ROOT, "library_tombstones")
+        {
+            let _ = doc.delete(&tombstones, &e.id);
+        }
+        Self::upsert_library_entry(doc, e);
+    }
+
+    pub fn library_is_removed(doc: &AutoCommit, id: &str) -> bool {
+        Self::has_tombstone(doc, "library_tombstones", id)
     }
 
     /// Every book in the library, ordered by when it was added (oldest first) so
@@ -310,6 +334,9 @@ impl BooksDoc {
         let mut out = Vec::new();
         let keys: Vec<String> = doc.keys(&lib).collect();
         for key in keys {
+            if Self::library_is_removed(doc, &key) {
+                continue;
+            }
             let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&lib, key.as_str()) else {
                 continue;
             };
