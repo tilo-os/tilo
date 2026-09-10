@@ -9,7 +9,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
@@ -18,10 +18,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_frame::{ModalFrame, ModalLayout, ModalSpec};
 
-/// Body row size — matches `typography.scale.sm` for compact density.
-const ROW_SIZE_TOKEN: fn(&Theme) -> f32 = |t| t.tokens.typography.scale.sm;
-/// Group heading size — one notch above the rows.
-const GROUP_SIZE_TOKEN: fn(&Theme) -> f32 = |t| t.tokens.typography.scale.base;
+/// Body row size before `TextRenderer` applies the accessibility multiplier.
+const ROW_SIZE_TOKEN: fn(&Theme) -> f32 =
+    |t| (t.tokens.typography.scale.sm / t.text_scale).max(12.0);
+/// Group heading size before `TextRenderer` applies the accessibility multiplier.
+const GROUP_SIZE_TOKEN: fn(&Theme) -> f32 =
+    |t| (t.tokens.typography.scale.base / t.text_scale).max(14.0);
 /// The shortcut grid is wider and taller than a conventional prompt body.
 const MODAL_WIDTH: f64 = 640.0;
 const BODY_HEIGHT: f64 = 388.0;
@@ -93,6 +95,10 @@ pub struct ShortcutsOverlay {
     /// Cached last-cursor position so `MouseInput` (no coords) can
     /// hit-test against the card.
     last_cursor: Point,
+    /// Local scroll position for the bounded shortcut reference.
+    scroll_y: f64,
+    max_scroll_y: f64,
+    text_scale: f64,
     dirty: bool,
 }
 
@@ -103,6 +109,9 @@ impl ShortcutsOverlay {
             viewport: Rect::ZERO,
             layout: None,
             last_cursor: Point::ZERO,
+            scroll_y: 0.0,
+            max_scroll_y: 0.0,
+            text_scale: 1.0,
             dirty: true,
         }
     }
@@ -114,6 +123,7 @@ impl ShortcutsOverlay {
     pub fn set_visible(&mut self, v: bool) {
         if self.visible != v {
             self.visible = v;
+            self.scroll_y = 0.0;
             self.dirty = true;
         }
     }
@@ -151,6 +161,8 @@ impl ShortcutsOverlay {
         }
         let tokens = &theme.tokens;
         let close_hovered = self.is_over_close(self.last_cursor);
+        let scale = f64::from(theme.text_scale);
+        self.text_scale = scale;
         let spec = ModalSpec::new("Keyboard shortcuts")
             .body_height(BODY_HEIGHT)
             .max_width(MODAL_WIDTH)
@@ -160,8 +172,8 @@ impl ShortcutsOverlay {
 
         // Hint row below the title — small dim line telling the user
         // how to close.
-        let hint_size = tokens.typography.scale.xs;
-        let hint_y = layout.body.y0 + 2.0;
+        let hint_size = (tokens.typography.scale.xs / theme.text_scale).max(11.0);
+        let hint_y = layout.body.y0 + 2.0 * scale;
         text_renderer.draw_text(
             scene,
             "Press Esc or click outside to close",
@@ -173,7 +185,24 @@ impl ShortcutsOverlay {
 
         // Groups: 2-column grid. Each column gets half the inner width
         // (minus a spacing.s6 gutter).
-        let groups_top = hint_y + f64::from(hint_size) + f64::from(tokens.spacing.s4);
+        let groups_top =
+            hint_y + f64::from(hint_size) * scale + f64::from(tokens.spacing.s4) * scale;
+        let footer_h = 30.0 * scale;
+        let groups_view = Rect::new(
+            layout.body.x0,
+            groups_top,
+            layout.body.x1,
+            (layout.body.y1 - footer_h).max(groups_top),
+        );
+        self.max_scroll_y = shortcut_scroll_limit(groups_top, groups_view.y1, theme);
+        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &groups_view,
+        );
         draw_groups(
             scene,
             transform,
@@ -181,8 +210,25 @@ impl ShortcutsOverlay {
             theme,
             layout.body.x0,
             layout.body.width(),
-            groups_top,
+            groups_top - self.scroll_y,
         );
+        scene.pop_layer();
+        if self.max_scroll_y > 0.0 {
+            let label = if self.scroll_y + 0.5 < self.max_scroll_y {
+                "Scroll for more shortcuts ↓"
+            } else {
+                "Scroll up for earlier shortcuts ↑"
+            };
+            text_renderer.draw_text(
+                scene,
+                label,
+                hint_size,
+                tokens.colors.text_dim,
+                transform
+                    * Affine::translate((layout.body.x0, layout.body.y1 - footer_h + 4.0 * scale)),
+                None,
+            );
+        }
         self.layout = Some(layout);
     }
 
@@ -227,6 +273,20 @@ impl ShortcutsOverlay {
                 // Always consume — overlay is blocking.
                 true
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let delta_y = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => {
+                        -f64::from(*lines) * ROW_HEIGHT * self.text_scale
+                    }
+                    MouseScrollDelta::PixelDelta(delta) => -delta.y / scale_factor,
+                };
+                let next = (self.scroll_y + delta_y).clamp(0.0, self.max_scroll_y);
+                if (next - self.scroll_y).abs() > f64::EPSILON {
+                    self.scroll_y = next;
+                    self.dirty = true;
+                }
+                true
+            }
             // Eat every keystroke so the editor underneath doesn't
             // see it while the overlay is up.
             WindowEvent::KeyboardInput { .. } => true,
@@ -241,8 +301,25 @@ impl Default for ShortcutsOverlay {
     }
 }
 
-fn group_block_height(row_count: usize, group_size: f32, _row_size: f32) -> f64 {
-    f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP + (row_count as f64) * ROW_HEIGHT
+fn group_block_height(row_count: usize, group_size: f32, _row_size: f32, scale: f64) -> f64 {
+    f64::from(group_size) * scale
+        + GROUP_HEADING_TO_ROWS_GAP * scale
+        + (row_count as f64) * ROW_HEIGHT * scale
+}
+
+fn shortcut_scroll_limit(groups_top: f64, groups_bottom: f64, theme: &Theme) -> f64 {
+    let scale = f64::from(theme.text_scale);
+    let group_size = GROUP_SIZE_TOKEN(theme);
+    let row_size = ROW_SIZE_TOKEN(theme);
+    let group_height = |index: usize| {
+        GROUPS.get(index).map_or(0.0, |group| {
+            group_block_height(group.rows.len(), group_size, row_size, scale)
+        })
+    };
+    let full_content_h = group_height(0).max(group_height(1))
+        + f64::from(theme.tokens.spacing.s6) * scale
+        + group_height(2).max(group_height(3));
+    (groups_top + full_content_h - groups_bottom).max(0.0)
 }
 
 /// Draw every [`GROUPS`] entry in a 2-column grid starting at
@@ -262,7 +339,8 @@ fn draw_groups(
     groups_top: f64,
 ) {
     let tokens = &theme.tokens;
-    let gutter = f64::from(tokens.spacing.s6);
+    let scale = f64::from(theme.text_scale);
+    let gutter = f64::from(tokens.spacing.s6) * scale;
     let col_w = ((inner_w - gutter) / 2.0).max(0.0);
     let col_left_x = inner_x0;
     let col_right_x = inner_x0 + col_w + gutter;
@@ -276,12 +354,12 @@ fn draw_groups(
             groups_top
         } else {
             let h0 = GROUPS.first().map_or(0.0, |g| {
-                group_block_height(g.rows.len(), group_size, row_size)
+                group_block_height(g.rows.len(), group_size, row_size, scale)
             });
             let h1 = GROUPS.get(1).map_or(0.0, |g| {
-                group_block_height(g.rows.len(), group_size, row_size)
+                group_block_height(g.rows.len(), group_size, row_size, scale)
             });
-            groups_top + h0.max(h1) + f64::from(tokens.spacing.s6)
+            groups_top + h0.max(h1) + f64::from(tokens.spacing.s6) * scale
         }
     };
 
@@ -303,9 +381,9 @@ fn draw_groups(
             None,
         );
 
-        let rows_top = y + f64::from(group_size) + GROUP_HEADING_TO_ROWS_GAP;
+        let rows_top = y + f64::from(group_size) * scale + GROUP_HEADING_TO_ROWS_GAP * scale;
         for (i, (label, key)) in group.rows.iter().enumerate() {
-            let row_y = rows_top + (i as f64) * ROW_HEIGHT;
+            let row_y = rows_top + (i as f64) * ROW_HEIGHT * scale;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -316,19 +394,21 @@ fn draw_groups(
             );
             // Shortcut chip: right-aligned in the column.
             let (kw, _) = text_renderer.measure(key, row_size, None);
-            let kx = x + col_w - f64::from(kw);
+            // Keep the chip inside its column even when a scaled glyph's
+            // measured advance lands exactly on the right edge.
+            let kx = x + col_w - f64::from(kw) - 4.0 * scale;
             // Soft chip background — translucent white for a "kbd"
             // affordance without needing per-theme tinting.
-            let chip_pad_x = 6.0;
-            let chip_pad_y = 2.0;
+            let chip_pad_x = 6.0 * scale;
+            let chip_pad_y = 2.0 * scale;
             let chip = RoundedRect::from_rect(
                 Rect::new(
                     kx - chip_pad_x,
                     row_y - chip_pad_y,
                     kx + f64::from(kw) + chip_pad_x,
-                    row_y + f64::from(row_size) + chip_pad_y,
+                    row_y + f64::from(row_size) * scale + chip_pad_y,
                 ),
-                f64::from(tokens.radii.sm),
+                f64::from(tokens.radii.sm) * scale,
             );
             scene.fill(
                 Fill::NonZero,
@@ -566,5 +646,25 @@ mod tests {
     fn invisible_overlay_does_not_consume_events() {
         let mut o = ShortcutsOverlay::new();
         assert!(!o.handle_key(&esc_event(), 1.0));
+    }
+
+    #[test]
+    fn high_text_shortcuts_are_bounded_and_scrollable_without_partial_rows() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let groups_top = 180.0;
+        let groups_bottom = 560.0;
+        let limit = shortcut_scroll_limit(groups_top, groups_bottom, &theme);
+        assert!(limit > 0.0, "2× shortcut reference needs a scroll range");
+        assert!(groups_bottom - groups_top >= ROW_HEIGHT * 2.0);
+
+        let mut overlay = ShortcutsOverlay::new();
+        overlay.visible = true;
+        overlay.max_scroll_y = limit;
+        overlay.text_scale = 2.0;
+        overlay.scroll_y = 0.0;
+        let next =
+            (overlay.scroll_y + ROW_HEIGHT * overlay.text_scale).clamp(0.0, overlay.max_scroll_y);
+        assert!(next > 0.0);
+        assert!(next <= overlay.max_scroll_y);
     }
 }
