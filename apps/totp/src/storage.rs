@@ -22,10 +22,11 @@
 //! parsed, re-sealed into `vault.enc`, and then deleted, so an upgrade
 //! transparently encrypts an existing vault without losing accounts.
 //!
-//! Persistence is best-effort: every IO or crypto error is logged via
-//! `tracing` and swallowed so a read-only or missing data dir never
-//! crashes the app — the vault still works in-memory for the session and
-//! for the `--shots` renderer.
+//! Persistence failures never crash the app: the vault remains usable in
+//! memory for the session and the `--shots` renderer.  Unlike the old
+//! fire-and-forget API, [`save`] reports whether the encrypted write became
+//! durable so the UI can state that boundary honestly and offer an explicit,
+//! bounded retry.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -53,6 +54,19 @@ const SEAL_FORMAT: u8 = 1;
 const NONCE_LEN: usize = 24;
 /// Symmetric key width (256-bit).
 const KEY_LEN: usize = 32;
+
+// This is thread-local so storage failure injection remains deterministic even
+// when the test harness runs unrelated authenticator tests in parallel.  It is
+// intentionally compiled out of production builds.
+#[cfg(test)]
+thread_local! {
+    static FORCE_SAVE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn force_save_failure_for_test(fail: bool) {
+    FORCE_SAVE_FAILURE.with(|forced| forced.set(fail));
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KeyCustody {
@@ -97,11 +111,13 @@ pub fn load() -> Vault {
     }
 }
 
-/// Persist the vault, sealed. Best-effort: logs and returns on any error.
-pub fn save(vault: &Vault) {
-    if let Some(dir) = data_dir() {
-        save_at_with_custody(&dir, vault, key_custody());
+/// Persist the vault, sealed. `false` means changes remain in memory only.
+pub fn save(vault: &Vault) -> bool {
+    #[cfg(test)]
+    if FORCE_SAVE_FAILURE.with(std::cell::Cell::get) {
+        return false;
     }
+    data_dir().is_some_and(|dir| save_at_with_custody(&dir, vault, key_custody()))
 }
 
 /// Load (and, if needed, migrate) the vault stored under `dir`.
@@ -153,14 +169,14 @@ fn save_at(dir: &Path, vault: &Vault) {
     save_at_with_custody(dir, vault, KeyCustody::LocalFile);
 }
 
-fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) {
+fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) -> bool {
     if let Err(e) = std::fs::create_dir_all(dir) {
         tracing::warn!(error = %e, "authenticator: could not create data dir");
-        return;
+        return false;
     }
     let Some(key) = load_or_create_key(dir, custody) else {
         tracing::warn!("authenticator: no vault key available; changes kept in memory only");
-        return;
+        return false;
     };
     let file = VaultFile {
         version: VAULT_VERSION,
@@ -170,15 +186,18 @@ fn save_at_with_custody(dir: &Path, vault: &Vault, custody: KeyCustody) {
         Ok(bytes) => Zeroizing::new(bytes),
         Err(e) => {
             tracing::warn!(error = %e, "authenticator: vault serialize failed");
-            return;
+            return false;
         }
     };
     let Some(blob) = seal(&key, &plaintext) else {
         tracing::warn!("authenticator: vault encryption failed");
-        return;
+        return false;
     };
     if let Err(e) = atomic_file::write(&dir.join("vault.enc"), &blob) {
         tracing::warn!(error = %e, "authenticator: vault write failed");
+        false
+    } else {
+        true
     }
 }
 

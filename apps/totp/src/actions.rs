@@ -1,8 +1,9 @@
 //! Authenticator's exported **actions** and the **resource tree** it publishes
 //! to Ctrl+K.
 //!
-//! Every document-mutating operation the vault performs — adding an account,
-//! deleting one, renaming or relabelling it, recolouring it, or reordering the
+//! Every document-mutating operation the shared account metadata performs —
+//! adding an account identity, deleting one, renaming or relabelling it,
+//! recolouring it, or reordering the
 //! list — is a [`TotpAction`]: a small serializable value that deterministically
 //! mutates the shared CRDT. Because the account list already lives in the shared
 //! document (`root["accounts"]`, keyed by uuid — see [`crate::doc`]), an action
@@ -17,14 +18,16 @@
 //! code is derived, not stored), and so are reveal/hide, copy-to-clipboard,
 //! search, and selection.
 //!
-//! # A note on the secret
-//! An [`TotpAction::AddAccount`] carries the account's base32 secret in its
-//! payload. It *must* — the secret is the account, and replay has to reproduce
-//! it byte-for-byte on every replica. The document already stores the same
-//! secret, so the action surface exposes nothing the CRDT didn't already.
+//! # Secret boundary
+//! The base32 key deliberately never appears in this module's encoded actions,
+//! resources, search records or Automerge document. It remains in the
+//! encrypted, device-local vault. Collaboration can therefore organise and
+//! locate account identities, while generating/copying a code requires a key
+//! that is actually present on this device.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use uuid::Uuid;
 
 use qos_actions::{
@@ -34,7 +37,7 @@ use qos_actions::{
 };
 
 use crate::doc::AuthDoc;
-use crate::model::{Account, AccountId, Algorithm, parse_otpauth_uri};
+use crate::model::{Account, AccountId, Algorithm, contains_secret_shaped_text};
 
 /// Registry `type_id` for every Authenticator action.
 pub const TOTP_ACTION_TYPE: &str = "totp.action";
@@ -60,10 +63,15 @@ pub fn open_account_address(id: AccountId) -> ActionAddress {
 /// fresh resource and admitted the operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TotpOperation {
+    OpenAddAccount,
+    SetUpLocal { id: String },
+    RetryPersist,
     OpenAccount { id: String },
     CopyCode { id: String },
 }
 
+/// # Errors
+/// Returns an error when a payload for this operation type is malformed.
 pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TotpOperation>, String> {
     if type_id != TOTP_OPERATION_TYPE {
         return Ok(None);
@@ -73,6 +81,10 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<TotpOper
         .map_err(|error| format!("invalid Authenticator operation: {error}"))
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "stable ids and enum payloads are JSON serializable"
+)]
 fn account_operation(
     id: &str,
     label: &str,
@@ -81,6 +93,30 @@ fn account_operation(
 ) -> ActionSpec {
     ActionSpec::operation(id, label, kind, TOTP_OPERATION_TYPE, operation)
         .expect("Authenticator account ids are JSON serializable")
+}
+
+/// Local, bounded retry of an already-staged encrypted-vault write. It carries
+/// no account fields and never enters the collaborative document.
+#[allow(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "a fixed enum payload and literal identifiers are serializable"
+)]
+pub fn retry_persist_operation() -> ActionSpec {
+    ActionSpec::operation(
+        "retry-save",
+        "Retry saving local vault",
+        OperationKind::Effect,
+        TOTP_OPERATION_TYPE,
+        &TotpOperation::RetryPersist,
+    )
+    .expect("fixed Authenticator retry operation is serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Write,
+        retry: RetryPolicy::AtMostOnce,
+        tags: vec!["security".into(), "local-vault".into()],
+        ..ActionContract::default()
+    })
 }
 
 /// Every collaborative operation the vault exports on its account store.
@@ -92,13 +128,12 @@ fn account_operation(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TotpAction {
     /// Add a full account. Every parameter needed to reproduce the record —
-    /// including the base32 `secret` and the pre-computed `order`/`color` — is
+    /// including the pre-computed `order`/`color` — is
     /// carried so replay lands the byte-identical row on every peer.
     AddAccount {
         id: String,
         issuer: String,
         label: String,
-        secret: String,
         algorithm: String,
         digits: u8,
         period: u32,
@@ -129,16 +164,13 @@ impl Action for TotpAction {
                 id,
                 issuer,
                 label,
-                secret,
                 algorithm,
                 digits,
                 period,
                 color,
                 order,
             } => {
-                // A malformed id or an empty secret is never produced by our own
-                // builder — treat it as a no-op so a bad replay can't wedge.
-                if secret.trim().is_empty() {
+                if contains_secret_shaped_text(issuer) || contains_secret_shaped_text(label) {
                     return Ok(());
                 }
                 let Ok(uuid) = id.parse::<AccountId>() else {
@@ -148,7 +180,7 @@ impl Action for TotpAction {
                     id: uuid,
                     issuer: issuer.clone(),
                     label: label.clone(),
-                    secret: secret.clone(),
+                    secret: String::new(),
                     algorithm: Algorithm::parse(algorithm),
                     digits: (*digits).clamp(4, 10),
                     period: (*period).clamp(5, 300),
@@ -163,12 +195,16 @@ impl Action for TotpAction {
                 }
             }
             TotpAction::SetIssuer { id, issuer } => {
-                if let Ok(uuid) = id.parse::<AccountId>() {
+                if !contains_secret_shaped_text(issuer)
+                    && let Ok(uuid) = id.parse::<AccountId>()
+                {
                     AuthDoc::set_issuer(doc, uuid, issuer);
                 }
             }
             TotpAction::SetLabel { id, label } => {
-                if let Ok(uuid) = id.parse::<AccountId>() {
+                if !contains_secret_shaped_text(label)
+                    && let Ok(uuid) = id.parse::<AccountId>()
+                {
                     AuthDoc::set_label(doc, uuid, label);
                 }
             }
@@ -249,7 +285,6 @@ pub fn add_account_action(acc: &Account, order: u32) -> TotpAction {
         id: acc.id.to_string(),
         issuer: acc.issuer.clone(),
         label: acc.label.clone(),
-        secret: acc.secret.clone(),
         algorithm: acc.algorithm.as_str().to_string(),
         digits: acc.digits,
         period: acc.period,
@@ -346,58 +381,37 @@ fn account_label(a: &Account) -> String {
 /// operation exported as an action. Read straight from the document so the tree
 /// is a level-triggered value, recomputed each frame.
 /// Build only the vault root for the initial palette snapshot.
-pub fn provide_contextual_resources(accounts: &[Account]) -> Vec<Resource> {
+pub fn provide_contextual_resources(_accounts: &[Account]) -> Vec<Resource> {
     let mut root = Resource::new("totp.vault", "totp.vault", "Accounts");
 
-    // Vault-level: add an account by pasting an `otpauth://` setup link. One
-    // free-text argument carries everything (issuer, label, secret, params); the
-    // uuid is minted once when the argument is committed and the colour/order are
-    // pinned from the current vault, so the built envelope replays deterministically.
-    let next_order = accounts.iter().map(|a| a.order).max().map_or(0, |m| m + 1);
-    let next_color = (accounts.len() % 7) as u8;
+    // Adding a secret opens the local, protected form. A setup URI is never
+    // accepted as a generic resource/action argument because resource payloads
+    // are inspectable and durable; the form stores the secret directly in the
+    // encrypted local vault and dispatches only its metadata action afterward.
     root = root.with_action(
-        ActionSpec::typed(
+        account_operation(
             "add-account",
             "Add account",
-            "otpauth://totp/Issuer:you@example.com?secret=\u{2026}",
-            ExecutionLocus::ClientLocal,
-            vec![
-                ActionParam::required(
-                    "uri",
-                    ParamType::Secret,
-                    "otpauth setup URI; redacted from logs",
-                )
-                .with_schema(serde_json::json!({ "pattern": "^otpauth://totp/" })),
-            ],
-            move |args| {
-                let uri = args.text("uri").unwrap_or_default();
-                let action = match parse_otpauth_uri(uri, Uuid::new_v4()) {
-                    Ok(mut acc) => {
-                        acc.color = next_color;
-                        add_account_action(&acc, next_order)
-                    }
-                    Err(error) => {
-                        return EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: format!("invalid otpauth setup URI: {error}").into_bytes(),
-                        };
-                    }
-                };
-                encode(&action)
-            },
+            OperationKind::View,
+            &TotpOperation::OpenAddAccount,
         )
-        .with_contract(ActionContract {
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            ..vault_contract()
-        }),
+        .with_contract(ActionContract::view()),
     );
 
     vec![root]
 }
 
 /// Materialise one account after search names its stable resource id.
-pub fn provide_account_resource(acc: &Account, index: usize, account_count: usize) -> Resource {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resource's complete action contract stays co-located"
+)]
+pub fn provide_account_resource(
+    acc: &Account,
+    index: usize,
+    account_count: usize,
+    has_local_secret: bool,
+) -> Resource {
     let id = acc.id;
     let cur_color = acc.color;
     let mut child = Resource::new(account_resource_id(id), "totp.account", account_label(acc));
@@ -419,6 +433,14 @@ pub fn provide_account_resource(acc: &Account, index: usize, account_count: usiz
             &TotpOperation::CopyCode { id: id.to_string() },
         )
         .with_contract(ActionContract {
+            availability: if has_local_secret {
+                Availability::Available
+            } else {
+                Availability::Unavailable {
+                    code: "local_secret_required".into(),
+                    reason: "Set up this account on this device before copying a code".into(),
+                }
+            },
             permission: PermissionRequirement::Read,
             risk: RiskLevel::Privileged,
             confirmation: ConfirmationPolicy::Confirm,
@@ -427,6 +449,17 @@ pub fn provide_account_resource(acc: &Account, index: usize, account_count: usiz
             ..ActionContract::default()
         }),
     );
+    if !has_local_secret {
+        child = child.with_action(
+            account_operation(
+                "set-up-local",
+                "Set up on this device",
+                OperationKind::View,
+                &TotpOperation::SetUpLocal { id: id.to_string() },
+            )
+            .with_contract(ActionContract::view()),
+        );
+    }
 
     child = child.with_action(
         ActionSpec::typed(
@@ -536,7 +569,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
     let account_count = accounts.len();
     for (index, acc) in accounts.iter().enumerate() {
-        root = root.with_child(provide_account_resource(acc, index, account_count));
+        root = root.with_child(provide_account_resource(acc, index, account_count, false));
     }
 
     vec![root]
@@ -544,7 +577,21 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 
 impl ResourceProvider for crate::app::AuthenticatorApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+        let accounts = AuthDoc::list_accounts(doc);
+        let mut root = provide_contextual_resources(&accounts)
+            .pop()
+            .unwrap_or_else(|| Resource::new("totp.vault", "totp.vault", "Accounts"));
+        let count = accounts.len();
+        for (index, account) in accounts.iter().enumerate() {
+            let has_local_secret = self.has_local_secret(account.id);
+            root = root.with_child(provide_account_resource(
+                account,
+                index,
+                count,
+                has_local_secret,
+            ));
+        }
+        vec![root]
     }
 }
 
@@ -658,11 +705,13 @@ mod tests {
             .iter()
             .find(|action| action.id == "add-account")
             .unwrap();
-        assert_eq!(add.kind, OperationKind::Document);
-        assert_eq!(add.params()[0].ty, ParamType::Secret);
-        assert_eq!(add.contract.permission, PermissionRequirement::Write);
-        assert_eq!(add.contract.risk, RiskLevel::Privileged);
-        assert_eq!(add.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(add.kind, OperationKind::View);
+        assert_eq!(add.contract, ActionContract::view());
+        let encoded_add = immediate_encode(add);
+        assert!(matches!(
+            serde_json::from_slice::<TotpOperation>(&encoded_add.payload).unwrap(),
+            TotpOperation::OpenAddAccount
+        ));
 
         let delete = account
             .actions
@@ -677,13 +726,18 @@ mod tests {
     }
 
     #[test]
-    fn account_resource_labels_redact_secret_shaped_identity_fields() {
-        let mut account = seed_accounts().remove(0);
+    fn shared_resource_tree_never_contains_account_secrets() {
+        let account = seed_accounts().remove(0);
         let secret = account.secret.clone();
-        account.issuer = format!("Security key {secret}");
-        account.label = secret.clone();
         let mut doc = AutoCommit::new();
         AuthDoc::sync_vault(&mut doc, &[account]);
+        let bytes = doc.save();
+        assert!(
+            !bytes
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "the CRDT never retains base32 key material"
+        );
         let resource = &provide_resources(&doc)[0].children[0];
         assert!(!resource.label.contains(&secret));
         assert!(
@@ -716,7 +770,8 @@ mod tests {
             .iter()
             .find(|action| action.id == "add-account")
             .unwrap();
-        assert_eq!(add.params()[0].ty, ParamType::Secret);
+        assert_eq!(add.kind, OperationKind::View);
+        assert!(add.params().is_empty());
         assert!(
             vault.children.is_empty(),
             "the contextual root stays bounded"
@@ -911,29 +966,29 @@ mod tests {
         );
     }
 
-    /// The vault's prompted "Add account" builds an action that, dispatched,
-    /// parses the pasted `otpauth://` link and inserts the account into the doc.
+    /// The vault's add entry is a local View route: secret-bearing setup links
+    /// are handled only by the encrypted local form, never a serialised action.
     #[test]
-    fn add_account_prompt_parses_otpauth_and_inserts() {
-        let mut doc = AutoCommit::new();
+    fn add_account_opens_local_protected_form_without_secret_payload() {
+        let doc = AutoCommit::new();
         let resources = provide_resources(&doc);
         let add = resources[0]
             .actions
             .iter()
             .find(|a| a.id == "add-account")
             .unwrap();
-        let encoded = prompted_encode(
-            add,
-            "otpauth://totp/Proton:ada@pm.me?secret=JBSWY3DPEHPK3PXP&issuer=Proton",
+        let encoded = immediate_encode(add);
+        assert!(matches!(
+            serde_json::from_slice::<TotpOperation>(&encoded.payload).unwrap(),
+            TotpOperation::OpenAddAccount
+        ));
+        assert!(
+            !encoded
+                .payload
+                .windows(16)
+                .any(|window| window == b"JBSWY3DPEHPK3PXP"),
+            "an add route contains no credential"
         );
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let accts = AuthDoc::list_accounts(&doc);
-        assert_eq!(accts.len(), 1, "the pasted link added exactly one account");
-        assert_eq!(accts[0].issuer, "Proton");
-        assert_eq!(accts[0].secret, "JBSWY3DPEHPK3PXP");
     }
 
     /// Reorder is deterministic against the document: `MoveDown` swaps the first
@@ -963,25 +1018,18 @@ mod tests {
         );
     }
 
-    /// A malformed `otpauth://` paste is refused during binding, before a
-    /// replayable action or half-formed account can exist.
+    /// A metadata action contains no secret even when its source account does.
     #[test]
-    fn malformed_add_link_is_refused_before_dispatch() {
-        let doc = AutoCommit::new();
-        let resources = provide_resources(&doc);
-        let add = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "add-account")
-            .unwrap();
-        let encoded = prompted_encode(add, "otpauth://totp/broken");
-        assert_eq!(
-            encoded.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
+    fn add_metadata_action_redacts_the_source_secret() {
+        let account = seed_accounts().remove(0);
+        let secret = account.secret.clone();
+        let encoded = encode(&add_account_action(&account, account.order));
         assert!(
-            AuthDoc::list_accounts(&doc).is_empty(),
-            "no partial account was inserted"
+            !encoded
+                .payload
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "the action contains only replicated metadata"
         );
     }
 }
