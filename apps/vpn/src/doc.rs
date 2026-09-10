@@ -7,13 +7,15 @@
 //! ├── "tor_global" (Bool)
 //! └── "connections" (Map, keyed by ConnId string)
 //!     └── <id> (Map)
-//!         ├── "name" / "kind" / "endpoint" / "address" / "dns"
-//!         │     "public_key" / "allowed_ips"   (Str)
+//!         ├── "name" / "kind" (Str)
 //!         ├── "tor" (Bool)
 //! ```
 //!
-//! Only shareable profile configuration lives here. Window selection, live
-//! connection state, handshakes and traffic counters remain machine-local.
+//! Only secret-free, shareable profile identity lives here. Credentials,
+//! endpoint/routing details, config paths, live connection state, handshakes
+//! and traffic counters remain machine-local. This is intentional: a
+//! collaborative profile tells another device *which* profile to provision,
+//! never enough information to reconstruct a tunnel.
 //! Storing connections as individual Automerge fields (rather than a JSON
 //! blob) is what lets two peers concurrently edit the fleet and converge.
 
@@ -75,17 +77,7 @@ impl VpnDoc {
         };
         let _ = doc.put(&obj, "name", c.name.clone());
         let _ = doc.put(&obj, "kind", c.kind.as_str());
-        let _ = doc.put(&obj, "endpoint", c.endpoint.clone());
-        let _ = doc.put(&obj, "address", c.address.clone());
-        let _ = doc.put(&obj, "dns", c.dns.clone());
-        let _ = doc.put(&obj, "public_key", c.public_key.clone());
-        let _ = doc.put(&obj, "allowed_ips", c.allowed_ips.clone());
         let _ = doc.put(&obj, "tor", ScalarValue::Boolean(c.tor));
-        let _ = doc.put(
-            &obj,
-            "config_path",
-            c.config_path.clone().unwrap_or_default(),
-        );
     }
 
     /// Rename one saved connection (config field only — never touches live
@@ -134,23 +126,10 @@ impl VpnDoc {
                     id,
                     name: s("name"),
                     kind: ConnKind::parse(&s("kind")),
-                    endpoint: s("endpoint"),
-                    address: s("address"),
-                    dns: s("dns"),
-                    public_key: s("public_key"),
-                    allowed_ips: s("allowed_ips"),
                     status: ConnStatus::Disconnected,
                     last_handshake_secs: None,
                     last_used: "Never on this device".into(),
                     tor: get_bool(doc, &obj, "tor"),
-                    rx_bytes: 0,
-                    tx_bytes: 0,
-                    base_down_mbps: 0.0,
-                    base_up_mbps: 0.0,
-                    config_path: {
-                        let p = s("config_path");
-                        if p.is_empty() { None } else { Some(p) }
-                    },
                 });
             }
         }
@@ -202,8 +181,6 @@ mod tests {
         let home = back.connections.iter().find(|c| c.name == "Home").unwrap();
         assert_eq!(home.status, ConnStatus::Disconnected);
         assert_eq!(home.kind, ConnKind::WireGuard);
-        assert_eq!(home.endpoint, "home.aurora.net:51820");
-        assert_eq!(home.rx_bytes, 0, "traffic counters are not synchronized");
     }
 
     #[test]
@@ -215,7 +192,6 @@ mod tests {
         assert!(back.connections.iter().all(|connection| {
             connection.status == ConnStatus::Disconnected
                 && connection.last_handshake_secs.is_none()
-                && connection.rx_bytes == 0
         }));
     }
 

@@ -1048,11 +1048,13 @@ impl ShellDriver {
             st.quick_settings.vpns = vec![
                 os_actions::VpnConnectionInfo {
                     name: "Engineering production WireGuard tunnel Frankfurt".into(),
+                    uuid: "shot-engineering-vpn-uuid".into(),
                     active: true,
                     kind: "wireguard".into(),
                 },
                 os_actions::VpnConnectionInfo {
                     name: "Personal research network with a long name".into(),
+                    uuid: "shot-personal-vpn-uuid".into(),
                     active: false,
                     kind: "vpn".into(),
                 },

@@ -181,16 +181,11 @@ pub fn read_transfer(conn: &Connection) -> Option<Transfer> {
     }
 }
 
-/// Whether an `OpenVPN` daemon for this connection is running, via
-/// `pgrep -f <config-path>`. `OpenVPN`'s tun device name is kernel-assigned, so
-/// process presence is the reliable real signal (matching on the specific
-/// config path avoids counting an unrelated tunnel). `None` if `pgrep` is
-/// unavailable.
+/// Whether an `OpenVPN` daemon for this connection is running. This legacy
+/// best-effort probe uses only the local profile name; production status is
+/// reconciled through `NetworkManager` instead.
 pub fn openvpn_running(conn: &Connection) -> Option<bool> {
-    let needle = conn.config_path().map_or_else(
-        || format!("{}.ovpn", conn.name),
-        std::string::ToString::to_string,
-    );
+    let needle = format!("{}.ovpn", conn.name);
     let out = Command::new("pgrep").args(["-f", &needle]).output().ok()?;
     match out.status.code() {
         Some(0) => Some(true),  // at least one matching process
@@ -326,14 +321,13 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
         use crate::config::{self, Backend};
         use crate::model::ConnKind;
 
-        // A WireGuard tunnel with an imported config resolves to iface `qtest0`
-        // and the real bring-up command references that exact file.
-        let mut conn = Connection::new("qtest0", ConnKind::WireGuard);
-        conn.config_path = Some("/tmp/qos-vpn-test/qtest0.conf".into());
+        // A legacy WireGuard plan resolves the local interface hint `qtest0`.
+        // Production activation uses NetworkManager's UUID instead.
+        let conn = Connection::new("qtest0", ConnKind::WireGuard);
         assert_eq!(config::iface_name(&conn), "qtest0");
         let plan = config::connect_plan(&conn, Backend::WgQuick);
         assert_eq!(plan.program, "wg-quick");
-        assert_eq!(plan.args, vec!["up", "/tmp/qos-vpn-test/qtest0.conf"]);
+        assert_eq!(plan.args, vec!["up", "qtest0"]);
 
         // REAL end-to-end, but only when the operator has opted in AND the box
         // can create a network interface (root + iproute2). We stand up a real

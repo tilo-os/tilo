@@ -41,7 +41,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         Some("add" | "import") => vpn::app_root_demo_add(),
         Some(
             state @ ("detail" | "config" | "logs" | "loading" | "error" | "disconnected"
-            | "connecting"),
+            | "connecting" | "unprovisioned" | "setup"),
         ) => vpn::app_root_demo_state(state),
         Some("empty") => vpn::app_root_demo_state("empty"),
         _ if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") => vpn::app_root_demo(),
@@ -68,6 +68,8 @@ pub fn main() {
                 "error",
                 "disconnected",
                 "connecting",
+                "unprovisioned",
+                "setup",
             ])
             .configure_app(|app| vpn::actions::register(app.action_registry_mut())),
     );

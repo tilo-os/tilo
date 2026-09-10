@@ -3,9 +3,10 @@
 //!
 //! Every document-mutating operation on the saved fleet is a [`VpnAction`]: a
 //! small serializable value that deterministically mutates the shared Automerge
-//! document (see [`crate::doc`]). The stored **configuration** is the document —
-//! the saved connection profiles, their per-connection Tor routing preference,
-//! and the global "route everything over Tor" toggle. The exact same
+//! document (see [`crate::doc`]). The stored collaborative metadata is only a
+//! profile id, display name, protocol, per-connection Tor routing preference,
+//! and global "route everything over Tor" toggle. `NetworkManager` UUIDs,
+//! endpoint/routing facts and credentials stay in the owner-local store. The exact same
 //! [`EncodedAction`] an on-screen affordance dispatches (a completed import, a
 //! connection's Tor toggle) is what the Ctrl+K palette dispatches — one source
 //! of truth, one replay path, undo for free.
@@ -30,8 +31,10 @@
 //!
 //! ## Determinism contract
 //!
-//! A connection's uuid is minted after validation and `NetworkManager` import,
-//! then carried whole in the [`VpnAction::AddConnection`] payload;
+//! A connection's collaborative uuid is minted after validation and
+//! `NetworkManager` import, then carried with its secret-free metadata in the
+//! [`VpnAction::AddConnection`] payload. It is never the local `NetworkManager`
+//! UUID; that association is persisted only on the provisioning device.
 //! [`Action::apply`] never touches the RNG or the wall-clock. It reads the
 //! current fleet from the document and applies a targeted, change-guarded write,
 //! so two replicas at the same heads land on the byte-identical result. A
@@ -55,17 +58,19 @@ use crate::model::{ConnId, ConnKind, Connection, Vault};
 pub const VPN_ACTION_TYPE: &str = "vpn.action";
 pub const VPN_IMPORT_TYPE: &str = "vpn.import-profile";
 pub const VPN_DELETE_TYPE: &str = "vpn.delete-profile";
+pub const VPN_PROVISION_TYPE: &str = "vpn.provision-profile";
 
 /// Every collaborative operation the VPN client exports on its saved fleet.
 ///
-/// Each variant is a deterministic transform of the stored configuration: the
+/// Each variant is a deterministic transform of the secret-free stored metadata: the
 /// executor loads the current fleet from the document, this transform applies a
 /// targeted write, and the diff replicates + replays for free (see
 /// [`Action::apply`]). The connection CRUD carries a pre-minted [`Connection`]
 /// (id and all) so replay reproduces it exactly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VpnAction {
-    /// Add a saved connection profile. The connection (including its uuid) is
+    /// Add a saved connection profile. The secret-free identity (including its
+    /// collaborative uuid) is
     /// minted at authoring time and carried whole; a re-add of the same id is a
     /// no-op so a double-applied envelope can't duplicate it. Boxed: a full
     /// [`Connection`] (many `String` fields) dwarfs every other variant, which
@@ -73,7 +78,7 @@ pub enum VpnAction {
     AddConnection { conn: Box<Connection> },
     /// Remove a saved connection by id. Absent id → no-op.
     RemoveConnection { id: ConnId },
-    /// Rename a saved connection (config field only — never touches the live
+    /// Rename a saved connection (metadata only — never touches the live
     /// status / counters). Absent id, empty name, or an unchanged name → no-op.
     RenameConnection { id: ConnId, name: String },
     /// Set a connection's "route this tunnel over Tor" preference. The target
@@ -221,6 +226,10 @@ fn connection_label(c: &Connection) -> String {
 /// The vault root is always published — an open VPN app can always "add a
 /// connection", even with an empty fleet — while the per-connection children
 /// track the saved list.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resource-tree builder keeps profile actions and their contracts together"
+)]
 pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
     let mut root = Resource::new("vpn.vault", "vpn.vault", "VPN");
 
@@ -278,23 +287,32 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
             "vpn.protocol",
             c.kind.long_name(),
         ));
+        if let Ok(mut provision) = ActionSpec::operation(
+            "provision-local",
+            "Set up on this device",
+            OperationKind::Effect,
+            VPN_PROVISION_TYPE,
+            &(id.to_string(), c.kind.as_str()),
+        ) {
+            provision.contract = ActionContract {
+                permission: PermissionRequirement::Admin,
+                risk: RiskLevel::Privileged,
+                confirmation: ConfirmationPolicy::Confirm,
+                retry: RetryPolicy::AtMostOnce,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["vpn".into(), "provisioning".into()],
+                ..ActionContract::default()
+            };
+            cr = cr.with_action(provision);
+        }
+        // Never make endpoint, routing, address, certificate/key or other
+        // tunnel material searchable. A peer can navigate the stable profile
+        // id, then provision its exact local credentials through the portal.
         cr.children.push(Resource::new(
-            format!("vpn.connection:{id}:endpoint"),
-            "vpn.endpoint",
-            if c.endpoint.is_empty() {
-                "Endpoint managed by NetworkManager".into()
-            } else {
-                c.endpoint.clone()
-            },
-        ));
-        cr.children.push(Resource::new(
-            format!("vpn.connection:{id}:routing"),
-            "vpn.routing-policy",
-            if c.allowed_ips.is_empty() {
-                "Routes managed by NetworkManager".into()
-            } else {
-                c.allowed_ips.clone()
-            },
+            format!("vpn.connection:{id}:provisioning"),
+            "vpn.local-provisioning",
+            "Provisioning is local to this device",
         ));
 
         // Toggle this tunnel's Tor routing preference.
@@ -372,6 +390,28 @@ mod tests {
             .expect("saved connection exports delete");
         assert_eq!(delete.contract.risk, RiskLevel::Destructive);
         assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
+    }
+
+    #[test]
+    fn setup_resource_carries_exact_profile_id_and_protocol() {
+        let vault = crate::model::sample_vault();
+        let profile = &vault.connections[0];
+        let resources = provide_resources(&vault);
+        let resource = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == format!("vpn.connection:{}", profile.id))
+            .expect("profile resource");
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "provision-local")
+            .expect("exact setup action");
+        let encoded = immediate_encode(action);
+        assert_eq!(encoded.type_id, VPN_PROVISION_TYPE);
+        let (id, kind): (String, String) = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(id, profile.id.to_string());
+        assert_eq!(kind, profile.kind.as_str());
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
