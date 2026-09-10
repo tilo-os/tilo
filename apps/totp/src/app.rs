@@ -1226,7 +1226,10 @@ impl Widget for AuthenticatorApp {
                 scene,
                 "Retry",
                 13.0,
-                Color::WHITE,
+                theme
+                    .tokens
+                    .colors
+                    .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
                 transform
                     * Affine::translate((
                         self.persistence_retry_rect.x0 + 23.0,
