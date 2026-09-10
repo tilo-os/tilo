@@ -521,7 +521,14 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     ]
     .iter()
     .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty() && value != "0"));
-    theme.with_reduce_motion(reduce_motion)
+    let text_scale = std::env::var("QOS_SHOTS_TEXT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|scale| scale.is_finite())
+        .map_or(1.0, |scale| scale.clamp(0.5, 2.0));
+    theme
+        .with_reduce_motion(reduce_motion)
+        .with_text_scale(text_scale)
 }
 
 /// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
@@ -533,6 +540,7 @@ fn run_bench(n: usize, viewport: (u32, u32)) {
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
     let mut widget = music::app_root_for_shot(""); // offline sample, hermetic
     let mut state = ui::State::new();
 
@@ -678,6 +686,7 @@ fn render_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut state = ui::State::new();
     let scene = render_widget_frame(
         widget.as_mut(),
@@ -705,6 +714,7 @@ fn render_live_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
     let mut app = music::live_shot_app();
     let mut state = ui::State::new();
 
