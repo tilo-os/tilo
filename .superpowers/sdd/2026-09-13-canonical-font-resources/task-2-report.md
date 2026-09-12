@@ -61,4 +61,4 @@ The default `TextRenderer::new()` path intentionally remains the existing ambien
 
 ## Commit
 
-The implementation commit before adding this report is `3a4b94f66` (`feat(ui): load shared canonical fonts with explicit fixture policy`).
+Final commit: `13e638cba` (`feat(ui): load shared canonical fonts with explicit fixture policy`).
