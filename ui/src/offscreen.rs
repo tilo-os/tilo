@@ -11,7 +11,11 @@
 //! boundary can land ±1 in a channel. Measured here: ≤4/57 600 pixels,
 //! always ±1, ink-count unchanged — a race between concurrent renders in
 //! one process, not a single-frame artifact. Compare with
-//! [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality.
+//! [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality. The
+//! stored pixels use straight alpha: RGB in fully transparent pixels is
+//! invisible, while if either pixel has nonzero alpha, every channel keeps the
+//! ±1 comparison tolerance. Exact untouched-pixel assertions remain separate
+//! checks for byte preservation.
 //!
 //! Never cache one in a `thread_local!`: dropping wgpu resources touches
 //! wgpu's own thread-local, and TLS destructors run in reverse
@@ -2087,14 +2091,21 @@ impl OffscreenRenderer {
         )
     }
 
-    /// Tolerates the ±1 antialiasing wobble described in the module docs;
-    /// anything above zero is a real difference. Buffers of different
-    /// lengths count as differing everywhere they don't overlap.
+    /// Compares stored straight-alpha RGBA8 pixels with the ±1 antialiasing
+    /// tolerance described in the module docs. RGB in fully transparent
+    /// pixels is invisible; if either pixel has nonzero alpha, every channel
+    /// participates in the tolerance. Buffers of different lengths count as
+    /// differing everywhere they don't overlap.
     pub fn pixels_differing_beyond_aa(a: &[u8], b: &[u8]) -> usize {
         let overlapping = a
             .chunks_exact(4)
             .zip(b.chunks_exact(4))
-            .filter(|(x, y)| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
+            .filter(|(x, y)| {
+                if x.get(3) == Some(&0) && y.get(3) == Some(&0) {
+                    return false;
+                }
+                x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1)
+            })
             .count();
         let unmatched = a.len().abs_diff(b.len()).div_ceil(4);
         overlapping.saturating_add(unmatched)
@@ -2387,6 +2398,33 @@ mod tests {
             OffscreenRenderer::pixels_differing_beyond_aa(&base, &base[..4]),
             1,
             "a size mismatch must count the pixels that have no counterpart"
+        );
+    }
+
+    #[test]
+    fn frame_comparison_ignores_rgb_only_when_both_pixels_are_fully_transparent() {
+        for (actual, expected, differences) in [
+            ([0, 0, 0, 0], [81, 209, 119, 0], 0),
+            ([10, 20, 30, 1], [12, 20, 30, 1], 1),
+            ([10, 20, 30, 0], [12, 20, 30, 1], 1),
+            ([12, 20, 30, 1], [10, 20, 30, 0], 1),
+            ([10, 20, 30, 0], [10, 20, 30, 2], 1),
+            ([10, 20, 30, 254], [10, 20, 30, 252], 1),
+        ] {
+            assert_eq!(
+                OffscreenRenderer::pixels_differing_beyond_aa(&actual, &expected),
+                differences,
+                "actual={actual:?}, expected={expected:?}"
+            );
+        }
+
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(
+                &[0, 0, 0, 0, 81, 209, 119, 0],
+                &[255, 0, 255, 0],
+            ),
+            1,
+            "transparent pixels without a counterpart remain a size mismatch"
         );
     }
 
