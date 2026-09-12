@@ -33,6 +33,7 @@ Integration requirements:
 - A true publication result means accepted publication, not guaranteed live wake delivery. Detached publications remain valid without waking any host. Closed weak routes never become detached.
 - Guards are `!Send`; every guard must drop in reverse entry order. Never store one in App or carry it to a worker/async suspension.
 - The Task 2 cutover is indivisible: do not commit/export/review an intermediate public-handle swap, constructor migration subset, or unbound live App. Keep the old complete behavior until the complete new behavior can be tested.
+- Every runtime test command uses `.superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py`; the controller creates it before task dispatch from the isolated-validation section. This applies to every extracted task brief.
 - Native build target: `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell`. Controller alone runs the corresponding Fedora commands at the committed SHA. Apply repository nextest/GPU rules to broader checks.
 
 ## Controller rulings and bounded scope
@@ -141,7 +142,7 @@ fn detached_entry_restores_an_outer_scope_after_unwind() {
 }
 ```
 
-- [ ] Run RED: `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo nextest run -p ui --lib --locked --profile ci -E 'test(wake::tests::detached_entry)'`. Expected compiler failure: no `WakeScope::enter_detached`.
+- [ ] Run RED: `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --lib --locked --profile ci -E 'test(wake::tests::detached_entry)'`. Expected compiler failure: no `WakeScope::enter_detached`.
 - [ ] Add this method to `impl WakeScope` beside `enter`:
 
 ```rust
@@ -157,7 +158,7 @@ pub fn enter_detached() -> WakeScopeGuard {
 }
 ```
 
-- [ ] Run GREEN with `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo nextest run -p ui --lib --locked --profile ci -E 'test(wake::tests::)'`, then `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo test -p ui --doc --locked 'wake::WakeScopeGuard'`. Require the 12 primitive tests and the thread-affinity compile-fail doctest.
+- [ ] Run GREEN with `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --lib --locked --profile ci -E 'test(wake::tests::)'`, then `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo test -p ui --doc --locked 'wake::WakeScopeGuard'`. Require the 12 primitive tests and the thread-affinity compile-fail doctest.
 - [ ] Format only the modified file with `rustfmt --edition 2024 ui/src/wake.rs`; run `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo clippy -p ui --lib --locked -- -D warnings`.
 - [ ] Commit only `ui/src/wake.rs` with message `feat(ui): add explicit detached wake entry`. Controller mirrors this SHA and runs the same tests/doc test/clippy on Fedora before Task 2 is accepted. Existing global routing is still completely intact at this boundary.
 
@@ -397,7 +398,7 @@ fn task_wake_sink_runs_after_generation_lock_is_released() {
 }
 ```
 
-- [ ] Run RED: `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo nextest run -p ui --lib --locked --profile ci -E 'test(local_state::tests::)'`. Expect routing/channel/closed-publication assertions to fail with the old implementation. Record discovered tests and failures; do not weaken test deadlines or expectations.
+- [ ] Run RED: `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --lib --locked --profile ci -E 'test(local_state::tests::)'`. Expect routing/channel/closed-publication assertions to fail with the old implementation. Record discovered tests and failures; do not weaken test deadlines or expectations.
 
 #### 2B. Replace the production local-state implementation
 
@@ -1169,7 +1170,7 @@ mod wake_integration_tests {
 
 For the fixture's required ten-argument `handle_event`, use the repository's existing narrow `clippy::too_many_arguments` test allowance. No unsafe scope operations are needed; the raw node-map insertion is the normal Widget layout contract.
 
-- [ ] Before adding the App implementation sections 2C–2F, run RED with `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo nextest run -p ui --lib --locked --profile ci -E 'test(app::wake_integration_tests::)'`. Expect missing App factory/entry/receiver APIs. Sequence this RED step immediately after adding these tests, before implementing 2C; the numbered sections group instructions by responsibility, not permission to skip RED.
+- [ ] Before adding the App implementation sections 2C–2F, run RED with `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --lib --locked --profile ci -E 'test(app::wake_integration_tests::)'`. Expect missing App factory/entry/receiver APIs. Sequence this RED step immediately after adding these tests, before implementing 2C; the numbered sections group instructions by responsibility, not permission to skip RED.
 
 #### 2H. Prove standard LaunchSpec construction/configuration share the owner
 
@@ -1252,8 +1253,8 @@ Use the existing signature-mandated `clippy::unnecessary_wraps` allowance for th
 - [ ] Run the focused combined portable tests:
 
 ```bash
-CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo nextest run -p ui --lib --locked --profile ci -E 'test(wake::tests::) or test(local_state::tests::) or test(app::wake_integration_tests::) or test(launch::tests::)'
-CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo test -p ui --doc --locked
+CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --lib --locked --profile ci -E 'test(wake::tests::) or test(local_state::tests::) or test(app::wake_integration_tests::) or test(launch::tests::)'
+CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo test -p ui --doc --locked
 CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo check -p ui --all-targets --locked
 CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo clippy -p ui --lib --locked -- -D warnings
 ```
@@ -1276,7 +1277,7 @@ The first search must return no old-global routing symbol. `UserEvent::Wake` is 
 
 ```bash
 cargo check --locked --all-targets -p ui -p browser -p terminal -p osk -p pdf_viewer -p word-processor -p installer -p greeter -p settings -p shell
-cargo test --locked -p ui --example ui-lab
+python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo test --locked -p ui --example ui-lab
 ```
 
 Use each host's isolated target directory and existing supported features. A baseline macOS OS-dependency blocker is recorded with package/error and reproduced at the parent SHA; it is not grounds to alter platform cfgs or claim an unchecked target passed. Fedora must compile the Linux-only clipboard/session/OSK consumers. Do not add a permanent Mac package exclusion list to work around broader port blockers.
@@ -1425,7 +1426,7 @@ fn explicitly_detached_headless_work_stays_functional_after_host_creation() {
 }
 ```
 
-- [ ] Run `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo nextest run -p ui --test it --locked --profile ci -E 'test(wake_scope_host::)'`. Require discovery and execution of exactly four `wake_scope_host::` tests in binary `it`; zero matching tests is a failure. This is added conformance coverage over existing Task 2 production behavior; it should be GREEN immediately, not require a deliberately broken implementation. If it is not green, investigate the exact ownership/publication failure and repair Task 2 semantics before proceeding.
+- [ ] Run `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --test it --locked --profile ci -E 'test(wake_scope_host::)'`. Require discovery and execution of exactly four `wake_scope_host::` tests in binary `it`; zero matching tests is a failure. This is added conformance coverage over existing Task 2 production behavior; it should be GREEN immediately, not require a deliberately broken implementation. If it is not green, investigate the exact ownership/publication failure and repair Task 2 semantics before proceeding.
 - [ ] Run `CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo clippy -p ui --test it --locked -- -D warnings` and format the new test file. Use the same scoped test-only lint allowances already used by adjacent integration tests for assertions and small fixture arithmetic; do not suppress production lints.
 - [ ] Commit both `ui/tests/it.rs` and `ui/tests/wake_scope_host.rs` as `test(ui): cover multi-host wake routing and mount replacement`. Controller verifies the same four tests and test-target clippy on Fedora at this SHA. Record that the fixture is framework conformance, not real app embedding qualification.
 
