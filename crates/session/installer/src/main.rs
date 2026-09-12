@@ -54,6 +54,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// layout, or writing the PNG to `--shots <path>` (see
 /// [`render_shot_to_png`]).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
@@ -69,12 +70,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // Shared slot the event loop fills with its proxy once running; the
     // install worker thread reads it to stream progress back in.
     let proxy_slot: ProxySlot = Arc::new(Mutex::new(None));
     let widget = InstallerApp::new().with_proxy(proxy_slot.clone());
     let state = ui::State::new();
-    let mut app = ui::App::new(state, Box::new(widget));
+    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
     // Hand the keyboard to the first field/row at startup so the wizard
     // is usable without a click...
     app.autofocus_first = true;

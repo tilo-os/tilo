@@ -1560,7 +1560,7 @@ impl UpdatesPane {
         let status_provider = Arc::clone(&self.status_provider);
         let details_provider = Arc::clone(&self.details_provider);
         let control = Arc::clone(&self.control);
-        let wake = self.wake;
+        let wake = self.wake.clone();
         let (tx, rx) = mpsc::channel();
         if std::thread::Builder::new()
             .name("qos-update-check".into())
@@ -1606,7 +1606,7 @@ impl UpdatesPane {
             return;
         }
         let control = Arc::clone(&self.control);
-        let wake = self.wake;
+        let wake = self.wake.clone();
         let (tx, rx) = mpsc::channel();
         if std::thread::Builder::new()
             .name("qos-firmware-refresh".into())

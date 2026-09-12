@@ -111,6 +111,8 @@ impl IdentityStore for DemoFileStore {
 }
 
 pub fn run(args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let screen = args
         .windows(2)
         .find(|w| w.first().is_some_and(|flag| flag == "--screen"))
@@ -151,7 +153,7 @@ pub fn run(args: &[String]) {
     );
 
     let state = State::new();
-    let app = App::new(state, Box::new(flow));
+    let app = App::from_scoped_parts(wake_scope, state, Box::new(flow));
     app.run();
 }
 
