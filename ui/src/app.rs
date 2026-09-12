@@ -5833,13 +5833,13 @@ impl AppHandler {
             return;
         };
 
-        let mut attributes = Window::default_attributes()
+        let attributes = Window::default_attributes()
             .with_title("Audience presentation")
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false);
         #[cfg(target_os = "linux")]
-        {
+        let attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
             let package_id = std::env::var("QOS_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
@@ -5854,8 +5854,8 @@ impl AppHandler {
             );
             // A role-like suffix keeps a compositor from mistaking the
             // audience output for a duplicate editor surface.
-            attributes = attributes.with_name(format!("{app_id}.audience"), "");
-        }
+            attributes.with_name(format!("{app_id}.audience"), "")
+        };
         let Ok(window) = event_loop.create_window(attributes) else {
             tracing::warn!(
                 "could not create separate audience presentation window; using single-output fallback"
@@ -6049,7 +6049,7 @@ impl AppHandler {
             return Ok(());
         }
         let logical_size = native_floating_logical_size(rect);
-        let mut attributes = Window::default_attributes()
+        let attributes = Window::default_attributes()
             .with_title(format!("Floating · {id}"))
             .with_decorations(false)
             .with_resizable(false)
@@ -6057,17 +6057,17 @@ impl AppHandler {
             .with_visible(false)
             .with_inner_size(logical_size);
         #[cfg(target_os = "linux")]
-        {
+        let attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            attributes = attributes.with_name(
+            attributes.with_name(
                 format!(
                     "{}{}",
                     crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX,
                     token
                 ),
                 "",
-            );
-        }
+            )
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -7547,7 +7547,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window_title.as_deref());
         let icon = crate::window_icon::resolve();
-        let mut window_attributes = Window::default_attributes()
+        let window_attributes = Window::default_attributes()
             .with_title(title)
             .with_window_icon(icon.clone())
             // Draggable title bar on compositors with no server-side
@@ -7559,7 +7559,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // See `resolve_app_id`: a shared id collapses per-app compositor
         // lookups.
         #[cfg(target_os = "linux")]
-        {
+        let window_attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
             let package_id = std::env::var("QOS_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
@@ -7569,8 +7569,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                     .as_deref(),
             );
-            window_attributes = window_attributes.with_name(app_id, "");
-        }
+            window_attributes.with_name(app_id, "")
+        };
         // `resumed` is a winit `ApplicationHandler` callback returning `()`,
         // so a `create_window` failure (compositor gone) has nowhere to
         // propagate to; there is no window to run without it either way.
