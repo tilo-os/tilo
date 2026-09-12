@@ -119,6 +119,8 @@ mod typography_visual_regression;
 mod undo_per_author;
 #[path = "undo_the_agents_work.rs"]
 mod undo_the_agents_work;
+#[path = "wake_scope_host.rs"]
+mod wake_scope_host;
 #[path = "warmup_no_adapter.rs"]
 mod warmup_no_adapter;
 #[path = "widget_trait_test.rs"]
