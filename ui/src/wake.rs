@@ -67,6 +67,17 @@ impl WakeScope {
         }
     }
 
+    /// Enter intentional headless/no-host execution, masking an outer scope.
+    /// Drop guards in reverse entry order, on this thread. Captures made here
+    /// stay detached after the previous construction context is restored.
+    pub fn enter_detached() -> WakeScopeGuard {
+        let previous = CURRENT.with(|current| current.replace(None));
+        WakeScopeGuard {
+            previous,
+            thread_affinity: PhantomData,
+        }
+    }
+
     /// Bind once and flush one wake if work arrived before startup.
     /// The sink must capture a sender/proxy, never an owning host reference.
     ///
@@ -367,6 +378,39 @@ mod tests {
         WakeHandle::new().wake();
         assert!(matches!(a_rx.try_recv(), Err(TryRecvError::Empty)));
         assert!(matches!(b_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn detached_entry_masks_an_outer_scope_and_restores_it() {
+        let (outer, rx) = bound_scope();
+        let _outer = outer.enter();
+        let detached = {
+            let _detached = WakeScope::enter_detached();
+            let handle = WakeHandle::new();
+            handle.wake();
+            handle
+        };
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        assert!(detached.authorize_publication());
+        detached.wake();
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        WakeHandle::new().wake();
+        assert!(outer.accepts(&rx.try_recv().unwrap()));
+    }
+
+    #[test]
+    fn detached_entry_restores_an_outer_scope_after_unwind() {
+        let (outer, rx) = bound_scope();
+        let _outer = outer.enter();
+        let result = std::panic::catch_unwind(|| {
+            let _detached = WakeScope::enter_detached();
+            WakeHandle::new().wake();
+            panic!("detached callback failed");
+        });
+        assert!(result.is_err());
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        WakeHandle::new().wake();
+        assert!(outer.accepts(&rx.try_recv().unwrap()));
     }
 
     #[test]
