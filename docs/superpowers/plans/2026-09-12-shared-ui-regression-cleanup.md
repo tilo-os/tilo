@@ -74,7 +74,8 @@ their ordinary string semantics.
 **Files:**
 - Modify: `apps/ebook/src/app.rs` (shortcut-capture pill label).
 - Modify: `apps/totp/src/app.rs` (persistence Retry label).
-- Existing verification: `ui/tests/design_token_audit.rs` and `ui/tests/app_shell_design_token_baseline.txt` (leave both unchanged).
+- Existing verification: `ui/tests/design_token_audit.rs` (leave unchanged).
+- Modify only the already-reduced Calendar row in `ui/tests/app_shell_design_token_baseline.txt`, as specified below.
 
 **Interfaces:**
 - Consumes `Theme::on_surface(surface: Color) -> OnCard`, selecting `.ink` against the actual painted background.
@@ -98,10 +99,30 @@ if capturing {
   The unique target is the `Press a key…` shortcut-capture pill whose current branch uses `Color::from_rgb8(250, 250, 252)`.
 
 - [ ] In totp's `draw_text_weighted` call for the literal `"Retry"`, replace its `Color::WHITE` argument with `theme.on_surface(theme.accent_primary).ink`. Preserve the older Add-account control and all other styling.
-- [ ] Format only the two changed source files. Run the complete design-token audit binary: `cargo nextest run -p ui --locked --profile ci -E 'binary(design_token_audit)'`. Both counts must return to their existing baselines; never set `UPDATE_APP_SHELL_DESIGN_BASELINE`.
+- [ ] Format only the two changed source files. Run the complete design-token audit binary: `cargo nextest run -p ui --locked --profile ci -E 'test(design_token_audit::)'`. Both counts must return to their existing baselines; never set `UPDATE_APP_SHELL_DESIGN_BASELINE`.
 - [ ] Run `cargo check -p ebook -p totp --lib --locked` using the designated native target. This validates both consumers; report any unrelated platform closure failure rather than expanding the patch.
 - [ ] Commit only the two app files as `fix(apps): use theme ink for accent control labels`. No new behavior-mirroring test is needed for these direct shared-token substitutions; existing theme contrast tests own the helper.
 - [ ] Controller verifies the audit and both app-library checks on Fedora at the exact commit.
+
+### Task 2 amendment: retain Calendar’s existing reduction
+
+The complete audit now reaches its stale-entry check and shows Calendar topbar
+white/black literals already fell to zero in existing commit `c21e19744`. The
+original instruction to leave every baseline entry unchanged conflicts with the
+audit’s explicit downward-ratchet contract. Do not edit its counting logic or
+restore old literals. Change exactly this baseline line:
+
+```diff
+-apps/calendar/src/topbar.rs white_or_black 3
++apps/calendar/src/topbar.rs white_or_black 0
+```
+
+Leave every other baseline line untouched. Do not invoke the regeneration flag.
+Run the complete four-test design-token audit module again and require all four
+to pass. Commit the single baseline edit as `test(ui): retain calendar theme debt reduction`.
+The two app-library checks already passed and need no repeat for this data-only
+follow-up. The reviewer reviews the original task and this amendment together;
+the controller runs both-host audit checks at the final task SHA.
 
 ## Review boundary
 
