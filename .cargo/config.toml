@@ -51,7 +51,7 @@ jobs = 4
 # x86-64 target-cpu/shadow-stack flags made every aarch64 build fail before it
 # reached the workspace.
 
-[target.'cfg(target_arch = "x86_64")']
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -67,12 +67,18 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
-[target.'cfg(target_arch = "aarch64")']
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))']
 rustflags = [
     "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
+    "--remap-path-prefix=/build=.",
+]
+
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C", "force-frame-pointers=yes",
     "--remap-path-prefix=/build=.",
 ]
 
@@ -139,10 +145,17 @@ rustflags = [
 # replaces this list and silently un-hardens the vendored C. Copy the flags
 # across if you ever need to.
 [env]
-CFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
-CXXFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
 CFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
 CXXFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+# GNU assembler/ELF switches such as `-Wa,--noexecstack` must not reach Darwin,
+# whose Apple toolchain does not accept them. Keep its cc-rs flags target-specific
+# so the supported stack protector is applied without leaking Linux-only switches.
+CFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = true }
+CXXFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = true }
+CFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
+CXXFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 
 # sccache refuses `-C incremental=`; with it on, 13,417/16,947 requests refused.
 # Here rather than Cargo.toml: a config [profile] overrides the manifest.
