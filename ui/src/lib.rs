@@ -120,6 +120,7 @@ pub mod undo;
 pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
+pub mod wake;
 pub mod warmup;
 pub mod webview;
 pub mod widget;
