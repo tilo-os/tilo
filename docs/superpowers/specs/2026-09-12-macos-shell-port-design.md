@@ -33,6 +33,26 @@ Initial target: Apple Silicon. macOS 13 is a proposed deployment minimum to
 validate against the pinned SDK/toolchain and physical machines before release.
 Intel support is a separately qualified target.
 
+### First milestone and product scope
+
+The first milestone is **real Notes and Files, with a complete capability map
+for every other app**. It hosts `dev.qos.notes` and `dev.qos.file-explorer` from
+their actual app crates on both platforms. The framework features in section 6
+are part of this milestone, including working
+Linux–Mac collaboration; merely opening both app surfaces does not satisfy it.
+
+The capability map is a deliverable of this milestone, not an assertion that
+every app already works. It covers every app manifest and names the shared
+provider or component-contract gap that blocks each unsupported app. Terminal,
+Browser and media apps follow by completing those shared services and verifying
+their existing components. Keep their app logic in the common codebase.
+
+The recommended delivery model is one Mac application containing qOS tiles.
+“Native” means native execution of qOS components and integration with the host;
+it does not require rewriting their widgets in AppKit. macOS and Linux build
+the same component definitions against their respective providers. Linux keeps
+its compositor and package-execution paths throughout the migration.
+
 ## 2. Architectural approaches
 
 | Approach | Benefit | Cost and fit |
@@ -84,19 +104,30 @@ qOS application: document model, domain actions, widget tree, local view
 
 ### Application component
 
-Evolve [`LaunchSpec`](../../../ui/src/launch.rs), which already owns root
-factories, arguments and standard startup, into a common application definition
-with standalone, embedded and headless runners. Reuse the existing
-`AppWidget: Widget` contract for embedded content. The factory accepts a host-assigned app instance,
-a document/resource binding, restoration data and an app-scoped service context.
-It returns app content and
-its lifecycle/action hooks; it does not start its own event loop when embedded.
+Extract one `ApplicationDefinition` from [`LaunchSpec`](../../../ui/src/launch.rs),
+which already owns root factories, arguments and standard startup. `LaunchSpec`
+becomes a CLI/startup adapter around that definition; standalone, embedded and
+headless runners all consume it. Reuse the existing `AppWidget: Widget` content
+contract rather than introduce a Mac widget trait.
+
+The definition contains a stable package `app_id`, display metadata, required
+and optional service capabilities, and one fallible factory:
+`create(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>`.
+These names specify the intended interface; they are not claims that these types
+exist yet.
+`HostContext` supplies instance identity, current lifetime and scoped services;
+`LaunchTarget` identifies the requested document/resource or a new document;
+`RestoreInput` supplies versioned restoration data. `AppComponent` supplies the
+real widget tree, live resources/actions and lifecycle/freeze hooks. It does not
+start an event loop. Fixed `AppKind` categories can remain presentation hints,
+but cannot serve as catalogue identity or restrict the set of registered apps.
 
 Expose a reusable factory from each application library. The standalone binary,
 headless runner and shell registry instantiate that same component. A small
-adapter can expose an existing root widget through `AppWidget`; it must not copy the app's business
-logic or reimplement a simpler shell-only version. Changes needed to expose this
-entry point are shared app-model work, not a macOS branch of the app.
+adapter can expose an existing root widget through `AppWidget`; it must not copy
+the app's business logic or reimplement a simpler shell-only version. Changes
+needed to expose this entry point are shared app-model work, not a macOS branch
+of the app.
 
 Identify each catalogue entry by its `qos-app.toml` package ID and one canonical
 application definition exported by that app crate. All three runners invoke
@@ -110,6 +141,42 @@ Results arriving after an instance closes are discarded or durably completed
 according to the operation contract; they cannot mutate a replacement instance.
 Register factories through one catalogue used by both platforms rather than
 adding OS-specific app lists or hardcoded constructor switches.
+
+The lifecycle sequence is resolve app/resource → validate capabilities → create
+instance scope → construct component → restore document and local view → mount.
+Only mounted content receives input. Background work captures its instance
+lifetime at construction; pre-mount wakes are retained until binding, and
+completions never switch their destination to another instance. On close,
+stop routing new work, persist its latest recoverable state, cancel outstanding
+instance work and detach content. Reopening a persistent instance ID creates a
+fresh lifetime token, so an old completion cannot target the new mount. A
+construction or restoration failure leaves a retryable error tile and retains
+the original persisted data.
+
+| Identity | Owner and meaning |
+| --- | --- |
+| `app_id` | Catalogue identity of application code, taken from `qos-app.toml`. |
+| `record_id` and resource address | Canonical collaborative document and its resources/history, scoped to the workspace. |
+| `instance_id` | Durable identity of one tile and its lifecycle; separate from the record it displays. |
+| `(device, instance_id)` | Locally persisted View: focus, selection, scroll and other participant-specific presentation. |
+| Mount lifetime token | Fresh per construction; invalidated on close and never reused by a replacement mount. |
+
+Two tiles opening one record share its document, but keep independent Views and
+operation contexts. Restoration reattaches to the latest canonical record; a
+stale frozen instance must not overwrite changes already merged into that record.
+The host's record service owns durable shared state; apps retain document schemas
+and domain operations. A standalone runner supplies the same service contract.
+
+This requires a shared migration of real
+[`NotesApp`](../../../apps/notes/src/app.rs), whose current standalone startup
+owns workspace/page savers and disables framework autosave. Embedded startup
+must bind those persistence operations to the host record service, with one
+writer and an explicit import of existing Notes data. Import preserves source
+data and is idempotent; an existing host record is not silently replaced by a
+local import. App-local caches or exports may remain derived data. Similarly,
+[`FileExplorerWidget`](../../../apps/file-explorer/src/files_app.rs) receives
+workspace roots, grants and path policy from its host context instead of
+discovering ambient home/FUSE state inside the hosted factory.
 
 Replace the process-global event-loop destination in
 [`LocalState` / `WakeHandle`](../../../ui/src/local_state.rs) with host-assigned
@@ -233,24 +300,41 @@ unavailable app documents and placement rather than deleting their records.
 
 ## 6. Features supplied by the host from the start
 
-1. **Persistent workspaces and app instances.** Restore documents, arrangement
-   and local view after restart. Use existing record stores and `FreezeThaw`;
-   define close/failure behavior and reject corrupt state without overwriting it.
-2. **Unified actions/resources.** One palette and discovery surface across apps;
-   GUI, CLI and agents invoke the same authorized actions with app/resource scope.
-3. **Collaboration and identity.** Reuse signed/encrypted protocol paths, device
-   enrollment, workspace roles, revocation and invitations. Native Mac setup
-   cannot require a previous Linux session.
-4. **Presence and following.** Shared document state remains distinct from each
-   participant's view. Following is explicit and reversible; local scroll/focus
-   is not continuously overwritten by another device.
-5. **Offline persistence and recovery.** Local edits survive restart and reconcile
-   after reconnect. Show connection/permission failures and bound queued work.
-   Do not invent a second sync protocol or imply that every external service is
-   available offline.
-6. **Framework accessibility and host conventions.** VoiceOver on Mac and the
-   existing Linux paths, Command/Control conventions, IME, clipboard, focus,
-   resize, drag/drop and native document integration.
+These are acceptance requirements for the Notes/Files milestone. Preserve the
+existing app-contract pillars—shared widgets, resources/actions, collaboration,
+serialization and accessibility—through the common component boundary.
+
+| Feature | Required user-visible behavior |
+| --- | --- |
+| **Tiled, persistent workspaces** | Open, focus, arrange and close real app instances. Restore documents, tile arrangement and each participant's local view after restart. Two Notes instances retain independent focus, undo context and background updates. |
+| **Unified actions and resource discovery** | The shell palette, GUI, CLI and agents discover and invoke the same authorized app/resource actions. A palette invocation targets the selected instance and produces the same result and undo boundary as the equivalent app interaction. |
+| **Collaboration and identity** | A fresh Mac profile enrolls without prior Linux setup. Mac and Linux participants exchange real document edits through the existing authenticated, encrypted protocol, with invitations, roles and revocation enforced. |
+| **Presence and explicit following** | Show collaborators' presence and allow follow/unfollow. Following never merges another participant's view into the local view or turns a remote focus update into document mutation. |
+| **Shared activity and history** | Reuse app history and the shell's workspace activity surface. Opening an app's activity request selects its actual resource/version. Preserve domain undo/redo semantics and do not manufacture duplicate history entries at the host boundary. |
+| **Offline persistence and recovery** | Local document edits survive restart and reconcile after reconnect. Corrupt records are preserved with a recoverable error; failed services expose their state. Operations that need a remote system report that requirement. |
+| **File and clipboard integration** | Files performs its supported create, rename, copy, move and trash flows through shared providers. Native file selection, clipboard and drag/drop retain grants and instance scope. Open-in-app routing uses the catalogue and reports unsupported document types. |
+| **Accessible, consistent interaction** | Shared widgets retain theme and scale settings, keyboard navigation and semantic actions. Support Command/Control conventions, IME and VoiceOver on Mac while retaining Linux accessibility. Theme and font policy belongs to the framework. |
+
+The host reuses the existing `qos-actions` dispatch and live `Widget::resources()`
+model. Portable hosting discovers commands from that resource model and resolves
+them again at invocation time. Migrate legacy `AppCommand` contributions to
+resource operations; the portable catalogue does not execute their direct
+Automerge callbacks as a parallel command path. GUI, palette and automation all
+observe the existing operation kinds:
+
+| Operation kind | Required behavior |
+| --- | --- |
+| Document | An authorized domain mutation enters the shared document with the existing action's undo/history boundary exactly once. |
+| View | A local presentation change does not enter document history or another participant's View. Follow/Reveal remains explicit. |
+| Effect | A reauthorized host/broker operation reports progress and a terminal outcome. It is not document undo and never replays because an instance is restored. |
+
+Do not create a second Mac command system or a second collaboration document
+merely to host an app.
+
+For Files, shared records and collaborative metadata remain distinct from
+machine-local paths and grants. Collaborating on a resource does not copy the
+owner's filesystem authority to another participant. Unsupported or denied file
+access remains an explicit result without discarding the shared resource.
 
 State restoration must not replay external effects. In particular, terminal
 CRDT state describes its screen projection; thawing it does not restart a
@@ -415,10 +499,11 @@ per workstream after review; it is too broad for one undifferentiated task list.
 | F. Distribution and regression | Clean-host bundle, runtime diagnostics, both-OS CI and GPU baselines. | Finder launch on declared supported OS versions, baseline host contract complete, relevant Linux checks green. |
 | Later: independent packages | Versioned child presentation bridge, compatible package selection and confinement. | Separate spec and negative isolation tests before activation on Mac. |
 
-The first useful release requires A–D and F, plus a published, verified app/service
-matrix from E. It must support complete real document apps, not only shell chrome
-or a renamed demo. This scope is an initial delivery step toward the entire
-SDK-conforming app set; it does not redefine unsupported apps as ported.
+The first useful release requires A–D and F for real Notes and Files, plus the
+complete app/service capability map from E. Later service-family releases qualify
+Terminal, Browser, media and other apps through the same contract. This sequence
+is an initial delivery step toward the entire SDK-conforming app set; it does
+not redefine unsupported apps as ported.
 
 Implementation order: establish the component and service boundary with Linux
 behavior intact, bring up the Mac host, complete baseline providers, then qualify
@@ -445,10 +530,11 @@ Use one framework conformance suite with Linux and Mac providers. Cover:
 - Provider-family flows: real terminal/PTY, file operations, web content and media
   for every family included in the advertised compatibility matrix.
 
-Test terminal thaw/reconnect for duplicate effects and verify that a required
-service failure cannot trigger a weaker execution path. Exercise two embedded
-apps with independent background wakes, and real native child views beneath
-shell overlays, before declaring multi-app hosting complete.
+Exercise two embedded apps with independent background wakes for the first
+milestone. Before qualifying Terminal, test thaw/reconnect for duplicate effects
+and verify that a required service failure cannot trigger a weaker execution
+path. Before qualifying apps with native child views, verify those views beneath
+shell overlays with correct clipping, focus and accessibility.
 
 Use a native Apple Silicon CI worker for compilation/portable tests and a
 logged-in physical Mac for window, permission, accessibility and GPU qualification.
@@ -498,15 +584,24 @@ This walkthrough establishes an initial working host; the fleet inventory still
 governs every additional app advertised as supported.
 
 1. Start a fresh Mac profile, enroll its identity and open the real Notes and
-   Files components inside the shell through the shared catalogue.
-2. Open two document instances, edit through keyboard/IME and invoke a document
-   action through the common palette. Focus, undo and background updates remain
-   scoped to the intended instance.
+   Files components inside the shell through the shared catalogue. Create a
+   Notes record, discover it in Files' workspace resources and open it through
+   the registered Notes definition. This uses a record binding, not an invented
+   file extension or the shell's lightweight Notes implementation.
+2. Open that record in two instances with independent Views. Edit through
+   keyboard/IME and invoke a document action through the common palette. Verify
+   one mutation/history boundary, appropriate undo behavior and scoped focus
+   and background updates. Open the record's activity from Files and verify the
+   selected resource/version. Exercise file operations in an explicitly granted
+   test directory.
 3. Launch the same Notes definition through the shared catalogue inside the
    production Linux shell/compositor and join the same workspace. Verify edits
-   and presence in both directions, explicit follow/unfollow, offline edits and
-   reconnect without replacing either participant's local view. A standalone
-   test client or legacy packaged-app path does not satisfy this host-parity gate.
+   and record-scoped presence in both directions, explicit follow/unfollow,
+   offline edits and reconnect without replacing either participant's local view.
+   Revoke a participant and verify that new mutations are rejected with a visible
+   access status; preserve already stored local data according to existing policy.
+   A standalone test client or legacy packaged-app path does not satisfy this
+   host-parity gate.
 4. Quit and reopen the Mac shell. Restore documents, arrangement and local view;
    opening a denied or revoked file grant reports the failure and preserves the
    affected document. Closing a tile rejects its late asynchronous updates.
