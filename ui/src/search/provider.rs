@@ -44,9 +44,10 @@ use std::borrow::Borrow;
 /// ownership of their domain records and use the returned stable snapshot
 /// offsets to materialise typed [`SearchResult`]s.
 ///
-/// Each suffix is represented by a record id and UTF-8 boundary, so storage is
-/// linear in the amount of normalised searchable text. Embedded NULs and all
-/// Unicode scalar values retain their ordinary string semantics.
+/// Posting lists narrow the candidates; complete-text verification rejects false
+/// gram combinations. Each page bounds verification work and supplies a cursor
+/// when candidates remain. Embedded NULs and all Unicode scalar values retain
+/// their ordinary string semantics.
 #[derive(Clone, Debug, Default)]
 pub struct SearchTextIndex {
     texts: Vec<String>,
@@ -1247,15 +1248,20 @@ mod tests {
     }
 
     #[test]
-    fn exact_suffix_range_does_not_lose_late_matches_to_false_candidates() {
-        let mut texts = vec!["abcXbcd"; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
+    fn bounded_pages_find_late_exact_matches_after_false_candidates() {
+        let mut texts = vec!["abcXbcd"; 296];
         texts.push("the exact abcd resource");
         let index = SearchTextIndex::new(texts);
 
-        assert_eq!(
-            index.matching_ids("abcd", DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
-        );
+        let first = index.matching_page("abcd", None, 256, 1);
+        assert!(first.ids.is_empty());
+        assert_eq!(first.inspected, 256);
+        assert_eq!(first.next_after, Some(255));
+
+        let second = index.matching_page("abcd", first.next_after, 256, 1);
+        assert_eq!(second.ids, vec![296]);
+        assert_eq!(second.inspected, 41);
+        assert_eq!(second.next_after, None);
     }
 
     fn catalog_hit(resource_id: &str, title: impl Into<String>) -> SearchResult {
