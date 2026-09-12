@@ -1491,12 +1491,10 @@ impl FrameHarness {
             None
         } else {
             match event {
-                WindowEvent::Touch(_) => Some(crate::interaction::InteractionEnvironment::TOUCH),
+                WindowEvent::Touch(_) => Some(self.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => {
-                    Some(crate::interaction::InteractionEnvironment::POINTER)
-                }
+                | WindowEvent::MouseWheel { .. } => Some(self.interaction.with_pointer_modality()),
                 WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -3283,6 +3281,36 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(value.to_bool(), Some(true));
+    }
+
+    #[test]
+    fn pointer_and_touch_preserve_keyboard_family_and_discovered_devices() {
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(Button::new("save", "Save", None)),
+            (400, 200),
+        );
+        let initial = crate::InteractionEnvironment {
+            keyboard_family: crate::interaction::KeyboardFamily::Apple,
+            available: crate::interaction::InputAvailability {
+                keyboard: true,
+                pointer: true,
+                touch: true,
+                controller: true,
+            },
+            ..crate::InteractionEnvironment::default()
+        };
+        driver.set_interaction_environment(initial);
+        driver.scroll(0.0, -1.0);
+        let pointer = driver.interaction_environment();
+        assert_eq!(pointer.keyboard_family, initial.keyboard_family);
+        assert_eq!(pointer.available, initial.available);
+        assert_eq!(pointer.pointer_precision, crate::PointerPrecision::Fine);
+        send_touch(&mut driver, winit::event::TouchPhase::Started, 10.0, 10.0);
+        let touch = driver.interaction_environment();
+        assert_eq!(touch.keyboard_family, initial.keyboard_family);
+        assert_eq!(touch.available, initial.available);
+        assert_eq!(touch.pointer_precision, crate::PointerPrecision::Coarse);
     }
 
     fn send_touch(driver: &mut Driver, phase: winit::event::TouchPhase, x: f64, y: f64) {
