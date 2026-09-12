@@ -9803,7 +9803,7 @@ impl BooksApp {
                 &binding,
                 13.0,
                 if capturing {
-                    Color::from_rgb8(250, 250, 252)
+                    theme.on_surface(theme.accent_primary).ink
                 } else {
                     c.text_primary
                 },
