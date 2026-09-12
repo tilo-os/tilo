@@ -390,6 +390,7 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
               hand a status back to"
 )]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+    let _detached = crate::wake::WakeScope::enter_detached();
     let args = parse_args_extended(
         raw_args,
         spec.allowed_flags,
@@ -491,19 +492,27 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     run_native_app(spec, &args)
 }
 
-fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
+    let scope = crate::wake::WakeScope::new();
+    let _entry = scope.enter();
     let (state, autosave) = spec.open_state_with_args.map_or_else(
         || (spec.open_state)(spec.app_id),
         |open| open(spec.app_id, args),
     );
-    let mut app = App::new(state, spec.live_root(args)?).with_autosave(autosave);
+    let root = spec.live_root(args)?;
+    let mut app = App::from_scoped_parts(scope, state, root).with_autosave(autosave);
     if let Some(text_scale) = args.text_scale {
         app.set_text_scale(text_scale);
     }
     if let Some(configure) = spec.configure_app {
+        let _configure_entry = app.enter_wake_scope();
         configure(&mut app);
     }
-    app.run();
+    Ok(app)
+}
+
+fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+    build_native_app(spec, args)?.run();
     Ok(())
 }
 
@@ -759,6 +768,32 @@ mod tests {
     static CUSTOM_LIVE_RAN: AtomicBool = AtomicBool::new(false);
     static CUSTOM_COMMAND_RAN: AtomicBool = AtomicBool::new(false);
 
+    thread_local! {
+        static LAUNCH_WAKE_CAPTURES: std::cell::RefCell<Vec<crate::WakeHandle>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn capture_launch_wake() {
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().push(crate::WakeHandle::new()));
+    }
+
+    fn scoped_open_state(_: &'static str) -> (State, crate::persist::Autosave) {
+        capture_launch_wake();
+        (
+            State::new(),
+            crate::persist::Autosave::disabled("wake routing test"),
+        )
+    }
+
+    fn scoped_root() -> Box<dyn Widget> {
+        capture_launch_wake();
+        Box::new(crate::widget::Text::new("scope test"))
+    }
+
+    fn scoped_configure(_: &mut App) {
+        capture_launch_wake();
+    }
+
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
@@ -943,6 +978,51 @@ mod tests {
             .command_handler(custom_command);
         run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
         assert!(CUSTOM_COMMAND_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn standard_live_factory_and_configuration_capture_the_same_app_lifetime() {
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        let spec = LaunchSpec::new("dev.qos.wake-test", scoped_root)
+            .open_state(scoped_open_state)
+            .configure_app(scoped_configure);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let mut outer = crate::WakeScope::new();
+        let _outer = outer.enter();
+        let app = build_native_app(&spec, &args).unwrap();
+        let captured =
+            LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert_eq!(captured.len(), 3);
+        assert!(captured.iter().all(crate::WakeHandle::is_active));
+        // Closing the parent must not close any child construction capture.
+        outer.close();
+        assert!(captured.iter().all(crate::WakeHandle::is_active));
+        drop(app);
+        assert!(captured.iter().all(|handle| !handle.is_active()));
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by LaunchSpec::command_handler"
+    )]
+    fn capture_command_wake(_: &LaunchArgs) -> Result<bool, LaunchError> {
+        capture_launch_wake();
+        Ok(true)
+    }
+
+    #[test]
+    fn cli_utility_capture_stays_detached_under_a_host_callback() {
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        let mut outer = crate::WakeScope::new();
+        let _outer = outer.enter();
+        let spec = LaunchSpec::new("dev.qos.wake-utility", dummy_root)
+            .command_handler(capture_command_wake);
+        run_with_args(&spec, &strings(&["app"])).unwrap();
+        outer.close();
+        let captures =
+            LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert_eq!(captures.len(), 1);
+        assert!(captures.iter().all(crate::WakeHandle::is_active));
     }
 
     #[test]

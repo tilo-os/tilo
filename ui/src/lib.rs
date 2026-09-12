@@ -158,7 +158,6 @@ pub use interaction::{
 };
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
-    WakeHandle,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
@@ -296,6 +295,7 @@ pub use widget::merge_strategy::{
 pub use animation::{Animated, Curve, Lerp, Spring, Transition, ease_out};
 
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
 // The capability model (`collab_types::caps`), reached through the
 // toolkit. These are re-exports, not toolkit-local copies — see
 // `permissions/mod.rs`.
