@@ -420,8 +420,11 @@ impl<T> LatestTask<T> {
         }
     }
 
-    /// Fallible form of [`Self::begin`]. Returns `None` without publishing the
-    /// running state once no unique generation remains.
+    /// Fallible form of [`Self::begin`]. `Some` means the running state and a
+    /// unique task generation were accepted for publication; it does not mean
+    /// that a wake was delivered or scheduled. Returns `None` without
+    /// publishing when the captured owner is closed, the state revision
+    /// namespace is exhausted, or the task generation namespace is exhausted.
     pub fn try_begin(&self, running: T) -> Option<TaskCompletion<T>>
     where
         T: Send + Sync + 'static,
@@ -525,14 +528,20 @@ impl<T> Clone for LocalStateWriter<T> {
 }
 
 impl<T> LocalStateWriter<T> {
-    /// Replace the value and schedule synchronization and redraw.
-    /// At revision exhaustion this is a no-op. Use [`Self::try_set`] to learn
-    /// whether a wake was scheduled.
+    /// Replace the value and request synchronization and redraw.
+    ///
+    /// The mutation is accepted only while the captured owner is open and its
+    /// revision namespace is not exhausted. The return value from
+    /// [`Self::try_set`] reports publication acceptance, not wake delivery or
+    /// scheduling.
     pub fn set(&self, value: T) {
         let _ = self.try_set(value);
     }
 
-    /// As [`Self::set`], reporting whether the replacement was published.
+    /// As [`Self::set`], reporting whether the replacement was accepted for
+    /// publication. `false` means the captured owner is closed or the
+    /// revision namespace is exhausted; no wake delivery or scheduling is
+    /// implied by `true`.
     pub fn try_set(&self, value: T) -> bool {
         if !self.state.try_set(value) {
             return false;
@@ -541,14 +550,20 @@ impl<T> LocalStateWriter<T> {
         true
     }
 
-    /// Mutate the value once and schedule synchronization and redraw.
-    /// At revision exhaustion this is a no-op. Use [`Self::try_update`] to
-    /// learn whether a wake was scheduled.
+    /// Mutate the value once and request synchronization and redraw.
+    ///
+    /// The mutation is accepted only while the captured owner is open and its
+    /// revision namespace is not exhausted. The return value from
+    /// [`Self::try_update`] reports publication acceptance, not wake delivery
+    /// or scheduling.
     pub fn update(&self, update: impl FnOnce(&mut T)) {
         let _ = self.try_update(update);
     }
 
-    /// As [`Self::update`], reporting whether the mutation was published.
+    /// As [`Self::update`], reporting whether the mutation was accepted for
+    /// publication. `false` means the captured owner is closed or the
+    /// revision namespace is exhausted; the callback is not invoked. `true`
+    /// does not mean that a wake was delivered or scheduled.
     pub fn try_update(&self, update: impl FnOnce(&mut T)) -> bool {
         if !self.state.try_update(update) {
             return false;
