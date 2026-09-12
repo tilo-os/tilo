@@ -978,7 +978,7 @@ impl WaylandClipboard {
         let inflight = Arc::clone(refresh_inflight);
         let worker_inflight = Arc::clone(&inflight);
         let current_generation = Arc::clone(refresh_generation);
-        let wake = self.wake;
+        let wake = self.wake.clone();
         let (immediate_tx, immediate_rx) = std::sync::mpsc::sync_channel(1);
         if std::thread::Builder::new()
             .name("qos-wayland-clipboard-read".into())

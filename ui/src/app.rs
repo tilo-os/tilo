@@ -135,7 +135,7 @@ pub enum UserEvent {
     External(String),
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
-    Wake,
+    Wake(crate::wake::WakeEvent),
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
     AccessKit(accesskit_winit::WindowEvent),
 }
@@ -444,6 +444,7 @@ pub struct ControlBindingCoverage {
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
 )]
 pub struct App {
+    wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
@@ -657,28 +658,115 @@ impl App {
         context
     }
 
+    /// Construct an explicitly detached app for headless or test execution.
+    ///
+    /// This masks any ambient host while App setup runs. It cannot retroactively
+    /// change handles already captured while constructing `state` or
+    /// `root_widget`. Native launchers must use [`Self::from_factory`],
+    /// [`Self::try_from_factory`], or [`Self::from_scoped_parts`].
     pub fn new(state: State, root_widget: Box<dyn Widget>) -> Self {
+        let _entry = crate::wake::WakeScope::enter_detached();
         Self::with_collaboration_manager(state, root_widget, CollaborationManager::new())
     }
 
-    /// Construct an app with an explicitly connected collaboration manager.
+    /// Construct an explicitly detached app with a connected collaboration
+    /// manager for headless or test execution.
     ///
-    /// Launchers normally use [`Self::new`], which discovers the inherited
-    /// runtime service. Headless hosts and integration harnesses already own
-    /// a connected endpoint, so accepting it here avoids process-global
-    /// environment mutation and keeps those callers on the production typed
-    /// transport.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "construction explicitly initializes all retained application state before applying startup projections"
-    )]
+    /// The detached context applies during App setup only. It does not adopt
+    /// handles captured earlier by `state`, `root_widget`, or the manager.
     pub fn with_collaboration_manager(
         state: State,
         root_widget: Box<dyn Widget>,
         collab_manager: CollaborationManager,
     ) -> Self {
+        Self::with_parts(None, state, root_widget, collab_manager)
+    }
+
+    /// Construct a live app whose root factory captures a fresh owner.
+    pub fn from_factory(state: State, factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let root = factory();
+        Self::from_scoped_parts(scope, state, root)
+    }
+
+    /// Fallible form of [`Self::from_factory`]. A failed factory closes all
+    /// capabilities it created before returning the error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error produced by `factory`.
+    pub fn try_from_factory<E>(
+        state: State,
+        factory: impl FnOnce() -> Result<Box<dyn Widget>, E>,
+    ) -> Result<Self, E> {
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let root = factory()?;
+        Ok(Self::from_scoped_parts(scope, state, root))
+    }
+
+    /// Transfer an existing owner into a live app.
+    ///
+    /// The caller must enter this exact scope before constructing all state,
+    /// models, and widgets passed here. The owner is bound once at native
+    /// startup; detached or foreign captures cannot be adopted retroactively.
+    pub fn from_scoped_parts(
+        wake_scope: crate::wake::WakeScope,
+        state: State,
+        root_widget: Box<dyn Widget>,
+    ) -> Self {
+        let _entry = wake_scope.enter();
+        Self::with_parts(
+            Some(wake_scope),
+            state,
+            root_widget,
+            CollaborationManager::new(),
+        )
+    }
+
+    pub fn enter_wake_scope(&self) -> crate::wake::WakeScopeGuard {
+        self.wake_scope.as_ref().map_or_else(
+            crate::wake::WakeScope::enter_detached,
+            crate::wake::WakeScope::enter,
+        )
+    }
+
+    fn close_wake_scope(&mut self) {
+        if let Some(scope) = self.wake_scope.as_mut() {
+            scope.close();
+        }
+    }
+
+    fn accept_wake(&mut self, event: &crate::wake::WakeEvent) -> bool {
+        if !self
+            .wake_scope
+            .as_ref()
+            .is_some_and(|scope| scope.accepts(event))
+        {
+            return false;
+        }
+        self.needs_sync = true;
+        true
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "construction explicitly initializes all retained application state before applying startup projections"
+    )]
+    fn with_parts(
+        wake_scope: Option<crate::wake::WakeScope>,
+        state: State,
+        root_widget: Box<dyn Widget>,
+        collab_manager: CollaborationManager,
+    ) -> Self {
+        let _entry = wake_scope.as_ref().map_or_else(
+            crate::wake::WakeScope::enter_detached,
+            crate::wake::WakeScope::enter,
+        );
         let configured_theme = Theme::configured();
         let mut app = Self {
+            wake_scope,
             state,
             root_widget,
             text_renderer: TextRenderer::new(),
@@ -1158,6 +1246,7 @@ impl App {
     }
 
     pub fn set_action_transport(&mut self, transport: Box<dyn qos_actions::ActionTransport>) {
+        let _entry = self.enter_wake_scope();
         self.action_transport = transport;
     }
 
@@ -1328,6 +1417,7 @@ impl App {
     /// the app plus ordinary controls projected from its retained semantic
     /// tree. Ctrl+K, scripts, and agents therefore consume one catalogue.
     pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
+        let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();
         self.resource_cache
             .borrow()
@@ -1341,6 +1431,7 @@ impl App {
     /// legacy controls and stale/duplicate action addresses into a coverage
     /// report without inspecting widget implementation details.
     pub fn control_action_coverage(&self) -> Vec<ControlBindingCoverage> {
+        let _entry = self.enter_wake_scope();
         let resources = self.collect_resources();
         self.control_action_coverage_for(&resources)
     }
@@ -2747,6 +2838,7 @@ impl App {
     }
 
     pub fn open_action_palette(&mut self) {
+        let _entry = self.enter_wake_scope();
         let resources = self.collect_local_resources();
         let providers = self.root_widget.search_providers();
         let mut palette = crate::action_palette::ActionPalette::new();
@@ -2999,6 +3091,7 @@ impl App {
     /// Layout grows to fit so text never clips; the value is clamped to a
     /// sane range by the theme.
     pub fn set_text_scale(&mut self, factor: f32) {
+        let _entry = self.enter_wake_scope();
         self.text_scale = factor;
         self.rebuild_theme();
         self.layout_dirty = true;
@@ -3010,6 +3103,7 @@ impl App {
     }
 
     pub fn set_ui_scale(&mut self, factor: f32) {
+        let _entry = self.enter_wake_scope();
         self.ui_scale = factor;
         self.rebuild_theme();
         self.layout_dirty = true;
@@ -3022,6 +3116,7 @@ impl App {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        let _entry = self.enter_wake_scope();
         if self.interaction == environment {
             return;
         }
@@ -3038,6 +3133,7 @@ impl App {
     /// Override platform HIG conventions for a native shell or deterministic
     /// cross-platform test. Ordinary apps use the host default.
     pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        let _entry = self.enter_wake_scope();
         if self.platform == conventions {
             return;
         }
@@ -3057,6 +3153,7 @@ impl App {
 
     /// Off restores the captured base theme, not a hard-coded default.
     pub fn set_high_contrast(&mut self, on: bool) {
+        let _entry = self.enter_wake_scope();
         if self.a11y.high_contrast == on {
             return;
         }
@@ -3067,6 +3164,7 @@ impl App {
     }
 
     pub fn toggle_high_contrast(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
         self.set_high_contrast(!self.a11y.high_contrast);
         self.a11y.high_contrast
     }
@@ -3076,6 +3174,7 @@ impl App {
     }
 
     pub fn set_reduce_motion(&mut self, on: bool) {
+        let _entry = self.enter_wake_scope();
         if self.a11y.reduce_motion == on {
             return;
         }
@@ -3086,6 +3185,7 @@ impl App {
     /// Low-vision preferences are re-applied on top, so changing the base
     /// theme doesn't discard them.
     pub fn set_theme(&mut self, theme: Theme) {
+        let _entry = self.enter_wake_scope();
         self.base_theme = theme;
         self.rebuild_theme();
         self.layout_dirty = true;
@@ -3095,6 +3195,7 @@ impl App {
     /// Disabling stops in-flight speech and returns every narration call
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
+        let _entry = self.enter_wake_scope();
         match (enabled, self.screen_reader.is_some()) {
             (true, false) => {
                 self.screen_reader = Some(Self::configured_screen_reader());
@@ -3119,6 +3220,7 @@ impl App {
     /// headless tests can assert on spoken phrases).
     #[doc(hidden)]
     pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
+        let _entry = self.enter_wake_scope();
         self.screen_reader = reader;
     }
 
@@ -3301,6 +3403,7 @@ impl App {
 
     /// Level-triggered: a no-op once the user's choice is caught up.
     pub(crate) fn reconcile_appearance(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
         if !self.appearance_reconcile {
             return false;
         }
@@ -3453,6 +3556,7 @@ impl App {
     /// Decides *whether* to publish and under what scope, not what space the
     /// pointer is in — see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
+        let _entry = self.enter_wake_scope();
         self.presence_broadcast_scope.clone_from(&key);
         // Reset the throttle so a new scope's first move fires immediately.
         self.last_pointer_broadcast = None;
@@ -3499,6 +3603,7 @@ impl App {
         viewport: vello::kurbo::Rect,
         point: vello::kurbo::Point,
     ) -> bool {
+        let _entry = self.enter_wake_scope();
         if let Some(uid) = self.presence_ctx.hit_test_offscreen_mist(viewport, point) {
             self.followed_peer = Some(uid);
             true
@@ -3511,6 +3616,7 @@ impl App {
         &self.permission_ctx
     }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
+        let _entry = self.enter_wake_scope();
         self.permission_ctx = ctx;
         // See `invalidate_widget_resource_cache`: once the numeric namespace
         // is exhausted, dropping the projection is the collision-free way to
@@ -3531,6 +3637,7 @@ impl App {
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
+        let _entry = self.enter_wake_scope();
         // Fan out to the optional out-of-band sink first (the shell's Iroh
         // bridge) so a slow socket never delays the network path.
         if let Some(sink) = self.presence_broadcast_sink.as_ref() {
@@ -3628,11 +3735,13 @@ impl App {
     /// without moving anything; the viewport snaps to them once their first
     /// View arrives.
     pub fn follow(&mut self, peer_id: impl Into<String>) {
+        let _entry = self.enter_wake_scope();
         self.followed_peer = Some(peer_id.into());
         self.apply_follow();
     }
 
     pub fn unfollow(&mut self) {
+        let _entry = self.enter_wake_scope();
         self.followed_peer = None;
     }
 
@@ -3660,6 +3769,7 @@ impl App {
     /// event loop.
     #[doc(hidden)]
     pub fn poll_and_apply_collab_events(&mut self) {
+        let _entry = self.enter_wake_scope();
         let events = self.collab_manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
@@ -3704,6 +3814,7 @@ impl App {
         reason = "one ordered pump drains directory callbacks and applies every collaboration lifecycle event before the next frame"
     )]
     pub fn pump_collab_presence(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
         // Replies to broker pull-directory callbacks must run before regular
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner
@@ -3882,6 +3993,7 @@ impl App {
     /// `MemoryRelay`.
     #[doc(hidden)]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
+        let _entry = self.enter_wake_scope();
         self.root_widget.handle_collab_event(&event);
         match event {
             CollabEvent::RemotePresenceUpdate {
@@ -4446,6 +4558,7 @@ impl App {
     /// `scale` is the window scale factor so bounds land in physical pixels
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
+        let _entry = self.enter_wake_scope();
         let resources = self.collect_declared_resources();
         crate::accesskit_bridge::build_tree_update_with_resources(
             self.root_widget.as_ref(),
@@ -4485,6 +4598,8 @@ impl App {
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
         use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
+
+        let _entry = self.enter_wake_scope();
 
         self.refresh_control_action_availability();
         let argument = match action {
@@ -4641,6 +4756,7 @@ impl App {
     /// Node identity is preserved for everything that recurred, so a
     /// consumer reacts to just the diff.
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
+        let _entry = self.enter_wake_scope();
         let resources = self.collect_declared_resources();
         self.semantic_tree.refresh(
             self.root_widget.as_ref(),
@@ -4674,6 +4790,8 @@ impl App {
         arg: Option<&str>,
     ) -> Result<bool, String> {
         use crate::a11y_tree::SemanticActionKind;
+
+        let _entry = self.enter_wake_scope();
         // Cloned so the mutation below is free to borrow doc/registry/transport.
         let Some(action) = self.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
@@ -4793,6 +4911,7 @@ impl App {
     /// Lets headless tests stand the App up without spinning a winit loop.
     #[doc(hidden)]
     pub fn init_layout(&mut self) {
+        let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(
@@ -4824,6 +4943,7 @@ impl App {
     /// loop.
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
+        let _entry = self.enter_wake_scope();
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         self.invalidate_widget_resource_cache();
         self.update_focusable_order();
@@ -4837,6 +4957,7 @@ impl App {
     /// with no caret restore, since the field legitimately changed.
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
+        let _entry = self.enter_wake_scope();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -4899,7 +5020,7 @@ impl App {
     ///
     /// ```ignore
     /// let (state, autosave) = ui::persist::open("dev.qos.my-app");
-    /// ui::App::new(state, my_app::app_root())
+    /// ui::App::from_factory(state, my_app::app_root)
     ///     .with_autosave(autosave)
     ///     .run();
     /// ```
@@ -4944,6 +5065,7 @@ impl App {
         records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
     ) -> Self {
+        let _entry = self.enter_wake_scope();
         self.records = Some(records);
         self.room_index = Some(room_index);
         self
@@ -4961,6 +5083,7 @@ impl App {
     /// change of address — without re-announcing it, deltas keep publishing
     /// under the previous record's name.
     pub fn record_tick(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
         let Some(set) = self.records.as_mut() else {
             return false;
         };
@@ -5051,6 +5174,7 @@ impl App {
     /// or if running it fails — there is no app without one, so there is no
     /// meaningful fallback.
     #[allow(
+        clippy::expect_used,
         clippy::unwrap_used,
         reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
     )]
@@ -5058,15 +5182,28 @@ impl App {
     where
         F: FnOnce(EventLoopProxy<UserEvent>),
     {
+        assert!(
+            self.wake_scope.is_some(),
+            "live App requires from_factory, try_from_factory, or from_scoped_parts"
+        );
         let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
         let proxy = event_loop.create_proxy();
-        let _state_wake = crate::local_state::install_event_loop_proxy(proxy.clone());
+        let wake_proxy = proxy.clone();
+        self.wake_scope
+            .as_mut()
+            .unwrap()
+            .bind(move |event| {
+                let _ = wake_proxy.send_event(UserEvent::Wake(event));
+            })
+            .expect("App wake scope must be open and unbound at native startup");
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
-        setup(proxy);
-
-        self.init_layout();
+        {
+            let _entry = self.enter_wake_scope();
+            setup(proxy);
+            self.init_layout();
+        }
 
         let mut handler = AppHandler {
             app: self,
@@ -5086,6 +5223,18 @@ impl App {
             dispatching_touch_pointer: false,
         };
         event_loop.run_app(&mut handler).unwrap();
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.close_wake_scope();
+        let _entry = self.enter_wake_scope();
+        let root = std::mem::replace(
+            &mut self.root_widget,
+            Box::new(crate::widget::Container::new()),
+        );
+        drop(root);
     }
 }
 
@@ -5790,6 +5939,7 @@ impl AppHandler {
         event_loop: &ActiveEventLoop,
         presenter: &Arc<Window>,
     ) {
+        let _entry = self.app.enter_wake_scope();
         let request = self.app.root_widget.audience_presentation_request();
         let monitors: Vec<winit::monitor::MonitorHandle> = presenter.available_monitors().collect();
         let primary_monitor = presenter.primary_monitor();
@@ -5881,6 +6031,7 @@ impl AppHandler {
     /// surface lifetime. This is deliberately idempotent: hotplug, explicit
     /// stop, and process teardown can race through the same state transition.
     fn close_audience_presentation(&mut self) {
+        let _entry = self.app.enter_wake_scope();
         let Some(mut audience) = self.audience_presentation.take() else {
             return;
         };
@@ -5896,6 +6047,7 @@ impl AppHandler {
     /// synchronising a second document. The root is responsible for a pure
     /// audience projection of the same model used by the presenter surface.
     fn handle_audience_redraw(&mut self) -> bool {
+        let _entry = self.app.enter_wake_scope();
         let Some(audience) = self.audience_presentation.as_mut() else {
             return false;
         };
@@ -5997,6 +6149,7 @@ impl AppHandler {
     }
 
     fn sync_ime(&mut self, window: &Window) {
+        let _entry = self.app.enter_wake_scope();
         let next = self.app.ime_window_state();
         if next == self.ime_state {
             return;
@@ -6027,6 +6180,7 @@ impl AppHandler {
         token: String,
         rect: KurboRect,
     ) -> Result<(), String> {
+        let _entry = self.app.enter_wake_scope();
         if let Some(existing) = self
             .floating_windows
             .iter_mut()
@@ -6090,6 +6244,7 @@ impl AppHandler {
     }
 
     fn suspend_native_floating_window(&mut self, id: &str) -> bool {
+        let _entry = self.app.enter_wake_scope();
         let Some(surface) = self
             .floating_windows
             .iter_mut()
@@ -6104,6 +6259,7 @@ impl AppHandler {
     }
 
     fn close_native_floating_window(&mut self, id: &str) -> bool {
+        let _entry = self.app.enter_wake_scope();
         let Some(index) = self
             .floating_windows
             .iter()
@@ -6120,6 +6276,7 @@ impl AppHandler {
     }
 
     fn apply_floating_host_messages(&mut self, event_loop: &ActiveEventLoop) -> bool {
+        let _entry = self.app.enter_wake_scope();
         let mut changed = false;
         for message in self.app.take_floating_host_messages() {
             match message {
@@ -6198,6 +6355,7 @@ impl AppHandler {
         // finish. Ten seconds remains a bounded failure path without turning
         // ordinary slow device discovery into UX churn.
         const FIRST_BUFFER_DEADLINE: Duration = Duration::from_secs(10);
+        let _entry = self.app.enter_wake_scope();
         let stalled = self
             .floating_windows
             .iter()
@@ -6226,6 +6384,7 @@ impl AppHandler {
     }
 
     fn sync_native_floating_geometry(&mut self) -> bool {
+        let _entry = self.app.enter_wake_scope();
         let presentations = self.app.root_widget.floating_surface_presentations();
         let mut changed = false;
         for surface in &mut self.floating_windows {
@@ -6254,6 +6413,7 @@ impl AppHandler {
     }
 
     fn handle_floating_redraw(&mut self, index: usize) -> bool {
+        let _entry = self.app.enter_wake_scope();
         let (app, surfaces) = (&mut self.app, &mut self.floating_windows);
         let Some(surface) = surfaces.get_mut(index) else {
             return false;
@@ -6350,6 +6510,7 @@ impl AppHandler {
         desktop_rect: KurboRect,
         event: WindowEvent,
     ) {
+        let _entry = self.app.enter_wake_scope();
         let scale = window.scale_factor();
         let event = match event {
             WindowEvent::CursorMoved {
@@ -6421,6 +6582,7 @@ impl AppHandler {
     /// verify against.
     #[allow(clippy::too_many_lines, reason = "see doc comment above")]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+        let _entry = self.app.enter_wake_scope();
         if self.render.is_none() {
             qos_startup_metrics::mark("first-redraw-init-render-start");
             if let Err(reason) = self.init_render(window) {
@@ -6856,6 +7018,7 @@ impl AppHandler {
     /// no clippy/cargo loop available here to verify against.
     #[allow(clippy::too_many_lines, reason = "see doc comment above")]
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
+        let _entry = self.app.enter_wake_scope();
         let event = other;
         let app = &mut self.app;
         let detected_interaction = if self.dispatching_touch_pointer {
@@ -7433,7 +7596,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
     // DeviceId is opaque and the dispatch chain never inspects it (same
     // trick `shell::compositor::native` uses headless).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "winit requires the complete synthetic event dispatch at this callback boundary"
+    )]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let _entry = self.app.enter_wake_scope();
+        let event = match event {
+            UserEvent::Wake(wake) => {
+                if self.app.accept_wake(&wake)
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
+                return;
+            }
+            other => other,
+        };
         let Some(window) = self.window.clone() else {
             return;
         };
@@ -7480,10 +7659,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
-            UserEvent::Wake => {
-                self.app.needs_sync = true;
-                window.request_redraw();
-            }
+            UserEvent::Wake(_) => {}
             UserEvent::AccessKit(ak_event) => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
@@ -7533,6 +7709,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let _entry = self.app.enter_wake_scope();
         // Can fire more than once (suspend/resume on mobile).
         if self.window.is_some() {
             return;
@@ -7611,6 +7788,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// `RenderSurface<'static>` references it, and wgpu may panic if the
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.app.close_wake_scope();
+        let _entry = self.app.enter_wake_scope();
         // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
         // before the native views and window disappear, so external clients
         // receive the provider's normal unregister/teardown rather than being
@@ -7642,6 +7821,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        let _entry = self.app.enter_wake_scope();
         if self
             .audience_presentation
             .as_ref()
@@ -7815,6 +7995,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         reason = "winit idle work must remain ordered within its single lifecycle callback"
     )]
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
             return;
         };
@@ -10221,6 +10402,8 @@ impl crate::view::FreezeThaw for App {
     fn capture_view(&self) -> crate::view::View {
         use crate::view::{FocusView, View, ViewRect};
 
+        let _entry = self.enter_wake_scope();
+
         let focus = self.focused_node.and_then(|id| {
             let ordinal = self.focusable_order.iter().position(|&x| x == id)?;
             let ephemeral = self
@@ -10260,6 +10443,7 @@ impl crate::view::FreezeThaw for App {
     /// `open_resource` is carried for presence/reboot to reopen the record;
     /// record-navigation itself is the host's and is not driven here.
     fn restore_view(&mut self, view: &crate::view::View) {
+        let _entry = self.enter_wake_scope();
         self.root_widget
             .restore_view_state(&crate::view::ViewContribution {
                 scroll: view.scroll.clone(),
@@ -11996,5 +12180,278 @@ mod damage_lifecycle_tests {
 
         widget.mark_drawn();
         assert!(!widget.dirty);
+    }
+}
+
+#[cfg(test)]
+mod wake_integration_tests {
+    use super::*;
+    use crate::view::{FreezeThaw, ViewContribution};
+    use crate::wake::{WakeEvent, WakeHandle, WakeScope};
+    use crate::{LatestRequest, LocalState};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+    fn bound_scope() -> (WakeScope, Receiver<WakeEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let mut scope = WakeScope::new();
+        scope
+            .bind(move |event| {
+                let _ = tx.send(event);
+            })
+            .unwrap();
+        (scope, rx)
+    }
+
+    type Captures = Rc<RefCell<Vec<(&'static str, LatestRequest<u32>)>>>;
+
+    struct CaptureRoot {
+        captures: Captures,
+    }
+
+    impl CaptureRoot {
+        fn capture(&self, label: &'static str) {
+            self.captures
+                .borrow_mut()
+                .push((label, LatestRequest::new()));
+        }
+    }
+
+    impl Drop for CaptureRoot {
+        fn drop(&mut self) {
+            self.capture("drop");
+        }
+    }
+
+    impl Widget for CaptureRoot {
+        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+            self.capture("sync");
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.capture("layout");
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+
+        fn draw(
+            &mut self,
+            _: &mut vello::Scene,
+            _: vello::kurbo::Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "signature is fixed by the Widget trait"
+        )]
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+            self.capture("event");
+        }
+
+        fn name(&self) -> &str {
+            "capture-root"
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+
+        fn view_state(&self) -> Option<ViewContribution> {
+            self.capture("capture-view");
+            Some(ViewContribution::default())
+        }
+
+        fn restore_view_state(&mut self, _: &ViewContribution) {
+            self.capture("restore-view");
+        }
+    }
+
+    #[test]
+    fn factory_state_stays_owned_before_binding_and_after_return() {
+        let mut captured = None;
+        let mut app = App::from_factory(State::new(), || {
+            let state = LocalState::new(0);
+            state.writer().set(1);
+            captured = Some(state);
+            Box::new(crate::widget::Text::new("root"))
+        });
+        let state = captured.unwrap();
+        let (tx, rx) = mpsc::channel();
+        app.wake_scope
+            .as_mut()
+            .unwrap()
+            .bind(move |event| {
+                let _ = tx.send(event);
+            })
+            .unwrap();
+        let pending = rx.try_recv().unwrap();
+        app.needs_sync = false;
+        assert!(app.accept_wake(&pending));
+        assert!(app.needs_sync);
+        assert_eq!(state.get(), 1);
+        drop(app);
+        assert!(!state.writer().try_set(2));
+    }
+
+    #[test]
+    fn transfer_preserves_the_exact_owner_and_rejects_foreign_events() {
+        let (scope, rx) = bound_scope();
+        let (other, other_rx) = bound_scope();
+        let state = {
+            let _entry = scope.enter();
+            LocalState::new(0)
+        };
+        let mut app = App::from_scoped_parts(
+            scope,
+            State::new(),
+            Box::new(crate::widget::Text::new("root")),
+        );
+        state.writer().set(1);
+        let current = rx.try_recv().unwrap();
+        other.handle().wake();
+        let foreign = other_rx.try_recv().unwrap();
+        app.needs_sync = false;
+        assert!(!app.accept_wake(&foreign));
+        assert!(!app.needs_sync);
+        assert!(app.accept_wake(&current));
+        assert!(app.needs_sync);
+        app.close_wake_scope();
+        app.needs_sync = false;
+        assert!(!app.accept_wake(&current));
+        assert!(!app.needs_sync);
+    }
+
+    #[test]
+    fn fallible_factory_error_closes_captures_and_restores_parent_context() {
+        let (outer, rx) = bound_scope();
+        let _outer = outer.enter();
+        let mut captured = None;
+        let result: Result<App, &'static str> = App::try_from_factory(State::new(), || {
+            captured = Some(LocalState::new(0));
+            Err("factory failed")
+        });
+        assert!(matches!(result, Err("factory failed")));
+        assert!(!captured.unwrap().writer().try_set(1));
+        WakeHandle::new().wake();
+        assert!(outer.accepts(&rx.try_recv().unwrap()));
+    }
+
+    #[test]
+    fn factory_unwind_closes_captures_and_restores_parent_context() {
+        let (outer, rx) = bound_scope();
+        let _outer = outer.enter();
+        let mut captured = None;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            App::from_factory(State::new(), || {
+                captured = Some(LocalState::new(0));
+                panic!("factory panicked");
+            })
+        }));
+        assert!(result.is_err());
+        assert!(!captured.unwrap().writer().try_set(1));
+        WakeHandle::new().wake();
+        assert!(outer.accepts(&rx.try_recv().unwrap()));
+    }
+
+    #[test]
+    fn callback_created_requests_keep_app_owner_when_begun_elsewhere() {
+        let (scope, rx) = bound_scope();
+        let (other, other_rx) = bound_scope();
+        let captures = Captures::default();
+        let root = {
+            let _entry = scope.enter();
+            Box::new(CaptureRoot {
+                captures: Rc::clone(&captures),
+            })
+        };
+        let mut app = App::from_scoped_parts(scope, State::new(), root);
+        {
+            let _other = other.enter();
+            app.init_layout();
+            app.refresh_focus_order();
+            let view = app.capture_view();
+            app.restore_view(&view);
+        }
+        let mut requests = std::mem::take(&mut *captures.borrow_mut());
+        for label in ["layout", "sync", "capture-view", "restore-view"] {
+            assert!(requests.iter().any(|(actual, _)| *actual == label));
+        }
+        for (_, mut request) in requests.drain(..) {
+            let completion = {
+                let _other = other.enter();
+                request.begin()
+            };
+            assert!(
+                std::thread::spawn(move || completion.complete(7))
+                    .join()
+                    .unwrap()
+            );
+            assert!(app.accept_wake(&rx.try_recv().unwrap()));
+            assert_eq!(request.try_take(), Some(7));
+        }
+        assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
+        {
+            let _other = other.enter();
+            drop(app);
+        }
+        let mut after_drop = std::mem::take(&mut *captures.borrow_mut());
+        assert!(after_drop.iter().any(|(label, _)| *label == "drop"));
+        for (_, request) in &mut after_drop {
+            assert!(request.try_begin().is_none());
+        }
+        assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn detached_app_callbacks_mask_an_ambient_host() {
+        let (outer, rx) = bound_scope();
+        let _outer = outer.enter();
+        let captures = Captures::default();
+        let mut app = App::new(
+            State::new(),
+            Box::new(CaptureRoot {
+                captures: Rc::clone(&captures),
+            }),
+        );
+        app.refresh_focus_order();
+        let mut requests = std::mem::take(&mut *captures.borrow_mut());
+        assert!(!requests.is_empty());
+        for (_, request) in &mut requests {
+            assert!(request.begin().complete(1));
+            assert_eq!(request.try_take(), Some(1));
+        }
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        WakeHandle::new().wake();
+        assert!(outer.accepts(&rx.try_recv().unwrap()));
+    }
+
+    #[test]
+    #[should_panic(expected = "live App requires from_factory")]
+    fn detached_native_startup_fails_before_creating_an_event_loop() {
+        App::new(State::new(), Box::new(crate::widget::Text::new("root"))).run();
     }
 }
