@@ -1304,8 +1304,25 @@ fn draw_rich_strikes(
 
 impl TextRenderer {
     pub fn new() -> Self {
+        Self::with_font_system(configured_font_system())
+    }
+
+    ///
+    /// # Errors
+    ///
+    /// Returns the catalog's packaging error if its manifest or fonts cannot
+    /// be loaded and validated.
+    pub fn with_font_catalog(
+        catalog: &crate::font_catalog::FontCatalog,
+    ) -> Result<Self, crate::font_catalog::FontCatalogError> {
+        Ok(Self::with_font_system(
+            crate::font_catalog::configured_font_system_with_catalog(catalog)?,
+        ))
+    }
+
+    fn with_font_system(font_system: FontSystem) -> Self {
         Self {
-            font_system: configured_font_system(),
+            font_system,
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
             measure_cache: HashMap::with_capacity(256),
@@ -2225,6 +2242,21 @@ impl TextRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_catalog_constructs_the_production_renderer_and_caches() {
+        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            "en-US",
+        );
+        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+        let first = renderer.measure("Reading", 16.0, None);
+        let second = renderer.measure("Reading", 16.0, None);
+        assert_eq!(first, second);
+        assert!(first.0 > 0.0 && first.1 > 0.0);
+        assert_eq!(renderer.hits, 1);
+        assert_eq!(renderer.misses, 1);
+    }
 
     struct EveryThirdByte;
 
