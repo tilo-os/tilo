@@ -1287,6 +1287,8 @@ Use each host's isolated target directory and existing supported features. A bas
 
 ### Task 3: Verify the reusable host seam under multiple mounts and reopen
 
+**Controller amendment from Task 2 review:** Also correct only the API documentation in `ui/src/local_state.rs` for `LatestTask::try_begin`, `LocalStateWriter::{set,try_set,update,try_update}`. State that the return value means publication was accepted, not that a wake was delivered/scheduled. Document closed-owner and exhausted-revision rejection and the task-generation rejection. Preserve implementation behavior. This is the outstanding Minor documentation/spec finding from Task 2 and is intentionally covered by this task's review; do not add implementation changes or repeat Task 2 runtime suites for a documentation edit.
+
 **Files:** Create `ui/tests/wake_scope_host.rs`; modify `ui/tests/it.rs` to register the module. `ui/Cargo.toml` has `autotests = false` and the consolidated `it` test binary, so an unregistered file would execute no tests. No production component contract or shell catalogue is added.
 
 **Interfaces:** Consumes production `ui::{WakeScope, WakeEvent, LocalState, LatestTask, LatestRequest}` and `WakeScope::enter_detached` from Tasks 1–2. This test host deliberately uses existing stable `u64` mount keys only inside the fixture; it does not propose a new public instance-id type. The sink sends `(mount_id, WakeEvent)`; dispatch checks lookup and then `scope.accepts` before synchronization. Never insert an entry when dispatching a wake.
