@@ -41,10 +41,11 @@ their actual app crates on both platforms. The framework features in section 6
 are part of this milestone, including working
 Linux–Mac collaboration; merely opening both app surfaces does not satisfy it.
 
-The capability map is a deliverable of this milestone, not an assertion that
-every app already works. It covers every app manifest and names the shared
-provider or component-contract gap that blocks each unsupported app. Terminal,
-Browser and media apps follow by completing those shared services and verifying
+The [app capability map](2026-09-12-macos-app-capability-map.md) inventories all
+47 current manifests. It is a source audit and qualification plan, not an
+assertion that every app already works. Maintain it through delivery, recording
+the shared provider or component-contract gap that blocks each unsupported app.
+Terminal, Browser and media apps follow by completing those shared services and verifying
 their existing components. Keep their app logic in the common codebase.
 
 The recommended delivery model is one Mac application containing qOS tiles.
@@ -134,6 +135,11 @@ application definition exported by that app crate. All three runners invoke
 that definition. Registration/conformance checks reject duplicate IDs, missing
 factories and substitute shell-owned implementations registered under a real
 app's ID. A matching title or screenshot is insufficient evidence of app parity.
+
+The manifest inventory includes non-tile roles: `dev.qos.agent` is a CLI service,
+and `dev.qos.osk` is a shell input surface. Qualify their existing service/input
+roles and record which GUI checks do not apply. Do not create a fake tile or
+require a GUI factory for the agent service merely to fill the catalogue.
 
 The host owns mount, focus, resize, suspension, restoration, unmount and service
 cancellation. Use stable instance IDs to associate records, events and commands.
@@ -269,6 +275,12 @@ For file authority, prefer granted handles/resource IDs with display names over
 bare path strings. A host provider resolves those handles and enforces their
 scope; the app does not infer access rights from a displayed path.
 
+The [Files acceptance contract](2026-09-12-macos-app-capability-map.md#notes-and-files-acceptance)
+also defines file-operation partial failure and cancellation, granted-root
+change observation, and host-owned file clipboard/drag payloads. These are
+required for the first milestone so file operations and cross-app transfers
+retain the same meaning on macOS and Linux.
+
 Native child views require special host integration. The existing
 [`NativeViewHost`](../../../ui/src/widget/native_view.rs) carries a real parent
 window. For embedded components, the provider must honor tile clipping, overlay
@@ -281,10 +293,13 @@ Maintain a complete fleet inventory: component entry point, required service
 families, direct OS dependencies and conformance status. A claimed supported
 app must use its real application component and pass its primary user flows.
 Use every `apps/*/qos-app.toml` package ID in the source tree as the inventory's
-source of truth. Record the audited baseline and include additions through
+source of truth; the initial inventory is in the
+[capability map](2026-09-12-macos-app-capability-map.md).
+Record the audited baseline and include additions through
 delivery; a manifest missing from the inventory fails CI. Each row is supported
 or explicitly blocked with a reason and a tracked follow-up. Every supported
-row names its canonical app definition; a blocked row remains discoverable
+GUI row names its canonical app definition; service rows name their service
+entrypoint and applicable lifecycle contract. A blocked row remains discoverable
 without constructing substitute content.
 
 For each app, record the applicable framework capabilities from section 6 and
