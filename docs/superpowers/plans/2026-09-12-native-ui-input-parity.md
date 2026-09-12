@@ -102,16 +102,53 @@ assert_eq!(
 - [ ] Remove the three Darwin-only `unused_mut` warnings in `AppHandler` window creation without lint suppression. Build immutable attributes, then shadow them in the Linux-only expression. Keep all existing names, ID resolution and settings:
 
 ```rust
-let attributes = Window::default_attributes() /* existing builder chain */;
 #[cfg(target_os = "linux")]
 let attributes = {
     use winit::platform::wayland::WindowAttributesExtWayland;
-    // Preserve the existing app-ID computation for this call site.
-    attributes.with_name(/* existing arguments */)
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let app_id = resolve_app_id(
+        self.app.window_app_id.as_deref().or(package_id.as_deref()),
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .as_deref(),
+    );
+    attributes.with_name(format!("{app_id}.audience"), "")
 };
 ```
 
-  Apply the same shape to audience, floating and primary window creation; preserve `window_attributes` as the primary variable name. The comments above describe existing unchanged code, not new placeholder values.
+  For floating windows, use the following Linux-only shadow:
+
+```rust
+#[cfg(target_os = "linux")]
+let attributes = {
+    use winit::platform::wayland::WindowAttributesExtWayland;
+    attributes.with_name(
+        format!("{}{}", crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX, token),
+        "",
+    )
+};
+```
+
+  For primary windows, preserve the `window_attributes` name:
+
+```rust
+#[cfg(target_os = "linux")]
+let window_attributes = {
+    use winit::platform::wayland::WindowAttributesExtWayland;
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let app_id = resolve_app_id(
+        self.app.window_app_id.as_deref().or(package_id.as_deref()),
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .as_deref(),
+    );
+    window_attributes.with_name(app_id, "")
+};
+```
+
+  At all three sites, remove `mut` from the initial declaration and retain its full builder chain unchanged.
 
 - [ ] Format the three affected files and run focused nextest coverage for all headless, interaction, shortcut-recorder and profiling tests. The existing `scroll_scenario_produces_per_pass_stats` must pass unchanged. Command: `cargo nextest run -p ui --locked --profile ci -E 'test(headless::tests::) or test(interaction::tests::) or test(widget::shortcut_recorder::tests::) or test(profiling::)'`.
 - [ ] Run `cargo clippy -p ui --all-targets --locked -- -D warnings`. Report unrelated failures separately; do not weaken them.
