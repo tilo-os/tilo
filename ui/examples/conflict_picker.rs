@@ -38,6 +38,8 @@ fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
 }
 
 pub fn run(_args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // Two writers concurrently moved the same kanban card to
     // different columns. Wrap that as a `PickOne` kind so the
     // picker shows them side-by-side.
@@ -69,6 +71,6 @@ pub fn run(_args: &[String]) {
     let state = State::new();
     let root_widget = Box::new(Column::new().push(Box::new(banner)).push(Box::new(picker)));
 
-    let app = App::new(state, root_widget);
+    let app = App::from_scoped_parts(wake_scope, state, root_widget);
     app.run();
 }

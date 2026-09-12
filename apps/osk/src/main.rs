@@ -150,6 +150,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 /// app via `virtual-keyboard-v1` (or a no-op when that protocol is absent). This
 /// is the path when there is no input method to drive auto-show.
 fn run_always_visible(purpose: Option<InputPurpose>) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let mut injector = default_injector();
     tracing::info!("osk: text-injection backend = {}", injector.backend_name());
     let mut widget = OskWidget::new().on_key(move |action| {
@@ -169,7 +171,7 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // keystrokes into the user's desktop.
 
     let (state, autosave) = ui::persist::open("dev.qos.osk");
-    let app = ui::App::new(state, Box::new(widget))
+    let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .with_autosave(autosave)
         .with_window_app_id(osk::KEYBOARD_APP_ID);
     app.run();
@@ -185,6 +187,8 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
 /// Typed/swiped text is committed back to the focused app via the same input
 /// method (`commit_string`).
 fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // The IM client is shared: the winit thread's `on_key` callback commits
     // typed text through it, while the background thread reads focus events.
     let im = Arc::new(Mutex::new(im));
@@ -221,7 +225,8 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget)).with_window_app_id(osk::KEYBOARD_APP_ID);
+    let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
+        .with_window_app_id(osk::KEYBOARD_APP_ID);
 
     // Spawn the input-method reader once the event loop proxy exists, so it can
     // push show/hide/purpose commands into the loop.
