@@ -1,7 +1,8 @@
 # A portable qOS application host for macOS and Linux
 
 Status: proposed specification, revised 2026-09-12 using Superpowers brainstorming.
-Repository baseline: `e4dce157d`. No implementation is included.
+Repository baseline for the architectural audit: `e4dce157d`.
+Scope: architecture and acceptance criteria; implementation is tracked separately.
 
 ## 1. Product contract
 
@@ -85,17 +86,23 @@ qOS application: document model, domain actions, widget tree, local view
 
 Evolve [`LaunchSpec`](../../../ui/src/launch.rs), which already owns root
 factories, arguments and standard startup, into a common application definition
-with standalone and embedded runners. Reuse the existing `AppWidget: Widget`
-contract for embedded content. The factory accepts a host-assigned app instance,
+with standalone, embedded and headless runners. Reuse the existing
+`AppWidget: Widget` contract for embedded content. The factory accepts a host-assigned app instance,
 a document/resource binding, restoration data and an app-scoped service context.
 It returns app content and
 its lifecycle/action hooks; it does not start its own event loop when embedded.
 
-Expose a reusable factory from each application library. The standalone binary
-and shell registry instantiate that same component. A small adapter can expose
-an existing root widget through `AppWidget`; it must not copy the app's business
+Expose a reusable factory from each application library. The standalone binary,
+headless runner and shell registry instantiate that same component. A small
+adapter can expose an existing root widget through `AppWidget`; it must not copy the app's business
 logic or reimplement a simpler shell-only version. Changes needed to expose this
 entry point are shared app-model work, not a macOS branch of the app.
+
+Identify each catalogue entry by its `qos-app.toml` package ID and one canonical
+application definition exported by that app crate. All three runners invoke
+that definition. Registration/conformance checks reject duplicate IDs, missing
+factories and substitute shell-owned implementations registered under a real
+app's ID. A matching title or screenshot is insufficient evidence of app parity.
 
 The host owns mount, focus, resize, suspension, restoration, unmount and service
 cancellation. Use stable instance IDs to associate records, events and commands.
@@ -206,6 +213,20 @@ Qualification follows services, not a separate port project for every app.
 Maintain a complete fleet inventory: component entry point, required service
 families, direct OS dependencies and conformance status. A claimed supported
 app must use its real application component and pass its primary user flows.
+Use every `apps/*/qos-app.toml` package ID in the source tree as the inventory's
+source of truth. Record the audited baseline and include additions through
+delivery; a manifest missing from the inventory fails CI. Each row is supported
+or explicitly blocked with a reason and a tracked follow-up. Every supported
+row names its canonical app definition; a blocked row remains discoverable
+without constructing substitute content.
+
+For each app, record the applicable framework capabilities from section 6 and
+their results on both hosts: actions/resources, collaboration, presence/following,
+restoration, offline recovery and accessibility. "Supported" requires those
+gates as well as primary flows. Mark a capability not applicable only when the
+app has no corresponding feature; a missing Mac provider is a blocker, not an
+exemption from conformance.
+
 The first release is not “all apps supported” until that inventory proves it.
 Unsupported hardware/system operations remain explicit capabilities; preserve
 unavailable app documents and placement rather than deleting their records.
@@ -229,7 +250,7 @@ unavailable app documents and placement rather than deleting their records.
    available offline.
 6. **Framework accessibility and host conventions.** VoiceOver on Mac and the
    existing Linux paths, Command/Control conventions, IME, clipboard, focus,
-  resize, drag/drop and native document integration.
+   resize, drag/drop and native document integration.
 
 State restoration must not replay external effects. In particular, terminal
 CRDT state describes its screen projection; thawing it does not restart a
@@ -291,6 +312,14 @@ Reuse [`ui::platform`](../../../ui/src/platform.rs) for shortcut conventions.
 Use the shared semantic tree with the Mac window accessibility adapter; retain
 Linux's direct compositor publisher. Controlled font fixtures and theme/scale
 settings are required for reproducible rendering tests.
+
+Headless execution remains a first-class runner of this same host contract.
+Preserve the current Linux CLI, action schema, semantic inspection, output files
+and failure exit behavior. Choosing headless mode must not initialize an AppKit
+window, require a logged-in desktop or consult the user's interactive profile.
+Semantic-only execution and offscreen GPU rendering retain their distinct
+requirements: the latter still needs a working graphics adapter. Test both in
+the Fedora Parallels VM using isolated state and the production app factories.
 
 ## 8. Platform services, authority and storage
 
@@ -426,6 +455,64 @@ logged-in physical Mac for window, permission, accessibility and GPU qualificati
 Keep Linux compositor, nested and headless checks; run physical DRM tests whenever
 changes affect its input, presenter or buffer lifetimes. A Mac pass cannot replace
 those Linux gates. Keep relevant CI green before integration.
+
+### Required host matrix
+
+Run both hosts from the same git commit and lockfile, with separate native build
+directories. Record the selected targets, discovered test counts, outcomes and
+any unavailable hardware. A successful compile or a small smoke suite does not
+constitute a complete test pass.
+
+| Host | Required coverage |
+| --- | --- |
+| Fedora Parallels VM | Full workspace membership and formatting checks; workspace tests, all-target checks and example tests from the existing nightly workflow; Linux shell/headless integration and the real app action scenarios. Preserve Linux service and compositor coverage. |
+| Native macOS | Every shared SDK/runtime/app test across the workspace, including portable behavior in apps with unavailable host capabilities; all supported targets and examples; Mac provider tests, real embedded-app flows and Metal rendering. Native window, IME and accessibility checks supplement automated headless coverage. |
+| Linux hardware runner | Existing hardware-dependent DRM/input/presentation checks whenever the affected boundary requires them. VM graphics results do not stand in for physical scanout. |
+
+Use the repository's nextest process isolation and GPU scheduling rules. Keep
+the isolated visual-golden tail so those tests are executed after other GPU
+work drains. After target-gating genuine OS-specific dependencies and targets,
+run `cargo nextest run --workspace --locked --profile ci` on both hosts. The
+non-golden and golden selections must be complementary and exhaustive, without
+a separate Mac package exclusion list. Also run the workspace membership guard,
+`cargo fmt --all --check`, `cargo check --workspace --locked --all-targets` and
+`cargo test --workspace --examples --locked`.
+
+On Fedora ARM64, select the ARM64 Mesa software-Vulkan ICD for the
+canonical software suite; record separate results for a hardware/virtual GPU.
+Keep Mac rendering expectations explicit about Metal, fonts, scale and pixel
+tolerance instead of weakening Linux goldens to make them pass on another backend.
+
+Maintain a target applicability inventory for the complete workspace. A test may
+be Linux-only because it exercises a Linux facility; a portable action, document,
+collaboration or lifecycle test cannot be excluded just because its current
+module also imports Linux APIs. Extract that shared behavior and test it on both
+hosts. Inventory every ignored test with prerequisites and a pass/fail/not-applicable
+result; run it where applicable, including hardware and external-service probes.
+Inspect logs for soft skips such as a missing adapter instead of counting an
+early return as coverage. Every required failure remains a delivery blocker.
+
+### Minimum end-to-end walkthrough
+
+This walkthrough establishes an initial working host; the fleet inventory still
+governs every additional app advertised as supported.
+
+1. Start a fresh Mac profile, enroll its identity and open the real Notes and
+   Files components inside the shell through the shared catalogue.
+2. Open two document instances, edit through keyboard/IME and invoke a document
+   action through the common palette. Focus, undo and background updates remain
+   scoped to the intended instance.
+3. Launch the same Notes definition through the shared catalogue inside the
+   production Linux shell/compositor and join the same workspace. Verify edits
+   and presence in both directions, explicit follow/unfollow, offline edits and
+   reconnect without replacing either participant's local view. A standalone
+   test client or legacy packaged-app path does not satisfy this host-parity gate.
+4. Quit and reopen the Mac shell. Restore documents, arrangement and local view;
+   opening a denied or revoked file grant reports the failure and preserves the
+   affected document. Closing a tile rejects its late asynchronous updates.
+5. Run the corresponding real app action and persistence scenarios headlessly
+   in Fedora without opening a desktop window. Verify resulting state and exit
+   status rather than treating a rendered screenshot as proof of functionality.
 
 For GPU validation, keep three clearly labeled measurements:
 
