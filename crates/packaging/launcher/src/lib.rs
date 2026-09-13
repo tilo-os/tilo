@@ -41,7 +41,6 @@ pub mod appdir;
 pub mod capabilities;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
-#[cfg(target_os = "linux")]
 pub mod gpu;
 pub mod hardening;
 #[cfg(target_os = "linux")]
