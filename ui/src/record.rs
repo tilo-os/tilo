@@ -1227,6 +1227,16 @@ impl Drop for RecordReservation {
 }
 
 impl RecordStore {
+    /// Explicit immutable identity only; legacy and memory stores have no canonical namespace.
+    pub(crate) fn canonical_namespace(&self) -> Option<(PathBuf, String, String)> {
+        let set = self.0.borrow();
+        Some((
+            set.canonical_root.clone()?,
+            set.package_id.clone(),
+            set.home.clone(),
+        ))
+    }
+
     /// Open Existing only; a missing document is never implicitly initialized.
     ///
     /// # Errors

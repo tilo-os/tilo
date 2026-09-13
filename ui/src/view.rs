@@ -133,6 +133,110 @@ impl View {
     }
 }
 
+/// Common local presentation validation; canonical state is never read or written here.
+impl View {
+    /// # Errors
+    /// Rejects nonfinite geometry before any widget receives it.
+    pub fn validate(&self) -> Result<(), ThawError> {
+        let rect = self.viewport;
+        if self
+            .scroll
+            .iter()
+            .chain([&rect.x, &rect.y, &rect.width, &rect.height])
+            .any(|v| !v.is_finite())
+        {
+            return Err(ThawError::InvalidView("nonfinite geometry".into()));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn capture_widget_view(
+    root: &dyn crate::widget::Widget,
+    focus: Option<FocusView>,
+    viewport: ViewRect,
+) -> View {
+    let open_resource = root.record_intent().map(|c| c.id.as_str().to_string());
+    let contribution = root.view_state().unwrap_or_default();
+    View {
+        scroll: contribution.scroll,
+        focus,
+        open_resource,
+        viewport,
+        view_mode: contribution.view_mode,
+    }
+}
+
+pub(crate) fn capture_focus(
+    ordinal: Option<usize>,
+    state: impl FnOnce() -> Option<String>,
+) -> Option<FocusView> {
+    ordinal.map(|ordinal| FocusView {
+        ordinal,
+        ephemeral: state().unwrap_or_default(),
+    })
+}
+
+pub(crate) fn restore_widget_view(root: &mut dyn crate::widget::Widget, view: &View) {
+    root.restore_view_state(&ViewContribution {
+        scroll: view.scroll.clone(),
+        view_mode: view.view_mode.clone(),
+    });
+}
+
+/// The caller resolves the saved ordinal in its current component's focus order.
+pub(crate) fn restore_focus_state(widget: &mut dyn crate::widget::Widget, focus: &FocusView) {
+    if !focus.ephemeral.is_empty() {
+        widget.set_state(&focus.ephemeral);
+    }
+}
+
+/// Prepared components have no runner node map yet. Traverse only their retained tree.
+pub(crate) fn capture_tree_focus(root: &dyn crate::widget::Widget) -> Option<FocusView> {
+    fn visit(root: &dyn crate::widget::Widget, ordinal: &mut usize) -> Option<FocusView> {
+        if root.is_focusable() && root.is_enabled() {
+            let current = *ordinal;
+            *ordinal = ordinal.saturating_add(1);
+            if root.is_focused() {
+                return capture_focus(Some(current), || root.get_state());
+            }
+        }
+        for child in root.children() {
+            if let Some(focus) = visit(child, ordinal) {
+                return Some(focus);
+            }
+        }
+        None
+    }
+    visit(root, &mut 0)
+}
+
+pub(crate) fn restore_tree_focus(root: &mut dyn crate::widget::Widget, focus: &FocusView) {
+    fn visit(root: &mut dyn crate::widget::Widget, ordinal: &mut usize, focus: &FocusView) {
+        if root.is_focusable() && root.is_enabled() {
+            let selected = *ordinal == focus.ordinal;
+            *ordinal = ordinal.saturating_add(1);
+            root.set_focus(selected);
+            if selected {
+                restore_focus_state(root, focus);
+            }
+        }
+        for child in root.children_mut() {
+            visit(child, ordinal, focus);
+        }
+    }
+    // An ordinal absent from the current tree must leave existing focus alone.
+    fn count(root: &dyn crate::widget::Widget) -> usize {
+        root.children().iter().fold(
+            usize::from(root.is_focusable() && root.is_enabled()),
+            |total, child| total.saturating_add(count(*child)),
+        )
+    }
+    if focus.ordinal < count(root) {
+        visit(root, &mut 0, focus);
+    }
+}
+
 /// The versioned freeze envelope: an app's serialized state bytes alongside
 /// its captured [`View`]. Collaboration and freeze/thaw serialize the *same*
 /// state; this pairs it with the presentation so a restore lands the user back
@@ -155,6 +259,12 @@ pub enum ThawError {
     /// The state payload failed to load — a corrupt CRDT document, or an
     /// override impl's own decode error. Carries a human-readable reason.
     State(String),
+    /// Invalid local presentation or identity.
+    InvalidView(String),
+    /// A local envelope belongs to a different host binding.
+    BindingMismatch,
+    /// Local View storage failed.
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for ThawError {
@@ -165,6 +275,9 @@ impl std::fmt::Display for ThawError {
                 f,
                 "frozen-app version {found} is not supported (this build reads {supported})"
             ),
+            ThawError::InvalidView(reason) => write!(f, "invalid local view: {reason}"),
+            ThawError::BindingMismatch => f.write_str("local view binding does not match"),
+            ThawError::Io(error) => write!(f, "local view storage failed: {error}"),
             ThawError::State(reason) => write!(f, "frozen-app state failed to load: {reason}"),
         }
     }
@@ -392,7 +505,7 @@ mod tests {
             "home-room",
         );
 
-        let mut app1 = App::new(state, Box::new(root));
+        let mut app1 = App::new_with_controlled_inputs(state, Box::new(root));
         app1.autofocus_first = true; // focus the single field so a caret exists
         app1.init_layout();
 
@@ -411,7 +524,7 @@ mod tests {
         assert_eq!(env.view, v1);
 
         // App 2: a fresh app with an EMPTY doc and a default root.
-        let mut app2 = App::new(State::new(), Box::new(DocRoot::new()));
+        let mut app2 = App::new_with_controlled_inputs(State::new(), Box::new(DocRoot::new()));
         app2.init_layout();
         assert_eq!(
             text_at(&app2.state_mut_for_test().doc.clone(), "body"),
@@ -450,7 +563,7 @@ mod tests {
     /// from an unknown version is rejected rather than mis-read — never a panic.
     #[test]
     fn thaw_rejects_bad_bytes_without_panicking() {
-        let mut app = App::new(State::new(), Box::new(DocRoot::new()));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(DocRoot::new()));
         app.init_layout();
 
         assert!(matches!(
