@@ -723,6 +723,23 @@ impl Widget for TileHost {
         }
     }
 
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        match &mut self.content {
+            TileContent::App(app) => app.start_resource_operation_with_document(
+                invocation, kind, type_id, payload, doc, path,
+            ),
+            _ => Ok(None),
+        }
+    }
+
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         if let TileContent::App(root) = &mut self.content {
             self.close_reports.extend(root.close_components());

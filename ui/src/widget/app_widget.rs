@@ -248,7 +248,16 @@ mod component_adapter {
                 return taffy.leaf_node(taffy::Style::default());
             };
             let child = root.build_layout(taffy, theme, node_map);
-            let node = taffy.parent_node(taffy::Style::default(), &[child]);
+            let node = taffy.parent_node(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            );
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
@@ -281,6 +290,11 @@ mod component_adapter {
                 && let Ok(children) = taffy.children(node)
                 && let Some(child) = children.first()
             {
+                let location = taffy.layout(node).copied().unwrap_or_default().location;
+                let origin = vello::kurbo::Point::new(
+                    origin.x + f64::from(location.x),
+                    origin.y + f64::from(location.y),
+                );
                 root.apply_layout(taffy, *child, origin);
             }
         }
@@ -299,7 +313,17 @@ mod component_adapter {
             let Some(root) = self.component.root.as_deref_mut() else {
                 return;
             };
-            root.draw(scene, transform, text_renderer, theme, presence);
+            // TileHost's clipped/animated steady-state paint uses ordinary draw.
+            // Canonical roots must still receive their permission-aware hook.
+            let permissions = binding.permissions.borrow().clone();
+            root.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                &permissions,
+            );
         }
         fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
             let binding = self.component.callback_binding();

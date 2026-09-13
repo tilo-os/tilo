@@ -184,6 +184,27 @@ impl Column {
 }
 
 impl Widget for Column {
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        // This container owns no operation handler. Preserve mutable admission
+        // down the retained tree without a second read-only fallback traversal.
+        for child in self.children_mut() {
+            if let Some(started) = child.start_resource_operation_with_document(
+                invocation, kind, type_id, payload, doc, path,
+            )? {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         for child in &mut self.children {
             child.sync(state, path);

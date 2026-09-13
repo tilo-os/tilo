@@ -475,6 +475,13 @@ impl AppComponent {
     }
     pub(crate) fn take_close_reports(&mut self) -> Vec<ComponentCloseReport> {
         let mut reports = std::mem::take(&mut self.pending_reports);
+        // Transfer is inert ownership metadata: an open parent must not hide
+        // recovery retained by a replaced nested tile. Never capture or close
+        // the parent here, and never consult a root after teardown removed it.
+        if let Some(root) = self.root.as_deref_mut() {
+            let _entry = self.context.wake_scope.enter();
+            reports.extend(root.take_component_close_reports());
+        }
         if !self.report_drained
             && let Some(report) = &self.close_report
         {
