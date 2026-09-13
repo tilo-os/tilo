@@ -22,6 +22,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use super::desktop_services::PortalResult;
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{
     PortalContext,
     auth::{authenticate_call, authenticate_frontend_call},
@@ -311,6 +312,7 @@ struct AppState {
 
 #[derive(Clone)]
 pub struct BackgroundBackend {
+    #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
     service: BackgroundServiceHandle,
@@ -320,10 +322,12 @@ pub struct BackgroundBackend {
 impl BackgroundBackend {
     /// Creates a backend that denies requests until qOS's launcher/chrome
     /// service is wired using [`Self::with_service`].
+    #[cfg(target_os = "linux")]
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
         Self::with_service_and_lifecycle(
             ctx,
@@ -332,12 +336,14 @@ impl BackgroundBackend {
         )
     }
 
+    #[cfg(target_os = "linux")]
     pub fn with_service(ctx: PortalContext, service: BackgroundServiceHandle) -> Self {
         Self::with_service_and_lifecycle(ctx, service, PortalLifecycle::new())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn with_service_and_lifecycle(
-        ctx: PortalContext,
+        #[cfg(target_os = "linux")] ctx: PortalContext,
         service: BackgroundServiceHandle,
         lifecycle: PortalLifecycle,
     ) -> Self {
@@ -431,6 +437,7 @@ impl BackgroundBackend {
             .map(|entry| entry.autostart_enabled)
     }
 
+    #[cfg(target_os = "linux")]
     async fn authenticated(
         &self,
         hdr: zbus::message::Header<'_>,
@@ -443,6 +450,7 @@ impl BackgroundBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Background")]
 impl BackgroundBackend {
     async fn get_app_state(
@@ -581,6 +589,7 @@ impl BackgroundBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBackend) {
     let task_connection = connection.clone();
     connection
@@ -656,17 +665,25 @@ mod tests {
 
     #[test]
     fn state_is_bounded_and_values_are_validated() {
-        let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
-        );
-        let backend = BackgroundBackend::new(PortalContext::new_with_null_spawners(
-            grants,
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
-            crate::portal::CallerMap::new(),
-        ));
+        let backend = BackgroundBackend {
+            #[cfg(target_os = "linux")]
+            ctx: {
+                let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
+                    crate::shell::state::Workspace::test_default(
+                        crate::shell::state::WorkspaceId(1),
+                        "test",
+                    ),
+                );
+                PortalContext::new_with_null_spawners(
+                    grants,
+                    crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
+                    crate::portal::CallerMap::new(),
+                )
+            },
+            apps: Arc::new(Mutex::new(HashMap::new())),
+            service: BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
+            lifecycle: PortalLifecycle::new(),
+        };
         assert!(backend.set_app_state("org.example.App", ACTIVE));
         assert_eq!(backend.app_state("org.example.App"), Some(ACTIVE));
         assert!(!backend.set_app_state("org.example.Bad", 3));

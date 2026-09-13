@@ -39,17 +39,24 @@
 
 pub mod appdir;
 pub mod capabilities;
+#[cfg(target_os = "linux")]
 pub mod dbus_proxy;
+#[cfg(target_os = "linux")]
 pub mod gpu;
 pub mod hardening;
+#[cfg(target_os = "linux")]
 pub mod host;
+#[cfg(target_os = "linux")]
 pub mod landlock;
+#[cfg(target_os = "linux")]
 pub mod landlock_shim;
 pub mod manifest;
 pub mod netgate;
 pub mod profile;
 pub mod registry;
+#[cfg(target_os = "linux")]
 pub mod run;
+#[cfg(target_os = "linux")]
 pub mod sandbox;
 pub mod seccomp;
 pub mod services;

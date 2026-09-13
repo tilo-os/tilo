@@ -292,6 +292,7 @@ impl QuickSettingsState {
     reason = "chrome fields represent independently focusable overlays and transient controls; combining them would obscure widget lifetime boundaries"
 )]
 pub struct ChromeState {
+    pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -431,6 +432,7 @@ impl ChromeState {
     pub fn new_with_handle(tree_handle: WorkspaceTreeHandle) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
             tree_handle,
+            hosted_inputs: super::hosted_inputs::HostedTileInputs::default(),
             overlays: OverlayFlags::default(),
             quick_settings: QuickSettingsState::default(),
             editing_workspace_name: None,
@@ -1254,7 +1256,7 @@ impl ChromeState {
     /// Consume one pending shell-originated lock request.  Kept private to
     /// the shell crate because only the compositor runtime may perform the
     /// session transition.
-    pub(crate) fn take_session_lock_request(&mut self) -> bool {
+    pub fn take_session_lock_request(&mut self) -> bool {
         std::mem::take(&mut self.session_lock_requested)
     }
 

@@ -10,6 +10,7 @@ use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
 /// Portal inhibit flags.
@@ -35,6 +36,7 @@ pub fn publish_screensaver_state(active: bool) {
 pub struct InhibitMonitorHandle(Arc<Mutex<HashSet<String>>>);
 
 pub struct InhibitBackend {
+    #[cfg(target_os = "linux")]
     ctx: PortalContext,
     registry: InhibitRegistry,
     holds: Arc<Mutex<HashMap<String, InhibitToken>>>,
@@ -42,11 +44,13 @@ pub struct InhibitBackend {
     lifecycle: PortalLifecycle,
 }
 impl InhibitBackend {
+    #[cfg(target_os = "linux")]
     pub fn new(ctx: PortalContext, registry: InhibitRegistry) -> Self {
         Self::with_lifecycle(ctx, registry, PortalLifecycle::new())
     }
+    #[cfg(target_os = "linux")]
     pub fn with_lifecycle(
-        ctx: PortalContext,
+        #[cfg(target_os = "linux")] ctx: PortalContext,
         registry: InhibitRegistry,
         lifecycle: PortalLifecycle,
     ) -> Self {
@@ -75,6 +79,7 @@ impl InhibitBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Inhibit")]
 impl InhibitBackend {
     /// The request path owns the RAII token.  Closing that request (or the
@@ -213,6 +218,7 @@ impl InhibitBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonitorHandle) {
     let task_connection = connection.clone();
     connection
@@ -263,6 +269,7 @@ fn valid_reason(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     fn context() -> PortalContext {
         let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
             crate::shell::state::Workspace::test_default(
@@ -279,7 +286,14 @@ mod tests {
     #[test]
     fn handle_close_releases_real_registry_hold() {
         let registry = InhibitRegistry::new();
-        let backend = InhibitBackend::new(context(), registry.clone());
+        let backend = InhibitBackend {
+            #[cfg(target_os = "linux")]
+            ctx: context(),
+            registry: registry.clone(),
+            holds: Arc::new(Mutex::new(HashMap::new())),
+            monitors: InhibitMonitorHandle::default(),
+            lifecycle: PortalLifecycle::new(),
+        };
         backend.holds.lock().unwrap().insert(
             "/org/freedesktop/portal/desktop/request/x".into(),
             registry.acquire("test"),

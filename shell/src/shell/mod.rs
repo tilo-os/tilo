@@ -37,12 +37,17 @@ pub mod desktop_backdrop;
 pub mod doc_open;
 pub mod editor_app;
 mod file_picker_overlay;
+pub mod floating;
+pub mod foreign;
+pub mod frame;
 pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
 pub mod history_narrative;
 pub mod host_apps;
+pub mod hosted_inputs;
 pub mod identity_provisioning;
+pub mod input_policy;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
@@ -63,6 +68,7 @@ pub mod personal_continuity_registry;
 pub mod placement;
 pub mod portal_dialog;
 mod power_menu;
+pub mod present;
 pub mod projection;
 mod projection_overlay;
 pub mod qs_actions;
@@ -74,10 +80,12 @@ mod quick_settings_root;
 mod quick_settings_vpn;
 mod quick_settings_wifi;
 pub mod remote_cursors;
+pub mod render;
 pub mod room_activity;
 pub mod room_records;
 pub mod search;
 pub mod session_audio_policy;
+pub mod session_policy;
 pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
 pub mod sidebar_wheel_disc;
@@ -85,7 +93,9 @@ pub mod split_row;
 pub mod state;
 pub mod status;
 pub mod system_monitor;
+pub mod tab_binding;
 pub mod tab_documents;
+pub mod test_control;
 pub mod test_support;
 pub mod text_entry;
 pub mod tile;
@@ -94,6 +104,7 @@ pub mod topbar;
 pub mod topbar_chrome;
 pub mod uri_open;
 pub mod window_actions;
+#[cfg(target_os = "linux")]
 pub mod windows_compat;
 pub mod workspace_drop;
 pub mod workspace_history;
@@ -171,6 +182,7 @@ pub struct Shell {
     overview_visible: bool,
     search_visible: bool,
     quick_settings_visible: bool,
+    _hosted_inputs: hosted_inputs::HostedTileInputs,
     ws_settings_visible: bool,
 
     /// Test-only pointer to the first hosted [`TerminalWidget`], captured
@@ -190,14 +202,21 @@ impl Shell {
     /// (real PTY, falls back to a `Stub`), Files, Notes, Editor, and a
     /// Browser chrome. Production launches the packaged WPE-backed browser;
     /// this in-process workspace mirror uses the same `BrowserWidget` contract.
+    /// # Panics
+    /// Panics if its explicitly temporary fixture directory cannot be created.
+    #[allow(
+        clippy::expect_used,
+        reason = "These infallible scratch/demo entry points require a private temporary Files fixture."
+    )]
     pub fn new_with_default_demo_workspace() -> Self {
+        let hosted_inputs = hosted_inputs::HostedTileInputs::fixture().expect("demo Files fixture");
         let DemoTabs {
             tabs,
             #[cfg(any(test, debug_assertions))]
             first_terminal_ptr,
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
-        } = default_demo_tabs();
+        } = default_demo_tabs(&hosted_inputs);
         let group = RuntimeGroup::with_tabs(tabs, state::WindowWidth::Normal);
         let strip = RuntimeStrip::new("Main", vec![group]);
         let workspace = RuntimeWorkspace::new("Home", vec![strip]);
@@ -218,6 +237,7 @@ impl Shell {
             overview_visible: false,
             search_visible: false,
             quick_settings_visible: false,
+            _hosted_inputs: hosted_inputs,
             ws_settings_visible: false,
             #[cfg(any(test, debug_assertions))]
             first_terminal_ptr,
@@ -746,7 +766,11 @@ struct DemoTabs {
     first_file_explorer_ptr: Option<*const FileExplorerWidget>,
 }
 
-fn default_demo_tabs() -> DemoTabs {
+#[allow(
+    clippy::expect_used,
+    reason = "The caller constructs these inputs using HostedTileInputs::fixture, which always supplies Files."
+)]
+fn default_demo_tabs(inputs: &hosted_inputs::HostedTileInputs) -> DemoTabs {
     let mut tabs: Vec<RuntimeTab> = Vec::new();
     #[cfg(any(test, debug_assertions))]
     let mut first_terminal_ptr: Option<*const TerminalWidget> = None;
@@ -755,7 +779,7 @@ fn default_demo_tabs() -> DemoTabs {
     #[cfg(any(test, debug_assertions))]
     let first_file_explorer_ptr: Option<*const FileExplorerWidget>;
 
-    match TerminalWidget::spawn_default() {
+    match TerminalWidget::spawn_headless() {
         Ok(t) => {
             let boxed: Box<TerminalWidget> = Box::new(t);
             #[cfg(any(test, debug_assertions))]
@@ -782,7 +806,9 @@ fn default_demo_tabs() -> DemoTabs {
 
     // File-explorer: `new` is infallible; OS errors surface via its own
     // in-pane status bar rather than the Stub fallback.
-    let fe_boxed: Box<FileExplorerWidget> = Box::new(FileExplorerWidget::new());
+    let fe_boxed: Box<FileExplorerWidget> = Box::new(FileExplorerWidget::with_startup_inputs(
+        inputs.files.clone().expect("demo Files inputs"),
+    ));
     #[cfg(any(test, debug_assertions))]
     {
         first_file_explorer_ptr = Some(&raw const *fe_boxed);
@@ -865,8 +891,15 @@ pub(crate) fn hosted_label_for_title(title: &str) -> String {
 /// Probe into [`to_ui_tile`] for tests that don't want the full `UiTile`
 /// type (and its boxed `AppWidget`) on the public surface.
 #[cfg(any(test, debug_assertions))]
+/// # Panics
+/// Panics if its explicitly temporary fixture directory cannot be created.
+#[allow(
+    clippy::expect_used,
+    reason = "These infallible scratch/demo entry points require a private temporary Files fixture."
+)]
 pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
-    match to_ui_tile(t) {
+    let inputs = hosted_inputs::HostedTileInputs::fixture().expect("tile-shape fixture");
+    match to_ui_tile_with_inputs(t, &inputs) {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
         UiTile::Notice { .. } => "Notice",
@@ -888,8 +921,32 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     }
 }
 
-pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
-    match t {
+pub fn to_ui_tile(t: &ShellTile) -> UiTile {
+    to_ui_tile_with_inputs(t, &hosted_inputs::HostedTileInputs::default())
+}
+
+pub(crate) fn to_ui_tile_with_inputs(
+    t: &ShellTile,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> UiTile {
+    match try_to_ui_tile(t, terminal::HostedProcessServices::default(), inputs) {
+        Ok(tile) => tile,
+        Err(error) => UiTile::Notice {
+            title: "Application unavailable".into(),
+            detail: error.to_string(),
+        },
+    }
+}
+
+/// Construct the actual embedded app using explicit host startup inputs.
+/// # Errors
+/// A required service must exist before the widget or a process is constructed.
+pub fn try_to_ui_tile(
+    t: &ShellTile,
+    services: terminal::HostedProcessServices,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> Result<UiTile, hosted_inputs::HostedTileError> {
+    Ok(match t {
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
             label: label.clone(),
@@ -898,7 +955,7 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
         // `compositor::foreign`'s frame store and also publishes the tab's
         // rect back so the compositor can configure the client to size.
         ShellTile::Foreign { app_id, surface_id } => UiTile::App(Box::new(
-            crate::compositor::foreign::ForeignSurfaceWidget::new(*surface_id, app_id.clone()),
+            crate::shell::foreign::ForeignSurfaceWidget::new(*surface_id, app_id.clone()),
         )),
         // A window someone else has open that this machine hasn't got its
         // own instance of yet; becomes a `Foreign` above once it arrives.
@@ -915,19 +972,36 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             },
         },
         ShellTile::AppPlaceholder { kind, label } => match kind {
-            ShellKind::Terminal => match TerminalWidget::spawn_default() {
-                Ok(w) => UiTile::App(Box::new(w)),
-                Err(e) => {
-                    tracing::warn!("terminal spawn failed: {e}; falling back to stub");
-                    UiTile::Stub {
-                        kind: to_ui_kind(kind),
-                        label: format!("Terminal: {e}"),
-                    }
-                }
-            },
+            ShellKind::Terminal => {
+                let widget = if inputs.is_fixture() {
+                    TerminalWidget::spawn_headless().map_err(|error| {
+                        hosted_inputs::HostedTileError::Fixture(error.to_string())
+                    })?
+                } else {
+                    TerminalWidget::spawn_hosted(services)
+                        .map_err(hosted_inputs::HostedTileError::Terminal)?
+                };
+                UiTile::App(Box::new(widget))
+            }
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
-            ShellKind::FileExplorer => UiTile::App(Box::new(FileExplorerWidget::new())),
+            ShellKind::FileExplorer => {
+                let widget = if let Some(files) = &inputs.files {
+                    FileExplorerWidget::with_startup_inputs(files.clone())
+                } else {
+                    #[cfg(target_os = "linux")]
+                    {
+                        FileExplorerWidget::new()
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                            "Files startup",
+                        ));
+                    }
+                };
+                UiTile::App(Box::new(widget))
+            }
             ShellKind::Browser => UiTile::App(Box::new(BrowserWidget::new())),
             // Each opens on an empty document — prose the shell wrote would
             // be indistinguishable from prose the user wrote.
@@ -945,7 +1019,7 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
                 label: label.clone(),
             },
         },
-    }
+    })
 }
 
 /// v1 renders the active workspace's active strip as a `StripView` overlay
@@ -996,6 +1070,14 @@ pub fn build_nirios_overlay_host_with_options(
 /// the same conversion when splicing freshly-added groups into a live
 /// [`GroupRow`].
 pub fn to_ui_window_group(g: &state::WindowGroup, records: &ui::record::RecordStore) -> UiGroup {
+    to_ui_window_group_with_inputs(g, records, &hosted_inputs::HostedTileInputs::default())
+}
+
+pub fn to_ui_window_group_with_inputs(
+    g: &state::WindowGroup,
+    records: &ui::record::RecordStore,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> UiGroup {
     let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
         .tabs
         .iter()
@@ -1007,7 +1089,7 @@ pub fn to_ui_window_group(g: &state::WindowGroup, records: &ui::record::RecordSt
                     title: t.title.clone(),
                     app_kind: Some(kind),
                 },
-                to_ui_tile(&t.tile),
+                to_ui_tile_with_inputs(&t.tile, inputs),
             )
         })
         .collect();
@@ -1036,6 +1118,12 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
+/// # Panics
+/// Panics if its explicitly temporary fixture directory cannot be created.
+#[allow(
+    clippy::expect_used,
+    reason = "These infallible scratch/demo entry points require a private temporary Files fixture."
+)]
 pub fn build_nirios_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
@@ -1044,10 +1132,11 @@ pub fn build_nirios_overlay_host_with_handle(
     // is a test, a probe or a `--shots` run, none of which may leave a
     // user's tabs on disk. A session passes its own store through
     // [`build_nirios_overlay_host_with_records`].
-    build_nirios_overlay_host_with_records(
+    build_nirios_overlay_host_with_inputs(
         tree_handle,
         enable_peer_sync,
         ui::record::RecordStore::in_memory(),
+        hosted_inputs::HostedTileInputs::fixture().expect("scratch Files fixture"),
     )
 }
 
@@ -1145,7 +1234,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             let groups: Vec<UiGroup> = strip
                 .window_groups
                 .iter()
-                .map(|g| to_ui_window_group(g, records))
+                .map(|g| to_ui_window_group_with_inputs(g, records, &chrome.borrow().hosted_inputs))
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)
@@ -1213,7 +1302,26 @@ pub fn build_nirios_overlay_host_with_records(
     enable_peer_sync: bool,
     records: ui::record::RecordStore,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
+    #[cfg(test)]
+    let inputs = hosted_inputs::HostedTileInputs::fixture().expect("test Files fixture");
+    #[cfg(not(test))]
+    let inputs = hosted_inputs::HostedTileInputs::default();
+    build_nirios_overlay_host_with_inputs(tree_handle, enable_peer_sync, records, inputs)
+}
+
+/// Build the real shell tree with host-provided app startup data, retained for tile rebuilds.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Keep the shared-tree construction signature aligned with the existing owned-handle public entry points."
+)]
+pub fn build_nirios_overlay_host_with_inputs(
+    tree_handle: state::WorkspaceTreeHandle,
+    enable_peer_sync: bool,
+    records: ui::record::RecordStore,
+    inputs: hosted_inputs::HostedTileInputs,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
+    chrome.borrow_mut().hosted_inputs = inputs;
     chrome.borrow_mut().set_records(records);
     let records = chrome.borrow().records().clone();
     // Points every hosted file explorer at the desktop's one open path, so

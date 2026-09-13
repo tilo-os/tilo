@@ -269,7 +269,7 @@ impl HostApplicationsProvider {
                     // Decided now, while the layout is still true; a
                     // foreign toplevel announces an app-id qOS did not
                     // mint, so the note is keyed on every declared identity.
-                    if let Some(app) = host_apps::find(&desktop_id) {
+                    let result = if let Some(app) = host_apps::find(&desktop_id) {
                         let st = chrome.borrow();
                         let tree = st.tree();
                         let placement =
@@ -283,17 +283,18 @@ impl HostApplicationsProvider {
                             .active_workspace()
                             .map(|workspace| workspace.room.to_string());
                         drop(tree);
+                        drop(st);
                         host_apps::queue_launch(host_apps::QueuedLaunch {
                             desktop_id: app.desktop_id,
                             display_name: app.name,
                             placement,
                             portal_workspace_id,
-                        });
-                        return;
-                    }
-                    // No capability publication or workspace id: no
-                    // sandbox for either to act on.
-                    if let Err(err) = host_apps::launch(&desktop_id, None) {
+                        })
+                    } else {
+                        host_apps::launch(&desktop_id, None).map(|_| ())
+                    };
+                    if let Err(err) = result {
+                        crate::shell::launcher::clear_pending_placement(&desktop_id);
                         tracing::error!(
                             target: "qos::app_launch",
                             desktop_id = %desktop_id,

@@ -20,10 +20,10 @@ use std::sync::Mutex;
 
 use ui::record::RecordId;
 
-use crate::compositor::tab_binding::Placement;
 use crate::shell::chrome_state::Chrome;
 use crate::shell::launcher::{self, InstalledApp, LaunchError};
 use crate::shell::state::{GroupId, StripId, TabId, TileContent, WorkspaceId, WorkspaceTree};
+use crate::shell::tab_binding::Placement;
 
 /// What opening `path` would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,6 +688,7 @@ mod tests {
             std::env::set_var("QOS_LAUNCHER_BIN", &bin);
             std::env::set_var("XDG_RUNTIME_DIR", dir);
         }
+        launcher::set_test_execution_program(Some(bin));
         launcher::set_wayland_socket_path(Some(dir.join("wayland-0")));
         log
     }
@@ -723,6 +724,7 @@ mod tests {
             std::env::remove_var("XDG_RUNTIME_DIR");
             std::env::remove_var("QOS_WORKSPACE_ROOTS");
         }
+        launcher::set_test_execution_program(None);
         launcher::set_wayland_socket_path(None);
         reset_session_state();
     }
@@ -869,7 +871,7 @@ mod tests {
         let adopted = {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::adopt_toplevel(
+            crate::shell::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
                 Some("word-processor".to_string()),
@@ -974,7 +976,14 @@ mod tests {
         let chrome = chrome_with_workspace();
         crate::shell::install_document_opener(&chrome);
 
-        let mut explorer = file_explorer::FileExplorerWidget::new();
+        let mut explorer =
+            file_explorer::FileExplorerWidget::with_startup_inputs(file_explorer::StartupInputs {
+                initial_dir: files.clone(),
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: Default::default(),
+            });
         explorer.navigate(files);
         let idx = explorer
             .displayed_entries()
@@ -1036,7 +1045,14 @@ mod tests {
         let chrome = chrome_with_workspace();
         crate::shell::install_document_opener(&chrome);
 
-        let mut explorer = file_explorer::FileExplorerWidget::new();
+        let mut explorer =
+            file_explorer::FileExplorerWidget::with_startup_inputs(file_explorer::StartupInputs {
+                initial_dir: files.clone(),
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: Default::default(),
+            });
         explorer.navigate(files);
         let idx = explorer
             .displayed_entries()
@@ -1088,7 +1104,7 @@ mod tests {
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::adopt_toplevel(
+            crate::shell::tab_binding::adopt_toplevel(
                 &mut tree,
                 77,
                 Some("word-processor".to_string()),
@@ -1097,7 +1113,7 @@ mod tests {
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut tree, 77);
+            crate::shell::tab_binding::close_tab_for_destroyed_surface(&mut tree, 77);
         }
 
         let reopened = open_in_workspace(&doc, &chrome).expect("reopening must work");

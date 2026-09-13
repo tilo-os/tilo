@@ -8,7 +8,7 @@
 //!
 //! Peers send surface-local pixels; the region check is what makes
 //! translating them into global coordinates safe. The scrubber reuses
-//! [`crate::compositor::client_input::shell_owns_chord`] rather than its own
+//! [`crate::shell::input_policy::shell_owns_chord`] rather than its own
 //! chord list, so local and remote denials cannot drift; `Ctrl+Alt+F1..F12`
 //! and `Ctrl+Alt+Delete` never reach the shell — the kernel/session takes
 //! them first.
@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 
 use vello::kurbo::{Point, Rect};
 
-use crate::compositor::client_input::{ChordMods, chord_key_for_evdev, shell_owns_chord};
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
+use crate::shell::input_policy::{ChordMods, chord_key_for_evdev, shell_owns_chord};
 
 /// How long local input keeps the remote side out — the host reaching for their own input is an unambiguous takeover.
 pub const PHYSICAL_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
@@ -124,7 +124,7 @@ impl Denial {
               splitting them into an enum would not make any check here clearer"
 )]
 pub struct ShellView {
-    /// Foreign tiles front-to-back, as [`crate::compositor::client_input::foreign_tiles`] enumerates them.
+    /// Foreign tiles front-to-back, as [`crate::shell::input_policy::foreign_tiles`] enumerates them.
     tiles: Vec<(SurfaceId, Rect)>,
     /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
@@ -522,10 +522,7 @@ impl RemoteInputFirewall {
 
         // Chords the shell never classifies because the kernel/session takes them first: VT switch and interrupt.
         if mods.ctrl && mods.alt {
-            if matches!(
-                chord,
-                crate::compositor::client_input::ChordKey::Function(_)
-            ) {
+            if matches!(chord, crate::shell::input_policy::ChordKey::Function(_)) {
                 return Err(Denial::SystemChord);
             }
             if keycode == keycode::DELETE {
@@ -1126,7 +1123,7 @@ mod tests {
 /// Denials proven through the production injection path, against a real
 /// `State`/`Seat`, asserting both the refusal rule and that the seat didn't
 /// move — a return-value-only check would pass even if the refusal happened after injection.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod production_path {
     use super::*;
     use crate::compositor::state::State;

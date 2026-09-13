@@ -1,17 +1,24 @@
 //! `org.freedesktop.impl.portal.Email` backend.
 use super::desktop_services::{EmailRequest, document_portal_path_from_uri};
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
+#[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
 pub struct EmailBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     dialogs: PortalDialogQueue,
 }
+#[cfg(target_os = "linux")]
 impl EmailBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -87,6 +94,7 @@ fn compose_detail(request: &EmailRequest) -> String {
     detail
 }
 #[interface(name = "org.freedesktop.impl.portal.Email")]
+#[cfg(target_os = "linux")]
 impl EmailBackend {
     async fn compose_email(
         &self,
