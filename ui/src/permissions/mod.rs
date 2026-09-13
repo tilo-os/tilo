@@ -120,7 +120,7 @@ impl PermissionScope {
 /// before a gated widget ever sees an event. Construct with
 /// [`PermissionContext::permissive`] (the local unrestricted user) or
 /// [`PermissionContext::from_capabilities`] (a real actor + capabilities).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionContext {
     /// The acting person's id, when the actor names one. Empty for an
     /// app / agent / token actor, which is not a person.

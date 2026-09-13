@@ -224,7 +224,11 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     author: &crate::permissions::UserId,
 ) -> bool {
     let mut brackets: Vec<Vec<automerge::ChangeHash>> = Vec::new();
+    let mut visited = std::collections::HashSet::new();
     for w_ptr in std::iter::once(root).chain(node_map.values().copied()) {
+        if !visited.insert(w_ptr.cast::<()>()) {
+            continue;
+        }
         // SAFETY: see the function's safety note. The reference is created and
         // dropped inside this iteration, so no two overlap.
         let w = unsafe { &mut *w_ptr };
@@ -261,19 +265,35 @@ pub(crate) unsafe fn record_dispatched_action_bound(
             brackets.push(before);
         }
     }
-    for &node in nodes.keys() {
-        // SAFETY: host owns this live stable layout; each exclusive callback ends
-        // before the next target is borrowed. No target reference escapes.
-        if let Ok(Some(before)) = unsafe {
-            crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
-                widget.take_committed_action()
-            })
-        } {
-            brackets.push(before);
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(root.cast::<()>());
+    let mut bound_changed = false;
+    for (&node, &pointer) in nodes {
+        if !visited.insert(pointer.cast::<()>()) {
+            continue;
+        }
+        if let Some(binding) = bindings.binding_for(node) {
+            // SAFETY: the stable host topology supplies exclusive node access;
+            // metadata/lifetime checks precede delivery under its canonical Doc.
+            let drained = binding.with_record_frame(&mut state.doc, false, |doc, _| unsafe {
+                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                    binding.drain_widget_actions(widget, doc)
+                })
+            });
+            bound_changed |= matches!(drained, Ok(Ok(Ok(true))));
+        } else {
+            // SAFETY: each unique live node is visited only once this sweep.
+            if let Ok(Some(before)) = unsafe {
+                crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                    widget.take_committed_action()
+                })
+            } {
+                brackets.push(before);
+            }
         }
     }
     let Some(before) = earliest_bracket(state, brackets) else {
-        return false;
+        return bound_changed;
     };
     if state.doc.get_heads() == before {
         return false;

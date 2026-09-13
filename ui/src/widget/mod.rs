@@ -201,18 +201,6 @@ pub struct ActionDirectoryResourcePage {
     pub exhausted: bool,
 }
 
-/// Ask the resource's owning widget for its explicit directory disclosure
-/// capability without traversing or materialising any lazy descendants.
-pub(crate) fn resolve_action_directory_visibility(
-    widget: &dyn Widget,
-    doc: &AutoCommit,
-    id: &str,
-) -> Option<qos_actions::ActionAddress> {
-    resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
-        widget.action_directory_visibility(doc, id)
-    })
-}
-
 /// Read a bounded page without allowing its retained widget reference or
 /// originating binding to escape the traversal.
 #[allow(
@@ -225,7 +213,12 @@ pub(crate) fn action_directory_page_at(
     target: usize,
     cursor: &[u8],
     max_results: usize,
-) -> Option<Option<ActionDirectoryResourcePage>> {
+) -> Option<
+    Option<(
+        ActionDirectoryResourcePage,
+        Option<crate::bound_dispatch::CallbackBinding>,
+    )>,
+> {
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
@@ -234,7 +227,12 @@ pub(crate) fn action_directory_page_at(
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
         cursor: &[u8],
         max_results: usize,
-    ) -> Option<Option<ActionDirectoryResourcePage>> {
+    ) -> Option<
+        Option<(
+            ActionDirectoryResourcePage,
+            Option<crate::bound_dispatch::CallbackBinding>,
+        )>,
+    > {
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
         let _entry = binding
@@ -246,16 +244,19 @@ pub(crate) fn action_directory_page_at(
             if boundary.is_some() {
                 return Some(None);
             }
-            return Some(if let Some(binding) = &binding {
-                binding
-                    .read_document(doc, |doc, _| {
-                        widget.action_directory_resource_page(doc, cursor, max_results)
-                    })
-                    .ok()
-                    .flatten()
-            } else {
-                widget.action_directory_resource_page(doc, cursor, max_results)
-            });
+            return Some(
+                (if let Some(binding) = &binding {
+                    binding
+                        .read_document(doc, |doc, _| {
+                            widget.action_directory_resource_page(doc, cursor, max_results)
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    widget.action_directory_resource_page(doc, cursor, max_results)
+                })
+                .map(|page| (page, binding)),
+            );
         }
         *ordinal = ordinal.saturating_add(1);
         widget.children().into_iter().find_map(|child| {
@@ -445,6 +446,24 @@ pub trait Widget {
     /// Runtime binding inherited by descendants in a matching layout topology.
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
         None
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "opaque toolkit-only request prevents a public root/registry decoder loan"
+    )]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            if request.target.is_some() && request.found {
+                break;
+            }
+            child.visit_components(request)?;
+        }
+        Ok(())
     }
 
     /// Session-local broker requests emitted by an application widget. These
