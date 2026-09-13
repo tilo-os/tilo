@@ -155,6 +155,8 @@ pub struct PortalDialogQueue {
 
 impl PortalDialogQueue {
     pub fn global() -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("global portal dialog queue");
         static QUEUE: LazyLock<PortalDialogQueue> = LazyLock::new(PortalDialogQueue::default);
         QUEUE.clone()
     }
