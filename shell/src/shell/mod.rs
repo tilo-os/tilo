@@ -1003,8 +1003,20 @@ pub fn try_to_ui_tile(
             // directory-read errors via its own in-pane status bar.
             ShellKind::FileExplorer => {
                 let widget = if let Some(files) = &inputs.files {
-                    FileExplorerWidget::with_startup_inputs(files.clone())
+                    if let Some(services) = inputs.file_services() {
+                        FileExplorerWidget::with_startup_inputs_and_services(
+                            files.clone(),
+                            services.clone(),
+                        )
+                    } else {
+                        FileExplorerWidget::with_startup_inputs(files.clone())
+                    }
                 } else {
+                    if inputs.is_fixture() {
+                        return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                            "Files startup",
+                        ));
+                    }
                     #[cfg(target_os = "linux")]
                     {
                         FileExplorerWidget::new()
