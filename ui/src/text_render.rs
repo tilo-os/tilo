@@ -4,7 +4,6 @@ use cosmic_text::{
     Style as FontStyle, SwashCache, Wrap,
 };
 use std::collections::HashMap;
-use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 use vello::Scene;
@@ -1204,6 +1203,7 @@ struct ShapeKey {
 #[derive(Clone)]
 struct GlyphRun {
     face_id: cosmic_text::fontdb::ID,
+    font_weight: Weight,
     glyphs: Vec<vello::Glyph>,
     normalized_coords: Vec<vello::NormalizedCoord>,
 }
@@ -1216,7 +1216,6 @@ const SHAPE_CACHE_LIMIT: usize = 4096;
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
-    font_cache: HashMap<cosmic_text::fontdb::ID, Font>,
     /// `(text, size, max_width, weight)` → measured `(width, height)`.
     /// Uncached cosmic-text re-shape per frame measured ~7.5ms in debug
     /// across a 50-widget tree; most widgets re-measure the same static
@@ -1231,7 +1230,7 @@ pub struct TextRenderer {
     /// `(text, size, max_width, weight, style)` → shaped + positioned glyph
     /// runs. An `Arc` value lets a lookup hand the runs back to the paint
     /// loop without cloning the glyph vecs or holding a borrow on the cache
-    /// while `font_cache` is touched.
+    /// while the font system is accessed.
     shape_cache: HashMap<ShapeKey, Arc<Vec<GlyphRun>>>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
     /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
@@ -1324,7 +1323,6 @@ impl TextRenderer {
         Self {
             font_system,
             swash_cache: SwashCache::new(),
-            font_cache: HashMap::new(),
             measure_cache: HashMap::with_capacity(256),
             generation: 0,
             hits: 0,
@@ -1905,41 +1903,43 @@ impl TextRenderer {
     /// arithmetic.
     fn flatten_glyph_runs(&mut self, buffer: &Buffer, style: &TextStyle) -> Vec<GlyphRun> {
         let variations = style.resolved_variations();
-        let mut runs: Vec<GlyphRun> = Vec::new();
+        let mut runs = Vec::new();
         for run in buffer.layout_runs() {
             let exercised_hyphen = run
                 .glyphs
                 .last()
                 .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
-            let mut current_face: Option<cosmic_text::fontdb::ID> = None;
+            let mut current: Option<(cosmic_text::fontdb::ID, Weight)> = None;
             let mut glyphs: Vec<vello::Glyph> = Vec::new();
             for g in run.glyphs {
                 if run.text.get(g.start..g.end) == Some("\u{ad}") {
                     continue;
                 }
-                if let Some(face_id) = current_face
-                    && face_id != g.font_id
+                let key = (g.font_id, g.font_weight);
+                if let Some((face_id, font_weight)) = current
+                    && current != Some(key)
                     && !glyphs.is_empty()
                 {
                     runs.push(GlyphRun {
                         face_id,
+                        font_weight,
                         glyphs: std::mem::take(&mut glyphs),
                         normalized_coords: self.normalized_coords(face_id, &variations),
                     });
                 }
-                current_face = Some(g.font_id);
-                let x = hanging_glyph_x(&run, g, style.hanging_punctuation);
+                current = Some(key);
                 glyphs.push(vello::Glyph {
                     id: u32::from(g.glyph_id),
-                    x,
+                    x: hanging_glyph_x(&run, g, style.hanging_punctuation),
                     y: run.line_y + g.y,
                 });
             }
-            if let Some(face_id) = current_face
+            if let Some((face_id, font_weight)) = current
                 && !glyphs.is_empty()
             {
                 runs.push(GlyphRun {
                     face_id,
+                    font_weight,
                     glyphs,
                     normalized_coords: self.normalized_coords(face_id, &variations),
                 });
@@ -1949,6 +1949,7 @@ impl TextRenderer {
             {
                 runs.push(GlyphRun {
                     face_id: hyphen.font_id,
+                    font_weight: hyphen.font_weight,
                     glyphs: vec![vello::Glyph {
                         id: u32::from(hyphen.glyph_id),
                         x: hyphen.x,
@@ -1991,8 +1992,7 @@ impl TextRenderer {
         arc
     }
 
-    /// The per-face Vello font handle is resolved from `font_cache`
-    /// (loaded lazily, once per face for the process).
+    /// Resolve font handles through cosmic-text's existing face-and-weight cache.
     fn paint_runs(
         &mut self,
         scene: &mut Scene,
@@ -2002,7 +2002,9 @@ impl TextRenderer {
         transform: Affine,
     ) {
         for run in runs {
-            let font = self.vello_font(run.face_id);
+            let Some(font) = self.vello_font(run.face_id, run.font_weight) else {
+                continue;
+            };
             scene
                 .draw_glyphs(&font)
                 .font_size(size)
@@ -2016,30 +2018,11 @@ impl TextRenderer {
         }
     }
 
-    /// Returns a clone — `FontData` is a cheap `Arc`-backed handle, so this
-    /// doesn't copy glyph outlines.
-    fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID) -> Font {
-        self.font_cache
-            .entry(face_id)
-            .or_insert_with(|| {
-                let font_data = self
-                    .font_system
-                    .db()
-                    .face(face_id)
-                    .and_then(|f| match &f.source {
-                        cosmic_text::fontdb::Source::Binary(data)
-                        | cosmic_text::fontdb::Source::SharedFile(_, data) => {
-                            Some(data.as_ref().as_ref().to_vec())
-                        }
-                        cosmic_text::fontdb::Source::File(path) => fs::read(path).ok(),
-                    });
-                if let Some(data) = font_data {
-                    Font::new(data.into(), 0)
-                } else {
-                    Font::new(vec![].into(), 0)
-                }
-            })
-            .clone()
+    /// Retain the exact face and shared bytes already used by shaping.
+    fn vello_font(&mut self, face_id: cosmic_text::fontdb::ID, weight: Weight) -> Option<Font> {
+        self.font_system
+            .get_font(face_id, weight)
+            .map(|font| font.as_peniko())
     }
 
     fn normalized_coords(
@@ -2200,7 +2183,12 @@ impl TextRenderer {
         line_y: f32,
         variations: &[FontVariation],
     ) {
-        let vello_font = self.vello_font(face_id);
+        let Some(first) = glyphs.first() else {
+            return;
+        };
+        let Some(vello_font) = self.vello_font(face_id, first.font_weight) else {
+            return;
+        };
 
         let vello_glyphs = glyphs.iter().map(|g| vello::Glyph {
             id: u32::from(g.glyph_id),
@@ -3120,3 +3108,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod renderer_regressions;
