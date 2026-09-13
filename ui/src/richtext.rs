@@ -182,6 +182,8 @@ pub struct RichTextLayout {
     pub(crate) baselines: Vec<(usize, usize, BaselineShift)>,
     discretionary_hyphen_width: f32,
     line_height: f32,
+    /// Block-level paint axes. The renderer replaces `wght` with each batch's
+    /// shaped glyph weight so an explicit block axis cannot override span bold.
     pub(crate) font_variations: Vec<crate::text_render::FontVariation>,
     pub(crate) hanging_punctuation: crate::text_render::HangingPunctuation,
     fragmentation: crate::text_render::Fragmentation,
