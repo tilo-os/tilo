@@ -5,11 +5,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use qos_power_mgmt::{InhibitRegistry, InhibitToken};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::lifecycle::PortalLifecycle;
+#[cfg(target_os = "linux")]
+use super::lifecycle::{LifecycleEntry, LifecycleResource};
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
@@ -33,14 +38,35 @@ pub fn publish_screensaver_state(active: bool) {
 }
 
 #[derive(Clone, Default)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+    )
+)]
 pub struct InhibitMonitorHandle(Arc<Mutex<HashSet<String>>>);
 
 pub struct InhibitBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     registry: InhibitRegistry,
     holds: Arc<Mutex<HashMap<String, InhibitToken>>>,
     monitors: InhibitMonitorHandle,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     lifecycle: PortalLifecycle,
 }
 impl InhibitBackend {
@@ -263,6 +289,7 @@ pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonito
         )
         .detach();
 }
+#[cfg(target_os = "linux")]
 fn valid_reason(value: &str) -> bool {
     !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
 }

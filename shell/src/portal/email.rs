@@ -1,5 +1,7 @@
 //! `org.freedesktop.impl.portal.Email` backend.
-use super::desktop_services::{EmailRequest, document_portal_path_from_uri};
+#[cfg(target_os = "linux")]
+use super::desktop_services::EmailRequest;
+use super::desktop_services::document_portal_path_from_uri;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 #[cfg(target_os = "linux")]
@@ -11,7 +13,9 @@ use std::collections::HashMap;
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
 pub struct EmailBackend {
     ctx: PortalContext,
@@ -32,6 +36,7 @@ impl EmailBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn string(options: &HashMap<String, OwnedValue>, key: &str, max: usize) -> Option<String> {
     options
         .get(key)?
@@ -72,6 +77,7 @@ fn attachment_uris(values: &[String]) -> bool {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn compose_detail(request: &EmailRequest) -> String {
     let mut recipients = request.addresses.clone();
     recipients.extend(request.cc.iter().map(|address| format!("Cc: {address}")));

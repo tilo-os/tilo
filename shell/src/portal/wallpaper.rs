@@ -1,4 +1,5 @@
 //! `org.freedesktop.impl.portal.Wallpaper` backend.
+#[cfg(target_os = "linux")]
 use super::desktop_services::WallpaperRequest;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
@@ -11,7 +12,9 @@ use std::collections::HashMap;
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
 pub struct WallpaperBackend {
     ctx: PortalContext,
@@ -32,6 +35,7 @@ impl WallpaperBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str) -> bool {
     options
         .get(key)

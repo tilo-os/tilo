@@ -328,6 +328,25 @@ fn copy_symlink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
     ))
 }
 
+/// # Errors
+/// This host has no qualified trash-enumeration and purge provider.
+#[cfg(target_os = "macos")]
+pub fn empty_trash() -> Result<usize, String> {
+    Err("Trash management is unavailable on this host".into())
+}
+/// # Errors
+/// This host has no qualified trash-restore provider.
+#[cfg(target_os = "macos")]
+pub fn restore_entries(_entries: &[PathBuf]) -> Result<usize, String> {
+    Err("Trash restore is unavailable on this host".into())
+}
+/// # Errors
+/// This host has no qualified trash-item purge provider.
+#[cfg(target_os = "macos")]
+pub fn purge_entries(_entries: &[PathBuf]) -> Result<usize, String> {
+    Err("Trash purge is unavailable on this host".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,23 +505,4 @@ mod tests {
         assert!(!f.exists());
         assert_eq!(moved.parent().unwrap(), destdir);
     }
-}
-
-/// # Errors
-/// This host has no qualified trash-enumeration and purge provider.
-#[cfg(target_os = "macos")]
-pub fn empty_trash() -> Result<usize, String> {
-    Err("Trash management is unavailable on this host".into())
-}
-/// # Errors
-/// This host has no qualified trash-restore provider.
-#[cfg(target_os = "macos")]
-pub fn restore_entries(_entries: &[PathBuf]) -> Result<usize, String> {
-    Err("Trash restore is unavailable on this host".into())
-}
-/// # Errors
-/// This host has no qualified trash-item purge provider.
-#[cfg(target_os = "macos")]
-pub fn purge_entries(_entries: &[PathBuf]) -> Result<usize, String> {
-    Err("Trash purge is unavailable on this host".into())
 }

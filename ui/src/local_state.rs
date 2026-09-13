@@ -664,9 +664,9 @@ mod tests {
 
     #[test]
     fn background_writer_wakes_once_after_each_completed_mutation() {
-        let (_scope, rx) = bound_scope();
+        let (scope, rx) = bound_scope();
         let state = {
-            let _entry = _scope.enter();
+            let _entry = scope.enter();
             LocalState::new(vec![1])
         };
         let writer = state.writer();

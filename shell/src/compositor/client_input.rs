@@ -29,9 +29,8 @@ use smithay::input::touch::{
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point as SmithayPoint, Serial};
-use vello::kurbo::{Point as KurboPoint, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey, PhysicalKey};
+use vello::kurbo::Rect;
+use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::compositor::backend::{
     GestureEvent as BackendGestureEvent, TouchEvent as BackendTouchEvent,
@@ -41,20 +40,10 @@ use crate::compositor::state::State;
 use crate::shell::notification::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
-use crate::shell::overlay_host::ShellOverlayHost;
-use crate::shell::state::{
-    GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
-};
+use crate::shell::state::{GroupId, StripId};
 
 /// Linux `BTN_LEFT`. The Wayland pointer protocol carries raw evdev button codes, not an enum, so the winit `MouseButton` has to be mapped back.
 const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
-const BTN_MIDDLE: u32 = 0x112;
-const BTN_SIDE: u32 = 0x113;
-const BTN_EXTRA: u32 = 0x114;
-
-/// Scroll distance, in surface-local units, that one notch of a discrete wheel maps to — matches mainstream compositors so clients scaling `wl_pointer.axis` behave consistently.
-const WHEEL_STEP: f64 = 15.0;
 
 /// Which side of the compositor owns the pointer for the duration of an implicit grab (first button down → last button up).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,14 +91,6 @@ pub struct ClientInput {
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a touchpad's small pixel deltas fire one discrete jump per [`JUMP_PX_PER_DETENT`]. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
 }
-
-/// Resolve where an Alt+Shift wheel jump of `steps` windows lands. A
-/// "window" is a tab: the walk flattens the active strip's groups into tabs
-/// in strip order, clamped at the ends; pure, so tests can pin navigation against a bare [`WorkspaceTree`].
-
-/// Conventional switcher traversal over the same flat window sequence as
-/// [`step_active_window`], wrapping only when the requested direction reaches
-/// an edge. Spatial Super+Arrow navigation continues to use the clamped form.
 
 impl ClientInput {
     /// Record a freshly-created foreign toplevel — called from `XdgShellHandler::new_toplevel`; the chrome-side tab is spliced in by [`sync_foreign_tabs`] next tick.
@@ -742,14 +723,6 @@ pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
     changed
 }
 
-/// Splice a foreign toplevel into the active workspace as its own window group, active in its strip so keyboard focus follows it. Returns `(strip, group)`, or `None` when the workspace has no strip.
-
-/// Drop the tab bound to `surface_id`, and the group that hosted it when that leaves it empty — also advances the strip's active-group pointer off a group that just disappeared.
-
-/// Rewrite the app-id + title of a mirrored foreign tab after a late `xdg_toplevel.set_app_id`.
-
-/// Tab-bar-friendly label for a wayland app-id (`org.example.MyApp` → `MyApp`), capped so a pathological id can't blow out the tab strip.
-
 /// Reconcile the seat's keyboard focus with the shell's focused tab. Called every tick: chrome capture drops client focus outright; otherwise focus follows the active tab.
 pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     let captured = chrome_captures_input(fb);
@@ -782,11 +755,6 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
         });
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
-
-/// Keep the current seat focus only when the same surface is still represented
-/// by one of the mapped overlay layers. The three layer-specific options are
-/// computed from live compositor state by [`sync_keyboard_focus`], while this
-/// small pure join keeps stale/dismissed overlays from winning the fallback.
 
 /// Advance the compositor seat's keyboard state while a trusted shell
 /// surface (currently the lock screen) owns the visible interaction.
@@ -1158,10 +1126,6 @@ fn route_keyboard_input(
     state.deliver_client_key(code, pressed, forward)
 }
 
-/// Record exactly which key presses reached a client and mirror that decision
-/// on release. A shell-owned press must never be followed by an unmatched
-/// client release, even when its ownership came from a live custom binding.
-
 /// Promote a file drag from the hosted file manager into a Wayland drag.
 /// Called every tick: once the chrome's in-process drag gesture has the
 /// pointer over a foreign tile, the compositor claims it, starts smithay's
@@ -1428,14 +1392,8 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
 )]
 mod tests {
     use super::*;
-    use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
-    use std::time::Duration;
     use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
-
-    /// Every printable ASCII character resolves to a key on the board — asserted over the whole range since a missing shifted-punctuation entry is exactly the gap a hand-picked list would miss.
-
-    /// A shifted character names the key its unshifted twin sits on.
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
         // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
@@ -1455,73 +1413,6 @@ mod tests {
             is_synthetic: false,
         }
     }
-
-    fn mods(state: ModifiersState) -> Modifiers {
-        Modifiers::from(state)
-    }
-
-    /// A workspace tree with one strip carrying two groups: a shell-owned stub and a foreign client on `surface_id`.
-    fn tree_with_foreign(surface_id: u64) -> (WorkspaceTree, StripId, GroupId) {
-        let stub_tab = Tab {
-            id: next_id(),
-            title: "Terminal".into(),
-            tile: TileContent::Stub {
-                kind: AppKind::Terminal,
-                label: "Terminal".into(),
-            },
-        };
-        let stub_tab_id = stub_tab.id;
-        let stub = WindowGroup {
-            id: next_id(),
-            tabs: vec![stub_tab],
-            active_tab: stub_tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let foreign_tab = Tab {
-            id: next_id(),
-            title: "client".into(),
-            tile: TileContent::Foreign {
-                app_id: "org.example.client".into(),
-                surface_id,
-            },
-        };
-        let foreign_tab_id = foreign_tab.id;
-        let foreign = WindowGroup {
-            id: next_id(),
-            tabs: vec![foreign_tab],
-            active_tab: foreign_tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let foreign_group = foreign.id;
-        let strip_id = StripId::from(next_id());
-        let mut strip = Strip::new(strip_id, "main");
-        strip.window_groups = vec![stub, foreign];
-        let ws_id = WorkspaceId::from(next_id());
-        let mut ws = Workspace::new(ws_id, "Home");
-        ws.strips = vec![strip];
-        let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            ..Default::default()
-        };
-        tree.active_strip.insert(ws_id, strip_id);
-        (tree, strip_id, foreign_group)
-    }
-
-    /// The peer-sync card must take the keyboard away from a focused client, or
-    /// it cannot be dismissed — a key only reaches its handler when `chrome_captures_input` says the chrome has taken input.
-
-    /// These surfaces are modal in the rendered shell, so the compositor
-    /// boundary—not merely their widget handler—must take the seat away from
-    /// the app underneath. Direct host tests cannot catch this regression:
-    /// they bypass the client-first router entirely.
-
-    /// The portal's file chooser is modal, so it must hold input while it is
-    /// up — the same contract as the peer-sync card above. Asserted on
-    /// `chrome_captures_input` with the dialog mounted the way the compositor
-    /// mounts one (through the portal's queue, drained by `pump_file_picker`), so this can't pass against a dialog production would never raise.
 
     #[test]
     fn onboarding_mutes_wayland_focus_and_the_remote_input_view() {
@@ -1553,11 +1444,6 @@ mod tests {
             "remote peers must see OOBE as occluding trusted chrome"
         );
     }
-
-    /// The geometry contract the pointer router depends on: a foreign
-    /// toplevel mirrored into the chrome's tree becomes a live window group
-    /// whose *tile* rect is laid out, hit-testable, and translates a global
-    /// cursor into surface-local coordinates. Runs against the real `FrameBuilder`, so a regression in the tree→widget resync or `ShellOverlayHost::active_tile_rect` fails here.
 
     /// The remote-input firewall's z-order check and local pointer routing must never disagree about what is on top — the disagreement *is* the clickjacking hole; they share [`foreign_tiles`].
     #[test]
@@ -2028,11 +1914,6 @@ mod tests {
             "a flood of app toasts buried the kill-switch confirmation",
         );
     }
-
-    /// The scrubber reads evdev keycodes off the wire; local input reads winit logical keys — both narrow to a [`ChordKey`], so the two can't drift apart.
-
-    /// F1 is the advertised desktop-guide key and must beat a focused client;
-    /// every other bare function key remains application-owned.
 
     #[test]
     fn client_input_registry_tracks_lifecycle_without_a_surface() {

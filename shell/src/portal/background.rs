@@ -16,12 +16,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 
 use super::desktop_services::PortalResult;
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::lifecycle::PortalLifecycle;
+#[cfg(target_os = "linux")]
+use super::lifecycle::{LifecycleEntry, LifecycleResource};
 #[cfg(target_os = "linux")]
 use super::{
     PortalContext,
@@ -34,6 +40,7 @@ pub const RUNNING: u32 = 1;
 pub const ACTIVE: u32 = 2;
 
 const MAX_TRACKED_APPS: usize = 256;
+#[cfg(target_os = "linux")]
 const MAX_NAME_BYTES: usize = 512;
 const MAX_COMMAND_ARGUMENTS: usize = 64;
 const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
@@ -69,11 +76,19 @@ pub trait BackgroundService: Send + Sync {
 }
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+    )
+)]
 pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
 impl BackgroundServiceHandle {
     pub fn new(service: Arc<dyn BackgroundService>) -> Self {
         Self(service)
     }
+    #[cfg(target_os = "linux")]
     fn request_background(
         &self,
         request: BackgroundConsentRequest,
@@ -81,9 +96,11 @@ impl BackgroundServiceHandle {
     ) -> PortalResult<()> {
         self.0.request_background(request, reply)
     }
+    #[cfg(target_os = "linux")]
     fn set_autostart(&self, app_id: &str, enabled: bool) -> PortalResult<bool> {
         self.0.set_autostart(app_id, enabled)
     }
+    #[cfg(target_os = "linux")]
     fn cancel_background(&self, handle: &str) {
         self.0.cancel_background(handle);
     }
@@ -315,7 +332,21 @@ pub struct BackgroundBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     service: BackgroundServiceHandle,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     lifecycle: PortalLifecycle,
 }
 
@@ -632,6 +663,7 @@ fn response_with_result(allowed: bool) -> (u32, HashMap<String, OwnedValue>) {
 fn valid_app_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 255 && !value.chars().any(char::is_control)
 }
+#[cfg(target_os = "linux")]
 fn valid_name(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_NAME_BYTES && !value.chars().any(char::is_control)
 }
