@@ -9,7 +9,7 @@ use crate::view::{FrozenApp, ThawError, View};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
 use crate::widget::{AppWidget, IconDescriptor};
 use automerge::AutoCommit;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -54,6 +54,7 @@ pub struct HostContext {
     action_context: qos_actions::ActionContext,
     wake_scope: WakeScope,
     construction: Rc<()>,
+    closing: Rc<Cell<bool>>,
 }
 impl HostContext {
     /// Reserve New or open Existing before the factory, using only supplied identities.
@@ -124,6 +125,7 @@ impl HostContext {
             action_context,
             wake_scope: WakeScope::new(),
             construction: Rc::new(()),
+            closing: Rc::new(Cell::new(false)),
         })
     }
     pub fn record(&self) -> &RecordCheckout {
@@ -163,6 +165,18 @@ impl HostContext {
         reservation.initialize(initialize)?;
         self.reservation = None;
         Ok(())
+    }
+    pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
+        crate::bound_dispatch::CallbackBinding {
+            lifetime: self.wake_scope.handle(),
+            closing: self.closing.clone(),
+            instance_id: self.instance_id,
+            records: self.records.clone(),
+            checkout: self.record.clone(),
+            permissions: self.permissions.clone(),
+            author: self.author.clone(),
+            operation_context: self.action_context.clone(),
+        }
     }
     fn envelope(&self, view: View) -> SavedInstanceView {
         SavedInstanceView {
@@ -305,13 +319,20 @@ impl ApplicationDefinition {
 /// Real app content and its lifetime; hosts cannot extract an unbound root.
 pub struct AppComponent {
     context: HostContext,
-    root: Option<Box<dyn AppWidget>>,
+    pub(crate) root: Option<Box<dyn AppWidget>>,
     registry: Option<qos_actions::ActionRegistry>,
     local_view: View,
     close_report: Option<ComponentCloseReport>,
     prepared: bool,
+    pub(crate) invocations: Vec<qos_actions::InvocationId>,
+    pending_reports: Vec<ComponentCloseReport>,
+    report_drained: bool,
 }
 impl AppComponent {
+    pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
+        self.context.callback_binding()
+    }
+
     pub fn new(
         context: HostContext,
         root: Box<dyn AppWidget>,
@@ -324,6 +345,9 @@ impl AppComponent {
             local_view: View::default(),
             close_report: None,
             prepared: false,
+            invocations: vec![],
+            pending_reports: vec![],
+            report_drained: false,
         }
     }
     pub fn record(&self) -> &RecordCheckout {
@@ -346,14 +370,20 @@ impl AppComponent {
     /// # Errors
     /// Rejects closed components and invalid widget geometry.
     pub fn capture_local_view(&self) -> Result<View, ThawError> {
+        if self.context.closing.get() {
+            return Err(ThawError::InvalidView("component is closing".into()));
+        }
+        self.capture_local_view_owned()
+    }
+    fn capture_local_view_owned(&self) -> Result<View, ThawError> {
         let _entry = self.context.wake_scope.enter();
         let root = self
             .root
             .as_deref()
             .ok_or_else(|| ThawError::InvalidView("component is closed".into()))?;
-        let mut view = crate::view::capture_widget_view(
+        let mut view = crate::view::capture_widget_view_bound(
             root,
-            crate::view::capture_tree_focus(root),
+            crate::view::capture_tree_focus_bound(root),
             self.local_view.viewport,
         );
         if view.open_resource.is_none() {
@@ -368,15 +398,18 @@ impl AppComponent {
     /// # Errors
     /// Rejects malformed geometry or closed components before invoking widget hooks.
     pub fn restore_local_view(&mut self, view: &View) -> Result<(), ThawError> {
+        if self.context.closing.get() {
+            return Err(ThawError::InvalidView("component is closing".into()));
+        }
         view.validate()?;
         let _entry = self.context.wake_scope.enter();
         let root = self
             .root
             .as_deref_mut()
             .ok_or_else(|| ThawError::InvalidView("component is closed".into()))?;
-        crate::view::restore_widget_view(root, view);
+        crate::view::restore_widget_view_bound(root, view);
         if let Some(focus) = &view.focus {
-            crate::view::restore_tree_focus(root, focus);
+            crate::view::restore_tree_focus_bound(root, focus);
         }
         self.local_view = view.clone();
         Ok(())
@@ -389,6 +422,11 @@ impl AppComponent {
         if let Some(report) = &self.close_report {
             return report.clone();
         }
+        // The close borrow can unwind before cancellation starts (for example,
+        // in View capture). Keep cleanup owned here even if the host catches it.
+        CloseComponentOnExit(self).0.close_owned()
+    }
+    fn close_owned(&mut self) -> ComponentCloseReport {
         let mut report = ComponentCloseReport {
             recovery: None,
             view_error: None,
@@ -397,41 +435,98 @@ impl AppComponent {
             record_retry: None,
             teardown_error: None,
         };
-        match self.capture_local_view() {
+        self.context.closing.set(true);
+        match self.capture_local_view_owned() {
             Ok(view) => {
-                let saved = self.context.envelope(view);
-                if let Err(error) = self.context.views.save(&saved) {
-                    report.view_error = Some(error.to_string());
-                    report.view_retry = Some(self.context.views.clone());
-                }
-                report.recovery = Some(saved);
+                self.local_view = view.clone();
+                report.recovery = Some(self.context.envelope(view));
             }
-            Err(error) => report.view_error = Some(error.to_string()),
+            Err(error) => {
+                report.view_error = Some(error.to_string());
+                report.recovery = Some(self.context.envelope(self.local_view.clone()));
+            }
         }
         self.context.wake_scope.close();
+        let _entry = self.context.wake_scope.enter();
+        if report.view_error.is_none()
+            && let Some(saved) = &report.recovery
+            && let Err(error) = self.context.views.save(saved)
+        {
+            report.view_error = Some(error.to_string());
+            report.view_retry = Some(self.context.views.clone());
+        }
         if let Err(error) = self.context.records.try_flush() {
             report.record_error = Some(error);
             report.record_retry = Some(self.context.records.clone());
         }
-        self.teardown();
+        // Parent View has already been captured. Each child still owns its live
+        // tree and captures/closes exactly once before any parent root is dropped.
+        if let Some(root) = self.root.as_deref_mut() {
+            self.pending_reports.extend(root.close_components());
+            self.pending_reports
+                .extend(root.take_component_close_reports());
+        }
+        self.close_report = Some(report.clone());
+        if let Err(error) = self.teardown() {
+            report.teardown_error = Some(error);
+        }
         self.close_report = Some(report.clone());
         report
+    }
+    pub(crate) fn take_close_reports(&mut self) -> Vec<ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.pending_reports);
+        if !self.report_drained
+            && let Some(report) = &self.close_report
+        {
+            reports.push(report.clone());
+            self.report_drained = true;
+        }
+        reports
     }
     pub fn close_report(&self) -> Option<&ComponentCloseReport> {
         self.close_report.as_ref()
     }
-    fn teardown(&mut self) {
+    fn teardown(&mut self) -> Result<(), String> {
+        self.context.closing.set(true);
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
-        let root = self.root.take();
-        let registry = self.registry.take();
-        drop_component_owned(root, registry);
+        // Ownership locals are declared after the closed route guard. If app
+        // cancellation unwinds, every remaining capture drops before that guard.
+        let mut owned = (
+            self.root.take(),
+            self.registry.take(),
+            std::mem::take(&mut self.invocations),
+        );
+        let result = if let Some(root) = owned.0.as_deref_mut() {
+            let result = self
+                .context
+                .records
+                .with_checked(&self.context.record.id, |doc| {
+                    for invocation in &owned.2 {
+                        root.poll_resource_operation(*invocation, true, doc, &automerge::ROOT);
+                    }
+                })
+                .map_err(|error| error.to_string());
+            root.unmount_native_views();
+            result
+        } else {
+            Ok(())
+        };
+        drop_component_owned(owned.0, (owned.1, owned.2));
+        result
     }
 }
+struct CloseComponentOnExit<'a>(&'a mut AppComponent);
+impl Drop for CloseComponentOnExit<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.teardown();
+    }
+}
+
 impl Drop for AppComponent {
     fn drop(&mut self) {
         // Failed setup must not save a supplied bad View over the persisted envelope.
-        self.teardown();
+        let _ = self.teardown();
     }
 }
 #[derive(Clone)]
@@ -445,6 +540,20 @@ pub struct ComponentCloseReport {
     pub teardown_error: Option<String>,
 }
 impl ComponentCloseReport {
+    /// Retry the same dirty canonical owner, retaining it until durability succeeds.
+    /// # Errors
+    /// Returns the original owner's current persistence failure.
+    pub fn retry_record(&mut self) -> Result<(), String> {
+        if let Some(records) = &self.record_retry {
+            records
+                .try_flush()
+                .inspect_err(|error| self.record_error = Some(error.clone()))?;
+            self.record_retry = None;
+            self.record_error = None;
+        }
+        Ok(())
+    }
+
     /// # Errors
     /// Retains the original store and envelope until the atomic save succeeds.
     pub fn retry_view(&mut self) -> Result<(), ThawError> {
@@ -560,5 +669,179 @@ mod cleanup_tests {
     #[test]
     fn registry_panic_propagates_after_both_closed_scope_drops() {
         assert_closed_cleanup("registry");
+    }
+}
+
+#[cfg(test)]
+mod bound_lifetime_tests {
+    use super::*;
+    use crate::widget::{AppKind, Column, Widget};
+    use automerge::ObjId;
+    use taffy::{NodeId, TaffyTree};
+    struct Root(Column);
+    impl Widget for Root {
+        fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+            self.0.sync(doc, path);
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            theme: &crate::Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.0.build_layout(tree, theme, nodes)
+        }
+        fn apply_layout(
+            &mut self,
+            tree: &TaffyTree<()>,
+            node: NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.0.apply_layout(tree, node, origin);
+        }
+        fn draw(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text: &mut crate::TextRenderer,
+            theme: &crate::Theme,
+            presence: &crate::PresenceCtx,
+        ) {
+            self.0.draw(scene, transform, text, theme, presence);
+        }
+        fn handle_event(
+            &mut self,
+            event: &winit::event::WindowEvent,
+            scale: f64,
+            modifiers: &winit::event::Modifiers,
+            doc: &mut AutoCommit,
+            path: &ObjId,
+            handled: &mut bool,
+            focus: &mut Option<NodeId>,
+            node: NodeId,
+            tree: &TaffyTree<()>,
+        ) {
+            self.0.handle_event(
+                event, scale, modifiers, doc, path, handled, focus, node, tree,
+            );
+        }
+        fn name(&self) -> &'static str {
+            "MountProbe"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.0.get_rect()
+        }
+    }
+    impl AppWidget for Root {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Mount probe"
+        }
+        fn app_icon(&self) -> IconDescriptor {
+            IconDescriptor::Glyph("P")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+    #[allow(clippy::needless_pass_by_value, reason = "component factory contract")]
+    fn factory(
+        mut context: HostContext,
+        target: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, LaunchError> {
+        if matches!(target, LaunchTarget::New) {
+            context
+                .initialize_new_record(|_| Ok(()))
+                .map_err(LaunchError::Record)?;
+        }
+        Ok(AppComponent::new(
+            context,
+            Box::new(Root(Column::new())),
+            qos_actions::ActionRegistry::new(),
+        ))
+    }
+    #[test]
+    fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners.open("dev.qos.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.qos.mount-probe",
+            title: "Mount probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let prepare = |target: &LaunchTarget| {
+            HostContext::prepare(
+                &definition,
+                records.clone(),
+                views.clone(),
+                "D".into(),
+                7,
+                Rc::new(RefCell::new(PermissionContext::permissive())),
+                UserId("probe-author".into()),
+                qos_actions::ActionContext::default(),
+                target,
+            )
+            .unwrap()
+        };
+        let mut old = definition
+            .instantiate(
+                prepare(&LaunchTarget::New),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let binding = old.callback_binding();
+        let target = LaunchTarget::Record {
+            checkout: old.record().clone(),
+            reveal: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        old.mount(move |event| {
+            tx.send(event).unwrap();
+        })
+        .unwrap();
+        let local = binding
+            .read_document(&AutoCommit::new(), |_, _| crate::LocalState::new(0))
+            .unwrap();
+        assert!(local.writer().try_set(1));
+        let queued = rx.try_recv().unwrap();
+        assert!(old.context.wake_scope.accepts(&queued));
+        records
+            .with(&old.record().id, |_| {
+                assert!(matches!(
+                    binding.with_document(&mut AutoCommit::new(), |_, _| panic!("busy entry ran")),
+                    Err(crate::bound_dispatch::BoundDispatchError::Record(
+                        RecordOpenError::Busy
+                    ))
+                ));
+            })
+            .unwrap();
+        old.close();
+        let mut reopened = definition
+            .instantiate(prepare(&target), target, RestoreInput::None)
+            .unwrap();
+        let (tx, new_rx) = std::sync::mpsc::channel();
+        reopened
+            .mount(move |event| {
+                tx.send(event).unwrap();
+            })
+            .unwrap();
+        assert!(!old.context.wake_scope.accepts(&queued));
+        assert!(!reopened.context.wake_scope.accepts(&queued));
+        assert!(!local.writer().try_set(2));
+        assert!(new_rx.try_recv().is_err());
+        assert!(matches!(
+            binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
+            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+        ));
     }
 }

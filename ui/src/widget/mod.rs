@@ -118,23 +118,78 @@ pub(crate) fn collect_widget_resources(
     doc: &AutoCommit,
     resources: &mut Vec<qos_actions::Resource>,
 ) {
-    resources.extend(widget.resources(doc));
-    widget.for_each_child(&mut |child| collect_widget_resources(child, doc, resources));
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        resources: &mut Vec<qos_actions::Resource>,
+    ) {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+        else {
+            return;
+        };
+        // Boundary adapters expose their real root as a child. Collect each
+        // declaration once, and release its document borrow before descending.
+        if boundary.is_none() {
+            if let Some(binding) = &binding {
+                if let Ok(found) = binding.read_document(doc, |doc, _| widget.resources(doc)) {
+                    resources.extend(found);
+                }
+            } else {
+                resources.extend(widget.resources(doc));
+            }
+        }
+        widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), resources));
+    }
+    visit(widget, doc, None, resources);
 }
 
-/// Resolve one lazily published resource from the retained widget tree.
+/// Resolve one lazily published resource through its originating boundary.
 pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
 ) -> Option<qos_actions::Resource> {
-    if let Some(resource) = widget.resource(doc, id) {
-        return Some(resource);
+    resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
+        widget.resource(doc, id)
+    })
+}
+
+fn resolve_bound_resource<R>(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    inherited: Option<crate::bound_dispatch::CallbackBinding>,
+    lookup: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<R>,
+) -> Option<R> {
+    let boundary = widget.callback_binding();
+    let binding = boundary.clone().or(inherited);
+    let _entry = binding
+        .as_ref()
+        .map(crate::bound_dispatch::CallbackBinding::enter)
+        .transpose()
+        .ok()?;
+    if boundary.is_none() {
+        let found = if let Some(binding) = &binding {
+            binding
+                .read_document(doc, |doc, _| lookup(widget, doc))
+                .ok()
+                .flatten()
+        } else {
+            lookup(widget, doc)
+        };
+        if found.is_some() {
+            return found;
+        }
     }
     widget
         .children()
         .into_iter()
-        .find_map(|child| resolve_widget_resource(child, doc, id))
+        .find_map(|child| resolve_bound_resource(child, doc, binding.clone(), lookup))
 }
 
 /// One bounded page from a widget-owned remote root catalogue.  `next_cursor`
@@ -146,27 +201,6 @@ pub struct ActionDirectoryResourcePage {
     pub exhausted: bool,
 }
 
-/// Return the retained widget at a stable pre-order position without asking it
-/// to materialize resources.  The app-owned cursor binds this ordinal to the
-/// directory revision, so a structural change invalidates instead of shifting
-/// a caller into an unrelated sibling.
-pub(crate) fn action_directory_widget_at<'a>(
-    widget: &'a dyn Widget,
-    target: usize,
-    ordinal: &mut usize,
-) -> Option<&'a dyn Widget> {
-    if *ordinal == target {
-        return Some(widget);
-    }
-    *ordinal = ordinal.saturating_add(1);
-    for child in widget.children() {
-        if let Some(found) = action_directory_widget_at(child, target, ordinal) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 /// Ask the resource's owning widget for its explicit directory disclosure
 /// capability without traversing or materialising any lazy descendants.
 pub(crate) fn resolve_action_directory_visibility(
@@ -174,12 +208,69 @@ pub(crate) fn resolve_action_directory_visibility(
     doc: &AutoCommit,
     id: &str,
 ) -> Option<qos_actions::ActionAddress> {
-    widget.action_directory_visibility(doc, id).or_else(|| {
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| resolve_action_directory_visibility(child, doc, id))
+    resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
+        widget.action_directory_visibility(doc, id)
     })
+}
+
+/// Read a bounded page without allowing its retained widget reference or
+/// originating binding to escape the traversal.
+#[allow(
+    clippy::option_option,
+    reason = "outer None means end of traversal; inner None means this ordinal has no bounded provider"
+)]
+pub(crate) fn action_directory_page_at(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    target: usize,
+    cursor: &[u8],
+    max_results: usize,
+) -> Option<Option<ActionDirectoryResourcePage>> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        target: usize,
+        ordinal: &mut usize,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<Option<ActionDirectoryResourcePage>> {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let _entry = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+            .ok()?;
+        if *ordinal == target {
+            if boundary.is_some() {
+                return Some(None);
+            }
+            return Some(if let Some(binding) = &binding {
+                binding
+                    .read_document(doc, |doc, _| {
+                        widget.action_directory_resource_page(doc, cursor, max_results)
+                    })
+                    .ok()
+                    .flatten()
+            } else {
+                widget.action_directory_resource_page(doc, cursor, max_results)
+            });
+        }
+        *ordinal = ordinal.saturating_add(1);
+        widget.children().into_iter().find_map(|child| {
+            visit(
+                child,
+                doc,
+                target,
+                ordinal,
+                binding.clone(),
+                cursor,
+                max_results,
+            )
+        })
+    }
+    visit(widget, doc, target, &mut 0, None, cursor, max_results)
 }
 
 /// Last-resort accessible label for controls whose constructor already
@@ -334,6 +425,28 @@ pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
 }
 
 pub trait Widget {
+    /// Owning lifecycle path: capture and close nested components before removing
+    /// their live trees, transferring all recovery reports to the caller.
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::close_components)
+            .collect()
+    }
+    /// Drain inert close-report ownership once; never invoke ordinary app callbacks
+    /// through a closed component. Bound owners override this to use cached metadata.
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::take_component_close_reports)
+            .collect()
+    }
+
+    /// Runtime binding inherited by descendants in a matching layout topology.
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
+
     /// Session-local broker requests emitted by an application widget. These
     /// are never document mutations; the host drains them onto its already
     /// authenticated collaboration channel.

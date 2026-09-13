@@ -264,6 +264,24 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
+        self.refresh_impl::<false>(root, node_map, focused, resources)
+    }
+    pub(crate) fn refresh_bound(
+        &mut self,
+        root: &dyn Widget,
+        node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        focused: Option<TaffyNodeId>,
+        resources: &[Resource],
+    ) -> TreeDelta {
+        self.refresh_impl::<true>(root, node_map, focused, resources)
+    }
+    fn refresh_impl<const BOUND: bool>(
+        &mut self,
+        root: &dyn Widget,
+        node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        focused: Option<TaffyNodeId>,
+        resources: &[Resource],
+    ) -> TreeDelta {
         // Reverse map widget *data* pointer -> taffy id, keyed on the thin
         // data address (`*const ()`) rather than the fat `*const dyn Widget`
         // — the data address of a live object is identical across every
@@ -276,7 +294,7 @@ impl SemanticTree {
             ptr_to_taffy.insert(w_ptr as *const (), taffy_id);
         }
 
-        let mut builder = Build {
+        let mut builder = Build::<BOUND> {
             nodes: HashMap::new(),
             order: Vec::new(),
             prompted: HashMap::new(),
@@ -584,7 +602,7 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
 
 /// Separate from [`SemanticTree`] so the retained frame is only replaced
 /// once the new one is fully built (and diffed against).
-struct Build<'a> {
+struct Build<'a, const BOUND: bool> {
     nodes: HashMap<SemanticId, SemanticNode>,
     order: Vec<SemanticId>,
     prompted: PromptedMap,
@@ -593,7 +611,7 @@ struct Build<'a> {
     duplicate_ids: Vec<SemanticId>,
 }
 
-impl Build<'_> {
+impl<const BOUND: bool> Build<'_, BOUND> {
     fn insert_node(&mut self, node: SemanticNode) {
         let id = node.id.clone();
         if self.nodes.insert(id.clone(), node).is_some() {
@@ -608,6 +626,9 @@ impl Build<'_> {
         semantic_parent: &SemanticId,
         parent_children: &mut Vec<SemanticId>,
     ) {
+        let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+            return;
+        };
         let taffy_id = self
             .ptr_to_taffy
             .get(&std::ptr::from_ref::<dyn Widget>(w).cast::<()>())

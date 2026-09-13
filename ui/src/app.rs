@@ -347,6 +347,7 @@ pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -
 /// Lets a nested settings/appearance pane drive the app's global appearance
 /// without a back-channel.
 fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
+    let _entry = crate::bound_dispatch::enter_widget(w).ok()?;
     if let Some(intent) = w.appearance_intent() {
         return Some(intent);
     }
@@ -451,6 +452,8 @@ pub struct App {
     taffy: TaffyTree<()>,
     root_node: Option<NodeId>,
     node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
+    bindings: crate::bound_dispatch::BoundNodeMap,
+    component_close_reports: Vec<crate::application::ComponentCloseReport>,
     layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
     /// rebuild before the next layout pass, runtime-spawned widgets (e.g. a
@@ -730,6 +733,71 @@ impl AppConstructionInputs {
 }
 
 impl App {
+    /// Capture/close embedded components while the host still owns their trees.
+    /// Recovery reports stay owned by this host until explicitly transferred.
+    pub fn close_components(&mut self) {
+        self.component_close_reports
+            .extend(self.root_widget.close_components());
+        self.component_close_reports
+            .extend(self.root_widget.take_component_close_reports());
+        self.bindings.clear();
+        self.node_map.clear();
+    }
+    pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
+        &self.component_close_reports
+    }
+    /// Transfer pending recovery to another owner; ordinary tile destruction cannot lose it.
+    pub fn take_component_close_reports(
+        &mut self,
+    ) -> Vec<crate::application::ComponentCloseReport> {
+        self.component_close_reports
+            .extend(self.root_widget.take_component_close_reports());
+        std::mem::take(&mut self.component_close_reports)
+    }
+
+    fn inspect_node<R>(
+        &self,
+        node: NodeId,
+        callback: impl FnOnce(&dyn Widget) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        // SAFETY: App owns this stable tree and no target reference escapes.
+        unsafe {
+            crate::bound_dispatch::inspect_bound_node(
+                &self.bindings,
+                &self.node_map,
+                node,
+                callback,
+            )
+        }
+    }
+    fn mutate_node<R>(
+        &mut self,
+        node: NodeId,
+        callback: impl FnOnce(&mut dyn Widget) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        // SAFETY: exclusive App access prevents overlapping target references/rebuild.
+        unsafe {
+            crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
+        }
+    }
+    fn dispatch_node<R>(
+        &mut self,
+        node: NodeId,
+        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        // SAFETY: exclusive App owns both maps and this stable tree.
+        unsafe {
+            crate::bound_dispatch::invoke_bound_node(
+                &self.bindings,
+                &self.node_map,
+                node,
+                &mut self.state.doc,
+                &self.state.root,
+                callback,
+            )
+        }
+    }
+
     fn initial_presence_context() -> PresenceCtx {
         // Own identity, in preference order: the handle announced on `Hello`,
         // then the fallback app id. Anything else is somebody else and gets
@@ -774,10 +842,28 @@ impl App {
 
     /// Construct a live app whose root factory captures a fresh owner.
     pub fn from_factory(state: State, factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
+        Self::from_factory_with_inputs(state, factory, || {
+            AppConstructionInputs::production(CollaborationManager::new())
+        })
+    }
+
+    fn from_factory_with_inputs(
+        state: State,
+        factory: impl FnOnce() -> Box<dyn Widget>,
+        inputs: impl FnOnce() -> AppConstructionInputs,
+    ) -> Self {
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
         let root = factory();
-        Self::from_scoped_parts(scope, state, root)
+        Self::from_scoped_parts_with_inputs(scope, state, root, inputs)
+    }
+
+    #[cfg(test)]
+    fn from_factory_with_controlled_inputs(
+        state: State,
+        factory: impl FnOnce() -> Box<dyn Widget>,
+    ) -> Self {
+        Self::from_factory_with_inputs(state, factory, AppConstructionInputs::controlled)
     }
 
     /// Fallible form of [`Self::from_factory`]. A failed factory closes all
@@ -806,12 +892,32 @@ impl App {
         state: State,
         root_widget: Box<dyn Widget>,
     ) -> Self {
+        Self::from_scoped_parts_with_inputs(wake_scope, state, root_widget, || {
+            AppConstructionInputs::production(CollaborationManager::new())
+        })
+    }
+
+    fn from_scoped_parts_with_inputs(
+        wake_scope: crate::wake::WakeScope,
+        state: State,
+        root_widget: Box<dyn Widget>,
+        inputs: impl FnOnce() -> AppConstructionInputs,
+    ) -> Self {
         let _entry = wake_scope.enter();
-        Self::with_parts(
-            Some(wake_scope),
+        Self::with_parts(Some(wake_scope), state, root_widget, inputs())
+    }
+
+    #[cfg(test)]
+    fn from_scoped_parts_with_controlled_inputs(
+        wake_scope: crate::wake::WakeScope,
+        state: State,
+        root_widget: Box<dyn Widget>,
+    ) -> Self {
+        Self::from_scoped_parts_with_inputs(
+            wake_scope,
             state,
             root_widget,
-            AppConstructionInputs::production(CollaborationManager::new()),
+            AppConstructionInputs::controlled,
         )
     }
 
@@ -874,6 +980,8 @@ impl App {
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
+            bindings: crate::bound_dispatch::BoundNodeMap::new(),
+            component_close_reports: vec![],
             layout_dirty: true,
             structure_dirty: false,
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -1381,7 +1489,7 @@ impl App {
         );
         let mut complete = declared.clone();
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh(
+        semantics.refresh_bound(
             self.root_widget.as_ref(),
             &self.node_map,
             self.focused_node,
@@ -1953,20 +2061,17 @@ impl App {
                 let mut inspected = 0usize;
                 let mut exhausted = false;
                 while rows.len() < max_results && inspected < max_work {
-                    let mut ordinal = 0usize;
-                    let Some(widget) = crate::widget::action_directory_widget_at(
+                    let Some(page) = crate::widget::action_directory_page_at(
                         self.root_widget.as_ref(),
+                        &self.state.doc,
                         widget_index,
-                        &mut ordinal,
+                        provider_cursor.as_deref().unwrap_or_default(),
+                        1,
                     ) else {
                         exhausted = true;
                         break;
                     };
-                    let Some(page) = widget.action_directory_resource_page(
-                        &self.state.doc,
-                        provider_cursor.as_deref().unwrap_or_default(),
-                        1,
-                    ) else {
+                    let Some(page) = page else {
                         widget_index = widget_index.saturating_add(1);
                         provider_cursor = None;
                         inspected = inspected.saturating_add(1);
@@ -3324,13 +3429,10 @@ impl App {
 
     fn announce_current_focus(&mut self) {
         let Some(id) = self.focused_node else { return };
-        let Some(&w_ptr) = self.node_map.get(&id) else {
-            return;
-        };
-        // SAFETY: same node_map dereference invariant the rest of `App` relies
-        // on — pointers are valid for the duration of an event dispatch (the
-        // tree is only rebuilt between frames). Mirrors `navigate_focus`.
-        let node = unsafe { (*w_ptr).accessibility() };
+        let node = self
+            .inspect_node(id, |widget| widget.accessibility())
+            .ok()
+            .flatten();
         if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
             sr.announce_focus(&node);
         }
@@ -3566,16 +3668,14 @@ impl App {
     /// private child storage.
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         let mut best: Option<(f64, CursorIcon)> = None;
-        for &w_ptr in self.node_map.values() {
-            // SAFETY: same invariant the rest of `App` relies on — the
-            // `node_map` pointers are valid for the duration of an event
-            // dispatch (the tree is only rebuilt between frames, never
-            // mid-`window_event`). This mirrors the existing `node_map`
-            // dereferences in `navigate_focus` / focus handling.
-            let w = unsafe { &*w_ptr };
-            let rect = w.get_rect();
+        for &node in self.node_map.keys() {
+            let Ok((rect, icon)) = self.inspect_node(node, |widget| {
+                (widget.get_rect(), widget.cursor_shape(point))
+            }) else {
+                continue;
+            };
             if rect.contains(point)
-                && let Some(icon) = w.cursor_shape(point)
+                && let Some(icon) = icon
             {
                 let area = (rect.width() * rect.height()).max(0.0);
                 if best.is_none_or(|(a, _)| area < a) {
@@ -3594,21 +3694,19 @@ impl App {
             return None;
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
-        for &w_ptr in self.node_map.values() {
-            // SAFETY: identical invariant to `resolve_cursor` — `node_map`
-            // pointers are valid for the duration of an event dispatch.
-            let w = unsafe { &*w_ptr };
-            let rect = w.get_rect();
-            if !rect.contains(point) {
+        for &node in self.node_map.keys() {
+            let Ok((rect, tip)) = self.inspect_node(node, |widget| {
+                (widget.get_rect(), widget.tooltip().map(str::to_owned))
+            }) else {
                 continue;
-            }
-            if let Some(tip) = w.tooltip() {
-                if tip.is_empty() {
-                    continue;
-                }
+            };
+            if rect.contains(point)
+                && let Some(tip) = tip
+                && !tip.is_empty()
+            {
                 let area = (rect.width() * rect.height()).max(0.0);
                 if best.as_ref().is_none_or(|(a, _, _)| area < *a) {
-                    best = Some((area, rect, tip.to_string()));
+                    best = Some((area, rect, tip));
                 }
             }
         }
@@ -3757,10 +3855,11 @@ impl App {
 
     fn broadcast_focus_presence(&mut self) {
         use crate::collaboration::PresencePayload;
-        let current = self
-            .focused_node
-            .and_then(|id| self.node_map.get(&id).copied())
-            .and_then(|w| unsafe { (*w).presence_payload() });
+        let current = self.focused_node.and_then(|id| {
+            self.inspect_node(id, |widget| widget.presence_payload())
+                .ok()
+                .flatten()
+        });
         if current != self.last_focus_presence {
             // When the caret advances forward under the same scope, publish
             // `Typing` for the inserted run so peers light up a fading
@@ -4164,6 +4263,9 @@ impl App {
             taffy: &TaffyTree<()>,
             order: &mut Vec<NodeId>,
         ) {
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+                return;
+            };
             if widget.is_focusable() && widget.is_enabled() {
                 order.push(node_id);
             }
@@ -4180,6 +4282,9 @@ impl App {
             widget: &dyn Widget,
             taffy: &TaffyTree<()>,
         ) -> Option<Vec<NodeId>> {
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+                return None;
+            };
             let children = widget.children();
             let child_nodes = taffy.children(node_id).ok();
             // Recurse first so a nested trap takes precedence.
@@ -4307,11 +4412,7 @@ impl App {
             if let Some(&id) = self.focusable_order.get(idx) {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
-                    if let Some(&w_ptr) = self.node_map.get(&id) {
-                        unsafe {
-                            (*w_ptr).set_state(&metadata);
-                        }
-                    }
+                    let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
                     self.last_stable_metadata = Some(metadata);
                 }
                 self.last_stable_focus_idx = Some(idx);
@@ -4341,9 +4442,9 @@ impl App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
-            self.node_map
-                .get(&id)
-                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+            self.inspect_node(id, |widget| widget.get_state())
+                .ok()
+                .flatten()
         });
         self.invalidate_widget_resource_cache();
 
@@ -4358,26 +4459,19 @@ impl App {
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         if self.focused_node != new_id {
-            if let Some(old_id) = self.focused_node
-                && let Some(&w_ptr) = self.node_map.get(&old_id)
-            {
-                unsafe {
-                    (*w_ptr).set_focus(false);
-                }
+            if let Some(old) = self.focused_node {
+                let _ = self.mutate_node(old, |widget| widget.set_focus(false));
             }
             self.focused_node = new_id;
-            if let Some(id) = new_id
-                && let Some(&w_ptr) = self.node_map.get(&id)
-            {
-                unsafe {
-                    (*w_ptr).set_focus(true);
-                }
-                // Interrupts the previous utterance so rapid arrow/Tab
-                // navigation stays responsive.
+            if let Some(node) = new_id {
+                let _ = self.mutate_node(node, |widget| widget.set_focus(true));
                 if self.screen_reader.is_some() {
-                    let node = unsafe { (*w_ptr).accessibility() };
-                    if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
-                        sr.announce_focus(&node);
+                    let access = self
+                        .inspect_node(node, |widget| widget.accessibility())
+                        .ok()
+                        .flatten();
+                    if let (Some(access), Some(reader)) = (access, self.screen_reader.as_mut()) {
+                        reader.announce_focus(&access);
                     }
                 }
             }
@@ -4392,9 +4486,14 @@ impl App {
     /// never activate `text-input-v3` accidentally.
     fn ime_window_state(&self) -> Option<ImeWindowState> {
         let id = self.focused_node?;
-        let &widget = self.node_map.get(&id)?;
-        let purpose = unsafe { (*widget).ime_purpose() }?;
-        let rect = unsafe { (*widget).ime_cursor_rect() }?;
+        let purpose = self
+            .inspect_node(id, |widget| widget.ime_purpose())
+            .ok()
+            .flatten()?;
+        let rect = self
+            .inspect_node(id, |widget| widget.ime_cursor_rect())
+            .ok()
+            .flatten()?;
         let bounded = |v: f64| {
             if v.is_finite() {
                 #[allow(
@@ -4421,8 +4520,10 @@ impl App {
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.screen_reader.as_ref()?;
         let id = self.focused_node?;
-        let &w_ptr = self.node_map.get(&id)?;
-        let node = unsafe { (*w_ptr).accessibility() }?;
+        let node = self
+            .inspect_node(id, |widget| widget.accessibility())
+            .ok()
+            .flatten()?;
         Some((id, crate::screen_reader::describe_state(&node)))
     }
 
@@ -4438,13 +4539,14 @@ impl App {
         if self.screen_reader.is_none() {
             return;
         }
-        let now = match self.node_map.get(&pre_id) {
-            Some(&w_ptr) => match unsafe { (*w_ptr).accessibility() } {
-                Some(node) => crate::screen_reader::describe_state(&node),
-                None => return,
-            },
-            None => return,
+        let Some(node) = self
+            .inspect_node(pre_id, |widget| widget.accessibility())
+            .ok()
+            .flatten()
+        else {
+            return;
         };
+        let now = crate::screen_reader::describe_state(&node);
         if now.is_empty() || now == pre_state {
             return;
         }
@@ -4456,8 +4558,10 @@ impl App {
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
         self.screen_reader.as_ref()?;
         let id = self.focused_node?;
-        let &w_ptr = self.node_map.get(&id)?;
-        let (caret, text) = unsafe { (*w_ptr).text_review() }?;
+        let (caret, text) = self
+            .inspect_node(id, |widget| widget.text_review())
+            .ok()
+            .flatten()?;
         Some((id, caret, text))
     }
 
@@ -4473,10 +4577,11 @@ impl App {
         if self.screen_reader.is_none() {
             return;
         }
-        let Some(&w_ptr) = self.node_map.get(&pre_id) else {
-            return;
-        };
-        let Some((now_caret, now_text)) = (unsafe { (*w_ptr).text_review() }) else {
+        let Some((now_caret, now_text)) = self
+            .inspect_node(pre_id, |widget| widget.text_review())
+            .ok()
+            .flatten()
+        else {
             return;
         };
         if now_text != pre_text || now_caret == pre_caret {
@@ -4508,6 +4613,9 @@ impl App {
     /// without moving focus.
     fn scan_live_regions(&mut self) {
         fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
+                return;
+            };
             if let Some(node) = w.accessibility()
                 && let (Some(politeness), Some(name)) = (node.live, node.name.clone())
             {
@@ -4559,9 +4667,7 @@ impl App {
             }
             return;
         };
-        let current_rect = if let Some(&w_ptr) = self.node_map.get(&current_id) {
-            unsafe { (*w_ptr).get_rect() }
-        } else {
+        let Ok(current_rect) = self.inspect_node(current_id, |widget| widget.get_rect()) else {
             return;
         };
         let current_center = current_rect.center();
@@ -4571,8 +4677,8 @@ impl App {
             if candidate_id == current_id {
                 continue;
             }
-            if let Some(&candidate_ptr) = self.node_map.get(&candidate_id) {
-                let candidate_rect = unsafe { (*candidate_ptr).get_rect() };
+            if let Ok(candidate_rect) = self.inspect_node(candidate_id, |widget| widget.get_rect())
+            {
                 let candidate_center = candidate_rect.center();
                 let vector = vello::kurbo::Vec2::new(
                     candidate_center.x - current_center.x,
@@ -4610,13 +4716,10 @@ impl App {
     /// without broadening that exception to arbitrary widgets or escaping an
     /// active focus trap.
     fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused_node
-            .and_then(|node| self.node_map.get(&node).copied())
-            .is_some_and(|widget| {
-                // `node_map` owns pointers into the retained widget tree and
-                // remains valid until the next layout rebuild.
-                unsafe { (*widget).wants_tab_input() }
-            })
+        self.focused_node.is_some_and(|node| {
+            self.inspect_node(node, |widget| widget.wants_tab_input())
+                .unwrap_or(false)
+        })
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -4653,7 +4756,7 @@ impl App {
     pub fn build_a11y_tree_update(&self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
         let resources = self.collect_declared_resources();
-        crate::accesskit_bridge::build_tree_update_with_resources(
+        crate::accesskit_bridge::build_tree_update_with_resources_bound(
             self.root_widget.as_ref(),
             &self.node_map,
             self.focused_node,
@@ -4690,7 +4793,7 @@ impl App {
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
         use crate::a11y::Action;
-        use crate::accesskit_bridge::{A11yTarget, resolve_node_id};
+        use crate::accesskit_bridge::{A11yTarget, resolve_node_id_bound};
 
         let _entry = self.enter_wake_scope();
 
@@ -4727,7 +4830,7 @@ impl App {
             }
         }
 
-        let resolved = resolve_node_id(self.root_widget.as_ref(), &self.node_map, target)?;
+        let resolved = resolve_node_id_bound(self.root_widget.as_ref(), &self.node_map, target)?;
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
             A11yTarget::Root => return None,
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
@@ -4738,22 +4841,17 @@ impl App {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target, true),
         };
-        let &w_ptr = self.node_map.get(&taffy_id)?;
-
-        let handled = unsafe {
-            if let Some(semantic_target) = semantic_target.as_deref() {
-                (*w_ptr).perform_semantic_action(
-                    semantic_target,
-                    action,
-                    &mut self.state.doc,
-                    &self.state.root,
-                )
-            } else if synthetic {
-                (*w_ptr).perform_action_at(action, &key_path, &mut self.state.doc, &self.state.root)
-            } else {
-                (*w_ptr).perform_action(action, &mut self.state.doc, &self.state.root)
-            }
-        };
+        let handled = self
+            .dispatch_node(taffy_id, |widget, doc, root| {
+                if let Some(target) = semantic_target.as_deref() {
+                    widget.perform_semantic_action(target, action, doc, root)
+                } else if synthetic {
+                    widget.perform_action_at(action, &key_path, doc, root)
+                } else {
+                    widget.perform_action(action, doc, root)
+                }
+            })
+            .ok()?;
         if handled {
             if matches!(action, Action::Focus) {
                 self.set_focused_node(Some(taffy_id));
@@ -4773,17 +4871,27 @@ impl App {
         match action {
             Action::Focus => {
                 if synthetic && !ordinal_path.is_empty() {
-                    unsafe { (*w_ptr).focus_synthetic_accessibility(&ordinal_path) };
+                    let _ = self.mutate_node(taffy_id, |widget| {
+                        widget.focus_synthetic_accessibility(&ordinal_path)
+                    });
                 }
                 self.set_focused_node(Some(taffy_id));
                 None
             }
             Action::Activate | Action::ToggleCheck => {
                 let rect = if synthetic {
-                    unsafe { (*w_ptr).synthetic_accessibility_rect(&ordinal_path) }
-                        .unwrap_or_else(|| unsafe { (*w_ptr).get_rect() })
+                    self.inspect_node(taffy_id, |widget| {
+                        widget.synthetic_accessibility_rect(&ordinal_path)
+                    })
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| {
+                        self.inspect_node(taffy_id, |widget| widget.get_rect())
+                            .unwrap_or(KurboRect::ZERO)
+                    })
                 } else {
-                    unsafe { (*w_ptr).get_rect() }
+                    self.inspect_node(taffy_id, |widget| widget.get_rect())
+                        .unwrap_or(KurboRect::ZERO)
                 };
                 let c = rect.center();
                 Some((c.x, c.y))
@@ -4851,7 +4959,7 @@ impl App {
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let _entry = self.enter_wake_scope();
         let resources = self.collect_declared_resources();
-        self.semantic_tree.refresh(
+        self.semantic_tree.refresh_bound(
             self.root_widget.as_ref(),
             &self.node_map,
             self.focused_node,
@@ -4915,9 +5023,6 @@ impl App {
                 };
                 if let Some(semantic_target) = semantic_target {
                     let taffy_id = NodeId::from(taffy_raw);
-                    let Some(&widget) = self.node_map.get(&taffy_id) else {
-                        return Ok(false);
-                    };
                     let keyed_path = semantic_target
                         .strip_prefix("qos.key-action:")
                         .and_then(|target| target.rsplit_once(':'))
@@ -4928,23 +5033,15 @@ impl App {
                         })
                         .transpose()
                         .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
-                    let handled = unsafe {
-                        if let Some(key_path) = keyed_path {
-                            (*widget).perform_action_at(
-                                &verb,
-                                &key_path,
-                                &mut self.state.doc,
-                                &self.state.root,
-                            )
-                        } else {
-                            (*widget).perform_semantic_action(
-                                &semantic_target,
-                                &verb,
-                                &mut self.state.doc,
-                                &self.state.root,
-                            )
-                        }
-                    };
+                    let handled = self
+                        .dispatch_node(taffy_id, |widget, doc, root| {
+                            if let Some(key_path) = keyed_path {
+                                widget.perform_action_at(&verb, &key_path, doc, root)
+                            } else {
+                                widget.perform_semantic_action(&semantic_target, &verb, doc, root)
+                            }
+                        })
+                        .map_err(|error| format!("component dispatch refused: {error:?}"))?;
                     if handled {
                         if matches!(verb, crate::a11y::Action::Focus) {
                             self.set_focused_node(Some(taffy_id));
@@ -5006,12 +5103,22 @@ impl App {
     pub fn init_layout(&mut self) {
         let _entry = self.enter_wake_scope();
         self.refresh_control_action_availability();
+        self.component_close_reports
+            .extend(self.root_widget.take_component_close_reports());
+        self.bindings.clear();
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(
             &mut self.taffy,
             &self.theme,
             &mut self.node_map,
         ));
+        if let Some(root) = self.root_node {
+            // SAFETY: App exclusively owns this exact newly built tree/topology.
+            unsafe {
+                self.bindings
+                    .rebuild(self.root_widget.as_ref(), &self.taffy, root, &self.node_map);
+            }
+        }
         self.update_focusable_order();
         if let Some(view) = self.pending_continuation_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
@@ -5026,9 +5133,9 @@ impl App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
-            self.node_map
-                .get(&id)
-                .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
+            self.inspect_node(id, |widget| widget.get_state())
+                .ok()
+                .flatten()
         });
     }
 
@@ -5057,22 +5164,33 @@ impl App {
             let idx = self
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-            let state = self
-                .focused_node
-                .and_then(|id| self.node_map.get(&id).copied())
-                .and_then(|w| unsafe { (*w).get_state() });
+            let state = self.focused_node.and_then(|id| {
+                self.inspect_node(id, |widget| widget.get_state())
+                    .ok()
+                    .flatten()
+            });
             (idx, state, self.root_widget.take_focus_reset())
         } else {
             (None, None, false)
         };
 
         self.taffy = TaffyTree::new();
+        self.component_close_reports
+            .extend(self.root_widget.take_component_close_reports());
+        self.bindings.clear();
         self.node_map.clear();
         self.root_node = Some(self.root_widget.build_layout(
             &mut self.taffy,
             &self.theme,
             &mut self.node_map,
         ));
+        if let Some(root) = self.root_node {
+            // SAFETY: App exclusively owns this exact newly built tree/topology.
+            unsafe {
+                self.bindings
+                    .rebuild(self.root_widget.as_ref(), &self.taffy, root, &self.node_map);
+            }
+        }
         self.structure_dirty = false;
         self.layout_dirty = true;
         self.update_focusable_order();
@@ -5091,11 +5209,8 @@ impl App {
                     self.set_focused_node(Some(id));
                     if exact.is_some()
                         && let Some(state) = prev_focus_state.as_deref()
-                        && let Some(&w) = self.node_map.get(&id)
                     {
-                        unsafe {
-                            (*w).set_state(state);
-                        }
+                        let _ = self.mutate_node(id, |widget| widget.set_state(state));
                     }
                 }
             }
@@ -5321,6 +5436,8 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.bindings.clear();
+        self.node_map.clear();
         self.close_wake_scope();
         let _entry = self.enter_wake_scope();
         let root = std::mem::replace(
@@ -5791,6 +5908,9 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         depth: usize,
         cycle: &[Color; 3],
     ) {
+        let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+            return;
+        };
         let rect = widget.get_rect();
         let &[a, b, c] = cycle;
         let color = match depth.checked_rem(3).unwrap_or(0) {
@@ -5880,6 +6000,7 @@ fn run_layout_pass(
         || app.root_widget.layout_needs_measure();
     if must_compute {
         let node_map = &app.node_map;
+        let bindings = &app.bindings;
         let text_renderer = &mut app.text_renderer;
         let t0 = std::time::Instant::now();
         let (logical_w, logical_h) =
@@ -5895,8 +6016,17 @@ fn run_layout_pass(
                 height: AvailableSpace::Definite(logical_h as f32),
             },
             |known, available, node_id, _, _| {
-                if let Some(&widget_ptr) = node_map.get(&node_id) {
-                    unsafe { (*widget_ptr).measure(known, available, text_renderer) }
+                if node_map.contains_key(&node_id) {
+                    // SAFETY: matching App layout maps, exclusive measurement and no escaping target.
+                    unsafe {
+                        crate::bound_dispatch::mutate_bound_node(
+                            bindings,
+                            node_map,
+                            node_id,
+                            |widget| widget.measure(known, available, text_renderer),
+                        )
+                    }
+                    .unwrap_or(taffy::Size::ZERO)
                 } else {
                     taffy::Size::ZERO
                 }
@@ -7499,15 +7629,12 @@ impl AppHandler {
                 ..
             } = event
             && let Some(fid) = app.focused_node
-            && let Some(&w_ptr) = app.node_map.get(&fid)
         {
-            let did = unsafe {
-                (*w_ptr).perform_action(
-                    &crate::a11y::Action::Activate,
-                    &mut app.state.doc,
-                    &app.state.root,
-                )
-            };
+            let did = app
+                .dispatch_node(fid, |widget, doc, root| {
+                    widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+                })
+                .unwrap_or(false);
             if did {
                 handled = true;
                 app.needs_sync = true;
@@ -7551,14 +7678,14 @@ impl AppHandler {
                 }
                 _ => (None, 0),
             };
-            if let (Some(act), Some(fid)) = (action, app.focused_node)
-                && let Some(&w_ptr) = app.node_map.get(&fid)
-            {
+            if let (Some(act), Some(fid)) = (action, app.focused_node) {
                 let mut any = false;
                 for _ in 0..times {
-                    any |= unsafe {
-                        (*w_ptr).perform_action(&act, &mut app.state.doc, &app.state.root)
-                    };
+                    any |= app
+                        .dispatch_node(fid, |widget, doc, root| {
+                            widget.perform_action(&act, doc, root)
+                        })
+                        .unwrap_or(false);
                 }
                 if any {
                     handled = true;
@@ -8834,7 +8961,8 @@ mod rebuild_focus_tests {
 
     #[test]
     fn caret_preserved_across_structure_rebuild() {
-        let mut app = App::new(State::new(), Box::new(RebuildHarness::new()));
+        let mut app =
+            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
         app.autofocus_first = true;
         app.autofocus_on_structure_change = true;
         app.init_layout();
@@ -8868,7 +8996,8 @@ mod rebuild_focus_tests {
 
     #[test]
     fn focus_reset_does_not_restore_caret() {
-        let mut app = App::new(State::new(), Box::new(RebuildHarness::new()));
+        let mut app =
+            App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
         app.autofocus_first = true;
         app.autofocus_on_structure_change = true;
         app.init_layout();
@@ -9028,7 +9157,7 @@ mod screen_reader_tests {
 
     fn app_with_reader() -> (App, SharedRecorder) {
         let rec = SharedRecorder::default();
-        let mut app = App::new(State::new(), Box::new(TwoButtons::new()));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(TwoButtons::new()));
         app.set_screen_reader(Some(ScreenReader::with_speaker(Box::new(rec.clone()))));
         (app, rec)
     }
@@ -9193,7 +9322,7 @@ mod screen_reader_tests {
 
     fn app_with_reader_over(root: Box<dyn Widget>) -> (App, SharedRecorder) {
         let rec = SharedRecorder::default();
-        let mut app = App::new(State::new(), root);
+        let mut app = App::new_with_controlled_inputs(State::new(), root);
         app.set_screen_reader(Some(ScreenReader::with_speaker(Box::new(rec.clone()))));
         app.init_layout();
         (app, rec)
@@ -9526,7 +9655,8 @@ mod focus_trap_tests {
     /// models the per-frame re-evaluation.
     fn host_app() -> (App, Rc<Cell<bool>>) {
         let cell = Rc::new(Cell::new(false));
-        let app = App::new(State::new(), Box::new(ModalHost::new(cell.clone())));
+        let app =
+            App::new_with_controlled_inputs(State::new(), Box::new(ModalHost::new(cell.clone())));
         (app, cell)
     }
 
@@ -10498,9 +10628,11 @@ impl crate::view::FreezeThaw for App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         let focus = crate::view::capture_focus(ordinal, || {
-            self.focused_node
-                .and_then(|id| self.node_map.get(&id))
-                .and_then(|&w| unsafe { (*w).get_state() })
+            self.focused_node.and_then(|id| {
+                self.inspect_node(id, |widget| widget.get_state())
+                    .ok()
+                    .flatten()
+            })
         });
         let viewport = self
             .last_frame_size
@@ -10511,24 +10643,22 @@ impl crate::view::FreezeThaw for App {
                 height: f64::from(s.height),
             })
             .unwrap_or_default();
-        crate::view::capture_widget_view(&*self.root_widget, focus, viewport)
+        crate::view::capture_widget_view_bound(&*self.root_widget, focus, viewport)
     }
 
     /// `open_resource` is carried for presence/reboot to reopen the record;
     /// record-navigation itself is the host's and is not driven here.
     fn restore_view(&mut self, view: &crate::view::View) {
         let _entry = self.enter_wake_scope();
-        crate::view::restore_widget_view(&mut *self.root_widget, view);
+        crate::view::restore_widget_view_bound(&mut *self.root_widget, view);
 
         if let Some(f) = &view.focus
             && let Some(&id) = self.focusable_order.get(f.ordinal)
         {
             self.set_focused_node(Some(id));
-            if let Some(&w) = self.node_map.get(&id) {
-                unsafe {
-                    crate::view::restore_focus_state(&mut *w, f);
-                }
-            }
+            let _ = self.mutate_node(id, |widget| {
+                crate::view::restore_focus_state_bound(widget, f);
+            });
         }
 
         self.layout_dirty = true;
@@ -12361,7 +12491,7 @@ mod wake_integration_tests {
     #[test]
     fn factory_state_stays_owned_before_binding_and_after_return() {
         let mut captured = None;
-        let mut app = App::from_factory(State::new(), || {
+        let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
             let state = LocalState::new(0);
             state.writer().set(1);
             captured = Some(state);
@@ -12393,7 +12523,7 @@ mod wake_integration_tests {
             let _entry = scope.enter();
             LocalState::new(0)
         };
-        let mut app = App::from_scoped_parts(
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
             scope,
             State::new(),
             Box::new(crate::widget::Text::new("root")),
@@ -12456,7 +12586,7 @@ mod wake_integration_tests {
                 captures: Rc::clone(&captures),
             })
         };
-        let mut app = App::from_scoped_parts(scope, State::new(), root);
+        let mut app = App::from_scoped_parts_with_controlled_inputs(scope, State::new(), root);
         {
             let _other = other.enter();
             app.init_layout();
@@ -12499,7 +12629,7 @@ mod wake_integration_tests {
         let (outer, rx) = bound_scope();
         let _outer = outer.enter();
         let captures = Captures::default();
-        let mut app = App::new(
+        let mut app = App::new_with_controlled_inputs(
             State::new(),
             Box::new(CaptureRoot {
                 captures: Rc::clone(&captures),
@@ -12520,6 +12650,255 @@ mod wake_integration_tests {
     #[test]
     #[should_panic(expected = "live App requires from_factory")]
     fn detached_native_startup_fails_before_creating_an_event_loop() {
-        App::new(State::new(), Box::new(crate::widget::Text::new("root"))).run();
+        App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Text::new("root")))
+            .run();
+    }
+}
+
+#[cfg(test)]
+mod bound_component_tests {
+    use super::*;
+    use crate::application::{
+        AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
+    };
+    use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    thread_local! { static CAPTURES: RefCell<Vec<(&'static str, crate::LatestRequest<u32>)>> = const { RefCell::new(vec![]) }; }
+    struct Probe;
+    impl Probe {
+        fn capture(label: &'static str) {
+            CAPTURES.with_borrow_mut(|v| v.push((label, crate::LatestRequest::new())));
+        }
+    }
+    impl Widget for Probe {
+        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+            assert_eq!(
+                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                Some("child")
+            );
+            Self::capture("sync");
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            Self::capture("build");
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn measure(
+            &mut self,
+            _: taffy::Size<Option<f32>>,
+            _: taffy::Size<taffy::AvailableSpace>,
+            _: &mut TextRenderer,
+        ) -> taffy::Size<f32> {
+            Self::capture("measure");
+            taffy::Size {
+                width: 30.0,
+                height: 20.0,
+            }
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {
+            Self::capture("apply");
+        }
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+            Self::capture("draw");
+        }
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            d: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+            assert_eq!(
+                d.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                Some("child")
+            );
+            Self::capture("event");
+        }
+        fn name(&self) -> &'static str {
+            "bound-probe"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+        fn is_focusable(&self) -> bool {
+            Self::capture("focus-order");
+            true
+        }
+        fn set_focus(&mut self, _: bool) {
+            Self::capture("focus");
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            Self::capture("accessibility");
+            Some(crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name("Child"))
+        }
+        fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+            Self::capture("ime");
+            Some(winit::window::ImePurpose::Normal)
+        }
+        fn ime_cursor_rect(&self) -> Option<vello::kurbo::Rect> {
+            Self::capture("ime-rect");
+            Some(vello::kurbo::Rect::ZERO)
+        }
+        fn perform_action(
+            &mut self,
+            _: &crate::a11y::Action,
+            doc: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) -> bool {
+            assert_eq!(
+                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                Some("child")
+            );
+            doc.put(ROOT, "action", true).unwrap();
+            Self::capture("action");
+            true
+        }
+    }
+    impl AppWidget for Probe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Probe"
+        }
+        fn app_icon(&self) -> IconDescriptor {
+            IconDescriptor::Glyph("P")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+    #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
+    fn factory(
+        mut context: HostContext,
+        _: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, crate::launch::LaunchError> {
+        context
+            .initialize_new_record(|doc| {
+                doc.put(ROOT, "marker", "child").map_err(|e| e.to_string())
+            })
+            .map_err(crate::launch::LaunchError::Record)?;
+        Ok(AppComponent::new(
+            context,
+            Box::new(Probe),
+            qos_actions::ActionRegistry::new(),
+        ))
+    }
+    #[test]
+    fn real_app_descendant_focus_ime_semantics_and_measure_keep_child_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners.open("dev.qos.binding-probe", "A").unwrap();
+        let views =
+            Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.qos.binding-probe",
+            title: "Probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: crate::record::RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let context = HostContext::prepare(
+            &definition,
+            records,
+            views,
+            "D".into(),
+            1,
+            Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            crate::permissions::UserId("probe-author".into()),
+            qos_actions::ActionContext::default(),
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        component
+            .mount(move |event| {
+                sender.send(event).unwrap();
+            })
+            .unwrap();
+        let mut outer = crate::wake::WakeScope::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        outer
+            .bind(move |event| {
+                tx.send(event).unwrap();
+            })
+            .unwrap();
+        let mut state = State::new();
+        state.doc.put(ROOT, "marker", "shell").unwrap();
+        let mut app = App::from_scoped_parts_with_controlled_inputs(
+            outer,
+            state,
+            Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
+        );
+        CAPTURES.with_borrow_mut(Vec::clear);
+        app.init_layout();
+        app.refresh_focus_order();
+        let leaf = app.focusable_order[0];
+        app.set_focused_node(Some(leaf));
+        let _ = app.ime_window_state();
+        app.dispatch_a11y_action(
+            accesskit::NodeId(u64::from(leaf).saturating_add(1)),
+            &crate::a11y::Action::Focus,
+        );
+        let layout_root = app.root_node.unwrap();
+        app.layout_dirty = true;
+        run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true).unwrap();
+        let captures = CAPTURES.with_borrow_mut(std::mem::take);
+        for label in [
+            "build",
+            "sync",
+            "measure",
+            "apply",
+            "focus-order",
+            "focus",
+            "ime",
+            "accessibility",
+            "action",
+        ] {
+            assert!(
+                captures.iter().any(|(actual, _)| *actual == label),
+                "missing {label}"
+            );
+        }
+        for (label, mut request) in captures {
+            assert!(request.begin().complete(1));
+            assert!(receiver.try_recv().is_ok(), "{label} missed child");
+            assert!(rx.try_recv().is_err(), "{label} woke outer");
+        }
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert_eq!(app.take_component_close_reports().len(), 1);
+        assert!(app.take_component_close_reports().is_empty());
     }
 }

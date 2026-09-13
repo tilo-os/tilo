@@ -301,6 +301,7 @@ impl Binding {
 
 pub struct TileHost {
     content: TileContent,
+    close_reports: Vec<crate::application::ComponentCloseReport>,
     /// `None` when nothing is bound — a bare `ui` host, a stub card, a
     /// test exercising only paint. Unbound tiles edit whatever document
     /// the parent pass carries.
@@ -359,9 +360,23 @@ const OPENING_SPINNER_PX_F32: f32 = 36.0;
 const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
+    pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+        match &mut self.content {
+            TileContent::App(root) => root.take_host_intent(),
+            _ => None,
+        }
+    }
+
+    pub fn from_component(component: crate::application::AppComponent) -> Self {
+        Self::new(TileContent::App(Box::new(
+            crate::widget::app_widget::BoundAppWidget { component },
+        )))
+    }
+
     pub fn new(content: TileContent) -> Self {
         Self {
             content,
+            close_reports: vec![],
             binding: None,
             announced: None,
             structure_dirty: false,
@@ -443,8 +458,27 @@ impl TileHost {
             TileContent::Notice { title, .. } => title.clone(),
         }
     }
+    /// Mutable legacy content access. Canonical components use checked replacement.
+    /// # Panics
+    /// Refuses extraction of a canonical component through the legacy content API.
     pub fn content_mut(&mut self) -> &mut TileContent {
+        assert!(
+            self.callback_binding().is_none(),
+            "canonical content requires checked replacement"
+        );
         &mut self.content
+    }
+    /// Replace a component after its complete closed-owner cleanup. The caller
+    /// retains returned reports until recovery is durably resolved.
+    #[must_use]
+    pub fn replace_component(
+        &mut self,
+        component: crate::application::AppComponent,
+    ) -> Vec<crate::application::ComponentCloseReport> {
+        self.replace_content(TileContent::App(Box::new(
+            crate::widget::app_widget::BoundAppWidget { component },
+        )));
+        self.take_component_close_reports()
     }
     /// Used when a window announced before it existed (an opening card)
     /// becomes the app; replacing the tab instead would hand focus
@@ -452,6 +486,11 @@ impl TileHost {
     /// new occupant is told its scope, and flags a structural rebuild
     /// since `App` and the card variants have different taffy shapes.
     pub fn replace_content(&mut self, content: TileContent) {
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports.extend(root.close_components());
+            self.close_reports
+                .extend(root.take_component_close_reports());
+        }
         self.content = content;
         self.announced = None;
         self.structure_dirty = true;
@@ -560,6 +599,163 @@ impl TileHost {
 }
 
 impl Widget for TileHost {
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        match &self.content {
+            TileContent::App(app) => app.continuation_metadata(state, path),
+            _ => None,
+        }
+    }
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &crate::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.restore_continuation_metadata(metadata, state, path),
+            _ => false,
+        }
+    }
+    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_external_event(payload, state, root);
+        }
+    }
+    fn take_focus_reset(&mut self) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.take_focus_reset(),
+            _ => false,
+        }
+    }
+    fn fullscreen_intent(&self) -> Option<bool> {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_intent(),
+            _ => None,
+        }
+    }
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_params(),
+            _ => crate::fullscreen::FullscreenRequest::mirror(
+                crate::fullscreen::FullscreenTarget::Largest,
+            ),
+        }
+    }
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_fullscreen_changed(active);
+        }
+    }
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        match &self.content {
+            TileContent::App(app) => app.audience_presentation_request(),
+            _ => None,
+        }
+    }
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_audience_presentation_changed(active);
+        }
+    }
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: vello::kurbo::Rect,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => {
+                app.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            }
+            _ => false,
+        }
+    }
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.handle_audience_presentation_event(event, state, path),
+            _ => false,
+        }
+    }
+    fn on_audience_presentation_closed(&mut self) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_audience_presentation_closed();
+        }
+    }
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        match &self.content {
+            TileContent::App(app) => app.view_state(),
+            _ => None,
+        }
+    }
+    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+        if let TileContent::App(app) = &mut self.content {
+            app.restore_view_state(view);
+        }
+    }
+    fn needs_idle_sync(&self) -> bool {
+        match &self.content {
+            TileContent::App(app) => app.needs_idle_sync(),
+            _ => false,
+        }
+    }
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        match &self.content {
+            TileContent::App(app) => app.search_providers(),
+            _ => Vec::new(),
+        }
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
+        if let TileContent::App(app) = &mut self.content {
+            app.activate_search_result(action_id, doc, path);
+        }
+    }
+
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports.extend(root.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        if let TileContent::App(root) = &mut self.content {
+            reports.extend(root.take_component_close_reports());
+        }
+        reports
+    }
+
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        match &self.content {
+            TileContent::App(widget) => widget.callback_binding(),
+            _ => None,
+        }
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        match &self.content {
+            TileContent::App(widget) => vec![widget.as_ref()],
+            _ => vec![],
+        }
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.content {
+            TileContent::App(widget) => vec![widget.as_mut()],
+            _ => vec![],
+        }
+    }
+
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         let live = self.resolve_record();
         let TileContent::App(w) = &mut self.content else {
