@@ -559,6 +559,14 @@ pub struct RecordSet {
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
+    canonical_root: Option<PathBuf>,
+    pending: HashMap<RecordId, Reserved>,
+    next_reservation: u64,
+}
+
+struct Reserved {
+    generation: u64,
+    store: std::sync::Arc<app_state::DocStore>,
 }
 
 impl RecordSet {
@@ -589,6 +597,9 @@ impl RecordSet {
             open: HashMap::new(),
             active: None,
             persistent: true,
+            canonical_root: None,
+            pending: HashMap::new(),
+            next_reservation: 0,
         }
     }
 
@@ -606,6 +617,9 @@ impl RecordSet {
             open: HashMap::new(),
             active: None,
             persistent: false,
+            canonical_root: None,
+            pending: HashMap::new(),
+            next_reservation: 0,
         }
     }
 
@@ -655,6 +669,9 @@ impl RecordSet {
         room: Option<&mut AutoCommit>,
         want: &RecordCheckout,
     ) -> bool {
+        if self.canonical_root.is_some() {
+            return false;
+        }
         if self.active.as_ref() == Some(&want.id) {
             return false;
         }
@@ -856,6 +873,9 @@ impl RecordSet {
     /// its own file and bringing it into `room`'s index. Returns whether
     /// this opened it.
     pub fn open_record(&mut self, want: &RecordCheckout, room: Option<&mut AutoCommit>) -> bool {
+        if self.canonical_root.is_some() {
+            return matches!(self.try_open_record(want), Ok(RecordOpenOutcome::Loaded));
+        }
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
             let (mut doc, autosave) = self.load(&want.id);
@@ -892,6 +912,54 @@ impl RecordSet {
             }
         }
         fresh
+    }
+
+    fn canonical_directory(&self, want: &RecordCheckout) -> Result<PathBuf, RecordOpenError> {
+        let root = self
+            .canonical_root
+            .as_ref()
+            .ok_or(RecordOpenError::IdentityMismatch)?;
+        Ok(app_state::DocStore::room_record_dir_at(
+            root,
+            &self.package_id,
+            &self.home,
+            &want.id.storage_key(),
+        )?)
+    }
+
+    fn try_open_record(
+        &mut self,
+        want: &RecordCheckout,
+    ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        let directory = self.canonical_directory(want)?;
+        if self.pending.contains_key(&want.id) {
+            return Err(RecordOpenError::Busy);
+        }
+        if let Some(slot) = self.open.get(&want.id) {
+            let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+            validate_identity(doc, want, &self.home)?;
+            return Ok(RecordOpenOutcome::AlreadyOpen);
+        }
+        let mut store = app_state::DocStore::open_canonical_at(&self.package_id, &directory)?;
+        let loaded = store
+            .load_canonical()?
+            .ok_or(RecordOpenError::MissingRecord)?;
+        validate_identity(loaded.document(), want, &self.home)?;
+        let mut doc = store.accept_canonical(loaded)?;
+        let owner = std::sync::Arc::new(store);
+        let autosave =
+            app_state::Autosave::try_spawn_canonical(&owner, app_state::DEFAULT_DEBOUNCE)?;
+        let history = crate::state::UndoLog::new(&mut doc);
+        self.open.insert(
+            want.id.clone(),
+            Parked {
+                doc: Some(doc),
+                kind: want.kind.clone(),
+                autosave: Some(autosave),
+                history,
+            },
+        );
+        Ok(RecordOpenOutcome::Loaded)
     }
 
     /// An open record's document, for a host showing several at once.
@@ -970,7 +1038,319 @@ impl RecordSet {
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
+/// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
+pub struct RecordOwners {
+    root: PathBuf,
+    owners: HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>,
+}
+
+impl RecordOwners {
+    pub fn new(profile_state_root: PathBuf) -> Self {
+        Self {
+            root: profile_state_root,
+            owners: HashMap::new(),
+        }
+    }
+
+    /// Get the unique live owner for this package and workspace.
+    ///
+    /// # Errors
+    /// Rejects an invalid explicit root, package or workspace.
+    pub fn open(
+        &mut self,
+        package_id: &str,
+        workspace_id: &str,
+    ) -> Result<RecordStore, RecordOpenError> {
+        app_state::DocStore::room_record_dir_at(
+            &self.root,
+            package_id,
+            workspace_id,
+            "validation",
+        )?;
+        let key = (package_id.to_owned(), workspace_id.to_owned());
+        if let Some(owner) = self.owners.get(&key).and_then(std::rc::Weak::upgrade) {
+            return Ok(RecordStore(owner));
+        }
+        let store = RecordStore::new(RecordSet {
+            package_id: package_id.to_owned(),
+            home: workspace_id.to_owned(),
+            open: HashMap::new(),
+            active: None,
+            persistent: true,
+            canonical_root: Some(self.root.clone()),
+            pending: HashMap::new(),
+            next_reservation: 0,
+        });
+        self.owners.insert(key, std::rc::Rc::downgrade(&store.0));
+        Ok(store)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordSaveStatus {
+    Saved,
+    Saving,
+    Failed(String),
+    MemoryOnly,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecordOpenOutcome {
+    Loaded,
+    AlreadyOpen,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RecordOpenError {
+    #[error(transparent)]
+    Store(#[from] app_state::StoreError),
+    #[error("record identity does not match its binding")]
+    IdentityMismatch,
+    #[error("record does not exist")]
+    MissingRecord,
+    #[error("record is reserved or already initialized")]
+    Busy,
+    #[error("record initialization failed: {0}")]
+    Initialization(String),
+}
+
+fn validate_identity(
+    doc: &AutoCommit,
+    want: &RecordCheckout,
+    workspace: &str,
+) -> Result<(), RecordOpenError> {
+    if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
+        || want.kind.as_str().is_empty()
+        || home(doc).is_none_or(|home| home.is_empty())
+        || room_scope(doc).as_deref() != Some(workspace)
+    {
+        return Err(RecordOpenError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+/// The unique construction owner of a not-yet-live record. Drop cancels only this generation.
+pub struct RecordReservation {
+    store: RecordStore,
+    checkout: RecordCheckout,
+    generation: u64,
+}
+
+impl RecordReservation {
+    pub fn checkout(&self) -> &RecordCheckout {
+        &self.checkout
+    }
+
+    /// Privately initialize once, then create the one history/writer and publish Ready.
+    ///
+    /// # Errors
+    /// Retains the reservation on initializer, validation or worker-startup failure.
+    pub fn initialize(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
+        self.initialize_with_spawn(initialize, |owner| {
+            app_state::Autosave::try_spawn_canonical(owner, app_state::DEFAULT_DEBOUNCE)
+        })
+    }
+
+    fn initialize_with_spawn(
+        &self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        spawn: impl FnOnce(
+            &std::sync::Arc<app_state::DocStore>,
+        ) -> Result<app_state::Autosave, app_state::StoreError>,
+    ) -> Result<(), RecordOpenError> {
+        let (owner, workspace) = {
+            let set = self.store.0.borrow();
+            let pending = set
+                .pending
+                .get(&self.checkout.id)
+                .filter(|p| p.generation == self.generation)
+                .ok_or(RecordOpenError::Busy)?;
+            (std::sync::Arc::clone(&pending.store), set.home.clone())
+        };
+        let mut doc = owner.new_canonical_document()?;
+        if !init_scoped(
+            &mut doc,
+            &self.checkout.id,
+            &self.checkout.kind,
+            &workspace,
+            Some(&workspace),
+        ) {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        initialize(&mut doc).map_err(RecordOpenError::Initialization)?;
+        owner.validate_canonical_schema(&doc)?;
+        validate_identity(&doc, &self.checkout, &workspace)?;
+        doc.commit();
+        let autosave = spawn(&owner)?;
+        let history = crate::state::UndoLog::new(&mut doc);
+        let mut set = self.store.0.borrow_mut();
+        if set
+            .pending
+            .get(&self.checkout.id)
+            .is_none_or(|p| p.generation != self.generation)
+        {
+            return Err(RecordOpenError::Busy);
+        }
+        set.pending.remove(&self.checkout.id);
+        set.open.insert(
+            self.checkout.id.clone(),
+            Parked {
+                doc: Some(doc),
+                kind: self.checkout.kind.clone(),
+                autosave: Some(autosave),
+                history,
+            },
+        );
+        if let Some(slot) = set.open.get_mut(&self.checkout.id)
+            && let (Some(doc), Some(saver)) = (&mut slot.doc, &mut slot.autosave)
+        {
+            saver.request(doc);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RecordReservation {
+    fn drop(&mut self) {
+        let mut set = self.store.0.borrow_mut();
+        if set
+            .pending
+            .get(&self.checkout.id)
+            .is_some_and(|p| p.generation == self.generation)
+        {
+            set.pending.remove(&self.checkout.id);
+        }
+    }
+}
+
 impl RecordStore {
+    /// Open Existing only; a missing document is never implicitly initialized.
+    ///
+    /// # Errors
+    /// Reports ownership contention, absence, identity/schema refusal and storage failures.
+    pub fn try_open_record(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        self.0.borrow_mut().try_open_record(want)
+    }
+
+    /// Reserve a New identity with its exclusive gate and no document/history/writer yet.
+    ///
+    /// # Errors
+    /// Refuses collisions, malformed existing data and unavailable storage.
+    pub fn reserve_record(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<RecordReservation, RecordOpenError> {
+        let mut set = self.0.borrow_mut();
+        let directory = set.canonical_directory(want)?;
+        if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
+            return Err(RecordOpenError::Busy);
+        }
+        let mut owner = app_state::DocStore::open_canonical_at(&set.package_id, &directory)?;
+        if owner.load_canonical()?.is_some() {
+            return Err(RecordOpenError::Busy);
+        }
+        let generation = set
+            .next_reservation
+            .checked_add(1)
+            .ok_or(RecordOpenError::Busy)?;
+        set.next_reservation = generation;
+        set.pending.insert(
+            want.id.clone(),
+            Reserved {
+                generation,
+                store: std::sync::Arc::new(owner),
+            },
+        );
+        Ok(RecordReservation {
+            store: self.clone(),
+            checkout: want.clone(),
+            generation,
+        })
+    }
+
+    pub fn is_ready(&self, id: &RecordId) -> bool {
+        self.0.borrow().peek(id).is_some()
+    }
+
+    /// Inspect durability without closing a typing transaction or scheduling work.
+    ///
+    /// # Errors
+    /// Reports missing/reserved records.
+    pub fn save_status(&self, id: &RecordId) -> Result<RecordSaveStatus, RecordOpenError> {
+        let set = self.0.borrow();
+        if set.pending.contains_key(id) {
+            return Err(RecordOpenError::Busy);
+        }
+        let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        if let Some(saver) = &slot.autosave {
+            let snapshot = saver.durability_snapshot();
+            if let Some(error) = snapshot.error {
+                return Ok(RecordSaveStatus::Failed(error));
+            }
+            return Ok(
+                if doc.pending_ops() == 0
+                    && snapshot.durable_heads.as_ref() == Some(&doc.base_heads())
+                {
+                    RecordSaveStatus::Saved
+                } else {
+                    RecordSaveStatus::Saving
+                },
+            );
+        }
+        Ok(if set.persistent {
+            RecordSaveStatus::Failed("record persistence unavailable".to_owned())
+        } else {
+            RecordSaveStatus::MemoryOnly
+        })
+    }
+
+    pub fn durability_error(&self, id: &RecordId) -> Option<String> {
+        self.0
+            .borrow()
+            .open
+            .get(id)
+            .and_then(|p| p.autosave.as_ref())
+            .and_then(app_state::Autosave::last_error)
+    }
+
+    /// Request current changes once and await actual acknowledgements for every record.
+    ///
+    /// # Errors
+    /// Returns record-specific storage failures; a subsequent explicit retry sends a full checkpoint.
+    pub fn try_flush(&self) -> Result<(), String> {
+        let mut set = self.0.borrow_mut();
+        let canonical = set.canonical_root.is_some();
+        let mut errors = Vec::new();
+        for (id, slot) in &mut set.open {
+            if let (Some(doc), Some(saver)) = (&mut slot.doc, &mut slot.autosave) {
+                if canonical && saver.last_error().is_some() {
+                    if let Err(e) = saver.try_restart_canonical() {
+                        errors.push(format!("{id}: {e}"));
+                        continue;
+                    }
+                    saver.request_checkpoint(doc);
+                } else {
+                    saver.request(doc);
+                }
+                if let Err(e) = saver.try_flush() {
+                    errors.push(format!("{id}: {e}"));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
     /// Share an existing set.
     pub fn new(set: RecordSet) -> Self {
         Self(std::rc::Rc::new(std::cell::RefCell::new(set)))
@@ -1065,6 +1445,110 @@ pub fn tick(
 mod tests {
     use super::*;
     use crate::state::State;
+
+    #[test]
+    fn canonical_startup_failure_retains_reservation_and_stale_drop_is_inert() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("state");
+        let mut owners = RecordOwners::new(root);
+        let store = owners.open("dev.qos.test", "room-a").unwrap();
+        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut token = store.reserve_record(&want).unwrap();
+        let generation = token.generation;
+        let owner = store.0.borrow().pending[&want.id].store.clone();
+        let failure = token.initialize_with_spawn(
+            |doc| {
+                put_text(doc, "discard", "private");
+                Ok(())
+            },
+            |_| {
+                Err(app_state::StoreError::Io {
+                    context: "injected initial spawn failure".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::WouldBlock),
+                })
+            },
+        );
+        assert!(matches!(failure, Err(RecordOpenError::Store(_))));
+        assert!(store.open_records().is_empty());
+        assert!(!owner.document_path().exists());
+        {
+            let set = store.0.borrow();
+            let reserved = &set.pending[&want.id];
+            assert_eq!(reserved.generation, generation);
+            assert!(std::sync::Arc::ptr_eq(&owner, &reserved.store));
+        }
+        assert!(app_state::DocStore::open_canonical_at("dev.qos.test", owner.dir()).is_err());
+        token
+            .initialize(|doc| {
+                assert!(doc.get(ROOT, "discard").unwrap().is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            token
+                .initialize(|_| panic!("second initializer must not run"))
+                .is_err()
+        );
+        drop(token);
+        assert!(store.is_ready(&want.id));
+        // Construct a stale-generation witness privately: no public handle can do this.
+        let other = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let token = store.reserve_record(&other).unwrap();
+        let stale_generation = token.generation;
+        drop(token);
+        let newer = store.reserve_record(&other).unwrap();
+        let stale = RecordReservation {
+            store: store.clone(),
+            checkout: other.clone(),
+            generation: stale_generation,
+        };
+        drop(stale);
+        assert!(matches!(
+            store.try_open_record(&other),
+            Err(RecordOpenError::Busy)
+        ));
+        drop(newer);
+        assert!(matches!(
+            store.try_open_record(&other),
+            Err(RecordOpenError::MissingRecord)
+        ));
+    }
+
+    #[test]
+    fn canonical_repeated_handles_do_not_duplicate_writes_or_rebase_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(tmp.path().join("state"));
+        let store = owners.open("dev.qos.test", "room-a").unwrap();
+        let second = owners.open("dev.qos.test", "room-a").unwrap();
+        let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        store
+            .reserve_record(&want)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        store.try_flush().unwrap();
+        let before = {
+            let set = store.0.borrow();
+            let p = &set.open[&want.id];
+            let saver = p.autosave.as_ref().unwrap();
+            (saver.full_writes(), saver.appends(), p.history.revision())
+        };
+        store.with(&want.id, |doc| put_text(doc, "body", "one edit"));
+        store.tick();
+        second.tick();
+        assert!(matches!(
+            second.try_open_record(&want),
+            Ok(RecordOpenOutcome::AlreadyOpen)
+        ));
+        second.try_flush().unwrap();
+        let after = {
+            let set = store.0.borrow();
+            let p = &set.open[&want.id];
+            let saver = p.autosave.as_ref().unwrap();
+            (saver.full_writes(), saver.appends(), p.history.revision())
+        };
+        assert_eq!(after, (before.0, before.1 + 1, before.2));
+    }
 
     fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {
         let _ = doc.put(&ROOT, key, value);
