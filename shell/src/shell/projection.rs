@@ -65,6 +65,8 @@ pub struct SystemProjectionBackend {
 
 impl Default for SystemProjectionBackend {
     fn default() -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("projection helper resolver");
         Self {
             helper: std::env::var("QOS_PROJECTOR_HELPER")
                 .unwrap_or_else(|_| "/usr/libexec/qos-projector".into()),
@@ -219,7 +221,7 @@ enum WorkerEvent {
 
 /// Non-blocking façade consumed by the overlay.
 pub struct ProjectionController {
-    tx: Sender<WorkerCommand>,
+    tx: Option<Sender<WorkerCommand>>,
     rx: Receiver<WorkerEvent>,
     pub devices: Vec<ProjectionDevice>,
     pub status: ProjectionStatus,
@@ -246,6 +248,8 @@ impl Default for ProjectionController {
 
 impl ProjectionController {
     pub fn new(mut backend: Box<dyn ProjectionBackend>) -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("projection live worker");
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -280,7 +284,7 @@ impl ProjectionController {
             tracing::error!("projection: worker thread failed to start: {err}");
         }
         Self {
-            tx: command_tx,
+            tx: Some(command_tx),
             rx: event_rx,
             devices: Vec::new(),
             status: ProjectionStatus::Idle,
@@ -289,8 +293,30 @@ impl ProjectionController {
         }
     }
 
+    pub(crate) fn unavailable() -> Self {
+        let (_, rx) = mpsc::channel();
+        Self {
+            tx: None,
+            rx,
+            devices: Vec::new(),
+            status: ProjectionStatus::Error("Projection service is unavailable".into()),
+            options: ProjectionOptions::default(),
+            selected: 0,
+        }
+    }
+
+    fn available_sender(&mut self) -> Option<&Sender<WorkerCommand>> {
+        if self.tx.is_none() {
+            self.status = ProjectionStatus::Error("Projection service is unavailable".into());
+        }
+        self.tx.as_ref()
+    }
+
     pub fn refresh(&mut self) {
-        if self.tx.send(WorkerCommand::Discover).is_ok() {
+        let Some(tx) = self.available_sender() else {
+            return;
+        };
+        if tx.send(WorkerCommand::Discover).is_ok() {
             self.status = ProjectionStatus::Scanning;
         } else {
             self.status = ProjectionStatus::Error("Projection service stopped".into());
@@ -298,17 +324,19 @@ impl ProjectionController {
     }
 
     pub fn connect_selected(&mut self) {
+        if self.available_sender().is_none() {
+            return;
+        }
         let Some(device) = self.devices.get(self.selected).cloned() else {
             return;
         };
         if !device.supports(self.options.mode) {
             self.options.mode = ProjectionMode::Mirror;
         }
-        if self
-            .tx
-            .send(WorkerCommand::Connect(device.clone(), self.options.clone()))
-            .is_ok()
-        {
+        if self.tx.as_ref().is_some_and(|tx| {
+            tx.send(WorkerCommand::Connect(device.clone(), self.options.clone()))
+                .is_ok()
+        }) {
             self.status = ProjectionStatus::Connecting {
                 device_id: device.id,
             };
@@ -319,6 +347,9 @@ impl ProjectionController {
     }
 
     pub fn disconnect(&mut self) {
+        if self.available_sender().is_none() {
+            return;
+        }
         let ProjectionStatus::Connected { device_id } = &self.status else {
             return;
         };
@@ -326,7 +357,11 @@ impl ProjectionController {
             self.status = ProjectionStatus::Idle;
             return;
         };
-        if self.tx.send(WorkerCommand::Disconnect(device)).is_ok() {
+        if self
+            .tx
+            .as_ref()
+            .is_some_and(|tx| tx.send(WorkerCommand::Disconnect(device)).is_ok())
+        {
             self.status = ProjectionStatus::Connecting {
                 device_id: device_id.clone(),
             };

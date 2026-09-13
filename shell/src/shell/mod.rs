@@ -37,6 +37,7 @@ pub mod desktop_backdrop;
 pub mod doc_open;
 pub mod editor_app;
 mod file_picker_overlay;
+pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;
 pub mod frame;
@@ -1285,9 +1286,13 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     let mut backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
         || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
         |workspace| {
-            Box::new(desktop_backdrop::DesktopBackdrop::for_workspace(
-                workspace.id.0.to_string(),
-            )) as Box<dyn Widget>
+            let workspace_id = workspace.id.0.to_string();
+            let backdrop = if chrome.borrow().hosted_inputs.file_services().is_some() {
+                desktop_backdrop::DesktopBackdrop::for_workspace_without_wallpaper(workspace_id)
+            } else {
+                desktop_backdrop::DesktopBackdrop::for_workspace(workspace_id)
+            };
+            Box::new(backdrop) as Box<dyn Widget>
         },
     );
     let backdrop_ptr = &raw mut *backdrop;
@@ -1354,7 +1359,6 @@ pub fn build_nirios_overlay_host_with_inputs(
     let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
     chrome.borrow_mut().hosted_inputs = inputs;
     chrome.borrow_mut().set_records(records);
-    let records = chrome.borrow().records().clone();
     // Points every hosted file explorer at the desktop's one open path, so
     // activating a row resolves the owning app and focuses an already-open
     // document exactly as a palette hit does. Installed once here and
@@ -1369,8 +1373,31 @@ pub fn build_nirios_overlay_host_with_inputs(
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }
 
+    build_overlay_host_from_chrome(&tree, chrome, enable_peer_sync, false)
+}
+
+pub(crate) fn build_nirios_overlay_host_with_fixture_inputs(
+    tree: state::WorkspaceTreeHandle,
+    inputs: hosted_inputs::HostedTileInputs,
+) -> Result<(overlay_host::ShellOverlayHost, chrome_state::Chrome), fixture_inputs::ShellFixtureError>
+{
+    fixture_inputs::validate(&tree.read(), &inputs)?;
+    let snapshot = tree.read().clone();
+    let chrome = chrome_state::ChromeState::new_with_fixture_handle(tree, inputs);
+    Ok(build_overlay_host_from_chrome(
+        &snapshot, chrome, false, true,
+    ))
+}
+
+fn build_overlay_host_from_chrome(
+    tree: &WorkspaceTree,
+    chrome: chrome_state::Chrome,
+    enable_peer_sync: bool,
+    fixture: bool,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
+    let records = chrome.borrow().records().clone();
     let (root, group_row_ptrs, scene_parts) =
-        build_workspace_root_with_scene_parts(&tree, &records, &chrome);
+        build_workspace_root_with_scene_parts(tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
     let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
@@ -1397,14 +1424,18 @@ pub fn build_nirios_overlay_host_with_inputs(
     // off on the outer Container/Column the topbar lands at y=0, so its
     // bottom is exactly `TOPBAR_HEIGHT_PX`.
     let sidebar_top = topbar_chrome::TOPBAR_HEIGHT_PX;
-    let host = overlay_host::ShellOverlayHost::new(root)
-        .with_chrome(chrome.clone())
-        .with_sidebar(sidebar)
-        .with_sidebar_top(sidebar_top)
-        .with_group_row_ptrs(group_row_ptrs)
-        .with_workspace_scene_parts(scene_parts)
-        .with_content_workspace(tree.active.raw())
-        .with_peer_sync_enabled(enable_peer_sync);
+    let host = if fixture {
+        overlay_host::ShellOverlayHost::with_fixture_content(root)
+    } else {
+        overlay_host::ShellOverlayHost::new(root)
+    }
+    .with_chrome(chrome.clone())
+    .with_sidebar(sidebar)
+    .with_sidebar_top(sidebar_top)
+    .with_group_row_ptrs(group_row_ptrs)
+    .with_workspace_scene_parts(scene_parts)
+    .with_content_workspace(tree.active.raw())
+    .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
 }
 
