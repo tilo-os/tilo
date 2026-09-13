@@ -1722,6 +1722,14 @@ impl CollaborationManager {
         Self::new_scoped(Some(record.as_str().to_string()))
     }
 
+    /// Explicitly disconnected construction: no identity, service or worker discovery.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            backend: Backend::Disabled,
+            identity: None,
+        }
+    }
+
     fn new_scoped(record: Option<String>) -> Self {
         let (app_id, cluster_id) = auto_hello_env();
         let identity = match sdk_join_identity(cluster_id) {
@@ -1731,10 +1739,7 @@ impl CollaborationManager {
                     ?error,
                     "collab: workspace join identity unavailable; disabling SDK collaboration"
                 );
-                return Self {
-                    backend: Backend::Disabled,
-                    identity: None,
-                };
+                return Self::disabled();
             }
         };
 
@@ -1755,17 +1760,11 @@ impl CollaborationManager {
                         ?error,
                         "collab: primary route unavailable; disabling SDK collaboration"
                     );
-                    return Self {
-                        backend: Backend::Disabled,
-                        identity: None,
-                    };
+                    return Self::disabled();
                 }
                 manager
             }
-            Err(_) => Self {
-                backend: Backend::Disabled,
-                identity: None,
-            },
+            Err(_) => Self::disabled(),
         }
     }
 
