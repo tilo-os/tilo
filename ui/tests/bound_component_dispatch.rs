@@ -87,6 +87,10 @@ thread_local! {
     static REENTRY: RefCell<Option<RefusedNode>> = const { RefCell::new(None) };
     static QUEUED_CONTROL: RefCell<Option<qos_actions::ControlInvocation>> = const { RefCell::new(None) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
+    static LEGACY_INTENT: RefCell<Option<ui::record::RecordCheckout>> = const { RefCell::new(None) };
+    static LEGACY_SCOPES: RefCell<Vec<ui::record::RecordId>> = const { RefCell::new(vec![]) };
+    static LEGACY_MUTABLE: Cell<bool> = const { Cell::new(false) };
+    static LEGACY_DOCUMENTS: RefCell<Vec<(String, bool)>> = const { RefCell::new(vec![]) };
     static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
     static LEGACY_START_CALLS: Cell<usize> = const { Cell::new(0) };
     static EXPECTED_WRITE: Cell<bool> = const { Cell::new(false) };
@@ -332,6 +336,40 @@ impl Root {
     }
 }
 impl Widget for Root {
+    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+        LEGACY_INTENT.with_borrow(Clone::clone)
+    }
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        if LEGACY_MUTABLE.get() {
+            LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
+        }
+    }
+
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if !LEGACY_MUTABLE.get() {
+            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+        }
+        let marker = doc
+            .get(ROOT, "marker")
+            .map_err(|e| e.to_string())?
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .unwrap_or_default();
+        LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
+        doc.put(ROOT, "legacy-follow-up", true)
+            .map_err(|e| e.to_string())?;
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            qos_actions::ActionOutput::default(),
+        )))
+    }
+
     fn invoke_resource_operation_v2(
         &mut self,
         kind: qos_actions::OperationKind,
@@ -1745,4 +1783,213 @@ fn mutable_container_traversal_invokes_legacy_fallback_once() {
         );
         LEGACY_START.set(None);
     }
+}
+
+#[test]
+fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_busy() {
+    let host = ProbeHost::new();
+    let checkout = ui::record::RecordCheckout::new(
+        ui::record::RecordId::minted(),
+        ui::record::RecordKind::new("probe"),
+    );
+    host.records
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "marker", "bound-B")
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    let missing = ui::record::RecordCheckout::new(
+        ui::record::RecordId::minted(),
+        ui::record::RecordKind::new("probe"),
+    );
+    let mut outer = AutoCommit::new();
+    outer.put(ROOT, "marker", "outer-A").unwrap();
+    let outer_path = outer
+        .put_object(ROOT, "outer-path", automerge::ObjType::Map)
+        .unwrap();
+    LEGACY_MUTABLE.set(true);
+    LEGACY_DOCUMENTS.with_borrow_mut(Vec::clear);
+    let mut outcomes = vec![];
+    for requested in [&checkout, &missing, &checkout] {
+        let mut tile = TileHost::new(ui::widget::TileContent::App(Box::new(Root(
+            Column::new(),
+            String::new(),
+            false,
+        ))));
+        tile.bind_record(host.records.clone(), requested.clone());
+        let mut tree = Column::new().push(Box::new(ui::widget::Row::new().push(Box::new(
+            ui::widget::Container::new().with_child(Box::new(tile)),
+        ))));
+        let mut invoke = || {
+            tree.start_resource_operation_with_document(
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::Effect,
+                "legacy.mutable",
+                &[],
+                &mut outer,
+                &outer_path,
+            )
+        };
+        let result = if outcomes.len() == 2 {
+            host.records.with(&checkout.id, |_| invoke()).unwrap()
+        } else {
+            invoke()
+        };
+        outcomes.push(result);
+    }
+    LEGACY_MUTABLE.set(false);
+    assert_eq!(
+        LEGACY_DOCUMENTS.with_borrow(Clone::clone),
+        vec![("bound-B".to_string(), true)],
+        "bound callback must run once with its record and ROOT; missing/busy bindings must not execute"
+    );
+    assert!(matches!(
+        outcomes[0],
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(_)))
+    ));
+    assert_eq!(
+        outcomes[1].as_ref().unwrap_err(),
+        &ui::record::RecordOpenError::MissingRecord.to_string()
+    );
+    assert_eq!(
+        outcomes[2].as_ref().unwrap_err(),
+        &ui::record::RecordOpenError::Busy.to_string()
+    );
+    assert!(outer.get(ROOT, "legacy-follow-up").unwrap().is_none());
+    assert!(
+        host.records
+            .read(&checkout.id, |doc| doc
+                .get(ROOT, "legacy-follow-up")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_bool()
+                .unwrap())
+            .unwrap()
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one live tile proves successful intent transition and retention across missing, mismatched and busy requests"
+)]
+fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
+    let host = ProbeHost::new();
+    let first = ui::record::RecordCheckout::new(
+        ui::record::RecordId::minted(),
+        ui::record::RecordKind::new("probe"),
+    );
+    let next = ui::record::RecordCheckout::new(
+        ui::record::RecordId::minted(),
+        ui::record::RecordKind::new("probe"),
+    );
+    let missing = ui::record::RecordCheckout::new(
+        ui::record::RecordId::minted(),
+        ui::record::RecordKind::new("probe"),
+    );
+    for (checkout, marker) in [(&first, "bound-B"), (&next, "selected-C")] {
+        host.records
+            .reserve_record(checkout)
+            .unwrap()
+            .initialize(|doc| {
+                doc.put(ROOT, "marker", marker)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+    }
+    LEGACY_MUTABLE.set(true);
+    LEGACY_DOCUMENTS.with_borrow_mut(Vec::clear);
+    LEGACY_SCOPES.with_borrow_mut(Vec::clear);
+    let mut tile = TileHost::new(ui::widget::TileContent::App(Box::new(Root(
+        Column::new(),
+        String::new(),
+        false,
+    ))));
+    tile.bind_record(host.records.clone(), first.clone());
+    let mut tree = Column::new().push(Box::new(ui::widget::Row::new().push(Box::new(
+        ui::widget::Container::new().with_child(Box::new(tile)),
+    ))));
+    let mut outer = AutoCommit::new();
+    outer.put(ROOT, "marker", "outer-A").unwrap();
+    let mut invoke = || {
+        tree.start_resource_operation_with_document(
+            qos_actions::InvocationId::new(),
+            qos_actions::OperationKind::Effect,
+            "legacy.mutable",
+            &[],
+            &mut outer,
+            &ROOT,
+        )
+    };
+    LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(next.clone()));
+    let selected = invoke();
+    LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(missing));
+    let absent = invoke();
+    LEGACY_INTENT.with_borrow_mut(|intent| {
+        *intent = Some(ui::record::RecordCheckout::new(
+            next.id.clone(),
+            ui::record::RecordKind::new("wrong-kind"),
+        ));
+    });
+    let mismatched = invoke();
+    LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(first.clone()));
+    let busy = host.records.with(&next.id, |_| invoke()).unwrap();
+    LEGACY_INTENT.with_borrow_mut(|intent| *intent = None);
+    let retained = invoke();
+    LEGACY_MUTABLE.set(false);
+    assert!(matches!(
+        selected,
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(_)))
+    ));
+    assert_eq!(
+        absent.as_ref().unwrap_err(),
+        &ui::record::RecordOpenError::MissingRecord.to_string()
+    );
+    assert_eq!(
+        mismatched.as_ref().unwrap_err(),
+        &ui::record::RecordOpenError::IdentityMismatch.to_string()
+    );
+    assert_eq!(
+        busy.as_ref().unwrap_err(),
+        &ui::record::RecordOpenError::Busy.to_string()
+    );
+    assert!(matches!(
+        retained,
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(_)))
+    ));
+    assert_eq!(
+        LEGACY_DOCUMENTS.with_borrow(Clone::clone),
+        vec![
+            ("selected-C".to_string(), true),
+            ("selected-C".to_string(), true)
+        ]
+    );
+    assert_eq!(
+        LEGACY_SCOPES.with_borrow(Clone::clone),
+        vec![first.id.clone(), next.id.clone()],
+        "failed intent changed live scope"
+    );
+    assert!(outer.get(ROOT, "legacy-follow-up").unwrap().is_none());
+    assert!(
+        host.records
+            .read(&first.id, |doc| doc
+                .get(ROOT, "legacy-follow-up")
+                .unwrap()
+                .is_none())
+            .unwrap()
+    );
+    assert!(
+        host.records
+            .read(&next.id, |doc| doc
+                .get(ROOT, "legacy-follow-up")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_bool()
+                .unwrap())
+            .unwrap()
+    );
 }
