@@ -1382,8 +1382,22 @@ impl RecordStore {
         self.0.borrow_mut().open_record(want, None)
     }
 
-    /// Do something with a record's document. `None` if the record is not
-    /// open here.
+    /// Exact runtime owner identity; namespace equality is insufficient for reentry.
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn with_checked<R>(
+        &self,
+        id: &RecordId,
+        f: impl FnOnce(&mut AutoCommit) -> R,
+    ) -> Result<R, RecordOpenError> {
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        let document = set.document_mut(id).ok_or(RecordOpenError::MissingRecord)?;
+        Ok(f(document))
+    }
+
+    /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
         set.document_mut(id).map(f)
