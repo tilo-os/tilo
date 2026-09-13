@@ -199,16 +199,29 @@ pub struct Shell {
 
 impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
-    /// (real PTY, falls back to a `Stub`), Files, Notes, Editor, and a
+    /// (null backend), Files, Notes, Editor, and a
     /// Browser chrome. Production launches the packaged WPE-backed browser;
     /// this in-process workspace mirror uses the same `BrowserWidget` contract.
     /// # Panics
     /// Panics if its explicitly temporary fixture directory cannot be created.
+    pub fn new_with_default_demo_workspace() -> Self {
+        Self::new_demo_workspace(None)
+    }
+
+    /// Construct the same demo workspace with an explicitly provided Terminal.
+    /// The caller creates the widget with its chosen process/service; this
+    /// constructor performs no process discovery or login-shell fallback.
+    /// # Panics
+    /// Panics if the temporary Files fixture cannot be created.
+    pub fn new_with_demo_terminal(terminal: TerminalWidget) -> Self {
+        Self::new_demo_workspace(Some(terminal))
+    }
+
     #[allow(
         clippy::expect_used,
-        reason = "These infallible scratch/demo entry points require a private temporary Files fixture."
+        reason = "The scratch workspace requires its private temporary Files fixture."
     )]
-    pub fn new_with_default_demo_workspace() -> Self {
+    fn new_demo_workspace(terminal: Option<TerminalWidget>) -> Self {
         let hosted_inputs = hosted_inputs::HostedTileInputs::fixture().expect("demo Files fixture");
         let DemoTabs {
             tabs,
@@ -216,7 +229,7 @@ impl Shell {
             first_terminal_ptr,
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
-        } = default_demo_tabs(&hosted_inputs);
+        } = default_demo_tabs(&hosted_inputs, terminal);
         let group = RuntimeGroup::with_tabs(tabs, state::WindowWidth::Normal);
         let strip = RuntimeStrip::new("Main", vec![group]);
         let workspace = RuntimeWorkspace::new("Home", vec![strip]);
@@ -770,7 +783,10 @@ struct DemoTabs {
     clippy::expect_used,
     reason = "The caller constructs these inputs using HostedTileInputs::fixture, which always supplies Files."
 )]
-fn default_demo_tabs(inputs: &hosted_inputs::HostedTileInputs) -> DemoTabs {
+fn default_demo_tabs(
+    inputs: &hosted_inputs::HostedTileInputs,
+    terminal: Option<TerminalWidget>,
+) -> DemoTabs {
     let mut tabs: Vec<RuntimeTab> = Vec::new();
     #[cfg(any(test, debug_assertions))]
     let mut first_terminal_ptr: Option<*const TerminalWidget> = None;
@@ -779,7 +795,7 @@ fn default_demo_tabs(inputs: &hosted_inputs::HostedTileInputs) -> DemoTabs {
     #[cfg(any(test, debug_assertions))]
     let first_file_explorer_ptr: Option<*const FileExplorerWidget>;
 
-    match TerminalWidget::spawn_headless() {
+    match terminal.map_or_else(TerminalWidget::spawn_headless, Ok) {
         Ok(t) => {
             let boxed: Box<TerminalWidget> = Box::new(t);
             #[cfg(any(test, debug_assertions))]
