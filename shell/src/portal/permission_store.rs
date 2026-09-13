@@ -20,6 +20,7 @@ use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{OwnedValue, Str};
 
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_frontend_call};
 
 const MAX_TABLE: usize = 96;
@@ -102,37 +103,59 @@ struct StoreFile {
     entries: BTreeMap<String, BTreeMap<String, StoredEntry>>,
 }
 
+/// The actual durable permission state, independent of the D-Bus authenticator.
 #[derive(Clone)]
-pub struct PermissionStoreBackend {
-    ctx: PortalContext,
+pub struct PermissionStoreData {
     state: Arc<Mutex<StoreFile>>,
     path: Arc<PathBuf>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct PermissionStoreBackend {
+    ctx: PortalContext,
+    data: PermissionStoreData,
+}
+#[cfg(target_os = "linux")]
+impl std::ops::Deref for PermissionStoreBackend {
+    type Target = PermissionStoreData;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+#[cfg(target_os = "linux")]
 impl PermissionStoreBackend {
+    fn entry(table: &str, id: &str) -> zbus::fdo::Result<(String, String)> {
+        PermissionStoreData::entry(table, id)
+    }
     pub fn new(ctx: PortalContext) -> Self {
         Self::at_path(ctx, default_path())
     }
     pub fn at_path(ctx: PortalContext, path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        let state = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
         Self {
             ctx,
-            state: Arc::new(Mutex::new(state)),
-            path: Arc::new(path),
+            data: PermissionStoreData::at_path(path),
         }
     }
-
     async fn authenticate(&self, sender: Option<&OwnedUniqueName>) -> zbus::fdo::Result<()> {
         authenticate_frontend_call(&self.ctx, sender)
             .await
             .map(|_| ())
             .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted portal caller".into()))
     }
-
+}
+impl PermissionStoreData {
+    pub fn at_path(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        let state = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            path: Arc::new(path),
+        }
+    }
     fn commit(&self, state: &StoreFile) -> zbus::fdo::Result<()> {
         let parent = self
             .path
@@ -188,6 +211,7 @@ impl PermissionStoreBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.PermissionStore")]
 impl PermissionStoreBackend {
     #[zbus(property, name = "version")]
@@ -503,24 +527,11 @@ fn checked_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn context() -> PortalContext {
-        let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
-        );
-        PortalContext::new_with_null_spawners(
-            grants,
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
-            crate::portal::CallerMap::new(),
-        )
-    }
     #[test]
     fn store_survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("permissions.json");
-        let store = PermissionStoreBackend::at_path(context(), &path);
+        let store = PermissionStoreData::at_path(&path);
         store
             .with_mutation(|state| {
                 state.entries.entry("documents".into()).or_default().insert(
@@ -536,7 +547,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let reopened = PermissionStoreBackend::at_path(context(), path);
+        let reopened = PermissionStoreData::at_path(path);
         assert!(
             reopened
                 .state
@@ -548,7 +559,7 @@ mod tests {
     }
     #[test]
     fn rejects_path_like_keys() {
-        assert!(PermissionStoreBackend::entry("table", "../escape").is_err());
+        assert!(PermissionStoreData::entry("table", "../escape").is_err());
     }
 
     #[test]

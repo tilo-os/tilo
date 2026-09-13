@@ -83,6 +83,12 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
 }
 
 fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
+    // Darwin inherits the listener's nonblocking flag on accept. This worker
+    // uses blocking framed I/O; an empty receive is not the end of a session.
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::warn!(%error, "cannot configure blocking service connection");
+        return;
+    }
     let Ok(handshake) = read_frame::<Handshake>(&mut stream) else {
         return;
     };
@@ -812,6 +818,9 @@ mod tests {
         qos_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
         assert_eq!(cert.user_public_key, identity.group_public_key());
         assert_eq!(cert.device_public_key, identity.signing_public_key());
+        // Leave the accepted worker waiting between frames; Darwin must not treat
+        // a temporarily empty nonblocking receive as the end of this session.
+        std::thread::sleep(Duration::from_millis(50));
         let signature = identity
             .sign_for("document.save", b"saved")
             .expect("granted sign");

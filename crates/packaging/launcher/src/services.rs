@@ -595,6 +595,7 @@ fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io
 
 /// Convert resolved services into `ServiceBind`s consumable by the
 /// sandbox argv builder.
+#[cfg(target_os = "linux")]
 pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::ServiceBind> {
     resolved
         .iter()
@@ -811,6 +812,7 @@ mod tests {
     /// for a connected socket, unique to that connection. Identifying
     /// descriptors this way rather than counting the process's is the
     /// difference between a check and a race.
+    #[cfg(target_os = "linux")]
     fn fd_target(fd: RawFd) -> Option<String> {
         std::fs::read_link(format!("/proc/self/fd/{fd}"))
             .ok()
@@ -820,6 +822,7 @@ mod tests {
     /// Every socket this process still holds a descriptor for. Failing to
     /// read `/proc/self/fd` fails the test — a check that can't see its
     /// subject must not report the subject is fine.
+    #[cfg(target_os = "linux")]
     fn open_sockets() -> std::collections::BTreeSet<String> {
         std::fs::read_dir("/proc/self/fd")
             .expect(
@@ -841,6 +844,7 @@ mod tests {
     /// numbers the fork will need, let the resolution go.
     #[test]
     #[serial_test::serial(process_env)]
+    #[cfg(target_os = "linux")]
     fn a_finished_launch_leaves_no_descriptor_behind() {
         const LAUNCHES: usize = 8;
 
@@ -982,10 +986,12 @@ mod tests {
             other => panic!("unexpected read from a live connection: {other:?}"),
         }
 
-        drop(app_copy);
+        // Darwin refuses timeout changes after peer disconnect. Establish the
+        // same EOF deadline while the final peer descriptor is still alive.
         served
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .unwrap();
+        drop(app_copy);
         assert_eq!(
             served.read(&mut buf).expect("the service must see the end"),
             0,

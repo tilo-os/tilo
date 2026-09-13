@@ -1,17 +1,24 @@
 //! `org.freedesktop.impl.portal.Wallpaper` backend.
 use super::desktop_services::WallpaperRequest;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
+#[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
 pub struct WallpaperBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     dialogs: PortalDialogQueue,
 }
+#[cfg(target_os = "linux")]
 impl WallpaperBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -50,6 +57,7 @@ fn valid_uri(uri: &str) -> bool {
         && !uri.chars().any(char::is_control)
 }
 #[interface(name = "org.freedesktop.impl.portal.Wallpaper")]
+#[cfg(target_os = "linux")]
 impl WallpaperBackend {
     async fn set_wallpaper_uri(
         &self,

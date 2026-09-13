@@ -16,6 +16,7 @@ use zbus::zvariant::{OwnedValue, Value};
 
 use crate::notifications::IncomingNotification;
 
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
 const MAX_ACTIVE_PORTAL_NOTIFICATIONS: usize = 256;
@@ -191,6 +192,7 @@ impl NotificationPortalHandle {
 /// generic freedesktop notification server has its own independent consumer;
 /// [`NotificationBridge::add_action_tap`] prevents either side from racing to
 /// drain the shared action mailbox.
+#[cfg(target_os = "linux")]
 pub fn spawn_action_emitter(
     connection: zbus::Connection,
     portal: NotificationPortalHandle,
@@ -218,11 +220,13 @@ pub fn spawn_action_emitter(
 
 /// Backend instance registered alongside the other portal interfaces.
 pub struct NotificationBackend {
+    #[cfg(target_os = "linux")]
     ctx: PortalContext,
     portal: NotificationPortalHandle,
 }
 
 impl NotificationBackend {
+    #[cfg(target_os = "linux")]
     pub fn new(ctx: PortalContext) -> Self {
         Self {
             ctx,
@@ -311,6 +315,7 @@ impl NotificationBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Notification")]
 impl NotificationBackend {
     /// Add or replace a notification. Unsupported icon/sound/category fields

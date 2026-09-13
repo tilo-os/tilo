@@ -749,7 +749,9 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        assert!(crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut tree, 92_003));
+        assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
+            &mut tree, 92_003
+        ));
 
         save_tree_to(&tree, &path).expect("save after close");
         let loaded = load_tree_from(&path).expect("restart");

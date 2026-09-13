@@ -8,6 +8,7 @@
 //! not linked in v1; requesting one returns `ShareError::EncoderUnavailable`
 //! from the constructor rather than silently falling back.
 
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::sync::{
     Arc, Mutex,
@@ -26,7 +27,9 @@ use crate::network::encoder::EncodeError;
 use crate::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, ShareRegistry, StreamingShare, StreamingThrottle};
 use crate::network::surface_stream::SurfaceStreamSender;
+#[cfg(target_os = "linux")]
 use smithay::backend::allocator::Buffer as _;
+#[cfg(target_os = "linux")]
 use smithay::backend::allocator::dmabuf::Dmabuf;
 
 /// Software-encoder FPS ceiling — openh264 can't sustain more on a typical
@@ -82,6 +85,7 @@ enum StagedKind {
     Rgba(Vec<u8>),
     /// DMABUF handle handed to the encoder; Arc-backed inside smithay, so
     /// staging it keeps every plane fd alive without a dup.
+    #[cfg(target_os = "linux")]
     Dmabuf(Dmabuf),
 }
 
@@ -89,6 +93,7 @@ enum StagedKind {
 /// `.take(4)` bounds the plane count, but writes go through `.get_mut()`
 /// anyway rather than trust that invariant to hold forever. Split out of
 /// `SharedFlatpakSession::encode_next_frame` to keep it short.
+#[cfg(target_os = "linux")]
 fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
     let mut plane_fds = [-1i32; 4];
     let mut plane_offsets = [0u64; 4];
@@ -542,6 +547,7 @@ impl SharedFlatpakSession {
     /// [`Self::encode_next_frame`] finds the encoder rejects zero-copy
     /// import, the frame is dropped for that tick and the compositor's SHM
     /// fallback picks up on the next commit.
+    #[cfg(target_os = "linux")]
     pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
         let capture_ts_ns = self.monotonic_ns_now();
         let mut slot = self
@@ -596,6 +602,7 @@ impl SharedFlatpakSession {
                 encoder.encode(FrameInput::Rgba(rgba), &mut nalus),
                 CapturePath::ShmReadback,
             ),
+            #[cfg(target_os = "linux")]
             StagedKind::Dmabuf(dmabuf) => (
                 encoder.encode(dmabuf_frame_input(dmabuf), &mut nalus),
                 CapturePath::DmabufDirect,

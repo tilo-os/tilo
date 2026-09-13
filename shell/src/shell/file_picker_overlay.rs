@@ -173,7 +173,20 @@ fn picker_scope_for(
     chrome: Option<&Chrome>,
     caller: &crate::portal::PortalCaller,
 ) -> crate::portal::PickerScope {
-    let base = crate::portal::PickerScope::for_user();
+    let supplied = chrome.and_then(|chrome| chrome.borrow().hosted_inputs.picker_scope.clone());
+    let base = supplied.unwrap_or_else(|| {
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            crate::portal::PickerScope::for_user()
+        }
+        #[cfg(any(not(target_os = "linux"), test))]
+        {
+            crate::portal::PickerScope {
+                initial_dir: std::path::PathBuf::new(),
+                roots: Vec::new(),
+            }
+        }
+    });
     let Some(chrome) = chrome else {
         return base;
     };

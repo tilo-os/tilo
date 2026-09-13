@@ -7,7 +7,7 @@
 
 use super::*;
 
-use crate::compositor::backend::drm::paint::{SceneDamage, VelloDrmBridge};
+use crate::shell::render::paint::{SceneDamage, VelloDrmBridge};
 
 const NATIVE_WIDTH: u32 = 3_840;
 const NATIVE_HEIGHT: u32 = 2_160;

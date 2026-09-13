@@ -3093,7 +3093,11 @@ mod tests {
         bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
         bar.activity_headline = Some("ada · 2 permission changes".into());
         bar.activity_unread = 4;
-        let mut renderer = TextRenderer::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts"),
+            "en-US",
+        );
+        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
         let theme = Theme::default().with_text_scale(1.3);
         let size = theme.tokens.typography.scale.sm;
         let max_width = bar.activity_content_width();
