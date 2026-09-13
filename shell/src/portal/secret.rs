@@ -15,8 +15,11 @@ use std::sync::{Arc, Mutex};
 
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::zvariant::{ObjectPath, OwnedFd, OwnedValue};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -28,6 +31,7 @@ use super::{PortalContext, auth::authenticate_call};
 
 const SECRET_BYTES: usize = 32;
 const MAX_APP_ID: usize = 255;
+#[cfg(target_os = "linux")]
 const MAX_TOKEN: usize = 512;
 const NONCE_BYTES: usize = 24;
 const STORE_MAGIC: &[u8; 5] = b"QPSV1";
@@ -244,6 +248,7 @@ impl SecretBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn default_path() -> PathBuf {
     super::private_state_root()
         .unwrap_or_else(|| PathBuf::from("/dev/null"))

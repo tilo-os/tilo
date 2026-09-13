@@ -320,7 +320,7 @@ fn unregister_launched_process(pid: u32) {
 /// Resolve a host process (normally xdg-dbus-proxy) to the qOS package
 /// supervising one of its ancestors. The walk is bounded and refuses stale
 /// registry entries. Unknown/direct session-bus callers stay unattributed.
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
@@ -2502,6 +2502,7 @@ mod tests {
             lines[0].len()
         );
     }
+    #[cfg(target_os = "linux")]
     use std::io::Write;
 
     #[test]

@@ -55,6 +55,13 @@ fn queued_launches() -> &'static std::sync::Mutex<Vec<QueuedLaunch>> {
     QUEUED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the shared provider-selection interface must return typed unavailability on other hosts"
+    )
+)]
 fn require_host_execution() -> Result<(), LaunchError> {
     #[cfg(target_os = "linux")]
     {

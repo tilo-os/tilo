@@ -8,12 +8,9 @@
 //! handled here ([`ReadbackError::DmaBufUnsupported`]). [`SurfaceTracker`] reuses one `Vec<u8>`
 //! per surface so steady-state readback is allocation-free after the second commit.
 
-use crate::network::protocol::SurfaceId;
-use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::wayland::shm::{BufferAccessError, with_buffer_contents};
-use std::collections::HashMap;
 
 /// Error variants surfaced by [`buffer_to_rgba`] and [`SurfaceTracker::on_commit`]. `thiserror` isn't a dep of this module, so we hand-roll `Display`/`Error`.
 #[derive(Debug)]
