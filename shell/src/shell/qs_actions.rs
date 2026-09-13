@@ -28,3 +28,48 @@ pub fn log_qs_result(op: &str, result: Result<(), String>) {
 pub fn log_qs_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     os_actions::log_get(op, result)
 }
+
+/// No hardware service is attached to an explicit fixture.
+pub(crate) struct UnavailableQsActions;
+
+impl QsActions for UnavailableQsActions {
+    fn set_brightness(&self, _pct: f32) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_volume(&self, _pct: f32) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_wifi(&self, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_bluetooth(&self, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_wired(&self, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_airplane_mode(&self, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_hotspot(&self, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_mobile_broadband(&self, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_vpn_connection(&self, _name: &str, _enabled: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn connect_wifi(&self, _ssid: &str, _password: Option<&str>) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_power_profile(&self, _profile: PowerProfile) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn toggle_mute(&self) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+    fn set_mute(&self, _muted: bool) -> Result<(), String> {
+        Err("Quick Settings service is unavailable".into())
+    }
+}

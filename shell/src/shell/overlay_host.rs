@@ -628,6 +628,37 @@ enum PrintScreenArbitration {
     Blocked(&'static str),
 }
 
+enum DesktopControlsSource {
+    Persisted,
+    Explicit(settings_store::hardware::DesktopControlsConfig),
+}
+
+impl DesktopControlsSource {
+    fn config(&self) -> settings_store::hardware::DesktopControlsConfig {
+        match self {
+            Self::Persisted => settings_store::hardware::DesktopControlsConfig::load(),
+            Self::Explicit(config) => *config,
+        }
+    }
+
+    fn is_explicit(&self) -> bool {
+        matches!(self, Self::Explicit(_))
+    }
+}
+
+struct OverlayInputs {
+    search_registry: crate::shell::search::SearchRegistry,
+    room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
+    shortcut_config: settings_store::hardware::ShortcutConfig,
+    desktop_controls: DesktopControlsSource,
+    qs_root: QuickSettingsRoot,
+    qs_refresh: crate::shell::qs_refresh::QsRefresh,
+    qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    room_activity: crate::shell::room_activity::RoomActivityPane,
+    projection_overlay: ProjectionOverlay,
+    history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -636,6 +667,7 @@ enum PrintScreenArbitration {
               and would ripple through this whole file's field accesses"
 )]
 pub struct ShellOverlayHost {
+    desktop_controls: DesktopControlsSource,
     rect: Rect,
     /// Last-used modality plus devices the host has actually discovered.
     /// The shortcut overlay reads this; connection alone never selects a
@@ -905,7 +937,7 @@ pub struct ShellOverlayHost {
     room_activity: crate::shell::room_activity::RoomActivityPane,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
-    history_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     /// Open/close curve for the room-activity sheet.
     room_activity_transition: ui::Transition,
     /// Whether the sheet was open last frame, to invalidate derived rows
@@ -1700,6 +1732,67 @@ impl ShellOverlayHost {
         reason = "constructor explicitly initializes the host's independent interaction surfaces"
     )]
     pub fn new(content: Box<dyn Widget>) -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("overlay production inputs");
+        let (search_registry, room_records) = Self::build_search_registry();
+        Self::from_inputs(
+            content,
+            OverlayInputs {
+                search_registry,
+                room_records,
+                shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+                desktop_controls: DesktopControlsSource::Persisted,
+                qs_root: QuickSettingsRoot::load_persisted(),
+                qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
+                qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+                room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
+                projection_overlay: ProjectionOverlay::default(),
+                history_narrator: Some(
+                    crate::shell::history_narrative::LocalHistoryNarrator::default(),
+                ),
+            },
+        )
+    }
+
+    pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
+        let mut search_registry = crate::shell::search::SearchRegistry::new();
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::NotesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::EditorProvider::new(),
+        ));
+        let records = crate::shell::search::providers::RecordsProvider::new();
+        let room_records = records.index();
+        search_registry.register(std::rc::Rc::new(records));
+        Self::from_inputs(
+            content,
+            OverlayInputs {
+                search_registry,
+                room_records,
+                shortcut_config: settings_store::hardware::ShortcutConfig::default(),
+                desktop_controls: DesktopControlsSource::Explicit(
+                    settings_store::hardware::DesktopControlsConfig::default(),
+                ),
+                qs_root: QuickSettingsRoot::with_config(
+                    settings_store::hardware::QuickSettingsConfig::default(),
+                ),
+                qs_refresh: crate::shell::qs_refresh::QsRefresh::without_os_reads(),
+                qs_actions: Box::new(crate::shell::qs_actions::UnavailableQsActions),
+                room_activity: crate::shell::room_activity::RoomActivityPane::new(),
+                history_narrator: None,
+                projection_overlay: ProjectionOverlay::from_controller(
+                    crate::shell::projection::ProjectionController::unavailable(),
+                ),
+            },
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one shared initialization body for the host interaction surfaces"
+    )]
+    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -1708,7 +1801,6 @@ impl ShellOverlayHost {
         // The shell paints scope + kind controls into the palette's own
         // reserved filter band, inside the card.
         palette.set_host_filter_strip(true);
-        let (search_registry, room_records) = Self::build_search_registry();
         Self {
             rect: Rect::ZERO,
             interaction: ui::InteractionEnvironment::default(),
@@ -1718,7 +1810,8 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
-            shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+            shortcut_config: inputs.shortcut_config,
+            desktop_controls: inputs.desktop_controls,
             content,
             workspace_scene_parts: None,
             onboarding: None,
@@ -1728,7 +1821,7 @@ impl ShellOverlayHost {
             outputs: Vec::new(),
             palette,
             palette_visible: false,
-            search_registry,
+            search_registry: inputs.search_registry,
             search_results: Vec::new(),
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
@@ -1738,7 +1831,7 @@ impl ShellOverlayHost {
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
             search_chip_rows: 1,
-            room_records,
+            room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
             content_node: None,
@@ -1760,7 +1853,7 @@ impl ShellOverlayHost {
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
-            qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
+            qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
@@ -1788,20 +1881,20 @@ impl ShellOverlayHost {
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
-            qs_root: QuickSettingsRoot::load_persisted(),
-            qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            qs_root: inputs.qs_root,
+            qs_actions: inputs.qs_actions,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
             qs_aux_drill_in: DrillInList::default(),
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
-            room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
-            history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+            room_activity: inputs.room_activity,
+            history_narrator: inputs.history_narrator,
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             collaborators_overlay: CollaboratorsOverlay::default(),
-            projection_overlay: ProjectionOverlay::default(),
+            projection_overlay: inputs.projection_overlay,
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -4297,6 +4390,9 @@ impl ShellOverlayHost {
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
+        if self.desktop_controls.is_explicit() {
+            return false;
+        }
         // Expiry is independent of new launcher events: a daemonising parent
         // can exit and never produce another event or window.
         crate::shell::launcher::expire_pending_placements();
@@ -6002,6 +6098,14 @@ impl ShellOverlayHost {
     /// The room record index the records provider reads and writes.
     /// Shared, not copied — a caller referencing a record here changes
     /// what the next keystroke finds.
+    #[cfg(test)]
+    pub(crate) fn fixture_provider_ids(&self) -> Vec<&str> {
+        self.search_registry
+            .providers_iter()
+            .map(crate::shell::search::SearchProvider::id)
+            .collect()
+    }
+
     pub fn room_records(
         &self,
     ) -> std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>> {
@@ -6793,9 +6897,12 @@ impl ShellOverlayHost {
     }
 
     fn refresh_history_narrative(&mut self) {
+        let Some(narrator) = self.history_narrator.as_mut() else {
+            return;
+        };
         if let Some(request) = self.room_activity.narrative_request() {
-            self.history_narrator.request(&request);
-            if let Some(narrative) = self.history_narrator.take_for(&request) {
+            narrator.request(&request);
+            if let Some(narrative) = narrator.take_for(&request) {
                 let _ = self.room_activity.apply_generated_narrative(narrative);
             }
         }
@@ -7798,7 +7905,13 @@ impl ShellOverlayHost {
             });
             return;
         }
-        match config.save() {
+        match if self.desktop_controls.is_explicit() {
+            config
+                .validate()
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))
+        } else {
+            config.save()
+        } {
             Ok(()) => {
                 self.shortcut_config = config;
                 self.shortcut_rebind = None;
@@ -7877,7 +7990,13 @@ impl ShellOverlayHost {
             });
             return;
         }
-        match candidate.save() {
+        match if self.desktop_controls.is_explicit() {
+            candidate
+                .validate()
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))
+        } else {
+            candidate.save()
+        } {
             Ok(()) => {
                 self.shortcut_config = candidate;
                 self.shortcut_rebind = None;
@@ -8269,7 +8388,7 @@ impl ShellOverlayHost {
         // Optional Vim navigation is intentionally a full Super+Ctrl layer,
         // never a bare/Ctrl-only text chord. This keeps H/J/K/L available to
         // terminals and editors and matches the promise in Settings.
-        if settings_store::hardware::DesktopControlsConfig::load().vim_mode
+        if self.desktop_controls.config().vim_mode
             && super_down
             && mstate.control_key()
             && !mstate.alt_key()
@@ -13438,9 +13557,7 @@ impl ShellOverlayHost {
                         transform.pre_translate((body.x0, pointer_y + 18.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
                     );
-                    if settings_store::hardware::DesktopControlsConfig::load().vim_mode
-                        && pointer_y + 58.0 < body.y1
-                    {
+                    if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
                         text_renderer.draw_text(
                             scene,
                             "Vim mode · h j k l",
