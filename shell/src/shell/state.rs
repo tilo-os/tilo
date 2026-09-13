@@ -1459,6 +1459,8 @@ pub fn role_label(role: CapRole) -> &'static str {
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
 pub fn local_user_id() -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("session identity");
     if let Ok(v) = std::env::var("QOS_USER_ID")
         && !v.is_empty()
     {
@@ -1484,6 +1486,8 @@ pub fn local_user_id() -> UserId {
 /// a valid explicit binding always wins. Callers that launch an app use the
 /// stricter path resolver and fail closed if its private record is unavailable.
 pub fn local_user_id_for_room(room: &RoomId) -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("room identity");
     crate::identity_registry::selected_principal_id(&room.to_string())
         .ok()
         .flatten()

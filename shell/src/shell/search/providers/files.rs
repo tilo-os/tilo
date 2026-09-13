@@ -269,6 +269,8 @@ type RankWorker = (
 
 impl FilesProvider {
     fn rank_worker() -> RankWorker {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Files search rank worker");
         // A single coalescing worker is deliberately shared by every
         // keystroke.  The one-slot mailbox retains only the newest request;
         // a cancelled current rank checks at small chunks and then picks it
@@ -346,6 +348,8 @@ impl FilesProvider {
     /// Kicks off the background name-index walk and returns immediately.
     /// Users who query before it finishes get only the tantivy content index.
     pub fn new() -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Files search constructor");
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         let name_index: Arc<Mutex<Arc<NameIndex>>> =
             Arc::new(Mutex::new(Arc::new(NameIndex::default())));
@@ -376,6 +380,8 @@ impl FilesProvider {
 
     /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
     pub fn rescan(&self) {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Files search rescan");
         let name_index = Arc::clone(&self.name_index);
         let home = self.home.clone();
         thread::Builder::new()

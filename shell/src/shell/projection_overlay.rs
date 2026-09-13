@@ -125,7 +125,7 @@ impl Default for ProjectionOverlay {
 }
 
 impl ProjectionOverlay {
-    fn from_controller(controller: ProjectionController) -> Self {
+    pub(crate) fn from_controller(controller: ProjectionController) -> Self {
         Self {
             controller,
             transition: ui::Transition::closed(),
