@@ -2320,13 +2320,13 @@ mod tests {
         BridgePhaseTiming, CpuXrgbWriteTotals, GateOutcome, GeometryReuseRejection,
         GeometryReuseTelemetry, GpuDispatchTimingTotals, HEIGHT, MAX_ACTION_CORRELATION_RECORDS,
         MAX_SCENE_REUSE_PAYLOAD_BYTES, MAX_SCENE_REUSE_RETAINED_BYTES, MAX_SCENE_REUSE_SNAPSHOTS,
-        MEAN_LIMIT_US, P99_LIMIT_US, RenderAttemptTotals, SampleError, SceneReuseObservation,
-        SceneReuseRenderMode, SceneReuseTelemetry, WIDTH, action_correlation_enabled,
-        direct_path_workgroup_configuration_is_valid, dispatch_click, dispatch_stage_breakdown,
-        dispatch_timestamp_status_after_take, gate_outcome, geometry_reuse_configuration_is_valid,
-        geometry_reuse_requested_from_value, geometry_reuse_telemetry_enabled,
-        gpu_dispatch_timestamp_status_name, meets_gates, open_profile_output,
-        profile_output_path_from_value, scene_reuse_configuration_is_valid,
+        MEAN_LIMIT_US, P99_LIMIT_US, PopulatedShellFixture, RenderAttemptTotals, SampleError,
+        SceneReuseObservation, SceneReuseRenderMode, SceneReuseTelemetry, WIDTH,
+        action_correlation_enabled, direct_path_workgroup_configuration_is_valid, dispatch_click,
+        dispatch_stage_breakdown, dispatch_timestamp_status_after_take, gate_outcome,
+        geometry_reuse_configuration_is_valid, geometry_reuse_requested_from_value,
+        geometry_reuse_telemetry_enabled, gpu_dispatch_timestamp_status_name, meets_gates,
+        open_profile_output, profile_output_path_from_value, scene_reuse_configuration_is_valid,
         scene_reuse_requested_from_value, scene_reuse_telemetry_enabled,
         summarize_diagnostic_values, summarize_samples, timestamp_profile_configuration_is_valid,
         write_action_correlation_profile, xrgb_damage_requested_from_value,
@@ -2337,7 +2337,6 @@ mod tests {
         BridgeError, SceneDamage, SharedCoarseGeometryDiagnostic, VelloDrmBridge, XrgbCpuWriteMode,
         XrgbHistoryCommit, XrgbTargetHistory,
     };
-    use shell::compositor::frame::FrameBuilder;
     use std::ffi::OsString;
     use std::io::{self, Write};
     use ui::taffy::NodeId;
