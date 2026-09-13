@@ -42,3 +42,9 @@ pub mod collab;
 // Hand-rolled Wayland dispatch for extension protocols smithay 0.7
 // doesn't wrap — currently `color-management-v1` + a small EDID parser for DRM output-side reporting.
 pub mod wayland;
+
+// These existing app tests need no Linux adapter. Keep their Linux integration
+// owner and compile the same source for native library-only validation.
+#[cfg(all(test, target_os = "macos"))]
+#[path = "../tests/apps_integration.rs"]
+mod apps_integration;
