@@ -695,11 +695,19 @@ impl CollaboratorsOverlay {
 
 /// Rows the dropdown and compositor presence publisher agree are in the room.
 pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
+    collaborator_roster_rows_with_local_user(tree, &crate::shell::state::local_user_id())
+}
+
+/// Builds the same presence rows using an explicitly supplied local principal.
+pub(crate) fn collaborator_roster_rows_with_local_user(
+    tree: &WorkspaceTree,
+    local_user: &str,
+) -> Vec<RosterRow> {
     let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
         Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
         _ => &tree.collaborators,
     };
-    let colors = crate::shell::state::roster_colors(roster);
+    let colors = crate::shell::state::roster_colors_with_local_user(roster, local_user);
     let agent_members = tree
         .active_workspace()
         .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
