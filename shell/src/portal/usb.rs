@@ -6,28 +6,35 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
+#[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{
     PortalDialogQueue, ReviewDecision, ReviewRequest, UsbDeviceDecision, UsbDeviceRequest,
     UsbDeviceRow,
 };
 
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
 const MAX_DEVICES: usize = 64;
 const MAX_IDENTIFIER: usize = 512;
 const MAX_LABEL: usize = 256;
 
+#[cfg(target_os = "linux")]
 pub struct UsbBackend {
     ctx: PortalContext,
     dialogs: PortalDialogQueue,
     lifecycle: PortalLifecycle,
 }
 
+#[cfg(target_os = "linux")]
 impl UsbBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -49,6 +56,7 @@ struct RequestedDevice {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.Usb")]
+#[cfg(target_os = "linux")]
 impl UsbBackend {
     #[zbus(property, name = "version")]
     const fn version(&self) -> u32 {

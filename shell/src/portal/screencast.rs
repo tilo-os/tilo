@@ -35,14 +35,17 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 
+use super::PortalCaller;
 #[cfg(test)]
 use super::PromptOutcome;
+#[cfg(target_os = "linux")]
 use super::auth::authenticate_call;
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 use super::screencast_pipewire::{
     PipewireStreamInfo, PipewireStreamRequest, ScreenCastStreamProvisionerHandle,
 };
-use super::{CapabilityKind, PortalCaller, PortalContext, flow};
+#[cfg(target_os = "linux")]
+use super::{CapabilityKind, PortalContext, flow};
 
 const MAX_LIVE_SESSIONS: usize = 64;
 const MAX_RESTORE_TOKENS: usize = 256;
@@ -231,6 +234,7 @@ fn valid_restore_map(records: &HashMap<String, RestoreData>) -> bool {
         })
 }
 
+#[cfg(target_os = "linux")]
 pub struct ScreenCastBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
@@ -282,6 +286,7 @@ impl ScreenCastSessionHandle {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl ScreenCastBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -323,6 +328,7 @@ impl ScreenCastBackend {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.ScreenCast")]
+#[cfg(target_os = "linux")]
 impl ScreenCastBackend {
     /// Source types the compositor can capture.
     #[zbus(property)]
@@ -855,10 +861,8 @@ fn outcome_to_start_response_for_tests(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{
-        CallerMap, FilePickerSpawnerHandle, GrantStoreHandle, MockScreenCastProvisioner,
-        NullFilePickerSpawner, PromptQueueHandle, PromptResolver,
-        ScreenCastStreamProvisionerHandle,
+    use crate::portal::screencast_pipewire::{
+        MockScreenCastProvisioner, ScreenCastStreamProvisionerHandle,
     };
     use crate::shell::state::{Workspace, WorkspaceId};
     use std::sync::Arc;
@@ -1051,27 +1055,9 @@ mod tests {
     /// The provisioner records the request the Start path forwards, including the selected source type + size.
     #[test]
     fn screencast_provisioner_records_source_type_and_size() {
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(40));
-        let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+        let ws_id = WorkspaceId(40);
         let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
         let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
-        let map = CallerMap::new();
-        let caller = PortalCaller::new(ws_id, "org.example");
-        map.force_caller_for_tests(caller);
-        let ctx = PortalContext {
-            grants: store,
-            prompts: queue,
-            caller_map: map,
-            file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-            screencast_provisioner: sc_handle,
-            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
-            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
-            documents: crate::portal::DocumentStoreHandle::host_paths(),
-            print_spooler: crate::portal::PrintSpoolerHandle::null(),
-            notifications: crate::notifications::NotificationBridge::new(),
-            desktop_services: Default::default(),
-            authenticator: None,
-        };
         let req = PipewireStreamRequest {
             caller: PortalCaller::new(ws_id, "org.example"),
             width: 1024,
@@ -1080,10 +1066,7 @@ mod tests {
             source_type: source_type::WINDOW,
             cursor_mode: cursor_mode::HIDDEN,
         };
-        let info = ctx
-            .screencast_provisioner
-            .provision(&req)
-            .expect("provision");
+        let info = sc_handle.provision(&req).expect("provision");
         assert_eq!(info.node_id, 13);
         assert_eq!(info.size, (1024, 768));
         assert_eq!(info.source_type, source_type::WINDOW);

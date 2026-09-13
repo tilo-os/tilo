@@ -27,6 +27,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use super::apply_scale_factor_changed;
 use super::{Backend, BackendEvent, Output, OutputId};
 use crate::compositor::present::Presenter;
 
@@ -62,44 +63,6 @@ fn initial_size() -> (u32, u32) {
         );
         (INITIAL_WIDTH, INITIAL_HEIGHT)
     }
-}
-
-/// Apply a host-window DPI change to the compositor's single output.
-///
-/// Winit emits `ScaleFactorChanged` when a window crosses monitors even when
-/// its physical size stays the same.  Treating that as a resize lets the
-/// compositor re-run its ordinary output/scale propagation path, including
-/// `wp_fractional_scale` and layout.  The suggested inner size is deliberately
-/// left to the subsequent `Resized` event; a scale-only event must still be
-/// useful on platforms that keep the pixel size unchanged.
-fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Option<BackendEvent> {
-    // Winit reports a positive, finite scale factor. Keep the guard here so a
-    // malformed backend event cannot poison all subsequent geometry with NaN
-    // or zero, and so the pure helper remains safe to reuse in tests.
-    if !scale_factor.is_finite() || scale_factor <= 0.0 {
-        return None;
-    }
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "monitor scale factor; f32 precision is ample for a UI scale value"
-    )]
-    let scale = scale_factor as f32;
-    // A duplicate notification is harmless but needlessly rebuilds layout and
-    // reconfigures the presentation pipe, so preserve the resize no-op rule.
-    #[allow(
-        clippy::float_cmp,
-        reason = "exact equality avoids rebuilding layout for duplicate host notifications"
-    )]
-    if output.scale == scale {
-        return None;
-    }
-    output.scale = scale;
-    Some(BackendEvent::OutputResized {
-        id: output.id,
-        size: output.size,
-        scale,
-    })
 }
 
 /// Base color for the first few frames before a theme arrives. Matches
@@ -596,34 +559,3 @@ impl ApplicationHandler for Inner {
 // non-main-thread `EventLoop::new`, making parallel `cargo test` runs
 // unreliable.  The event-to-backend state transition above is pure and is
 // covered without constructing an event loop.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scale_factor_change_updates_output_without_a_pixel_resize() {
-        let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
-
-        let event = apply_scale_factor_changed(&mut output, 1.5)
-            .expect("a real DPI change must reach the compositor");
-
-        assert_eq!(output.scale, 1.5);
-        assert!(matches!(
-            event,
-            BackendEvent::OutputResized {
-                id: OutputId(7),
-                size: (1920, 1080),
-                scale: 1.5,
-            }
-        ));
-    }
-
-    #[test]
-    fn duplicate_or_invalid_scale_changes_are_ignored() {
-        let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
-        assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());
-        assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
-        assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
-        assert_eq!(output.scale, 1.25);
-    }
-}

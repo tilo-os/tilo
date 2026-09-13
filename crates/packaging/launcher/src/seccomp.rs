@@ -26,10 +26,15 @@
 //! `share/qos-default.bpf` for environments where seccompiler can't run
 //! inside the sandbox — identical output for the current build arch.
 
+#[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(any(test, target_os = "linux"))]
+use std::path::Path;
+use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 use seccompiler::{
     BackendError, BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition,
     SeccompFilter, SeccompRule, TargetArch,
@@ -37,6 +42,7 @@ use seccompiler::{
 
 /// Built-in baseline policy errors.
 #[derive(Debug, thiserror::Error)]
+#[cfg(target_os = "linux")]
 pub enum SeccompError {
     #[error("unsupported host architecture for seccomp baseline: {0}")]
     UnsupportedArch(&'static str),
@@ -46,6 +52,7 @@ pub enum SeccompError {
     Io(#[from] io::Error),
 }
 
+#[cfg(target_os = "linux")]
 fn host_target_arch() -> Result<TargetArch, SeccompError> {
     if cfg!(target_arch = "x86_64") {
         Ok(TargetArch::x86_64)
@@ -65,6 +72,7 @@ fn host_target_arch() -> Result<TargetArch, SeccompError> {
 /// allowed, denying `clone3` blocks nothing of substance — it just
 /// makes a common code path (including the portal client's
 /// worker-thread spawn) unreliable.
+#[cfg(target_os = "linux")]
 const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_ptrace,
     libc::SYS_mount,
@@ -101,6 +109,7 @@ const BLANKET_DENIES: &[libc::c_long] = &[
     libc::SYS_acct,
 ];
 
+#[cfg(target_os = "linux")]
 const CLONE_NAMESPACE_FLAGS: &[u64] = &[
     libc::CLONE_NEWCGROUP as u64,
     libc::CLONE_NEWIPC as u64,
@@ -238,16 +247,19 @@ pub fn resolve_profile(requested: &str, package_id: &str) -> ProfileDecision {
 
 /// Syscalls that take a page-protection bitmask in argument 2 and can
 /// therefore produce a writable, executable mapping.
+#[cfg(target_os = "linux")]
 const PROT_ARG_SYSCALLS: &[libc::c_long] =
     &[libc::SYS_mmap, libc::SYS_mprotect, libc::SYS_pkey_mprotect];
 
 /// `PROT_WRITE | PROT_EXEC`, used as both mask and value so the rule
 /// reads "both bits are set" rather than "exactly this" — `PROT_READ`
 /// is almost always set alongside them.
+#[cfg(target_os = "linux")]
 fn write_exec_bits() -> u64 {
     (libc::PROT_WRITE | libc::PROT_EXEC) as u64
 }
 
+#[cfg(target_os = "linux")]
 fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, SeccompError> {
     let arch = host_target_arch()?;
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
@@ -329,6 +341,7 @@ fn build_baseline_filter(profile: SeccompProfile) -> Result<SeccompFilter, Secco
     Ok(filter)
 }
 
+#[cfg(target_os = "linux")]
 fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
     let mut out = Vec::with_capacity(prog.len().saturating_mul(8));
     for stmt in prog {
@@ -349,6 +362,7 @@ fn bpf_to_bytes(prog: &BpfProgram) -> Vec<u8> {
 ///
 /// Returns [`SeccompError`] if the filter's rules or its BPF compilation
 /// fail to build.
+#[cfg(target_os = "linux")]
 pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError> {
     let filter = build_baseline_filter(profile)?;
     let program: BpfProgram = filter.try_into()?;
@@ -362,6 +376,7 @@ pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError
 ///
 /// Returns [`SeccompError`] if `dir` cannot be created, the filter cannot be
 /// compiled, or the blob cannot be written.
+#[cfg(target_os = "linux")]
 pub fn write_baseline_to(dir: &Path, profile: SeccompProfile) -> Result<PathBuf, SeccompError> {
     std::fs::create_dir_all(dir)?;
     let bytes = compile_baseline(profile)?;
@@ -374,6 +389,7 @@ pub fn write_baseline_to(dir: &Path, profile: SeccompProfile) -> Result<PathBuf,
 /// compiling when present. Looked up relative to `$CARGO_MANIFEST_DIR`
 /// at build time and `<crate_root>/share/qos-default.bpf` at runtime —
 /// a developer convenience only; production has a fixed location.
+#[cfg(target_os = "linux")]
 pub fn baked_blob_path(profile: SeccompProfile) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("share")
@@ -385,6 +401,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn baseline_compiles_and_blob_alignment() {
         let bytes = compile_baseline(SeccompProfile::QosDefault).expect("compile");
         assert!(!bytes.is_empty(), "empty BPF");
@@ -397,6 +414,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn write_baseline_creates_blob() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_baseline_to(dir.path(), SeccompProfile::QosDefault).unwrap();
@@ -418,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn jit_profile_is_the_only_one_that_drops_the_write_exec_rules() {
         let strict = compile_baseline(SeccompProfile::QosDefault).unwrap();
         let jit = compile_baseline(SeccompProfile::QosJit).unwrap();
@@ -446,6 +465,7 @@ mod tests {
     ///   10 = a mapping that should have been refused succeeded
     ///   11 = a mapping that should have been allowed was refused
     ///   12 = the filter itself would not install
+    #[cfg(target_os = "linux")]
     fn probe_mappings_under(profile: SeccompProfile) -> i32 {
         let filter = build_baseline_filter(profile).expect("build filter");
         let program: BpfProgram = filter.try_into().expect("compile filter");
@@ -541,6 +561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn strict_profile_refuses_writable_executable_memory_in_the_kernel() {
         assert_eq!(
             probe_mappings_under(SeccompProfile::QosDefault),
@@ -551,6 +572,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn baseline_refuses_kernel_introspection_and_fault_injection_syscalls() {
         let filter = build_baseline_filter(SeccompProfile::QosDefault).expect("build filter");
         let program: BpfProgram = filter.try_into().expect("compile filter");
@@ -586,6 +608,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn jit_profile_still_permits_writable_executable_memory() {
         assert_eq!(
             probe_mappings_under(SeccompProfile::QosJit),
@@ -672,6 +695,7 @@ mod tests {
     /// compiled the other one.
     #[test]
     #[serial_test::serial(process_env)]
+    #[cfg(target_os = "linux")]
     fn an_unentitled_request_is_refused_by_the_running_filter() {
         let _policy = JitPolicy::listing("dev.qos.browser\n");
 

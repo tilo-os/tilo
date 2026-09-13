@@ -1,15 +1,21 @@
 //! `org.freedesktop.impl.portal.Screenshot` backend.
 use super::desktop_services::{PortalResult, ScreenshotRequest, ScreenshotTarget};
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
 pub struct ScreenshotBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
 }
+#[cfg(target_os = "linux")]
 impl ScreenshotBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -53,6 +59,7 @@ fn color_value(color: (f64, f64, f64)) -> Option<OwnedValue> {
     OwnedValue::try_from(zbus::zvariant::Value::new(color)).ok()
 }
 #[interface(name = "org.freedesktop.impl.portal.Screenshot")]
+#[cfg(target_os = "linux")]
 impl ScreenshotBackend {
     #[zbus(property, name = "AvailableTargets")]
     fn available_targets(&self) -> u32 {

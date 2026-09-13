@@ -6,22 +6,32 @@
 //!
 //! Mode selection is a single `--mode <hosted|native>` (or `--mode=<...>`) flag; anything unrecognised, including the flag being absent, falls back to [`Mode::Native`].
 
+#[cfg(target_os = "linux")]
 pub mod accessibility;
+#[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(feature = "hdr-decode")]
+#[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
+#[cfg(target_os = "linux")]
 pub mod bridge;
+#[cfg(target_os = "linux")]
 pub mod capture;
+#[cfg(target_os = "linux")]
 pub mod client_input;
 pub mod dev_env;
 pub mod drag_feedback;
+#[cfg(target_os = "linux")]
 pub mod floating_service;
 pub mod foreign;
 pub mod frame;
+#[cfg(target_os = "linux")]
 pub mod gpu_import;
+#[cfg(target_os = "linux")]
 pub mod hosted;
 #[cfg(feature = "hosted-test-control")]
+#[cfg(target_os = "linux")]
 pub mod hosted_test_control;
 pub mod idle;
 pub mod lock_auth;
@@ -29,22 +39,30 @@ pub mod lock_controller;
 pub mod lock_screen;
 pub mod metrics;
 #[cfg(feature = "hdr-decode")]
-mod mp4_recording;
+pub mod mp4_recording;
+#[cfg(target_os = "linux")]
 pub mod native;
+#[cfg(target_os = "linux")]
 pub mod osk_service;
+#[cfg(target_os = "linux")]
 pub mod output_globals;
 pub mod pacing;
 pub mod present;
 pub mod projection_capture;
+#[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
 pub mod selection;
+#[cfg(target_os = "linux")]
 pub mod state;
 pub mod surface_outputs;
+#[cfg(target_os = "linux")]
 pub mod surface_readback;
 pub mod switch_control;
 pub mod tab_binding;
+#[cfg(target_os = "linux")]
 pub mod test_control;
+#[cfg(target_os = "linux")]
 mod xwayland;
 
 /// Which run mode the compositor should boot into.

@@ -87,11 +87,13 @@ pub struct MemoryClipboardBroker {
 /// Production bridge into the compositor's focus-gated selection mirror.
 /// It preserves arbitrary bounded MIME payloads (including PNG/JPEG) and the
 /// compositor publishes them only through normal focused `wl_data_device`.
+#[cfg(target_os = "linux")]
 pub struct CompositorClipboardBroker {
     selection: crate::compositor::selection::SharedSelection,
     seen_revision: Mutex<u64>,
 }
 
+#[cfg(target_os = "linux")]
 impl CompositorClipboardBroker {
     pub fn new(selection: crate::compositor::selection::SharedSelection) -> Self {
         Self {
@@ -101,6 +103,7 @@ impl CompositorClipboardBroker {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl ClipboardBroker for CompositorClipboardBroker {
     fn begin_offer(&self, mimes: &[String]) -> Result<(), String> {
         crate::compositor::selection::begin_mirror_offer(
@@ -320,6 +323,7 @@ impl ClipboardBackend {
             })),
         }
     }
+    #[cfg(target_os = "linux")]
     pub fn with_remote_desktop(
         remote: super::remote_desktop::RemoteDesktopSessionHandle,
         broker: ClipboardBrokerHandle,

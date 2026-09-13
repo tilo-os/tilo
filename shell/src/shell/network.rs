@@ -3793,7 +3793,7 @@ mod tests {
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
             "dev.qos.browser",
-            crate::compositor::tab_binding::Placement::IntoTab(browser_tab),
+            crate::shell::tab_binding::Placement::IntoTab(browser_tab),
         );
         crate::shell::launcher::stage_continuation_resume(
             room,
@@ -3817,7 +3817,7 @@ mod tests {
         // it while retaining the other independent offers.
         {
             let replica = source.replica.lock().expect("source replica");
-            assert!(crate::compositor::tab_binding::remove_tab(
+            assert!(crate::shell::tab_binding::remove_tab(
                 &mut replica.tree.write(),
                 browser_tab,
             ));
