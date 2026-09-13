@@ -18,6 +18,9 @@
 //! cargo run -p shell --example redraw_bench --release
 //! ```
 
+#[path = "support/populated_shell_fixture.rs"]
+mod populated_shell_fixture;
+
 use std::array;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -26,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ROOT};
+use populated_shell_fixture::PopulatedShellFixture;
 use shell::compositor::backend::drm::paint::{
     BridgePhaseTiming, SceneDamage, VelloDrmBridge, XrgbCpuWriteMode, XrgbHistoryCommit,
     XrgbTargetHistory,
@@ -1777,7 +1781,7 @@ fn run() -> Result<(), String> {
             "{PROFILE_ENV}=1 is required when {VELLO_GPU_TIMESTAMPS_ENV}=1 or {VELLO_GPU_DISPATCH_TIMESTAMPS_ENV}=1; timestamp-instrumented runs are diagnostic-only"
         ));
     }
-    let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+    let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())?;
     let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).map_err(|error| error.to_string())?;
     let xrgb_damage_available = xrgb_damage_requested && bridge.xrgb_history_available();
     let sparse_tile_bounds_requested =
@@ -3712,7 +3716,8 @@ mod tests {
 
     #[test]
     fn benchmark_actions_alternate_quick_settings_open_and_outside_dismissal() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let _initial_scene = frame.paint();
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
@@ -3757,7 +3762,8 @@ mod tests {
 
     #[test]
     fn benchmark_actions_produce_bounded_damage() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let _initial = frame.paint_with_damage();
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
@@ -3812,7 +3818,8 @@ mod tests {
 
     #[test]
     fn native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let width = usize::try_from(WIDTH).expect("native width fits usize");
         let height = usize::try_from(HEIGHT).expect("native height fits usize");
         let pitch = width.checked_mul(4).expect("native pitch fits usize");
@@ -4063,7 +4070,8 @@ mod tests {
 
     #[test]
     fn native_4k_benchmark_actions_use_one_and_two_target_xrgb_history() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let width = usize::try_from(WIDTH).expect("native width fits usize");
         let height = usize::try_from(HEIGHT).expect("native height fits usize");
         let pitch = width.checked_mul(4).expect("native pitch fits usize");
@@ -4182,7 +4190,8 @@ mod tests {
     #[test]
     #[ignore = "explicit native-4K shared-coarse fine diagnostic"]
     fn native_4k_shared_coarse_damage_pixels_are_exact() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let width = usize::try_from(WIDTH).expect("native width fits usize");
         let height = usize::try_from(HEIGHT).expect("native height fits usize");
         let pitch = width.checked_mul(4).expect("native pitch fits usize");
@@ -4243,7 +4252,8 @@ mod tests {
     #[test]
     #[ignore = "explicit native-4K dense repeatability diagnostic"]
     fn native_4k_dense_oracle_is_repeatable_within_and_across_contexts() {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let mut repeatability = DenseRepeatabilityHarness::new();
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
@@ -4584,7 +4594,8 @@ mod tests {
         let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("geometry bridge");
         let mut full = vec![0_u8; len];
         let mut sparse = vec![0_u8; len];
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let mut document = AutoCommit::new();
         let modifiers = Modifiers::default();
         let mut focus: Option<NodeId> = None;
@@ -6255,7 +6266,8 @@ mod tests {
     }
 
     fn fixed_quick_settings_pose_candidate(permille: u16) -> shell::compositor::frame::FramePaint {
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark())
+            .expect("explicit populated shell fixture");
         let _closed_baseline = frame.paint_with_damage();
         let _settled_closed_baseline = frame.paint_with_damage();
         assert!(
