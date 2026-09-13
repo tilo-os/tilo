@@ -344,12 +344,7 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     assert_legacy_and_segmented_match(&mut frame, "workspace root rebuild", false);
 }
 
-#[test]
-fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
-    let guard = DenyAmbientStarts::new();
-    let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
-    let initial_scene = fixture.paint();
-    assert!(!initial_scene.encoding().is_empty());
+fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
@@ -421,9 +416,9 @@ fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
         .map(|record| record.id.to_string())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(actual_records, expected_records);
-    drop(tree);
-    drop(chrome);
+}
 
+fn assert_owned_files_fixture(fixture: &PopulatedShellFixture) {
     let mut fixture_children = std::fs::read_dir(fixture.parent.path())
         .expect("fixture parent remains owned")
         .collect::<Result<Vec<_>, _>>()
@@ -437,7 +432,9 @@ fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
         std::fs::read(child.join("Welcome.txt")).expect("fixture Welcome.txt"),
         b"Shell capture fixture\n"
     );
+}
 
+fn assert_populated_control_targets(fixture: &PopulatedShellFixture) {
     for target in ["topbar_tray_pill", "topbar_overview_button"] {
         assert!(
             fixture
@@ -447,6 +444,18 @@ fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
             "{target} remains an actual painted control"
         );
     }
+}
+
+#[test]
+fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
+    let guard = DenyAmbientStarts::new();
+    let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    let initial_scene = fixture.paint();
+    assert!(!initial_scene.encoding().is_empty());
+    assert_populated_tree_inventory(&fixture);
+    assert_owned_files_fixture(&fixture);
+    assert_populated_control_targets(&fixture);
+
     let mut document = AutoCommit::new();
     let mut focus = None;
     let open_qs = dispatch_populated_fixture_click(
