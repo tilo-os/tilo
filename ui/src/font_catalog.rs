@@ -72,6 +72,27 @@ pub fn catalog_manifest_sha256() -> String {
     hex::encode(Sha256::digest(MANIFEST.as_bytes()))
 }
 
+#[cfg(test)]
+pub(crate) fn fixture_catalog() -> FontCatalog {
+    FontCatalog::controlled_fixture(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        "en-US",
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_font_system() -> FontSystem {
+    fixture_catalog()
+        .load()
+        .expect("checked-in canonical font fixture")
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
+    crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
+        .expect("checked-in canonical renderer fixture")
+}
+
 impl FontCatalog {
     pub fn product(root: impl Into<PathBuf>, locale: impl Into<String>) -> Self {
         Self {

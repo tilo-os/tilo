@@ -87,6 +87,7 @@ struct Frame {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
+    adapter: String,
 }
 
 #[allow(
@@ -97,7 +98,7 @@ struct Frame {
               (at most a few thousand px, scale <= 1.5), always positive and well within f32's \
               exact-integer range and u32's range"
 )]
-fn render(case: Case) -> Option<Frame> {
+fn render(case: Case) -> Frame {
     let theme = if case.light {
         Theme::light()
     } else {
@@ -108,7 +109,12 @@ fn render(case: Case) -> Option<Frame> {
     let mut state = State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let mut text_renderer = TextRenderer::new();
+    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        "en-US",
+    );
+    let mut text_renderer =
+        TextRenderer::with_font_catalog(&catalog).expect("checked-in typography font catalog");
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = widget.build_layout(&mut taffy, &theme, &mut node_map);
@@ -145,21 +151,18 @@ fn render(case: Case) -> Option<Frame> {
     );
     let width = (f64::from(LOGICAL_WIDTH) * case.display_scale).round() as u32;
     let height = (f64::from(logical_height) * case.display_scale).round() as u32;
-    let mut renderer = match OffscreenRenderer::try_new(width, height) {
-        Ok(renderer) => renderer,
-        Err(error) => {
-            eprintln!("offscreen: {error} — skipping typography visual regression");
-            return None;
-        }
-    };
-    Some(Frame {
+    let mut renderer = OffscreenRenderer::try_new(width, height)
+        .expect("typography golden qualification requires an actual offscreen adapter");
+    let adapter = format!("{:?}", renderer.adapter_info());
+    Frame {
         width,
         height,
         // Golden generation and comparison must use the renderer's canonical
         // one-shot path. It retries glyph-atlas/bump warm-up internally;
         // `render` can return a partial first frame even without overflow.
         rgba: renderer.render_resilient(&scene, theme.bg_app),
-    })
+        adapter,
+    }
 }
 
 fn write_png(path: &Path, frame: &Frame) {
@@ -196,6 +199,7 @@ fn read_png(path: &Path) -> Frame {
         width: info.width,
         height: info.height,
         rgba: bytes,
+        adapter: String::new(),
     }
 }
 
@@ -216,7 +220,40 @@ fn diagnostic_diff(actual: &Frame, expected: &Frame) -> Frame {
         width: actual.width,
         height: actual.height,
         rgba,
+        adapter: actual.adapter.clone(),
     }
+}
+
+fn record_evidence(case: Case, frame: &Frame) {
+    let Some(directory) = std::env::var_os("QOS_TYPOGRAPHY_EVIDENCE_DIR") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).expect("create typography evidence directory");
+    write_png(&directory.join(format!("{}-actual.png", case.name)), frame);
+    let receipt = serde_json::json!({
+        "case": case.name,
+        "width": frame.width,
+        "height": frame.height,
+        "logical_width": LOGICAL_WIDTH,
+        "display_scale": case.display_scale,
+        "text_scale": case.text_scale,
+        "light": case.light,
+        "font_manifest_sha256": ui::font_catalog::catalog_manifest_sha256(),
+        "font_scope": "controlled-product-and-fixtures",
+        "font_locale": "en-US",
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "adapter": frame.adapter,
+        "wgpu_backend_request": std::env::var("WGPU_BACKEND").ok(),
+        "vulkan_driver_files_request": std::env::var("VK_DRIVER_FILES").ok(),
+        "vulkan_legacy_icd_request": std::env::var("VK_ICD_FILENAMES").ok(),
+    });
+    std::fs::write(
+        directory.join(format!("{}-receipt.json", case.name)),
+        serde_json::to_vec_pretty(&receipt).expect("serialize typography receipt"),
+    )
+    .expect("write typography receipt");
 }
 
 #[test]
@@ -227,9 +264,8 @@ fn multilingual_gallery_matches_scale_matrix() {
     let mut failures = Vec::new();
 
     for &case in CASES {
-        let Some(actual) = render(case) else {
-            return;
-        };
+        let actual = render(case);
+        record_evidence(case, &actual);
         let baseline = baseline_dir.join(format!("{}.png", case.name));
         if update {
             write_png(&baseline, &actual);
