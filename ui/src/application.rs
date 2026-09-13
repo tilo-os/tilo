@@ -218,8 +218,32 @@ impl ApplicationDefinition {
     /// or second history/autosave initialization follows its View restoration.
     ///
     /// # Errors
-    /// Ready records survive factory/restore failure through `ComponentSetup`'s strong owner.
+    /// Ready records survive any checked validation or setup failure through
+    /// `ComponentSetup`'s strong owner; Reserved failures cancel without publication.
     pub fn instantiate(
+        &self,
+        context: HostContext,
+        target: LaunchTarget,
+        restore: RestoreInput,
+    ) -> Result<AppComponent, LaunchError> {
+        let records = context.records.clone();
+        let record = context.record.clone();
+        let result = self.instantiate_checked(context, target, restore);
+
+        result.map_err(|source| {
+            if records.is_ready(&record.id) {
+                LaunchError::ComponentSetup {
+                    source: Box::new(source),
+                    record,
+                    records,
+                }
+            } else {
+                source
+            }
+        })
+    }
+
+    fn instantiate_checked(
         &self,
         context: HostContext,
         target: LaunchTarget,
@@ -274,17 +298,7 @@ impl ApplicationDefinition {
             Ok(component)
         });
         drop(entry);
-        result.map_err(|source| {
-            if records.is_ready(&record.id) {
-                LaunchError::ComponentSetup {
-                    source: Box::new(source),
-                    record,
-                    records,
-                }
-            } else {
-                source
-            }
-        })
+        result
     }
 }
 
@@ -399,29 +413,25 @@ impl AppComponent {
             report.record_error = Some(error);
             report.record_retry = Some(self.context.records.clone());
         }
-        report.teardown_error = self.teardown();
+        self.teardown();
         self.close_report = Some(report.clone());
         report
     }
     pub fn close_report(&self) -> Option<&ComponentCloseReport> {
         self.close_report.as_ref()
     }
-    fn teardown(&mut self) -> Option<String> {
+    fn teardown(&mut self) {
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
         let root = self.root.take();
         let registry = self.registry.take();
-        let root_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(root)));
-        let registry_result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(registry)));
-        (root_result.is_err() || registry_result.is_err())
-            .then(|| "component teardown panicked".into())
+        drop_component_owned(root, registry);
     }
 }
 impl Drop for AppComponent {
     fn drop(&mut self) {
         // Failed setup must not save a supplied bad View over the persisted envelope.
-        let _ = self.teardown();
+        self.teardown();
     }
 }
 #[derive(Clone)]
@@ -431,6 +441,7 @@ pub struct ComponentCloseReport {
     pub view_retry: Option<Rc<InstanceViewStore>>,
     pub record_error: Option<String>,
     pub record_retry: Option<RecordStore>,
+    /// Reserved for fallible lifecycle results. Arbitrary app panics propagate.
     pub teardown_error: Option<String>,
 }
 impl ComponentCloseReport {
@@ -479,5 +490,75 @@ impl ApplicationCatalog {
             .get(app_id)
             .copied()
             .ok_or_else(|| LaunchError::UnknownApplication(app_id.into()))
+    }
+}
+
+// The tuple owns both captures before either Drop begins. Rust's field cleanup
+// drops the registry even if the root panics, then propagates the original unwind.
+// The caller keeps its closed-scope guard alive throughout this cleanup.
+fn drop_component_owned<R, C>(root: R, registry: C) {
+    drop((root, registry));
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    // Name, previously captured handle activity, and activity captured during Drop.
+    type DropObservation = (&'static str, bool, bool);
+
+    struct DropProbe {
+        name: &'static str,
+        panics: bool,
+        handle: WakeHandle,
+        observations: Rc<RefCell<Vec<DropObservation>>>,
+    }
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.observations.borrow_mut().push((
+                self.name,
+                self.handle.is_active(),
+                WakeHandle::new().is_active(),
+            ));
+            if self.panics {
+                std::panic::panic_any(self.name);
+            }
+        }
+    }
+    fn assert_closed_cleanup(panicking: &'static str) {
+        let mut scope = WakeScope::new();
+        let observations = Rc::new(RefCell::new(Vec::new()));
+        let root = DropProbe {
+            name: "root",
+            panics: panicking == "root",
+            handle: scope.handle(),
+            observations: observations.clone(),
+        };
+        let registry = DropProbe {
+            name: "registry",
+            panics: panicking == "registry",
+            handle: scope.handle(),
+            observations: observations.clone(),
+        };
+        scope.close();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _entry = scope.enter();
+            drop_component_owned(root, registry);
+        }));
+        let payload =
+            result.expect_err("owned cleanup must propagate the original destructor panic");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&panicking));
+        assert_eq!(
+            *observations.borrow(),
+            vec![("root", false, false), ("registry", false, false)]
+        );
+    }
+    #[test]
+    fn root_panic_still_drops_registry_under_closed_scope_and_propagates() {
+        assert_closed_cleanup("root");
+    }
+    #[test]
+    fn registry_panic_propagates_after_both_closed_scope_drops() {
+        assert_closed_cleanup("registry");
     }
 }
