@@ -733,7 +733,9 @@ impl FileExplorerWidget {
         Self::with_inputs(config_dir, home, user_dirs, None, FileServices::Legacy)
     }
 
-    /// Build the real widget from host-supplied startup data, without ambient discovery.
+    /// Build with host-supplied startup data and legacy thumbnail/opener services.
+    /// Use [`Self::with_startup_inputs_and_services`] to supply services explicitly,
+    /// including their absence.
     pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
         Self::with_inputs(
             None,
