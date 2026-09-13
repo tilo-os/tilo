@@ -409,12 +409,14 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
         .iter()
         .map(|tab| ui::record::RecordId::for_tab(tab.id).to_string())
         .collect::<std::collections::BTreeSet<_>>();
+    drop(tree);
     let actual_records = chrome
         .records()
         .open_records()
         .into_iter()
         .map(|record| record.id.to_string())
         .collect::<std::collections::BTreeSet<_>>();
+    drop(chrome);
     assert_eq!(actual_records, expected_records);
 }
 
