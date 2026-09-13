@@ -287,6 +287,25 @@ struct Binding {
 }
 
 impl Binding {
+    fn follow_checked(
+        &mut self,
+        want: Option<RecordCheckout>,
+    ) -> Result<RecordId, crate::record::RecordOpenError> {
+        let requested = want
+            .as_ref()
+            .or_else(|| (self.live == self.tab.id).then_some(&self.tab));
+        if let Some(requested) = requested {
+            self.store.open_record_checked(requested)?;
+        }
+        if let Some(want) = want
+            && want.id != self.live
+        {
+            self.live = want.id;
+            self.established = false;
+        }
+        Ok(self.live.clone())
+    }
+
     fn follow(&mut self, want: Option<RecordCheckout>) -> RecordId {
         if let Some(want) = want
             && want.id != self.live
@@ -732,12 +751,40 @@ impl Widget for TileHost {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        match &mut self.content {
-            TileContent::App(app) => app.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            ),
-            _ => Ok(None),
+        if !matches!(&self.content, TileContent::App(_)) {
+            return Ok(None);
         }
+        // Resolve a requested legacy binding before exposing any document.
+        // Failure must not advance/announce its scope or fall back to the host.
+        let live = match &mut self.binding {
+            Some(binding) => {
+                let want = match &self.content {
+                    TileContent::App(app) => app.record_intent(),
+                    _ => None,
+                };
+                Some(
+                    binding
+                        .follow_checked(want)
+                        .map_err(|error| error.to_string())?,
+                )
+            }
+            None => None,
+        };
+        self.announce_scope();
+        let TileContent::App(app) = &mut self.content else {
+            return Ok(None);
+        };
+        if let (Some(live), Some(binding)) = (live, &self.binding) {
+            return binding
+                .store
+                .with_checked(&live, |document| {
+                    app.start_resource_operation_with_document(
+                        invocation, kind, type_id, payload, document, &ROOT,
+                    )
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        app.start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
     }
 
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
