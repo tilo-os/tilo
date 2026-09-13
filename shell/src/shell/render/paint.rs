@@ -82,28 +82,6 @@ static NEXT_XRGB_HISTORY_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// presenting incomplete geometry as a successful frame.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
 
-// Temporary fence/profile correlation; unavailable to production and macOS builds.
-#[cfg(all(test, target_os = "linux"))]
-fn diagnostic_monotonic_ns() -> Result<u64, &'static str> {
-    let mut timestamp = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: timestamp is a valid writable timespec; CLOCK_MONOTONIC needs no other inputs.
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut timestamp) } != 0 {
-        return Err("clock_gettime_failed");
-    }
-    let seconds = u64::try_from(timestamp.tv_sec).map_err(|_| "invalid_seconds")?;
-    let nanos = u64::try_from(timestamp.tv_nsec).map_err(|_| "invalid_nanoseconds")?;
-    if nanos >= 1_000_000_000 {
-        return Err("invalid_nanoseconds");
-    }
-    seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanos))
-        .ok_or("nanoseconds_overflow")
-}
-
 /// Identity of the adapter actually opened by this bridge. This comes from the wgpu adapter
 /// that owns the renderer, rather than from a separate GL probe.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -829,26 +807,10 @@ impl RetainedGpuTarget {
         let result = (|| {
             #[cfg(test)]
             self.before_wait(WaitPhase::Fence, LINUX_FENCE_WAIT)?;
-            #[cfg(all(test, target_os = "linux"))]
-            let fence_start_ns = diagnostic_monotonic_ns();
             let waited = self.device.poll(wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: Some(LINUX_FENCE_WAIT),
             });
-            #[cfg(all(test, target_os = "linux"))]
-            {
-                use std::io::Write as _;
-                let fence_end_ns = diagnostic_monotonic_ns();
-                // SAFETY: Linux gettid has no arguments or memory preconditions.
-                let tid = unsafe { libc::gettid() };
-                // Emit after the end timestamp; diagnostic I/O failure must not alter rendering.
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "QOS_FENCE_DIAG start_ns={fence_start_ns:?} end_ns={fence_end_ns:?} pid={} tid={tid} attempt={} poll={waited:?}",
-                    std::process::id(),
-                    self.last_render_attempts,
-                );
-            }
             self.check_health()?;
             waited.map_err(|error| {
                 BridgeError::Map(format!("LinuxPerPhase fence wait: {error:?}"))
