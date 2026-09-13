@@ -205,7 +205,10 @@ fn known_collaborator<'a>(
 }
 
 pub fn room_people(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomPerson> {
-    let me = local_user_id();
+    room_people_with_local_user(ws, tree, &local_user_id())
+}
+
+fn room_people_with_local_user(ws: &Workspace, tree: &WorkspaceTree, me: &str) -> Vec<RoomPerson> {
     ws.roster()
         .into_iter()
         .map(|(id, role)| {
@@ -277,21 +280,25 @@ pub fn room_shares(ws: &Workspace, tree: &WorkspaceTree) -> Vec<RoomShare> {
 }
 
 pub fn room_cards(tree: &WorkspaceTree) -> Vec<RoomCard> {
+    room_cards_with_local_user(tree, &local_user_id())
+}
+
+pub(crate) fn room_cards_with_local_user(tree: &WorkspaceTree, local: &str) -> Vec<RoomCard> {
     tree.workspaces
         .iter()
         .map(|ws| RoomCard {
             id: ws.id,
             name: ws.name.clone(),
             is_current: ws.id == tree.active,
-            people: room_people(ws, tree),
+            people: room_people_with_local_user(ws, tree, local),
             shares: room_shares(ws, tree),
-            strips: overview_strips(ws, tree),
+            strips: overview_strips(ws, tree, local),
         })
         .collect()
 }
 
-fn overview_strips(ws: &Workspace, tree: &WorkspaceTree) -> Vec<OverviewStrip> {
-    let people = room_people(ws, tree);
+fn overview_strips(ws: &Workspace, tree: &WorkspaceTree, local: &str) -> Vec<OverviewStrip> {
+    let people = room_people_with_local_user(ws, tree, local);
     let active_strip = tree.active_strip.get(&ws.id).copied();
     ws.strips
         .iter()
