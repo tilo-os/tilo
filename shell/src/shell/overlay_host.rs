@@ -1781,7 +1781,9 @@ impl ShellOverlayHost {
                 ),
                 qs_refresh: crate::shell::qs_refresh::QsRefresh::without_os_reads(),
                 qs_actions: Box::new(crate::shell::qs_actions::UnavailableQsActions),
-                room_activity: crate::shell::room_activity::RoomActivityPane::new(),
+                room_activity: crate::shell::room_activity::RoomActivityPane::with_local_user(
+                    "shell-fixture".into(),
+                ),
                 history_narrator: None,
                 portal_dialogs: PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
@@ -7111,7 +7113,14 @@ impl ShellOverlayHost {
     /// for one set of rooms and painted with another.
     fn overview_cards(&self) -> Vec<crate::shell::overview::RoomCard> {
         match self.chrome.as_ref() {
-            Some(c) => crate::shell::overview::room_cards(&c.borrow().tree()),
+            Some(c) => {
+                let state = c.borrow();
+                let tree = state.tree();
+                state.explicit_local_user().map_or_else(
+                    || crate::shell::overview::room_cards(&tree),
+                    |local| crate::shell::overview::room_cards_with_local_user(&tree, local),
+                )
+            }
             None => Vec::new(),
         }
     }
@@ -13979,7 +13988,15 @@ impl ShellOverlayHost {
                 let state = c.borrow();
                 let tree = state.tree();
                 match tree.workspaces.get(idx) {
-                    Some(ws) => crate::shell::state::roster_colors(&ws.collaborators),
+                    Some(ws) => state.explicit_local_user().map_or_else(
+                        || crate::shell::state::roster_colors(&ws.collaborators),
+                        |local| {
+                            crate::shell::state::roster_colors_with_local_user(
+                                &ws.collaborators,
+                                local,
+                            )
+                        },
+                    ),
                     None => std::collections::HashMap::default(),
                 }
             }
@@ -15142,7 +15159,10 @@ impl ShellOverlayHost {
         // Settle colours over the whole room (including the local user)
         // before filtering to what's on screen, so every host computes
         // the same assignment and a person is one colour everywhere.
-        let local = crate::shell::state::local_user_id();
+        let local = chrome_rc
+            .borrow()
+            .explicit_local_user()
+            .map_or_else(crate::shell::state::local_user_id, str::to_owned);
         let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
         room_ids.push(local.as_str());
         let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
