@@ -27,7 +27,7 @@
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
@@ -66,6 +66,7 @@ const PROVIDER_HIT_BUDGET: usize = 32;
 /// Diagnostics for one bounded progressive-search step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SearchAdvance {
+    /// Query candidates or retained authorization rows checked in this step.
     pub inspected: usize,
     pub added: usize,
     pub pending: bool,
@@ -162,6 +163,13 @@ impl PendingOperation {
     }
 }
 
+/// Retained display validation belongs to the provider that produced the row.
+/// None hides the row until its finite queued check completes.
+struct ProviderRowValidation {
+    provider: usize,
+    permissions: Option<crate::permissions::PermissionContext>,
+}
+
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
 /// fed by the focused app's resource/action tree plus any folded-in
 /// [`SearchProvider`]s.
@@ -174,6 +182,8 @@ pub struct ActionPalette {
     action_rows: Vec<SearchResult>,
     provider_rows: Vec<SearchResult>,
     provider_index: HashMap<String, RowResolution>,
+    provider_validation: HashMap<String, ProviderRowValidation>,
+    validation_queue: VecDeque<String>,
     /// The focused instance's open resources (their exported actions are rows).
     resources: Vec<Resource>,
     bound_resources: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
@@ -232,6 +242,8 @@ impl ActionPalette {
             action_rows: Vec::new(),
             provider_rows: Vec::new(),
             provider_index: HashMap::new(),
+            provider_validation: HashMap::new(),
+            validation_queue: VecDeque::new(),
             resources: Vec::new(),
             bound_resources: Vec::new(),
             providers: Vec::new(),
@@ -380,11 +392,28 @@ impl ActionPalette {
         self.results.is_empty()
     }
 
-    /// Advance at most one provider by one bounded page. The host calls this
-    /// once per redraw while `pending` is true, so a large corpus remains
-    /// responsive while exact matches eventually become visible.
+    /// Advance one bounded query page or one finite retained-validation step.
+    /// A completed-query external redraw may start a fresh validation pass;
+    /// its final step returns pending=false so it never schedules another pass.
     pub fn advance_search_page(&mut self) -> SearchAdvance {
-        self.prune_denied_bound_provider_rows();
+        // Prompt/confirmation owns the empty result surface. Preserve any
+        // partial pass until the existing exit/open rebuild restarts search.
+        if self.in_argument_mode() {
+            return SearchAdvance {
+                generation: self.search_generation,
+                ..SearchAdvance::default()
+            };
+        }
+        if self.validation_queue.is_empty() && self.provider_complete.iter().all(|done| *done) {
+            for (key, validation) in &mut self.provider_validation {
+                validation.permissions = None;
+                self.validation_queue.push_back(key.clone());
+            }
+        }
+        self.queue_stale_provider_rows();
+        if !self.validation_queue.is_empty() {
+            return self.validate_provider_rows();
+        }
         let generation = self.search_generation;
         let provider_count = self.providers.len();
         if provider_count == 0 || self.provider_complete.iter().all(|done| *done) {
@@ -430,19 +459,7 @@ impl ActionPalette {
             PROVIDER_HIT_BUDGET,
             PROVIDER_HIT_BUDGET,
         );
-        let results = page
-            .results
-            .into_iter()
-            .filter(|hit| {
-                binding.as_ref().is_none_or(|binding| {
-                    self.bound_provider_hit_allowed(
-                        provider.as_ref(),
-                        binding,
-                        hit.action_address().as_ref(),
-                    )
-                })
-            })
-            .collect();
+        let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), page.results);
         let complete = page.next.is_none();
         if let Some(slot) = self.provider_cursors.get_mut(provider_index) {
             *slot = page.next;
@@ -452,9 +469,11 @@ impl ActionPalette {
         }
 
         let inspected = page.inspected;
-        let added = self.merge_provider_page(results, binding.as_ref());
+        let added = self.merge_provider_page(results, binding.as_ref(), provider_index);
+        self.queue_stale_provider_rows();
         self.refresh_progressive_results();
-        let pending = self.provider_complete.iter().any(|done| !*done);
+        let pending =
+            !self.validation_queue.is_empty() || self.provider_complete.iter().any(|done| !*done);
         self.results.set_empty_text(if pending {
             "Searching…"
         } else {
@@ -516,44 +535,135 @@ impl ActionPalette {
             .is_some_and(|resource| qos_actions::door::resolve(&[resource], address).is_some())
     }
 
-    fn prune_denied_bound_provider_rows(&mut self) {
-        let denied = self
-            .provider_index
-            .iter()
-            .filter_map(|(key, resolution)| {
-                let (binding, address) = match resolution {
-                    RowResolution::Bound(target) => {
-                        (&target.binding, Some(&target.address.address))
-                    }
-                    RowResolution::Navigate(_, Some(binding)) => (binding, None),
-                    _ => return None,
+    fn checked_provider_hits(
+        &self,
+        provider: &dyn SearchProvider,
+        binding: Option<&crate::bound_dispatch::CallbackBinding>,
+        hits: Vec<SearchResult>,
+    ) -> Vec<(SearchResult, Option<crate::permissions::PermissionContext>)> {
+        hits.into_iter()
+            .filter_map(|hit| {
+                let Some(binding) = binding else {
+                    return Some((hit, None));
                 };
-                let allowed = self
-                    .providers
-                    .iter()
-                    .filter(|provider| {
-                        provider
-                            .callback_binding()
-                            .is_some_and(|owner| owner.same_component(binding))
-                    })
-                    .any(|provider| {
-                        self.bound_provider_hit_allowed(provider.as_ref(), binding, address)
-                    });
-                (!allowed).then(|| key.clone())
+                let permissions = binding.permissions.borrow().clone();
+                (self.bound_provider_hit_allowed(provider, binding, hit.action_address().as_ref())
+                    && permissions == *binding.permissions.borrow())
+                .then_some((hit, Some(permissions)))
             })
-            .collect::<std::collections::HashSet<_>>();
-        if !denied.is_empty() {
-            self.provider_rows
-                .retain(|row| !denied.contains(&row.action_id));
-            self.provider_index.retain(|key, _| !denied.contains(key));
-            self.refresh_progressive_results();
+            .collect()
+    }
+
+    fn provider_row_binding(
+        &self,
+        key: &str,
+    ) -> Option<(
+        &crate::bound_dispatch::CallbackBinding,
+        Option<&qos_actions::ActionAddress>,
+    )> {
+        match self.provider_index.get(key)? {
+            RowResolution::Bound(target) => Some((&target.binding, Some(&target.address.address))),
+            RowResolution::Navigate(_, Some(binding)) => Some((binding, None)),
+            _ => None,
+        }
+    }
+
+    fn provider_row_is_current(&self, key: &str) -> bool {
+        let Some(validation) = self.provider_validation.get(key) else {
+            return true;
+        };
+        self.provider_row_binding(key).is_some_and(|(binding, _)| {
+            !binding.closing.get()
+                && binding.lifetime.is_active()
+                && validation
+                    .permissions
+                    .as_ref()
+                    .is_some_and(|permissions| *permissions == *binding.permissions.borrow())
+        })
+    }
+
+    fn queue_stale_provider_rows(&mut self) {
+        let stale = self
+            .provider_validation
+            .iter()
+            .filter(|(key, validation)| {
+                validation.permissions.is_some() && !self.provider_row_is_current(key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            if let Some(validation) = self.provider_validation.get_mut(&key) {
+                validation.permissions = None;
+                self.validation_queue.push_back(key);
+            }
+        }
+    }
+
+    fn validate_provider_rows(&mut self) -> SearchAdvance {
+        let before = self.results.len();
+        let mut inspected = 0usize;
+        let mut denied = std::collections::HashSet::new();
+        for _ in 0..PROVIDER_HIT_BUDGET {
+            let Some(key) = self.validation_queue.pop_front() else {
+                break;
+            };
+            let Some(validation) = self.provider_validation.get(&key) else {
+                continue;
+            };
+            inspected = inspected.saturating_add(1);
+            let allowed = self
+                .provider_row_binding(&key)
+                .and_then(|(binding, address)| {
+                    let permissions = binding.permissions.borrow().clone();
+                    let provider = self.providers.get(validation.provider)?;
+                    (self.bound_provider_hit_allowed(provider.as_ref(), binding, address)
+                        && permissions == *binding.permissions.borrow()
+                        && !binding.closing.get()
+                        && binding.lifetime.is_active())
+                    .then_some(permissions)
+                });
+            if let Some(permissions) = allowed {
+                if let Some(validation) = self.provider_validation.get_mut(&key) {
+                    validation.permissions = Some(permissions);
+                }
+            } else {
+                denied.insert(key);
+            }
+        }
+        self.provider_rows
+            .retain(|row| !denied.contains(&row.action_id));
+        self.provider_index.retain(|key, _| !denied.contains(key));
+        self.provider_validation
+            .retain(|key, _| !denied.contains(key));
+        // A callback may revoke an owner checked earlier in this same pass.
+        // Hide those rows now and enqueue each only on Some -> None transition.
+        self.queue_stale_provider_rows();
+        self.refresh_progressive_results();
+        let pending =
+            !self.validation_queue.is_empty() || self.provider_complete.iter().any(|done| !*done);
+        self.results.set_empty_text(if pending {
+            "Searching…"
+        } else {
+            "No matches"
+        });
+        self.search_announcement = Some(format!(
+            "{} results{}",
+            self.results.len(),
+            if pending { ", still searching" } else { "" }
+        ));
+        SearchAdvance {
+            inspected,
+            added: self.results.len().saturating_sub(before),
+            pending,
+            generation: self.search_generation,
         }
     }
 
     fn merge_provider_page(
         &mut self,
-        results: Vec<SearchResult>,
+        results: Vec<(SearchResult, Option<crate::permissions::PermissionContext>)>,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
+        provider: usize,
     ) -> usize {
         let before = self.provider_rows.len();
         let mut known = self
@@ -561,7 +671,7 @@ impl ActionPalette {
             .iter()
             .map(|row| row.action_id.clone())
             .collect::<std::collections::HashSet<_>>();
-        for hit in results {
+        for (hit, permissions) in results {
             let row_id = binding.map_or_else(
                 || format!("{NAV_PREFIX}{}", hit.action_id),
                 |binding| format!("{NAV_PREFIX}{}:{}", binding.lifetime_id, hit.action_id),
@@ -594,6 +704,15 @@ impl ActionPalette {
                 continue;
             };
             self.provider_index.insert(row_id.clone(), resolution);
+            if permissions.is_some() {
+                self.provider_validation.insert(
+                    row_id.clone(),
+                    ProviderRowValidation {
+                        provider,
+                        permissions,
+                    },
+                );
+            }
             let mut row = SearchResult::new(hit.kind, hit.title, row_id).with_score(hit.score);
             if let Some(subtitle) = hit.subtitle {
                 row = row.with_subtitle(subtitle);
@@ -603,9 +722,8 @@ impl ActionPalette {
             }
             self.provider_rows.push(row);
         }
-        // Retain only what can be displayed. Later pages are merged and
-        // reranked, so a stronger late exact hit displaces a broad early hit
-        // without memory growing with the corpus.
+        // Retain display candidates per kind. The number of kinds is not
+        // capped; retained authorization work is bounded separately.
         self.provider_rows =
             rank_and_group(&self.search_query, std::mem::take(&mut self.provider_rows))
                 .into_iter()
@@ -617,6 +735,8 @@ impl ActionPalette {
             .map(|row| row.action_id.as_str())
             .collect::<std::collections::HashSet<_>>();
         self.provider_index
+            .retain(|row_id, _| retained.contains(row_id.as_str()));
+        self.provider_validation
             .retain(|row_id, _| retained.contains(row_id.as_str()));
         self.provider_rows.len().saturating_sub(before)
     }
@@ -999,6 +1119,8 @@ impl ActionPalette {
         self.base_index = index;
         self.provider_rows.clear();
         self.provider_index.clear();
+        self.provider_validation.clear();
+        self.validation_queue.clear();
         self.provider_cursors = vec![None; self.providers.len()];
         self.provider_complete = vec![false; self.providers.len()];
         self.next_provider = 0;
@@ -1015,7 +1137,12 @@ impl ActionPalette {
 
     fn refresh_progressive_results(&mut self) {
         let mut rows = self.action_rows.clone();
-        rows.extend(self.provider_rows.iter().cloned());
+        rows.extend(
+            self.provider_rows
+                .iter()
+                .filter(|row| self.provider_row_is_current(&row.action_id))
+                .cloned(),
+        );
         let groups = rank_and_group(&self.search_query, rows);
         let mut index = self.base_index.clone();
         for row in groups.iter().flat_map(|group| &group.results) {

@@ -13363,6 +13363,73 @@ mod bound_component_tests {
     thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
     thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
     thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
+    thread_local! {
+        static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
+    }
+    struct PagedProbe {
+        catalog: crate::search::SearchCatalog,
+        resolutions: Rc<[Cell<usize>; 2]>,
+        owner: usize,
+    }
+    impl PagedProbe {
+        fn new(strict: bool, resolutions: Rc<[Cell<usize>; 2]>) -> Self {
+            let catalog = crate::search::SearchCatalog::new("Bound paging probe");
+            for id in 0..65 {
+                let resource = format!("bound:paged:{id}");
+                catalog
+                    .upsert(
+                        &resource,
+                        "paged",
+                        crate::search::SearchResult::for_action(
+                            format!("Paged kind {id}"),
+                            format!("{} paged {id}", if strict { "Allowed" } else { "Revoked" }),
+                            qos_actions::ActionAddress::new(&resource, "apply"),
+                        ),
+                    )
+                    .unwrap();
+            }
+            Self {
+                catalog,
+                resolutions,
+                owner: usize::from(strict),
+            }
+        }
+    }
+    impl crate::search::SearchProvider for PagedProbe {
+        fn name(&self) -> &'static str {
+            "Bound paging probe"
+        }
+        fn search(&self, _: &str) -> Vec<crate::search::SearchResult> {
+            panic!("the controlled paging fixture must use search_page")
+        }
+        fn search_page(
+            &self,
+            query: &str,
+            cursor: Option<&crate::search::SearchCursor>,
+            work_budget: usize,
+            result_limit: usize,
+        ) -> crate::search::SearchPage {
+            self.catalog
+                .query_page(query, cursor, work_budget, result_limit)
+        }
+        // Deliberately inherit unknown generation: validation cannot cache a
+        // claim that this provider's authorization declarations are stable.
+        fn resolve_action_resource(
+            &self,
+            address: &qos_actions::ActionAddress,
+        ) -> Option<qos_actions::Resource> {
+            let counter = &self.resolutions[self.owner];
+            counter.set(counter.get().saturating_add(1));
+            address.resource.strip_prefix("bound:paged:")?;
+            (address.action == "apply").then(|| {
+                qos_actions::Resource::new(&address.resource, "probe", "Paged").with_action(
+                    qos_actions::ActionSpec::immediate("apply", "Apply", "bound.apply", &FollowUp)
+                        .unwrap()
+                        .requiring(qos_actions::PermissionRequirement::Write),
+                )
+            })
+        }
+    }
     #[derive(Default)]
     struct Probe {
         strict: bool,
@@ -13487,6 +13554,9 @@ mod bound_component_tests {
         }
 
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            if let Some(counts) = PAGED_SEARCH_COUNTS.with_borrow(Clone::clone) {
+                return vec![Box::new(PagedProbe::new(self.strict, counts))];
+            }
             vec![Box::new(LazyProbe {
                 strict: self.strict,
             })]
@@ -14793,6 +14863,128 @@ mod bound_component_tests {
                     .is_none()
             );
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one controlled paging fixture covers completion, revocation and prompt pause"
+    )]
+    fn task4_completed_bound_search_validation_is_bounded() {
+        let mut fixture = ActionFixture::with_authority(false, true);
+        let confirmation = fixture.target(1, "follow-up");
+        let counts = Rc::new([Cell::new(0), Cell::new(0)]);
+        PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = Some(counts.clone()));
+        fixture.app.open_action_palette();
+        PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = None);
+        let palette = fixture.app.action_palette.as_mut().unwrap();
+        palette.set_query("paged");
+        let mut ticks = 0;
+        while palette.advance_search_page().pending {
+            ticks += 1;
+            assert!(ticks < 20, "initial bounded query must finish");
+        }
+        assert_eq!(palette.result_labels().len(), 130, "no total-kind clipping");
+        let step = |palette: &mut crate::action_palette::ActionPalette| {
+            for counter in counts.iter() {
+                counter.set(0);
+            }
+            let progress = palette.advance_search_page();
+            let callbacks: usize = counts.iter().map(Cell::get).sum();
+            assert!(
+                callbacks <= 32,
+                "{callbacks} resolver callbacks in one step"
+            );
+            assert!(progress.inspected <= 32);
+            assert!(callbacks <= progress.inspected, "unaccounted provider work");
+            progress
+        };
+        // A completed-query redraw starts at most one finite validation pass.
+        let mut progress = step(palette);
+        ticks = 0;
+        while progress.pending {
+            progress = step(palette);
+            ticks += 1;
+            assert!(
+                ticks < 20,
+                "completed validation must stop requesting redraws"
+            );
+        }
+        assert_eq!(palette.result_labels().len(), 130);
+        // Revoke during the next finite pass after this owner was visited;
+        // queue order must not make the already-validated-row oracle accidental.
+        ticks = 0;
+        loop {
+            assert!(step(palette).pending);
+            if counts[0].get() > 0 {
+                break;
+            }
+            ticks += 1;
+            assert!(ticks < 5, "the first owner must participate in this pass");
+        }
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        ticks = 0;
+        loop {
+            progress = step(palette);
+            assert!(
+                palette
+                    .result_labels()
+                    .iter()
+                    .all(|label| !label.starts_with("Revoked")),
+                "unchecked stale rows must remain hidden"
+            );
+            if !progress.pending {
+                break;
+            }
+            ticks += 1;
+            assert!(ticks < 20, "revocation validation must finish");
+        }
+        assert_eq!(palette.result_labels().len(), 65);
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .all(|label| label.starts_with("Allowed"))
+        );
+        // The existing strict owner's follow-up enters the real confirmation
+        // field. A partially drained validation pass must pause behind it.
+        palette.set_query("");
+        for tick in 0..20 {
+            if !palette.advance_search_page().pending {
+                break;
+            }
+            assert!(tick < 19, "reset query must complete");
+        }
+        assert!(step(palette).pending);
+        assert!(palette.activate_bound(&confirmation));
+        assert!(palette.in_argument_mode());
+        assert!(palette.result_labels().is_empty());
+        for _ in 0..2 {
+            let progress = step(palette);
+            assert_eq!(progress.inspected, 0);
+            assert!(!progress.pending);
+            assert!(palette.result_labels().is_empty());
+        }
+        palette.open();
+        for tick in 0..20 {
+            if !palette.advance_search_page().pending {
+                break;
+            }
+            assert!(tick < 19, "reset query must complete");
+        }
+        assert_eq!(
+            palette
+                .result_labels()
+                .iter()
+                .filter(|label| label.starts_with("Allowed"))
+                .count(),
+            65
+        );
     }
 
     #[test]
