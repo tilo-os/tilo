@@ -655,6 +655,55 @@ pub struct KeyEvent {
     pub(crate) platform_specific: platform_impl::KeyEventExtra,
 }
 
+impl KeyEvent {
+    /// Construct a complete synthetic key event for deterministic input
+    /// drivers. Every public field and available platform supplement is explicit.
+    #[doc(hidden)]
+    pub fn synthetic(
+        raw: RawKeyEvent,
+        logical_key: keyboard::Key,
+        text: Option<SmolStr>,
+        location: keyboard::KeyLocation,
+        repeat: bool,
+        text_with_all_modifiers: Option<SmolStr>,
+        key_without_modifiers: keyboard::Key,
+    ) -> Self {
+        #[cfg(any(
+            macos_platform,
+            x11_platform,
+            wayland_platform,
+            windows_platform,
+            orbital_platform,
+        ))]
+        let platform_specific =
+            platform_impl::KeyEventExtra { text_with_all_modifiers, key_without_modifiers };
+
+        #[cfg(any(android_platform, ios_platform))]
+        let platform_specific = {
+            drop(text_with_all_modifiers);
+            drop(key_without_modifiers);
+            platform_impl::KeyEventExtra {}
+        };
+
+        #[cfg(web_platform)]
+        let platform_specific = {
+            drop(text_with_all_modifiers);
+            drop(key_without_modifiers);
+            platform_impl::KeyEventExtra
+        };
+
+        Self {
+            physical_key: raw.physical_key,
+            logical_key,
+            text,
+            location,
+            state: raw.state,
+            repeat,
+            platform_specific,
+        }
+    }
+}
+
 /// Describes keyboard modifiers event.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Modifiers {
