@@ -1865,41 +1865,73 @@ impl FrameHarness {
         Ok(started)
     }
 
+    fn dispatch_bound_control(
+        &mut self,
+        target: crate::bound_dispatch::BoundActionTarget,
+        intent: &qos_actions::ControlInvocation,
+    ) {
+        let invocation = qos_actions::InvocationId::new();
+        match crate::bound_dispatch::invoke_resource_action(
+            self.root.as_mut(),
+            &mut self.state.doc,
+            &target,
+            self.action_transport.as_mut(),
+            None,
+            Some(&intent.arguments),
+            &self.author.0,
+            false,
+            false,
+            invocation,
+            None,
+        ) {
+            Ok(crate::widget::ResourceOperationStart::Accepted) => {
+                self.bound_invocations.insert(invocation, target);
+            }
+            Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
+            Err(error) => {
+                tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+            }
+        }
+    }
+
     fn dispatch_control_invocations(&mut self) {
         for (target, intent) in
             crate::bound_dispatch::drain_control_invocations(self.root.as_mut()).unwrap_or_default()
         {
-            let invocation = qos_actions::InvocationId::new();
-            match crate::bound_dispatch::invoke_resource_action(
-                self.root.as_mut(),
-                &mut self.state.doc,
-                &target,
-                self.action_transport.as_mut(),
-                None,
-                Some(&intent.arguments),
-                &self.author.0,
-                false,
-                false,
-                invocation,
-                None,
-            ) {
-                Ok(crate::widget::ResourceOperationStart::Accepted) => {
-                    self.bound_invocations.insert(invocation, target);
-                }
-                Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
-                Err(error) => tracing::warn!(%error, "headless: bound control refused"),
-            }
+            self.dispatch_bound_control(target, &intent);
         }
 
         while let Some(intent) = self.root.take_control_invocation() {
+            let selected = crate::bound_dispatch::discover_bound_resources(
+                self.root.as_ref(),
+                &self.state.doc,
+                Some(&intent.address),
+            )
+            .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
+            .and_then(|snapshots| {
+                crate::bound_dispatch::select_bound_target(&snapshots, &intent.address, None)
+            });
+            let target = match selected {
+                Ok(target) => target,
+                Err(error) => {
+                    tracing::warn!(code = error.code(), %error, "headless: control target refused");
+                    continue;
+                }
+            };
+            if let Some(target) = target {
+                self.dispatch_bound_control(target, &intent);
+                continue;
+            }
+            // The legacy executor may only consume declarations belonging to
+            // the outer document; bound targets were selected or refused above.
             let mut resources = Vec::new();
-            crate::widget::collect_widget_resources(
+            crate::bound_dispatch::collect_unbound_resources(
                 self.root.as_ref(),
                 &self.state.doc,
                 &mut resources,
             );
             if qos_actions::door::resolve(&resources, &intent.address).is_none()
-                && let Some(resource) = crate::widget::resolve_widget_resource(
+                && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
                     self.root.as_ref(),
                     &self.state.doc,
                     &intent.address.resource,
@@ -1956,7 +1988,9 @@ impl FrameHarness {
                     self.pending_control_invocations.insert(invocation);
                 }
                 Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
-                Err(error) => tracing::warn!(%error, "headless: control action refused"),
+                Err(error) => {
+                    tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                }
             }
         }
     }

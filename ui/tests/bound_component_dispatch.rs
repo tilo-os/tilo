@@ -2187,3 +2187,123 @@ fn task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner() {
         .unwrap();
     assert_eq!(driver.state_mut().doc.get_heads(), outer);
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one, two and zero authorized targets share the same control and outer-history oracle"
+)]
+fn task4_driver_unqualified_control_selects_or_refuses_bound_targets() {
+    use crate::support::application::{ProbeAction, action_probe_factory, author};
+    use automerge::ReadDoc;
+    #[derive(Clone)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for authorized in [1, 2, 0] {
+        let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = diagnostics.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || Capture(writer.clone()))
+            .finish();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let host = ProbeHost::new();
+        let definition = definition(action_probe_factory);
+        let mut column = ui::widget::Column::new();
+        let mut records = Vec::new();
+        for instance in 11..13 {
+            let allowed = instance < 11_u64.saturating_add(authorized);
+            let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+                ui::permissions::PermissionContext::from_capabilities(
+                    ui::permissions::Actor::person(
+                        allowed.then_some(ui::permissions::Role::Owner),
+                        "probe-author",
+                    ),
+                    vec![],
+                )
+                .at_unix_time(100),
+            ));
+            let component = definition
+                .instantiate(
+                    host.prepare_with_permissions(
+                        &definition,
+                        instance,
+                        &LaunchTarget::New,
+                        permissions,
+                    )
+                    .unwrap(),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+                .unwrap();
+            records.push(component.record().clone());
+            column = column.push(Box::new(TileHost::from_component(component)));
+        }
+        let resource = qos_actions::Resource::new("probe:shared", "probe", "Shared probe")
+            .with_action(
+                qos_actions::ActionSpec::immediate(
+                    "edit",
+                    "Edit",
+                    "probe.edit",
+                    &ProbeAction("edited".into()),
+                )
+                .unwrap(),
+            );
+        let button = Button::new("outer-edit", "Outer edit", None)
+            .on_action(qos_actions::ActionBinding::unit_for(&resource, "edit").unwrap());
+        column = column.push(Box::new(button));
+        let mut driver = controlled_driver(Box::new(column), (300, 200));
+        if authorized == 0 {
+            driver
+                .action_registry_mut()
+                .register::<ProbeAction>("probe.edit");
+        }
+        let outer = driver.state_mut().doc.get_heads();
+        driver
+            .perform_named("outer-edit", &ui::a11y::Action::Activate)
+            .unwrap();
+        for (index, checkout) in records.iter().enumerate() {
+            host.records
+                .read_history(&checkout.id, |doc, history| {
+                    let changed = authorized == 1 && index == 0;
+                    assert_eq!(
+                        doc.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+                        Some(if changed { "edited" } else { "initialized" })
+                    );
+                    assert_eq!(
+                        history
+                            .next_undo_in(
+                                &author(),
+                                11_u64.saturating_add(u64::try_from(index).unwrap())
+                            )
+                            .is_some(),
+                        changed
+                    );
+                })
+                .unwrap();
+        }
+        assert_eq!(driver.state_mut().doc.get_heads(), outer);
+        assert!(!driver.state_mut().can_undo_as(None));
+        if authorized != 1 {
+            let diagnostics = String::from_utf8(diagnostics.lock().unwrap().clone()).unwrap();
+            assert!(
+                diagnostics.contains(if authorized == 2 {
+                    "ambiguous_action_target"
+                } else {
+                    "unknown_action"
+                }),
+                "{diagnostics}"
+            );
+        }
+    }
+}

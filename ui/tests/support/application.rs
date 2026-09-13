@@ -29,6 +29,16 @@ thread_local! {
     static PROVIDERS: RefCell<Option<Rc<RefCell<ProviderObservations>>>> = const { RefCell::new(None) };
 }
 
+thread_local! {
+    static COMMIT_REQUEST: Cell<bool> = const { Cell::new(false) };
+    static COMMIT_DRAINS: Cell<usize> = const { Cell::new(0) };
+}
+pub fn request_probe_commit() {
+    COMMIT_REQUEST.set(true);
+}
+pub fn probe_commit_drains() -> usize {
+    COMMIT_DRAINS.get()
+}
 #[derive(Default)]
 pub struct ProviderObservations {
     pub methods: Vec<(&'static str, bool)>,
@@ -178,6 +188,8 @@ impl ProbeHost {
     pub fn new() -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
+        COMMIT_REQUEST.set(false);
+        COMMIT_DRAINS.set(0);
         INITIALIZATIONS.set(0);
         HANDLES.with_borrow_mut(Vec::clear);
         PROVIDERS.with_borrow_mut(|providers| *providers = None);
@@ -407,6 +419,22 @@ struct ProbeRoot {
     corrupt_restore: bool,
 }
 impl Widget for ProbeRoot {
+    fn needs_commit(&self) -> bool {
+        COMMIT_REQUEST.get()
+    }
+    fn on_commit(&mut self) {
+        COMMIT_REQUEST.set(false);
+        COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
+    }
+    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+        Some(qos_actions::ActionContext::for_resource(
+            &self.caret,
+            "probe:shared",
+            "probe",
+            &self.caret,
+        ))
+    }
+
     fn resources(&self, _: &AutoCommit) -> Vec<qos_actions::Resource> {
         if !self.operational {
             return vec![];
