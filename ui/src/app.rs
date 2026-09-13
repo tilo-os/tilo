@@ -644,6 +644,91 @@ pub struct App {
     floating_host_messages: Vec<crate::floating_surface::FloatingSurfaceHostMessage>,
 }
 
+/// Lazy private inputs keep discovery at the original initializer/callback boundary.
+/// Constructing this provider itself performs no discovery beyond its supplied manager.
+struct AppConstructionInputs {
+    collab_manager: CollaborationManager,
+    configured_theme: fn() -> Theme,
+    text_renderer: fn() -> TextRenderer,
+    debug_mode: fn() -> bool,
+    theme_store_stamp: fn() -> Option<std::time::SystemTime>,
+    local_author: fn() -> crate::permissions::UserId,
+    presence_ctx: fn() -> PresenceCtx,
+    screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
+    high_contrast: fn() -> bool,
+    reduce_motion: fn() -> bool,
+    text_scale: fn() -> f32,
+    ui_scale: fn() -> f32,
+    pending_continuation_restore: fn() -> Option<crate::collaboration::ContinuationMetadata>,
+    profiler: fn() -> Option<crate::profiling::FrameProfiler>,
+    floating_surface_client: fn() -> Option<crate::floating_surface::FloatingSurfaceServiceClient>,
+    startup_presence_scope: fn() -> Option<PresenceKey>,
+    surface_id: fn() -> String,
+}
+
+impl AppConstructionInputs {
+    fn production(collab_manager: CollaborationManager) -> Self {
+        Self {
+            collab_manager,
+            configured_theme: Theme::configured,
+            text_renderer: TextRenderer::new,
+            debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
+            theme_store_stamp: || {
+                settings_store::settings_path()
+                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+            },
+            local_author: crate::collaboration::local_user_id,
+            presence_ctx: App::initial_presence_context,
+            screen_reader: || {
+                if App::screen_reader_env_enabled()
+                    || App::persisted_accessibility_bool("screen_reader")
+                {
+                    Some(App::configured_screen_reader())
+                } else {
+                    None
+                }
+            },
+            high_contrast: App::high_contrast_env_enabled,
+            reduce_motion: App::reduce_motion_env_enabled,
+            text_scale: || App::text_scale_env().unwrap_or(1.0),
+            ui_scale: || App::ui_scale_env().unwrap_or(1.0),
+            pending_continuation_restore: crate::collaboration::continuation_restore_env,
+            profiler: crate::profiling::FrameProfiler::from_env,
+            floating_surface_client:
+                crate::floating_surface::FloatingSurfaceServiceClient::discover,
+            startup_presence_scope: PresenceKey::for_local_workspace,
+            surface_id: crate::local_surface_id,
+        }
+    }
+
+    #[cfg(test)]
+    fn controlled() -> Self {
+        Self {
+            collab_manager: CollaborationManager::disabled(),
+            configured_theme: Theme::dark,
+            text_renderer: crate::font_catalog::fixture_renderer,
+            debug_mode: || false,
+            theme_store_stamp: || None,
+            local_author: || crate::permissions::UserId("fixture-user".into()),
+            presence_ctx: || {
+                let mut presence = PresenceCtx::empty();
+                presence.set_own_identity(["fixture-user".to_owned()]);
+                presence
+            },
+            screen_reader: || None,
+            high_contrast: || false,
+            reduce_motion: || false,
+            text_scale: || 1.0,
+            ui_scale: || 1.0,
+            pending_continuation_restore: || None,
+            profiler: || None,
+            floating_surface_client: || None,
+            startup_presence_scope: || None,
+            surface_id: || "fixture-surface".into(),
+        }
+    }
+}
+
 impl App {
     fn initial_presence_context() -> PresenceCtx {
         // Own identity, in preference order: the handle announced on `Hello`,
@@ -679,7 +764,12 @@ impl App {
         root_widget: Box<dyn Widget>,
         collab_manager: CollaborationManager,
     ) -> Self {
-        Self::with_parts(None, state, root_widget, collab_manager)
+        Self::with_parts(
+            None,
+            state,
+            root_widget,
+            AppConstructionInputs::production(collab_manager),
+        )
     }
 
     /// Construct a live app whose root factory captures a fresh owner.
@@ -721,7 +811,18 @@ impl App {
             Some(wake_scope),
             state,
             root_widget,
-            CollaborationManager::new(),
+            AppConstructionInputs::production(CollaborationManager::new()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_controlled_inputs(state: State, root_widget: Box<dyn Widget>) -> Self {
+        let _entry = crate::wake::WakeScope::enter_detached();
+        Self::with_parts(
+            None,
+            state,
+            root_widget,
+            AppConstructionInputs::controlled(),
         )
     }
 
@@ -758,18 +859,18 @@ impl App {
         wake_scope: Option<crate::wake::WakeScope>,
         state: State,
         root_widget: Box<dyn Widget>,
-        collab_manager: CollaborationManager,
+        inputs: AppConstructionInputs,
     ) -> Self {
         let _entry = wake_scope.as_ref().map_or_else(
             crate::wake::WakeScope::enter_detached,
             crate::wake::WakeScope::enter,
         );
-        let configured_theme = Theme::configured();
+        let configured_theme = (inputs.configured_theme)();
         let mut app = Self {
             wake_scope,
             state,
             root_widget,
-            text_renderer: TextRenderer::new(),
+            text_renderer: (inputs.text_renderer)(),
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
@@ -781,23 +882,22 @@ impl App {
             last_frame_size: None,
             last_layout_px: None,
             theme: configured_theme.clone(),
-            debug_mode: cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
+            debug_mode: (inputs.debug_mode)(),
             focused_node: None,
             focusable_order: Vec::new(),
             autofocus_first: false,
             autofocus_on_structure_change: false,
             appearance_reconcile: false,
-            theme_store_stamp: settings_store::settings_path()
-                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
-            collab_manager,
-            local_author: crate::collaboration::local_user_id(),
-            presence_ctx: Self::initial_presence_context(),
+            collab_manager: inputs.collab_manager,
+            local_author: (inputs.local_author)(),
+            presence_ctx: (inputs.presence_ctx)(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             pointer_space: None,
@@ -811,13 +911,7 @@ impl App {
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
             // Auto-enable if the shell mirrored QOS_A11Y_* into this sandbox.
-            screen_reader: if Self::screen_reader_env_enabled()
-                || Self::persisted_accessibility_bool("screen_reader")
-            {
-                Some(Self::configured_screen_reader())
-            } else {
-                None
-            },
+            screen_reader: (inputs.screen_reader)(),
             screen_reader_modifier_down: false,
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
@@ -842,17 +936,16 @@ impl App {
             last_published_actions: None,
             action_directory_cursors: std::collections::HashMap::new(),
             last_published_continuation: None,
-            pending_continuation_restore: crate::collaboration::continuation_restore_env(),
+            pending_continuation_restore: (inputs.pending_continuation_restore)(),
             pending_continuation_view: None,
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
-            profiler: crate::profiling::FrameProfiler::from_env(),
+            profiler: (inputs.profiler)(),
             window_title: None,
             window_app_id: None,
-            floating_surface_client:
-                crate::floating_surface::FloatingSurfaceServiceClient::discover(),
+            floating_surface_client: (inputs.floating_surface_client)(),
             last_floating_presentations: std::collections::HashMap::new(),
             last_active_floating_ids: std::collections::HashSet::new(),
             prepared_floating_presentations: std::collections::HashSet::new(),
@@ -861,20 +954,20 @@ impl App {
             floating_host_messages: Vec::new(),
         };
 
-        app.a11y.high_contrast = Self::high_contrast_env_enabled();
-        app.a11y.reduce_motion = Self::reduce_motion_env_enabled();
+        app.a11y.high_contrast = (inputs.high_contrast)();
+        app.a11y.reduce_motion = (inputs.reduce_motion)();
         app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = Self::text_scale_env().unwrap_or(1.0);
-        app.ui_scale = Self::ui_scale_env().unwrap_or(1.0);
+        app.text_scale = (inputs.text_scale)();
+        app.ui_scale = (inputs.ui_scale)();
         app.rebuild_theme();
 
         // The scope is also what sends `Arrived`, so an app that never set
         // one would never catch up on anything written before it opened.
         // No room means no scope.
-        if let Some(scope) = PresenceKey::for_local_workspace() {
+        if let Some(scope) = (inputs.startup_presence_scope)() {
             app.set_presence_broadcast_scope(Some(scope));
         }
-        app.presence_ctx.set_surface_id(crate::local_surface_id());
+        app.presence_ctx.set_surface_id((inputs.surface_id)());
         // Apply launcher-provided continuation before the first widget sync or
         // redraw.  Waiting for an input event left a restored app blank on a
         // quiet freshly-created window.
@@ -10400,65 +10493,40 @@ impl crate::view::FreezeThaw for App {
     }
 
     fn capture_view(&self) -> crate::view::View {
-        use crate::view::{FocusView, View, ViewRect};
-
         let _entry = self.enter_wake_scope();
-
-        let focus = self.focused_node.and_then(|id| {
-            let ordinal = self.focusable_order.iter().position(|&x| x == id)?;
-            let ephemeral = self
-                .node_map
-                .get(&id)
+        let ordinal = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+        let focus = crate::view::capture_focus(ordinal, || {
+            self.focused_node
+                .and_then(|id| self.node_map.get(&id))
                 .and_then(|&w| unsafe { (*w).get_state() })
-                .unwrap_or_default();
-            Some(FocusView { ordinal, ephemeral })
         });
-
-        let open_resource = self
-            .root_widget
-            .record_intent()
-            .map(|c| c.id.as_str().to_string());
-
         let viewport = self
             .last_frame_size
-            .map(|s| ViewRect {
+            .map(|s| crate::view::ViewRect {
                 x: 0.0,
                 y: 0.0,
                 width: f64::from(s.width),
                 height: f64::from(s.height),
             })
             .unwrap_or_default();
-
-        let contrib = self.root_widget.view_state().unwrap_or_default();
-
-        View {
-            scroll: contrib.scroll,
-            focus,
-            open_resource,
-            viewport,
-            view_mode: contrib.view_mode,
-        }
+        crate::view::capture_widget_view(&*self.root_widget, focus, viewport)
     }
 
     /// `open_resource` is carried for presence/reboot to reopen the record;
     /// record-navigation itself is the host's and is not driven here.
     fn restore_view(&mut self, view: &crate::view::View) {
         let _entry = self.enter_wake_scope();
-        self.root_widget
-            .restore_view_state(&crate::view::ViewContribution {
-                scroll: view.scroll.clone(),
-                view_mode: view.view_mode.clone(),
-            });
+        crate::view::restore_widget_view(&mut *self.root_widget, view);
 
         if let Some(f) = &view.focus
             && let Some(&id) = self.focusable_order.get(f.ordinal)
         {
             self.set_focused_node(Some(id));
-            if !f.ephemeral.is_empty()
-                && let Some(&w) = self.node_map.get(&id)
-            {
+            if let Some(&w) = self.node_map.get(&id) {
                 unsafe {
-                    (*w).set_state(&f.ephemeral);
+                    crate::view::restore_focus_state(&mut *w, f);
                 }
             }
         }

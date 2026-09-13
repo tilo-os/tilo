@@ -304,3 +304,6 @@ pub use permissions::{
     Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
     Scope as CapScope, Subject, UserId, Verb,
 };
+
+pub mod application;
+pub mod application_view;

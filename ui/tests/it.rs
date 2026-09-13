@@ -136,3 +136,5 @@ mod workspace_view_test;
 mod wpe_engine;
 
 mod canonical_record_owner;
+
+mod application_contract;
