@@ -149,7 +149,8 @@ pub(crate) fn collect_widget_resources(
     visit(widget, doc, None, resources);
 }
 
-/// Resolve one lazily published resource through its originating boundary.
+/// Test traversal probe; production callers retain bound provenance.
+#[cfg(test)]
 pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -160,6 +161,7 @@ pub(crate) fn resolve_widget_resource(
     })
 }
 
+#[cfg(test)]
 fn resolve_bound_resource<R>(
     widget: &dyn Widget,
     doc: &AutoCommit,

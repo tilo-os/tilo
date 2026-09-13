@@ -61,8 +61,17 @@ pub struct SearchField {
 
 impl SearchField {
     pub fn new() -> Self {
+        Self::with_input(TextInput::local())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_language(language: &str) -> Self {
+        Self::with_input(TextInput::local_with_language(language))
+    }
+
+    fn with_input(input: TextInput) -> Self {
         Self {
-            input: TextInput::local()
+            input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
                 .with_placeholder("Search"),

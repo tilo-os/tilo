@@ -205,6 +205,7 @@ pub struct ActionPalette {
     /// A text renderer kept for the field's per-frame measure pass, so `layout`
     /// does not construct a font system every frame the palette is open.
     measure: TextRenderer,
+    field_factory: fn() -> SearchField,
 }
 
 impl Default for ActionPalette {
@@ -216,8 +217,13 @@ impl Default for ActionPalette {
 impl ActionPalette {
     /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
+        Self::with_inputs(TextRenderer::new(), SearchField::new)
+    }
+
+    /// Use the host's explicit font construction input for the real initializer.
+    pub(crate) fn with_inputs(measure: TextRenderer, field_factory: fn() -> SearchField) -> Self {
         Self {
-            field: SearchField::new().with_placeholder("Search actions and results"),
+            field: field_factory().with_placeholder("Search actions and results"),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
@@ -244,7 +250,8 @@ impl ActionPalette {
             rect: Rect::ZERO,
             field_taffy: TaffyTree::new(),
             field_node: None,
-            measure: TextRenderer::new(),
+            measure,
+            field_factory,
         }
     }
 
@@ -334,7 +341,7 @@ impl ActionPalette {
         self.confirm = None;
         self.pending_dispatch = None;
         self.pending_nav = None;
-        self.field = SearchField::new().with_placeholder("Search actions and results");
+        self.field = (self.field_factory)().with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
     }
@@ -377,6 +384,7 @@ impl ActionPalette {
     /// once per redraw while `pending` is true, so a large corpus remains
     /// responsive while exact matches eventually become visible.
     pub fn advance_search_page(&mut self) -> SearchAdvance {
+        self.prune_denied_bound_provider_rows();
         let generation = self.search_generation;
         let provider_count = self.providers.len();
         if provider_count == 0 || self.provider_complete.iter().all(|done| *done) {
@@ -422,6 +430,19 @@ impl ActionPalette {
             PROVIDER_HIT_BUDGET,
             PROVIDER_HIT_BUDGET,
         );
+        let results = page
+            .results
+            .into_iter()
+            .filter(|hit| {
+                binding.as_ref().is_none_or(|binding| {
+                    self.bound_provider_hit_allowed(
+                        provider.as_ref(),
+                        binding,
+                        hit.action_address().as_ref(),
+                    )
+                })
+            })
+            .collect();
         let complete = page.next.is_none();
         if let Some(slot) = self.provider_cursors.get_mut(provider_index) {
             *slot = page.next;
@@ -431,7 +452,7 @@ impl ActionPalette {
         }
 
         let inspected = page.inspected;
-        let added = self.merge_provider_page(page.results, binding.as_ref());
+        let added = self.merge_provider_page(results, binding.as_ref());
         self.refresh_progressive_results();
         let pending = self.provider_complete.iter().any(|done| !*done);
         self.results.set_empty_text(if pending {
@@ -452,6 +473,80 @@ impl ActionPalette {
             added,
             pending,
             generation,
+        }
+    }
+
+    fn bound_provider_hit_allowed(
+        &self,
+        provider: &dyn SearchProvider,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        address: Option<&qos_actions::ActionAddress>,
+    ) -> bool {
+        let Ok(_entry) = binding.enter() else {
+            return false;
+        };
+        let Some(address) = address else {
+            return binding
+                .permissions
+                .borrow()
+                .check(&crate::permissions::PermissionScope::app(
+                    &binding.app_id,
+                    collab_types::caps::Verb::Read,
+                ));
+        };
+        // Provider resolution runs through its captured owner. Eager resources
+        // remain a valid source for providers that emit only canonical hits.
+        let resource = provider.resolve_action_resource(address).or_else(|| {
+            self.bound_resources
+                .iter()
+                .find(|snapshot| snapshot.binding.same_component(binding))
+                .and_then(|snapshot| {
+                    snapshot
+                        .resources
+                        .iter()
+                        .find(|resource| {
+                            qos_actions::door::resolve(std::slice::from_ref(resource), address)
+                                .is_some()
+                        })
+                        .cloned()
+                })
+        });
+        resource
+            .and_then(|resource| crate::bound_dispatch::filter_resource(binding, resource))
+            .is_some_and(|resource| qos_actions::door::resolve(&[resource], address).is_some())
+    }
+
+    fn prune_denied_bound_provider_rows(&mut self) {
+        let denied = self
+            .provider_index
+            .iter()
+            .filter_map(|(key, resolution)| {
+                let (binding, address) = match resolution {
+                    RowResolution::Bound(target) => {
+                        (&target.binding, Some(&target.address.address))
+                    }
+                    RowResolution::Navigate(_, Some(binding)) => (binding, None),
+                    _ => return None,
+                };
+                let allowed = self
+                    .providers
+                    .iter()
+                    .filter(|provider| {
+                        provider
+                            .callback_binding()
+                            .is_some_and(|owner| owner.same_component(binding))
+                    })
+                    .any(|provider| {
+                        self.bound_provider_hit_allowed(provider.as_ref(), binding, address)
+                    });
+                (!allowed).then(|| key.clone())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        if !denied.is_empty() {
+            self.provider_rows
+                .retain(|row| !denied.contains(&row.action_id));
+            self.provider_index.retain(|key, _| !denied.contains(key));
+            self.refresh_progressive_results();
         }
     }
 
@@ -743,14 +838,14 @@ impl ActionPalette {
                     ActionKind::Prompted { prompt, .. } => {
                         // Repurpose the field to collect the argument; clear the result
                         // list so only the prompt shows.
-                        self.field = SearchField::new();
+                        self.field = (self.field_factory)();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
                         self.arg = Some(ArgState { bound, address });
                     }
                     ActionKind::Typed { prompt, .. } => {
-                        self.field = SearchField::new();
+                        self.field = (self.field_factory)();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
@@ -1170,7 +1265,7 @@ impl ActionPalette {
         self.arg = None;
         self.confirm = None;
         // Restore the query field and result set.
-        self.field = SearchField::new().with_placeholder("Search actions and results");
+        self.field = (self.field_factory)().with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
     }
@@ -1185,7 +1280,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
             ConfirmationPolicy::Phrase { phrase } => phrase,
         };
-        self.field = SearchField::new();
+        self.field = (self.field_factory)();
         self.field
             .set_placeholder(&format!("Type {expected} to confirm"));
         self.field.set_focused(true);

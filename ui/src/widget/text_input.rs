@@ -343,6 +343,10 @@ impl TextInput {
     pub fn new(path: Vec<PathSegment>) -> Self {
         let spell_language = spellcheck::default_language();
         spellcheck::warm_up_language(&spell_language);
+        Self::with_language(path, spell_language)
+    }
+
+    fn with_language(path: Vec<PathSegment>, spell_language: String) -> Self {
         Self {
             id: String::new(),
             path,
@@ -801,6 +805,12 @@ impl TextInput {
         let mut s = Self::new(Vec::new());
         s.crdt_bound = false;
         s
+    }
+
+    /// Explicit host language without discovery or background dictionary warmup.
+    #[cfg(test)]
+    pub(crate) fn local_with_language(language: &str) -> Self {
+        Self::with_language(Vec::new(), language.to_owned())
     }
 
     /// Create a true two-way binding to typed process-local text state.
