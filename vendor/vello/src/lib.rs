@@ -257,6 +257,10 @@ impl FromIterator<AaConfig> for AaSupport {
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
+    /// Encoding completed, but the caller declined submission. Reconstruct this renderer.
+    #[error("render submission declined after encoding; reconstruct renderer")]
+    SubmissionAborted,
+
     #[cfg(feature = "wgpu")]
     #[error("diagnostic geometry capture {0} bytes exceeds {1} byte cap")]
     #[doc(hidden)]
@@ -2243,8 +2247,10 @@ impl Renderer {
     /// after Vello has encoded the whole recording and before submission, so
     /// its commands execute after the render without requiring another queue
     /// submission.
+    /// Encode with an optional final submission gate. A rejected recording requires
+    /// renderer reconstruction; no counter/timestamp readback is started for it.
     #[doc(hidden)]
-    pub fn render_to_texture_with_post_render<F>(
+    pub fn render_to_texture_with_post_render_checked<F, G>(
         &mut self,
         device: &Device,
         queue: &Queue,
@@ -2252,9 +2258,11 @@ impl Renderer {
         texture: &TextureView,
         params: &RenderParams,
         post_render: F,
+        before_submit: G,
     ) -> Result<()>
     where
         F: FnOnce(&mut wgpu::CommandEncoder),
+        G: FnOnce() -> bool,
     {
         self.last_canonical_segment_order_selected = false;
         self.last_area_ppt8_selected = false;
@@ -2308,13 +2316,14 @@ impl Renderer {
             *target.as_image().unwrap(),
             texture,
         )];
-        self.engine.run_recording_with_post_render(
+        self.engine.run_recording_with_post_render_checked(
             device,
             queue,
             &self.recording,
             &external_resources,
             "render_to_texture",
             post_render,
+            before_submit,
             #[cfg(feature = "wgpu-profiler")]
             &mut self.profiler,
         )?;
@@ -2337,6 +2346,31 @@ impl Renderer {
         }
 
         Ok(())
+    }
+
+    /// Append post-render commands to the same unconditional Vello submission.
+    #[doc(hidden)]
+    pub fn render_to_texture_with_post_render<F>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        post_render: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder),
+    {
+        self.render_to_texture_with_post_render_checked(
+            device,
+            queue,
+            scene,
+            texture,
+            params,
+            post_render,
+            || true,
+        )
     }
 
     /// Render only exact native-pixel damage through the opt-in sparse Area
@@ -2925,8 +2959,10 @@ impl Renderer {
     ///
     /// The callback is not invoked when sparse rendering is unavailable or
     /// `damage` is empty, because those cases submit no command buffer.
+    /// Encode with an optional final submission gate. A rejected recording requires
+    /// renderer reconstruction; no counter/timestamp readback is started for it.
     #[doc(hidden)]
-    pub fn render_to_texture_with_damage_and_post_render<F>(
+    pub fn render_to_texture_with_damage_and_post_render_checked<F, G>(
         &mut self,
         device: &Device,
         queue: &Queue,
@@ -2935,9 +2971,11 @@ impl Renderer {
         params: &RenderParams,
         damage: &[FineDamageRect],
         post_render: F,
+        before_submit: G,
     ) -> Result<Option<SparseRenderStats>>
     where
         F: FnOnce(&mut wgpu::CommandEncoder),
+        G: FnOnce() -> bool,
     {
         self.last_canonical_segment_order_selected = false;
         self.last_area_ppt8_selected = false;
@@ -3121,13 +3159,14 @@ impl Renderer {
                 ExternalResource::Image(*target.as_image().unwrap(), texture),
                 ExternalResource::Buffer(proxy, &upload.buffer),
             ];
-            self.engine.run_recording_with_post_render(
+            self.engine.run_recording_with_post_render_checked(
                 device,
                 queue,
                 &self.recording,
                 &external_resources,
                 "render_to_texture_sparse",
                 post_render,
+                before_submit,
                 #[cfg(feature = "wgpu-profiler")]
                 &mut self.profiler,
             )?;
@@ -3136,13 +3175,14 @@ impl Renderer {
                 *target.as_image().unwrap(),
                 texture,
             )];
-            self.engine.run_recording_with_post_render(
+            self.engine.run_recording_with_post_render_checked(
                 device,
                 queue,
                 &self.recording,
                 &external_resources,
                 "render_to_texture_sparse",
                 post_render,
+                before_submit,
                 #[cfg(feature = "wgpu-profiler")]
                 &mut self.profiler,
             )?;
@@ -3167,6 +3207,33 @@ impl Renderer {
             }
         }
         Ok(Some(stats))
+    }
+
+    /// Append post-render commands to the same unconditional Vello submission.
+    #[doc(hidden)]
+    pub fn render_to_texture_with_damage_and_post_render<F>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        damage: &[FineDamageRect],
+        post_render: F,
+    ) -> Result<Option<SparseRenderStats>>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder),
+    {
+        self.render_to_texture_with_damage_and_post_render_checked(
+            device,
+            queue,
+            scene,
+            texture,
+            params,
+            damage,
+            post_render,
+            || true,
+        )
     }
 
     /// Poll outstanding counter readbacks without waiting for the GPU.
