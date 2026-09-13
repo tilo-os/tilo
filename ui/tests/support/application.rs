@@ -22,8 +22,12 @@ thread_local! {
     static INITIALIZATIONS: Cell<usize> = const { Cell::new(0) };
     static HANDLES: RefCell<Vec<WakeHandle>> = const { RefCell::new(vec![]) };
     static LOCAL: RefCell<Option<LocalState<String>>> = const { RefCell::new(None) };
+    static PANIC_ON_DROP: Cell<bool> = const { Cell::new(false) };
     static DROP_CLOSED: Cell<bool> = const { Cell::new(false) };
     static FOREIGN_CONTEXT: RefCell<Option<HostContext>> = const { RefCell::new(None) };
+}
+pub fn panic_on_next_root_drop() {
+    PANIC_ON_DROP.set(true);
 }
 pub fn drop_was_closed() -> bool {
     DROP_CLOSED.get()
@@ -396,6 +400,9 @@ impl Drop for ProbeRoot {
     fn drop(&mut self) {
         let captured_during_drop = WakeHandle::new();
         DROP_CLOSED.set(!captured_during_drop.is_active() && !self.local.try_set("drop".into()));
+        if PANIC_ON_DROP.replace(false) {
+            std::panic::panic_any("probe destructor panic");
+        }
     }
 }
 #[allow(
