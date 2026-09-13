@@ -645,6 +645,13 @@ impl ChromeState {
     }
 
     /// Person principal this session presents inside `room`.
+    pub(crate) fn explicit_local_user(&self) -> Option<&str> {
+        match &self.identity_source {
+            IdentitySource::Explicit(principal) => Some(principal),
+            IdentitySource::SessionRegistry => None,
+        }
+    }
+
     pub fn local_user_for_room(
         &self,
         room: &crate::shell::state::RoomId,
