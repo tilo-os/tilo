@@ -99,8 +99,11 @@ match renderer.poll_bump_budget(&device)? {
     BumpBudgetPoll::Complete { overflowed: true } => { /* retry required */ }
 }
 // No wait_indefinitely call is reachable through this new API.
-// Complete without counters is permitted only when measurement is deliberately
-// disabled; the target owner still independently waits for GPU submission completion.
+// A fresh idle renderer with no render/readback started has no outstanding
+// counter work and may report Complete. Otherwise Complete without counters is
+// permitted only when measurement is deliberately disabled. An expected but
+// absent download is an error, never idle. Neither case proves GPU/frame
+// completion; the target owner independently fences actual submissions.
 ```
 
 - [ ] Add tests named `checked_bump_pending_retains_download_and_overflow`, `checked_bump_map_failure_is_not_completion`, `checked_bump_missing_download_is_error`, and `checked_bump_collection_preserves_growth_and_recycles_once`. They operate on `BudgetTracker`, the real download allocation and `Renderer`; use narrow `cfg(test)` access to the pending callback/result to hold readiness or report a failed map. Do not test a replacement enum/state-machine model. Assert no duplicate recycle and no poisoned buffer returns to the pool. Exercise the case where an ordinary render's collection observes failure before the checked caller runs.
