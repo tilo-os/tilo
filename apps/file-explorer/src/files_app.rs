@@ -104,6 +104,8 @@ fn format_duration(duration_ms: u64) -> String {
 /// when there is no persistence dir. `None` when neither location is
 /// writable — previews then fall back to type badges (see [`ThumbCtx`]).
 fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
+    #[cfg(test)]
+    crate::model::fixture_io_guard::ambient_io("build_thumb_service");
     let dir = config_dir.map_or_else(
         || std::env::temp_dir().join("qos-file-explorer-thumbnails"),
         |d| d.join("thumbnails"),
@@ -409,11 +411,25 @@ pub struct StartupInputs {
     pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
 }
 
+/// Optional services supplied by an embedding host. Absence never selects
+/// the standalone thumbnail cache or global document opener.
+#[derive(Clone)]
+pub struct HostedFileServices {
+    pub thumbnails: Option<Arc<ThumbnailService>>,
+    pub document_opener: Option<Rc<RefCell<DocumentOpener>>>,
+}
+
+enum FileServices {
+    Legacy,
+    Hosted(HostedFileServices),
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FileExplorerWidget {
+    services: FileServices,
     startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
     home_path: Option<PathBuf>,
@@ -714,12 +730,32 @@ impl FileExplorerWidget {
         home: Option<PathBuf>,
         user_dirs: favorites::UserDirs,
     ) -> Self {
-        Self::with_inputs(config_dir, home, user_dirs, None)
+        Self::with_inputs(config_dir, home, user_dirs, None, FileServices::Legacy)
     }
 
     /// Build the real widget from host-supplied startup data, without ambient discovery.
     pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
-        Self::with_inputs(None, None, favorites::UserDirs::default(), Some(inputs))
+        Self::with_inputs(
+            None,
+            None,
+            favorites::UserDirs::default(),
+            Some(inputs),
+            FileServices::Legacy,
+        )
+    }
+
+    /// Build with exact host services; absent services remain unavailable.
+    pub fn with_startup_inputs_and_services(
+        inputs: StartupInputs,
+        services: HostedFileServices,
+    ) -> Self {
+        Self::with_inputs(
+            None,
+            None,
+            favorites::UserDirs::default(),
+            Some(inputs),
+            FileServices::Hosted(services),
+        )
     }
 
     #[allow(
@@ -731,6 +767,7 @@ impl FileExplorerWidget {
         home: Option<PathBuf>,
         user_dirs: favorites::UserDirs,
         inputs: Option<StartupInputs>,
+        services: FileServices,
     ) -> Self {
         let injected = inputs.is_some();
         let inputs = inputs.unwrap_or_else(|| StartupInputs {
@@ -766,16 +803,25 @@ impl FileExplorerWidget {
         let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearchProvider::new(&remote_accounts);
-        let mut entries = read_dir_sync(&cwd).unwrap_or_default();
+        let mut entries = if injected {
+            crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
+        } else {
+            read_dir_sync(&cwd)
+        }
+        .unwrap_or_default();
         if !show_hidden {
             entries.retain(|e| !e.name.starts_with('.'));
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
-        let thumbs = build_thumb_service(config_dir.as_deref()).map(Arc::new);
+        let thumbs = match &services {
+            FileServices::Legacy => build_thumb_service(config_dir.as_deref()).map(Arc::new),
+            FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
+        };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
         Self {
+            services,
             startup_accounts,
             current_path: cwd,
             home_path: home,
@@ -1483,6 +1529,14 @@ impl FileExplorerWidget {
         self.load(path);
     }
 
+    fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        if self.startup_accounts.is_some() {
+            crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
+        } else {
+            read_dir_sync(path)
+        }
+    }
+
     /// Re-read `path` into the view without touching history (shared by
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
@@ -1496,10 +1550,10 @@ impl FileExplorerWidget {
         self.scroll_offset.set((0.0, 0.0));
         // Opening the Trash for the first time (nothing deleted yet) should show
         // an empty folder, not a "no such directory" error, so materialise it.
-        if fileops::is_trash_dir(&path) {
+        if matches!(self.services, FileServices::Legacy) && fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
-        match read_dir_sync(&path) {
+        match self.read_directory(&path) {
             Ok(mut entries) => {
                 if !self.show_hidden {
                     entries.retain(|e| !e.name.starts_with('.'));
@@ -1614,7 +1668,7 @@ impl FileExplorerWidget {
             .primary()
             .and_then(|index| self.entries.get(index))
             .map(|entry| (entry.record_id, entry.path.clone()));
-        let Ok(mut entries) = read_dir_sync(&self.current_path) else {
+        let Ok(mut entries) = self.read_directory(&self.current_path) else {
             // A transient unmount/reconnect must not replace a still-useful
             // view with an error page. Explicit Refresh remains the path that
             // surfaces directory errors to the user.
@@ -3571,7 +3625,14 @@ impl FileExplorerWidget {
             self.navigate(path);
             return Ok(false);
         }
-        match ask_host_to_open(&path) {
+        let result = match &self.services {
+            FileServices::Legacy => ask_host_to_open(&path),
+            FileServices::Hosted(hosted) => Some(hosted.document_opener.as_ref().map_or_else(
+                || Err("Document opening is unavailable".into()),
+                |open| open.borrow_mut()(&path),
+            )),
+        };
+        match result {
             Some(Ok(())) => {}
             Some(Err(reason)) => self.status = Some(reason),
             None => runner.open_default(&path)?,
@@ -4584,6 +4645,8 @@ pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("SystemRunner process");
         std::process::Command::new(program)
             .current_dir(cwd)
             .spawn()
@@ -4595,6 +4658,8 @@ impl CommandRunner for SystemRunner {
         arg: &std::path::Path,
         cwd: &std::path::Path,
     ) -> std::io::Result<()> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("SystemRunner process");
         std::process::Command::new(program)
             .arg(arg)
             .current_dir(cwd)
@@ -4602,6 +4667,8 @@ impl CommandRunner for SystemRunner {
             .map(|_c| ())
     }
     fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
         open::that(path)
     }
 }
@@ -4687,6 +4754,8 @@ pub fn clear_document_opener() {
 
 /// Ask the host to open `path`. `None` when no host installed a route.
 fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
+    #[cfg(test)]
+    crate::model::fixture_io_guard::ambient_io("ask_host_to_open");
     DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
@@ -12401,11 +12470,45 @@ mod breadcrumb_home_tests {
 #[cfg(test)]
 mod injected_startup_tests {
     use super::*;
+    use crate::model::fixture_io_guard::{DenyAmbientIo, OwnedListings};
+
+    struct ClearOpener;
+    impl Drop for ClearOpener {
+        fn drop(&mut self) {
+            clear_document_opener();
+        }
+    }
+
+    fn startup(path: &Path) -> StartupInputs {
+        StartupInputs {
+            initial_dir: path.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
+        }
+    }
+
+    fn absent_services() -> HostedFileServices {
+        HostedFileServices {
+            thumbnails: None,
+            document_opener: None,
+        }
+    }
+
+    fn owned_child(parent: &Path) -> PathBuf {
+        let child = parent.join("files");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("Welcome.txt"), b"Shell capture fixture\n").unwrap();
+        child
+    }
 
     #[test]
     fn injected_startup_and_reload_keep_the_host_directory_and_catalogs() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("host-document.txt"), b"host").unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
         let account = crate::remote_accounts::RemoteAccount {
             id: accounts::AccountId::from("host-fixture".to_string()),
             kind: crate::remote_accounts::RemoteAccountKind::WebDav,
@@ -12413,16 +12516,13 @@ mod injected_startup_tests {
             host: "fixture.invalid".to_string(),
             health: crate::remote_accounts::RemoteAccountHealth::Disabled,
         };
-        let mut widget = FileExplorerWidget::with_startup_inputs(StartupInputs {
-            initial_dir: dir.path().to_path_buf(),
-            workspace_roots: Vec::new(),
-            record_roots: Vec::new(),
-            remote_accounts: vec![account.clone()],
-            trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
-        });
-        assert_eq!(widget.current_path, dir.path());
+        let mut inputs = startup(&child);
+        inputs.remote_accounts.push(account.clone());
+        let mut widget =
+            FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
+        assert_eq!(widget.current_path, child);
         assert_eq!(widget.displayed_entries().len(), 1);
-        assert_eq!(widget.displayed_entries()[0].name, "host-document.txt");
+        assert_eq!(widget.displayed_entries()[0].name, "Welcome.txt");
         ui::widget::Widget::set_focus(&mut widget, true);
         let mut document = automerge::AutoCommit::new();
         ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
@@ -12430,12 +12530,105 @@ mod injected_startup_tests {
         assert!(!widget.refresh_trusted_identities(None));
         widget.refresh_metadata_if_due(Instant::now() + LIVE_METADATA_REFRESH_INTERVAL);
         widget.refresh();
-        assert_eq!(widget.current_path, dir.path());
+        assert_eq!(widget.current_path, child);
         assert!(widget.workspace_roots.is_empty());
         assert_eq!(widget.remote_account_snapshot(), vec![account]);
         assert_eq!(
             widget.trusted_humans,
             crate::identity_directory::TrustedHumanDirectory::default()
         );
+        assert_eq!(guard.attempts(), 0);
+        assert!(
+            listings
+                .observations()
+                .iter()
+                .all(|(path, workspace)| path == &child && !workspace)
+        );
+    }
+
+    #[test]
+    fn injected_services_absence_never_builds_thumbnails_or_uses_global_opener() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let calls = Rc::new(Cell::new(0));
+        set_document_opener({
+            let calls = calls.clone();
+            move |_| {
+                calls.set(calls.get() + 1);
+                Err("test TLS opener must remain unused".into())
+            }
+        });
+        let _clear = ClearOpener;
+        let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+            startup(&child),
+            absent_services(),
+        );
+        assert!(widget.thumbs.is_none());
+        crate::command::push(&widget.cmds, FileCommand::Activate(0));
+        assert!(widget.drain_commands());
+        assert_eq!(
+            widget.status_line(),
+            Some("Document opening is unavailable")
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(guard.attempts(), 0);
+        assert_eq!(listings.observations(), vec![(child, false)]);
+    }
+
+    #[test]
+    fn injected_listing_and_refresh_use_only_explicit_workspace_roots() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let mut inputs = startup(&child);
+        inputs
+            .workspace_roots
+            .push(parent.path().join("unrelated-workspace"));
+        let mut widget =
+            FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
+        std::fs::write(child.join("Reload.txt"), b"reload").unwrap();
+        assert!(widget.apply_command(FileCommand::Refresh));
+        assert_eq!(widget.displayed_entries().len(), 2);
+        std::fs::write(child.join("Metadata.txt"), b"metadata").unwrap();
+        assert!(widget.refresh_metadata_preserving_view());
+        assert_eq!(widget.displayed_entries().len(), 3);
+        assert_eq!(
+            listings.observations(),
+            vec![
+                (child.clone(), false),
+                (child.clone(), false),
+                (child, false)
+            ]
+        );
+        assert_eq!(guard.attempts(), 0);
+    }
+
+    #[test]
+    fn fixture_io_guards_stop_before_following_io() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let reached = Cell::new(0);
+        let denied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::model::fixture_io_guard::ambient_io("guard negative control");
+            reached.set(reached.get() + 1);
+        }));
+        assert!(denied.is_err());
+        assert_eq!(reached.get(), 0);
+        assert_eq!(guard.attempts(), 1);
+        let denied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::model::fixture_io_guard::observe_owned_listing(
+                &parent.path().join("sibling"),
+                false,
+            );
+            reached.set(reached.get() + 1);
+        }));
+        assert!(denied.is_err());
+        assert_eq!(reached.get(), 0);
+        assert!(listings.observations().is_empty());
     }
 }
