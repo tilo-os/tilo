@@ -1499,7 +1499,7 @@ type QsFastFields = (
 
 fn collaborator_rows_for_state(
     state: &crate::shell::chrome_state::ChromeState,
-    tree: &WorkspaceTree,
+    tree: &crate::shell::state::WorkspaceTree,
 ) -> Vec<RosterRow> {
     state.explicit_local_user().map_or_else(
         || collaborator_roster_rows(tree),
