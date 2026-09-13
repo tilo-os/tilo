@@ -1798,6 +1798,19 @@ impl CallbackBinding {
                 return Ok(true);
             }
             frame.settle_segment(doc);
+            if frame
+                .state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| !Rc::ptr_eq(&pending.owner, &self.closing))
+            {
+                // A foreign no-op notification is not mutation evidence. Its
+                // acknowledgement must not consume the pending owner's burst
+                // or replace the saved metadata/context.
+                drop(owned);
+                widget.on_commit();
+                return Ok(true);
+            }
             if let Some(before) = bracket {
                 // A nested action can already have consumed a bracket still
                 // reported by an ancestor ActionHost. Only advance the pending
