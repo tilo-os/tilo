@@ -30,16 +30,17 @@ use std::os::fd::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
 
 mod autosave;
-pub use autosave::{Autosave, DEFAULT_DEBOUNCE};
+pub use autosave::{Autosave, DEFAULT_DEBOUNCE, DurabilitySnapshot};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
+const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per record. See [`DocStore::open_record`].
 pub const RECORDS_DIR: &str = "records";
@@ -67,6 +68,14 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("another writer owns {path}")]
+    WriterBusy { path: PathBuf },
+    #[error("existing document is empty: {path}")]
+    EmptyExistingDocument { path: PathBuf },
+    #[error("storage source changed: {path}")]
+    SourceChanged { path: PathBuf },
+    #[error("invalid schema in {path}: {reason}")]
+    InvalidSchema { path: PathBuf, reason: &'static str },
     #[error("invalid package id {0:?}: {1}")]
     PackageId(String, &'static str),
     /// The record key could not be turned into a directory name (distinct from
@@ -222,6 +231,45 @@ pub struct DocStore {
     /// the one on disk — set only for a refusal that must not be written over;
     /// e.g. [`Autosave`] switches itself off when this is set.
     refusal: Option<Refusal>,
+    // Shared for legacy stores, exclusive for canonical owners; acquired before the actor.
+    gate: File,
+    canonical: Option<CanonicalState>,
+    writer_claimed: AtomicBool,
+    #[cfg(test)]
+    faults: std::sync::Arc<TestFaults>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TestFaults {
+    spawn_failures: std::sync::atomic::AtomicUsize,
+    active_workers: std::sync::atomic::AtomicUsize,
+    max_workers: std::sync::atomic::AtomicUsize,
+    append_prefix: std::sync::Mutex<Option<usize>>,
+    sync_failure: std::sync::Mutex<Option<PathBuf>>,
+    sync_visits: std::sync::Mutex<Vec<PathBuf>>,
+    completion:
+        std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+struct CanonicalState {
+    directory: File,
+    identity: std::sync::Arc<()>,
+    accepted: bool,
+}
+
+/// A validated decoding candidate. No recovered bytes are published until acceptance.
+pub struct CanonicalLoad {
+    doc: AutoCommit,
+    source_bytes: Vec<u8>,
+    repair_bytes: Option<Vec<u8>>,
+    identity: std::sync::Arc<()>,
+}
+
+impl CanonicalLoad {
+    pub fn document(&self) -> &AutoCommit {
+        &self.doc
+    }
 }
 
 /// The document on disk, and why this build would not open it.
@@ -424,6 +472,7 @@ impl DocStore {
         // Recovers a pre-existing dir or an older layout's stale file; see `ensure_state_dir`.
         ensure_state_dir(&dir)?;
 
+        let gate = acquire_gate(&dir.join(CANONICAL_GATE), false)?;
         let lock = acquire_writer_lock(&dir.join(LOCK_FILE));
         let actor = if lock.is_some() {
             load_or_create_actor(&dir.join(ACTOR_FILE))?
@@ -443,7 +492,266 @@ impl DocStore {
             lock,
             persisted: Vec::new(),
             refusal: None,
+            gate,
+            canonical: None,
+            writer_claimed: AtomicBool::new(false),
+            #[cfg(test)]
+            faults: std::sync::Arc::default(),
         })
+    }
+
+    /// Resolve one record under an explicit profile root without consulting the environment.
+    ///
+    /// # Errors
+    /// Rejects relative roots and invalid package, room or record identifiers.
+    pub fn room_record_dir_at(
+        profile_root: &Path,
+        package: &str,
+        room: &str,
+        record: &str,
+    ) -> Result<PathBuf, StoreError> {
+        validate_package_id(package)?;
+        validate_record_key(room)?;
+        validate_record_key(record)?;
+        validate_absolute_directory(profile_root)?;
+        Ok(profile_root
+            .join(package)
+            .join(ROOMS_DIR)
+            .join(room)
+            .join(RECORDS_DIR)
+            .join(record))
+    }
+
+    /// Open an exclusive canonical owner. Never adopts stale files or falls back to memory.
+    /// The ownership gate is cooperative: older binaries that do not acquire it can still write,
+    /// so concurrent use of one profile with those binaries is unsupported.
+    ///
+    /// # Errors
+    /// Rejects invalid paths, contested gates and every filesystem durability failure.
+    pub fn open_canonical_at(package_id: &str, directory: &Path) -> Result<Self, StoreError> {
+        Self::open_canonical_with(package_id, directory, |_| {})
+    }
+
+    fn open_canonical_with(
+        package_id: &str,
+        directory: &Path,
+        configure: impl FnOnce(&mut Self),
+    ) -> Result<Self, StoreError> {
+        validate_package_id(package_id)?;
+        validate_absolute_directory(directory)?;
+        fs::create_dir_all(directory).map_err(|e| io_err("creating canonical directory", e))?;
+        let opened = File::open(directory).map_err(|e| io_err("opening canonical directory", e))?;
+        let gate = acquire_gate(&directory.join(CANONICAL_GATE), true)?;
+        let actor = load_or_create_actor(&directory.join(ACTOR_FILE))?;
+        let mut store = Self {
+            package_id: package_id.to_owned(),
+            dir: directory.to_path_buf(),
+            document: directory.join(DOCUMENT_FILE),
+            actor,
+            lock: None,
+            persisted: Vec::new(),
+            refusal: None,
+            gate,
+            canonical: Some(CanonicalState {
+                directory: opened,
+                identity: std::sync::Arc::new(()),
+                accepted: false,
+            }),
+            writer_claimed: AtomicBool::new(false),
+            #[cfg(test)]
+            faults: std::sync::Arc::default(),
+        };
+        configure(&mut store);
+        store.check_canonical_source()?;
+        store.sync_directory_chain()?;
+        Ok(store)
+    }
+
+    fn canonical_state(&self) -> Result<&CanonicalState, StoreError> {
+        self.canonical.as_ref().ok_or_else(|| {
+            io_err(
+                "canonical mode required",
+                io::Error::from(io::ErrorKind::InvalidInput),
+            )
+        })
+    }
+
+    /// Build a private current-schema candidate without publishing bytes or resetting heads.
+    ///
+    /// # Errors
+    /// Rejects legacy mode and propagates schema-stamp errors.
+    pub fn new_canonical_document(&self) -> Result<AutoCommit, StoreError> {
+        self.canonical_state()?;
+        let mut doc = AutoCommit::new().with_actor(self.actor.clone());
+        doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION))
+            .map_err(|e| self.automerge_error(e))?;
+        Ok(doc)
+    }
+
+    fn automerge_error(&self, source: automerge::AutomergeError) -> StoreError {
+        StoreError::Automerge {
+            path: self.document.clone(),
+            source: Box::new(source),
+        }
+    }
+
+    /// Validate every live schema assignment without coercion or mutation.
+    ///
+    /// # Errors
+    /// Rejects legacy mode, malformed/conflicting schemas and newer schemas.
+    pub fn validate_canonical_schema(&self, doc: &AutoCommit) -> Result<(), StoreError> {
+        self.canonical_state()?;
+        let invalid = |reason| StoreError::InvalidSchema {
+            path: self.document.clone(),
+            reason,
+        };
+        let mut versions = Vec::new();
+        for (value, _) in doc
+            .get_all(ROOT, SCHEMA_VERSION_KEY)
+            .map_err(|e| self.automerge_error(e))?
+        {
+            let raw = match value {
+                automerge::Value::Scalar(value) => match value.as_ref() {
+                    automerge::ScalarValue::Uint(v) => *v,
+                    automerge::ScalarValue::Int(v) => {
+                        u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
+                    }
+                    _ => return Err(invalid("schema version must be an integer")),
+                },
+                automerge::Value::Object(_) => {
+                    return Err(invalid("schema version must be a scalar"));
+                }
+            };
+            versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
+        }
+        if let Some(found) = versions
+            .iter()
+            .copied()
+            .max()
+            .filter(|v| *v > SCHEMA_VERSION)
+        {
+            return Err(StoreError::NewerSchema {
+                path: self.document.clone(),
+                found,
+                understood: SCHEMA_VERSION,
+            });
+        }
+        if versions.iter().any(|v| Some(v) != versions.first()) {
+            return Err(invalid("conflicting schema versions"));
+        }
+        Ok(())
+    }
+
+    /// Decode an existing file, retaining any repair privately for identity validation.
+    ///
+    /// # Errors
+    /// Refuses empty, corrupt, changed or unsupported documents without publishing a repair.
+    pub fn load_canonical(&mut self) -> Result<Option<CanonicalLoad>, StoreError> {
+        self.check_canonical_source()?;
+        let source_bytes = match fs::read(&self.document) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_err("reading canonical document", e)),
+        };
+        if source_bytes.is_empty() {
+            return Err(StoreError::EmptyExistingDocument {
+                path: self.document.clone(),
+            });
+        }
+        let (mut doc, repair) = match AutoCommit::load_with_options(
+            &source_bytes,
+            LoadOptions::new().on_partial_load(OnPartialLoad::Error),
+        ) {
+            Ok(doc) => (doc, false),
+            Err(_) => (
+                AutoCommit::load_with_options(
+                    &source_bytes,
+                    LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
+                )
+                .map_err(|e| self.automerge_error(e))?,
+                true,
+            ),
+        };
+        self.validate_canonical_schema(&doc)?;
+        let repair_bytes = repair.then(|| doc.save());
+        Ok(Some(CanonicalLoad {
+            doc,
+            source_bytes,
+            repair_bytes,
+            identity: self.canonical_state()?.identity.clone(),
+        }))
+    }
+
+    /// Accept this owner's exact validated candidate and acknowledge its durable on-disk heads.
+    ///
+    /// # Errors
+    /// Refuses a changed source/owner or any publication/file/directory synchronization failure.
+    pub fn accept_canonical(
+        &mut self,
+        mut loaded: CanonicalLoad,
+    ) -> Result<AutoCommit, StoreError> {
+        self.check_canonical_source()?;
+        if !std::sync::Arc::ptr_eq(&loaded.identity, &self.canonical_state()?.identity)
+            || fs::read(&self.document).ok().as_ref() != Some(&loaded.source_bytes)
+        {
+            return Err(StoreError::SourceChanged {
+                path: self.document.clone(),
+            });
+        }
+        self.validate_canonical_schema(&loaded.doc)?;
+        if let Some(bytes) = loaded.repair_bytes {
+            self.write_full(&bytes)?;
+        } else {
+            File::open(&self.document)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| io_err("syncing accepted document", e))?;
+            self.sync_directory_chain()?;
+        }
+        loaded.doc.set_actor(self.actor.clone());
+        self.persisted = loaded.doc.get_heads();
+        if let Some(state) = self.canonical.as_mut() {
+            state.accepted = true;
+        }
+        Ok(loaded.doc)
+    }
+
+    fn check_canonical_source(&self) -> Result<(), StoreError> {
+        let state = self.canonical_state()?;
+        for (opened, path) in [
+            (&state.directory, self.dir.clone()),
+            (&self.gate, self.dir.join(CANONICAL_GATE)),
+        ] {
+            if !same_file(opened, &path) {
+                return Err(StoreError::SourceChanged { path });
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_directory_chain(&self) -> Result<(), StoreError> {
+        self.check_canonical_source()?;
+        let physical =
+            fs::canonicalize(&self.dir).map_err(|e| io_err("resolving canonical directory", e))?;
+        for path in physical.ancestors() {
+            #[cfg(test)]
+            {
+                self.faults
+                    .sync_visits
+                    .lock()
+                    .unwrap()
+                    .push(path.to_path_buf());
+                if self.faults.sync_failure.lock().unwrap().as_deref() == Some(path) {
+                    return Err(io_err(
+                        "injected directory sync failure",
+                        io::Error::from(io::ErrorKind::Unsupported),
+                    ));
+                }
+            }
+            File::open(path)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
+        }
+        self.check_canonical_source()
     }
 
     pub fn package_id(&self) -> &str {
@@ -468,7 +776,7 @@ impl DocStore {
     /// instance is live: writes still succeed (last writer wins, merged on next
     /// load) but the actor id is fresh rather than the sidecar's.
     pub fn is_exclusive_writer(&self) -> bool {
-        self.lock.is_some()
+        self.canonical.is_some() || self.lock.is_some()
     }
 
     /// Load the persisted document, or `Ok(None)` on a first launch. A trailing
@@ -675,11 +983,25 @@ impl DocStore {
         if delta.is_empty() {
             return Ok(());
         }
+        if self.canonical.is_some() {
+            self.check_canonical_source()?;
+        }
         let mut f = OpenOptions::new()
-            .create(true)
+            .create(self.canonical.is_none())
             .append(true)
             .open(&self.document)
             .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
+        #[cfg(test)]
+        let injected_prefix = self.faults.append_prefix.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(prefix) = injected_prefix {
+            f.write_all(&delta[..prefix.min(delta.len())]).unwrap();
+            f.sync_all().unwrap();
+            return Err(io_err(
+                "injected append failure after prefix",
+                io::Error::from(io::ErrorKind::WriteZero),
+            ));
+        }
         f.write_all(delta)
             .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
         f.sync_all()
@@ -688,11 +1010,98 @@ impl DocStore {
     }
 
     pub(crate) fn write_full(&self, bytes: &[u8]) -> Result<(), StoreError> {
-        fs::create_dir_all(&self.dir)
-            .map_err(|e| io_err(format!("creating {}", self.dir.display()), e))?;
+        if self.canonical.is_some() {
+            self.check_canonical_source()?;
+        } else {
+            fs::create_dir_all(&self.dir)
+                .map_err(|e| io_err(format!("creating {}", self.dir.display()), e))?;
+        }
         atomic_file::write(&self.document, bytes)
-            .map_err(|e| io_err(format!("writing {}", self.document.display()), e))
+            .map_err(|e| io_err(format!("writing {}", self.document.display()), e))?;
+        if self.canonical.is_some() {
+            self.sync_directory_chain()?;
+        }
+        #[cfg(test)]
+        let completion = self.faults.completion.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some((reached, resume)) = completion {
+            reached.send(()).unwrap();
+            resume.recv().unwrap();
+        }
+        Ok(())
     }
+}
+
+fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(io_err(
+            "absolute directory without parent traversal required",
+            io::Error::from(io::ErrorKind::InvalidInput),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn same_file(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(_file: &File, _path: &Path) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| io_err(format!("opening gate {}", path.display()), e))?;
+    let mode = if exclusive {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_SH
+    };
+    // SAFETY: the owned file descriptor remains live for this call and the returned lease.
+    if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::WouldBlock {
+            return Err(StoreError::WriterBusy {
+                path: path.to_path_buf(),
+            });
+        }
+        return Err(io_err("acquiring canonical gate", error));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
+    if exclusive {
+        return Err(io_err(
+            "canonical gate unsupported",
+            io::Error::from(io::ErrorKind::Unsupported),
+        ));
+    }
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| io_err("opening gate", e))
 }
 
 /// Atomically assign a legacy source to one room.  A marker is deliberately
@@ -940,6 +1349,399 @@ mod tests {
             std::env::remove_var("QOS_PACKAGE_ID");
         }
         tmp
+    }
+
+    #[test]
+    fn canonical_lock_child() {
+        let Some(path) = std::env::var_os("QOS_CANONICAL_TEST_DIR") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let canonical = std::env::var_os("QOS_CANONICAL_TEST_MODE").is_some();
+        let mut store = if canonical {
+            DocStore::open_canonical_at("dev.qos.test", &path)
+        } else {
+            DocStore::open_in("dev.qos.test", path)
+        }
+        .unwrap();
+        let mut doc = store.new_document();
+        doc.put(ROOT, "held", true).unwrap();
+        store.save(&mut doc).unwrap();
+        println!("CANONICAL_GATE_READY");
+        std::io::stdout().flush().unwrap();
+        let mut release = String::new();
+        std::io::stdin().read_line(&mut release).unwrap();
+        drop(store);
+    }
+
+    #[test]
+    fn canonical_cross_process_gate_matrix_and_release() {
+        use std::io::BufRead;
+        for first_canonical in [false, true] {
+            for second_canonical in [false, true] {
+                for terminate in [false, true] {
+                    let tmp = TempDir::new().unwrap();
+                    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                    command
+                        .args(["--exact", "tests::canonical_lock_child", "--nocapture"])
+                        .env("QOS_CANONICAL_TEST_DIR", tmp.path())
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped());
+                    if first_canonical {
+                        command.env("QOS_CANONICAL_TEST_MODE", "canonical");
+                    }
+                    let mut child = command.spawn().unwrap();
+                    let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+                    loop {
+                        let mut line = String::new();
+                        assert!(
+                            output.read_line(&mut line).unwrap() > 0,
+                            "child must acquire gate before opener test"
+                        );
+                        if line.contains("CANONICAL_GATE_READY") {
+                            break;
+                        }
+                    }
+                    let actor = fs::read(tmp.path().join(ACTOR_FILE)).unwrap();
+                    let document = fs::read(tmp.path().join(DOCUMENT_FILE)).unwrap();
+                    let open = || {
+                        if second_canonical {
+                            DocStore::open_canonical_at("dev.qos.test", tmp.path())
+                        } else {
+                            DocStore::open_in("dev.qos.test", tmp.path().to_path_buf())
+                        }
+                    };
+                    let result = open();
+                    assert_eq!(result.is_ok(), !first_canonical && !second_canonical);
+                    if first_canonical || second_canonical {
+                        assert!(matches!(result, Err(StoreError::WriterBusy { .. })));
+                    }
+                    assert_eq!(fs::read(tmp.path().join(ACTOR_FILE)).unwrap(), actor);
+                    assert_eq!(fs::read(tmp.path().join(DOCUMENT_FILE)).unwrap(), document);
+                    if terminate {
+                        child.kill().unwrap();
+                    } else {
+                        child.stdin.take().unwrap().write_all(b"release\n").unwrap();
+                    }
+                    child.wait().unwrap();
+                    assert!(open().is_ok());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_directory_sync_failure_is_retried_even_when_ancestors_exist() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("profile/package/rooms/room/records/record");
+        let obligation = fs::canonicalize(tmp.path()).unwrap().join("profile");
+        let faults = std::sync::Arc::new(TestFaults::default());
+        *faults.sync_failure.lock().unwrap() = Some(obligation.clone());
+        let result = DocStore::open_canonical_with("dev.qos.test", &path, |store| {
+            store.faults = faults.clone();
+        });
+        assert!(result.is_err());
+        assert!(path.is_dir());
+        assert!(faults.sync_visits.lock().unwrap().contains(&obligation));
+        *faults.sync_failure.lock().unwrap() = None;
+        faults.sync_visits.lock().unwrap().clear();
+        let store = DocStore::open_canonical_with("dev.qos.test", &path, |store| {
+            store.faults = faults.clone();
+        })
+        .unwrap();
+        assert!(faults.sync_visits.lock().unwrap().contains(&obligation));
+        let physical = fs::canonicalize(&path).unwrap();
+        assert_eq!(
+            *faults.sync_visits.lock().unwrap(),
+            physical
+                .ancestors()
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>()
+        );
+        let mut doc = store.new_canonical_document().unwrap();
+        doc.put(ROOT, "body", "visible").unwrap();
+        *faults.sync_failure.lock().unwrap() = Some(physical);
+        assert!(store.write_full(&doc.save()).is_err());
+        assert_eq!(
+            text_of(
+                &AutoCommit::load(&fs::read(store.document_path()).unwrap()).unwrap(),
+                "body"
+            )
+            .as_deref(),
+            Some("visible")
+        );
+        drop(store);
+        let mut reopen = DocStore::open_canonical_at("dev.qos.test", &path).unwrap();
+        let loaded = reopen.load_canonical().unwrap().unwrap();
+        reopen.accept_canonical(loaded).unwrap();
+    }
+
+    #[test]
+    fn canonical_missing_or_replaced_directory_and_gate_never_recreated() {
+        for replace_gate in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("record");
+            let store = DocStore::open_canonical_at("dev.qos.test", &path).unwrap();
+            if replace_gate {
+                fs::remove_file(path.join(CANONICAL_GATE)).unwrap();
+                fs::write(path.join(CANONICAL_GATE), b"replacement").unwrap();
+            } else {
+                fs::rename(&path, tmp.path().join("moved")).unwrap();
+            }
+            assert!(matches!(
+                store.write_full(b"forbidden"),
+                Err(StoreError::SourceChanged { .. })
+            ));
+            assert!(matches!(
+                store.append_bytes(b"forbidden"),
+                Err(StoreError::SourceChanged { .. })
+            ));
+            assert_eq!(path.exists(), replace_gate);
+        }
+    }
+
+    #[test]
+    fn canonical_empty_corrupt_and_changed_sources_are_never_published() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap();
+        assert!(store.load_canonical().unwrap().is_none());
+        for bytes in [b"".as_slice(), b"not automerge".as_slice()] {
+            fs::write(store.document_path(), bytes).unwrap();
+            assert!(store.load_canonical().is_err());
+            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+        }
+        let mut doc = store.new_canonical_document().unwrap();
+        doc.put(ROOT, "body", "original").unwrap();
+        let bytes = doc.save();
+        fs::write(store.document_path(), &bytes).unwrap();
+        let loaded = store.load_canonical().unwrap().unwrap();
+        fs::write(store.document_path(), b"replacement").unwrap();
+        assert!(matches!(
+            store.accept_canonical(loaded),
+            Err(StoreError::SourceChanged { .. })
+        ));
+        assert_eq!(fs::read(store.document_path()).unwrap(), b"replacement");
+    }
+
+    fn with_partial_tail(doc: &mut AutoCommit) -> Vec<u8> {
+        let heads = doc.get_heads();
+        let mut bytes = doc.save();
+        doc.put(ROOT, "incomplete_tail", true).unwrap();
+        let tail = doc.save_after(&heads);
+        bytes.extend_from_slice(&tail[..tail.len() / 2]);
+        bytes
+    }
+
+    fn assert_malformed_schemas_are_rejected(store: &mut DocStore) {
+        for value in [
+            ScalarValue::Int(-1),
+            ScalarValue::Int(i64::MAX),
+            ScalarValue::Uint(u64::MAX),
+            ScalarValue::F64(1.0),
+            ScalarValue::Str("1".into()),
+            ScalarValue::Boolean(true),
+            ScalarValue::Null,
+            ScalarValue::Timestamp(1),
+            ScalarValue::Counter(1.into()),
+            ScalarValue::Bytes(vec![1]),
+        ] {
+            for torn in [false, true] {
+                let mut doc = AutoCommit::new();
+                doc.put(ROOT, SCHEMA_VERSION_KEY, value.clone()).unwrap();
+                assert_eq!(
+                    schema_version_of(&doc),
+                    SCHEMA_VERSION,
+                    "legacy remains tolerant"
+                );
+                let bytes = if torn {
+                    with_partial_tail(&mut doc)
+                } else {
+                    doc.save()
+                };
+                fs::write(store.document_path(), &bytes).unwrap();
+                assert!(matches!(
+                    store.load_canonical(),
+                    Err(StoreError::InvalidSchema { .. })
+                ));
+                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+            }
+        }
+        let mut object = AutoCommit::new();
+        object
+            .put_object(ROOT, SCHEMA_VERSION_KEY, ObjType::Map)
+            .unwrap();
+        assert!(matches!(
+            store.validate_canonical_schema(&object),
+            Err(StoreError::InvalidSchema { .. })
+        ));
+    }
+
+    fn assert_supported_schemas_are_nonmutating(store: &mut DocStore) {
+        for value in [
+            None,
+            Some(ScalarValue::Int(0)),
+            Some(ScalarValue::Int(1)),
+            Some(ScalarValue::Uint(1)),
+            Some(ScalarValue::Uint(2)),
+        ] {
+            for torn in [false, true] {
+                let mut doc = AutoCommit::new();
+                if let Some(value) = value.clone() {
+                    doc.put(ROOT, SCHEMA_VERSION_KEY, value).unwrap();
+                }
+                let newer = schema_version_of(&doc) > SCHEMA_VERSION;
+                let bytes = if torn {
+                    with_partial_tail(&mut doc)
+                } else {
+                    doc.save()
+                };
+                fs::write(store.document_path(), &bytes).unwrap();
+                if newer {
+                    assert!(matches!(
+                        store.load_canonical(),
+                        Err(StoreError::NewerSchema { .. })
+                    ));
+                } else {
+                    let loaded = store.load_canonical().unwrap().unwrap();
+                    if value.is_none() {
+                        assert!(
+                            loaded
+                                .document()
+                                .get(ROOT, SCHEMA_VERSION_KEY)
+                                .unwrap()
+                                .is_none()
+                        );
+                    }
+                }
+                assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+            }
+        }
+    }
+
+    fn assert_schema_conflicts_are_checked(store: &mut DocStore) {
+        for (left, right, accepted) in [
+            (ScalarValue::Int(1), ScalarValue::Uint(1), true),
+            (ScalarValue::Uint(0), ScalarValue::Uint(1), false),
+        ] {
+            let mut a = AutoCommit::new();
+            let mut b = a.fork();
+            a.put(ROOT, SCHEMA_VERSION_KEY, left).unwrap();
+            b.put(ROOT, SCHEMA_VERSION_KEY, right).unwrap();
+            a.merge(&mut b).unwrap();
+            let bytes = a.save();
+            fs::write(store.document_path(), &bytes).unwrap();
+            if accepted {
+                let loaded = store.load_canonical().unwrap().unwrap();
+                let restored = store.accept_canonical(loaded).unwrap();
+                assert_eq!(restored.get_all(ROOT, SCHEMA_VERSION_KEY).unwrap().len(), 2);
+            } else {
+                assert!(matches!(
+                    store.load_canonical(),
+                    Err(StoreError::InvalidSchema {
+                        reason: "conflicting schema versions",
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+        }
+        let mut supported_winner_seen = false;
+        for swap in [false, true] {
+            let mut a = AutoCommit::new().with_actor(ActorId::from(vec![1]));
+            let mut b = AutoCommit::new().with_actor(ActorId::from(vec![2]));
+            a.put(ROOT, SCHEMA_VERSION_KEY, if swap { 1_u64 } else { 2 })
+                .unwrap();
+            b.put(ROOT, SCHEMA_VERSION_KEY, if swap { 2_u64 } else { 1 })
+                .unwrap();
+            a.merge(&mut b).unwrap();
+            supported_winner_seen |= schema_version_of(&a) == 1;
+            let bytes = a.save();
+            fs::write(store.document_path(), &bytes).unwrap();
+            assert!(matches!(
+                store.load_canonical(),
+                Err(StoreError::NewerSchema { found: 2, .. })
+            ));
+            assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+        }
+        assert!(
+            supported_winner_seen,
+            "must exercise unsupported losing assignment"
+        );
+    }
+
+    #[test]
+    fn canonical_schema_checks_all_live_values_without_mutation() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap();
+        assert_malformed_schemas_are_rejected(&mut store);
+        assert_supported_schemas_are_nonmutating(&mut store);
+        assert_schema_conflicts_are_checked(&mut store);
+    }
+
+    #[test]
+    fn canonical_prefix_repair_sync_failure_leaves_visible_bytes_unacknowledged() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap();
+        let mut doc = store.new_canonical_document().unwrap();
+        doc.put(ROOT, "body", "prefix").unwrap();
+        let torn = with_partial_tail(&mut doc);
+        fs::write(store.document_path(), &torn).unwrap();
+        let loaded = store.load_canonical().unwrap().unwrap();
+        *store.faults.sync_failure.lock().unwrap() = Some(fs::canonicalize(tmp.path()).unwrap());
+        assert!(store.accept_canonical(loaded).is_err());
+        assert!(store.persisted.is_empty());
+        assert!(!store.canonical_state().unwrap().accepted);
+        assert!(AutoCommit::load(&fs::read(store.document_path()).unwrap()).is_ok());
+        *store.faults.sync_failure.lock().unwrap() = None;
+        let loaded = store.load_canonical().unwrap().unwrap();
+        store.accept_canonical(loaded).unwrap();
+        assert!(store.canonical_state().unwrap().accepted);
+    }
+
+    #[test]
+    fn canonical_recovery_waits_for_acceptance_and_is_bound_to_its_store() {
+        let tmp = TempDir::new().unwrap();
+        let mut store = DocStore::open_canonical_at("dev.qos.test", tmp.path()).unwrap();
+        let mut doc = store.new_canonical_document().unwrap();
+        doc.put(ROOT, "body", "prefix").unwrap();
+        let heads = doc.get_heads();
+        let mut bytes = doc.save();
+        doc.put(ROOT, "body", "torn").unwrap();
+        let tail = doc.save_after(&heads);
+        bytes.extend_from_slice(&tail[..tail.len() / 2]);
+        fs::write(store.document_path(), &bytes).unwrap();
+        let loaded = store.load_canonical().unwrap().unwrap();
+        assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+        assert_eq!(
+            text_of(loaded.document(), "body").as_deref(),
+            Some("prefix")
+        );
+        let other = TempDir::new().unwrap();
+        let mut wrong = DocStore::open_canonical_at("dev.qos.test", other.path()).unwrap();
+        assert!(matches!(
+            wrong.accept_canonical(loaded),
+            Err(StoreError::SourceChanged { .. })
+        ));
+        let loaded = store.load_canonical().unwrap().unwrap();
+        store.accept_canonical(loaded).unwrap();
+        assert!(AutoCommit::load(&fs::read(store.document_path()).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn canonical_gate_blocks_legacy_before_actor_creation() {
+        let tmp = TempDir::new().unwrap();
+        // The canonical protocol reserves this gate before touching actor or document.
+        let gate_path = tmp.path().join("canonical.lock");
+        let gate = acquire_writer_lock(&gate_path).unwrap();
+        let result = DocStore::open_in("dev.qos.test", tmp.path().to_path_buf());
+        assert!(
+            result.is_err(),
+            "a legacy opener must respect the canonical gate"
+        );
+        assert!(!tmp.path().join(ACTOR_FILE).exists());
+        assert!(!tmp.path().join(DOCUMENT_FILE).exists());
+        drop(gate);
+        assert!(DocStore::open_in("dev.qos.test", tmp.path().to_path_buf()).is_ok());
     }
 
     fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
