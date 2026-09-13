@@ -359,6 +359,13 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
 }
 
+struct FramePresentationInputs {
+    text_renderer: TextRenderer,
+    theme: Theme,
+    own_identity: String,
+    theme_store_stamp: Option<std::time::SystemTime>,
+}
+
 impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
@@ -457,8 +464,47 @@ impl FrameBuilder {
         (host.with_status_bridge(bridge), chrome)
     }
 
-    fn from_parts((host, chrome): (ShellOverlayHost, Chrome), viewport: (u32, u32)) -> Self {
-        let theme = Self::shots_theme_override().unwrap_or_else(Theme::dark);
+    /// Construct the actual shell widgets with owned files and absent ambient services.
+    /// # Errors
+    /// Rejects persistent trees, unsupported tiles, or missing fixture services before widgets exist.
+    pub fn with_fixture_inputs(
+        tree: WorkspaceTree,
+        viewport: (u32, u32),
+        inputs: super::fixture_inputs::ShellFixtureInputs,
+    ) -> Result<Self, super::fixture_inputs::ShellFixtureError> {
+        super::fixture_inputs::validate(&tree, &inputs.hosted)?;
+        let parts =
+            super::build_nirios_overlay_host_with_fixture_inputs(tree.shared(), inputs.hosted)?;
+        Ok(Self::from_parts_with_presentation(
+            parts,
+            viewport,
+            FramePresentationInputs {
+                text_renderer: inputs.text_renderer,
+                theme: inputs.theme,
+                own_identity: "shell-fixture".into(),
+                theme_store_stamp: None,
+            },
+        ))
+    }
+
+    fn from_parts(parts: (ShellOverlayHost, Chrome), viewport: (u32, u32)) -> Self {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Frame production presentation");
+        let presentation = FramePresentationInputs {
+            theme: Self::shots_theme_override().unwrap_or_else(Theme::dark),
+            text_renderer: TextRenderer::new(),
+            own_identity: crate::shell::state::local_user_id(),
+            theme_store_stamp: settings_store::settings_path()
+                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+        };
+        Self::from_parts_with_presentation(parts, viewport, presentation)
+    }
+
+    fn from_parts_with_presentation(
+        (host, chrome): (ShellOverlayHost, Chrome),
+        viewport: (u32, u32),
+        presentation: FramePresentationInputs,
+    ) -> Self {
         let mut builder = Self {
             host,
             chrome,
@@ -466,12 +512,11 @@ impl FrameBuilder {
             node_map: HashMap::new(),
             host_node: None,
             root_node: None,
-            text_renderer: TextRenderer::new(),
+            text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
-            theme,
+            theme: presentation.theme,
             watch_configured_theme: false,
-            theme_store_stamp: settings_store::settings_path()
-                .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
+            theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
             night_light: false,
             night_light_temperature: 3_700,
@@ -483,7 +528,7 @@ impl FrameBuilder {
                 // including this subscription, so excluding our own identity avoids
                 // the owner seeing a presence pill over their own window.
                 let mut ctx = PresenceCtx::default();
-                ctx.set_own_identity([crate::shell::state::local_user_id()]);
+                ctx.set_own_identity([presentation.own_identity]);
                 ctx
             },
             peer_presence: None,

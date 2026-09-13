@@ -64,3 +64,48 @@ pub fn key_press(logical: &str, mods: Mods) -> KeyPress {
         mods,
     }
 }
+
+#[cfg(test)]
+mod ambient {
+
+    static DENY_AMBIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static AMBIENT_ATTEMPTS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    pub(crate) struct DenyAmbientStarts {
+        initial_attempts: usize,
+    }
+    impl DenyAmbientStarts {
+        pub(crate) fn new() -> Self {
+            use std::sync::atomic::Ordering;
+            assert!(
+                !DENY_AMBIENT.swap(true, Ordering::SeqCst),
+                "ambient guard already armed"
+            );
+            AMBIENT_ATTEMPTS.store(0, Ordering::SeqCst);
+            Self {
+                initial_attempts: 0,
+            }
+        }
+        pub(crate) fn attempts(&self) -> usize {
+            AMBIENT_ATTEMPTS
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .saturating_sub(self.initial_attempts)
+        }
+    }
+    impl Drop for DenyAmbientStarts {
+        fn drop(&mut self) {
+            DENY_AMBIENT.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    pub(crate) fn ambient_start(boundary: &'static str) {
+        use std::sync::atomic::Ordering;
+        if DENY_AMBIENT.load(Ordering::SeqCst) {
+            AMBIENT_ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            panic!("ambient service start forbidden: {boundary}");
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) use ambient::{DenyAmbientStarts, ambient_start};

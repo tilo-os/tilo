@@ -119,6 +119,7 @@ pub struct DesktopBackdrop {
     /// Private workspace identity used only to select a local image cache.
     /// It never enters workspace replication or app-visible widget state.
     workspace_id: Option<String>,
+    wallpaper_available: bool,
 }
 
 /// The ground is the system's largest, quietest surface — at desktop
@@ -226,6 +227,7 @@ impl DesktopBackdrop {
             cache_rect: Rect::ZERO,
             cache_stops: None,
             workspace_id: None,
+            wallpaper_available: true,
         }
     }
 
@@ -235,6 +237,13 @@ impl DesktopBackdrop {
     pub fn for_workspace(workspace_id: impl Into<String>) -> Self {
         let mut backdrop = Self::new();
         backdrop.workspace_id = Some(workspace_id.into());
+        backdrop
+    }
+
+    /// Retain the workspace appearance with no portal or persisted wallpaper source.
+    pub(crate) fn for_workspace_without_wallpaper(workspace_id: impl Into<String>) -> Self {
+        let mut backdrop = Self::for_workspace(workspace_id);
+        backdrop.wallpaper_available = false;
         backdrop
     }
 
@@ -258,7 +267,11 @@ impl DesktopBackdrop {
         // Kept outside the gradient/grid scene cache: a portal import updates
         // the private wallpaper registry asynchronously and must appear
         // without requiring an unrelated resize or theme change.
-        if let Some(workspace_id) = self.workspace_id.as_deref() {
+        if self.wallpaper_available
+            && let Some(workspace_id) = self.workspace_id.as_deref()
+        {
+            #[cfg(test)]
+            crate::shell::test_support::ambient_start("workspace wallpaper lookup");
             let image =
                 crate::portal::desktop_services::wallpaper_preview_file_for_workspace(workspace_id)
                     .and_then(|path| read_normalised_wallpaper(&path))
