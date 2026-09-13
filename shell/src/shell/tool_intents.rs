@@ -174,6 +174,12 @@ fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<()
 }
 
 fn serve_client(stream: UnixStream, handler: &Handler) {
+    // Darwin inherits the listener's nonblocking flag on accept. This worker
+    // uses blocking framed I/O; an empty receive is not the end of a session.
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::warn!(%error, "cannot configure blocking service connection");
+        return;
+    }
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();

@@ -226,7 +226,7 @@ pub enum EncodeTickOutcome {
 
 /// Drive one iteration of the owner-side damage-aware encode loop.
 /// `fetch_frame` bottoms out at
-/// [`crate::compositor::surface_readback::SurfaceTracker::take_latest`] in
+/// [`crate::network::surface_tracker::SurfaceTracker::take_latest`] in
 /// production, a synthesised RGBA frame in tests. Not mutated until an
 /// encode succeeds, so callers swallowing [`EncodeTickOutcome::EncodeFailed`] don't poison the timestamp.
 pub fn encode_tick<F>(
@@ -281,6 +281,7 @@ mod tests {
     use std::time::Duration;
 
     /// Put `surface` on screen, focused, unobstructed, so the firewall's checks have something to answer from.
+    #[cfg(target_os = "linux")]
     fn stage_shared_surface(state: &mut crate::compositor::state::State, surface: SurfaceId) {
         use crate::network::input_firewall::ShellView;
         use vello::kurbo::Rect;
@@ -368,14 +369,14 @@ mod tests {
     }
 
     /// Wires the real production egress path through a
-    /// [`crate::compositor::surface_readback::SurfaceTracker`]: a deposited
+    /// [`crate::network::surface_tracker::SurfaceTracker`]: a deposited
     /// frame is drained via `take_latest`, H.264-decoded, and
     /// PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
     /// `#[cfg(test)]`-gated since production bytes arrive via a real shm `wl_buffer`.
     #[test]
     fn shared_foreign_surface_round_trips_rgba() {
-        use crate::compositor::surface_readback::SurfaceTracker;
         use crate::network::decoder::H264Decoder;
+        use crate::network::surface_tracker::SurfaceTracker;
 
         const W: u32 = 64;
         const H: u32 = 64;
@@ -460,6 +461,7 @@ mod tests {
 
     /// `RemoteInputSink::apply` for `State` calls `PointerHandle::motion` for `PointerMotion`; asserts the pointer's location reflects the injected coordinates.
     #[test]
+    #[cfg(target_os = "linux")]
     fn apply_remote_input_pointer_motion_reaches_seat() {
         use crate::compositor::state::State;
         use crate::network::streaming::{InputEvent, StreamingShare};
@@ -525,6 +527,7 @@ mod tests {
 
     /// `InputEvent::Key` must reach `KeyboardHandle::input` — proven via `forwarded_pressed_keys` after a Key event.
     #[test]
+    #[cfg(target_os = "linux")]
     fn apply_remote_input_key_reaches_keyboard() {
         use crate::compositor::state::State;
         use crate::network::streaming::{InputEvent, StreamingShare};
@@ -613,6 +616,7 @@ mod tests {
     /// Hover and click focus are independent: pointer leave preserves the
     /// caret, while an explicit blur releases keyboard focus.
     #[test]
+    #[cfg(target_os = "linux")]
     fn pointer_leave_preserves_focus_until_explicit_blur() {
         use crate::compositor::state::State;
         use crate::network::streaming::{InputEvent, StreamingShare};
@@ -677,7 +681,7 @@ mod tests {
 
     #[test]
     fn encode_tick_throttled_when_within_interval() {
-        use crate::compositor::surface_readback::SurfaceTracker;
+        use crate::network::surface_tracker::SurfaceTracker;
 
         const W: u32 = 32;
         const H: u32 = 32;
@@ -711,6 +715,7 @@ mod tests {
 
     /// A `RemoteDesktop` `NotifyPointerMotionAbsolute` must reach the real smithay seat, mirroring the peer-sync motion test above.
     #[test]
+    #[cfg(target_os = "linux")]
     fn apply_remote_desktop_absolute_motion_reaches_seat() {
         use crate::compositor::state::State;
         use crate::network::streaming::RemoteAction;
@@ -742,6 +747,7 @@ mod tests {
 
     /// A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.
     #[test]
+    #[cfg(target_os = "linux")]
     fn apply_remote_desktop_keycode_reaches_keyboard() {
         use crate::compositor::state::State;
         use crate::network::streaming::RemoteAction;
@@ -784,6 +790,7 @@ mod tests {
 
     /// End-to-end production path: a [`ChannelInjector`] carries a decoded action into `apply_remote_desktop_action` against the real seat.
     #[test]
+    #[cfg(target_os = "linux")]
     fn remote_desktop_channel_injector_drives_the_seat() {
         use crate::compositor::state::State;
         use crate::network::streaming::RemoteAction;

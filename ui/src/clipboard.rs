@@ -48,10 +48,8 @@ fn join_bounded(thread: std::thread::JoinHandle<()>, budget: std::time::Duration
     }
 }
 
-#[cfg(target_os = "linux")]
 pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
-#[cfg(target_os = "linux")]
 pub const MAX_CLIPBOARD_IMAGE_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Which selection a clipboard operation refers to.

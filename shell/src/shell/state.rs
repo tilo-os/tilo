@@ -10138,8 +10138,8 @@ mod active_group_tests {
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn mixed_layout_edits_survive_every_restart_boundary() {
-        use crate::compositor::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
         use crate::shell::persist::load_tree_from;
+        use crate::shell::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
 
         let state_dir = tempfile::tempdir().expect("state dir");
         let state_path = state_dir.path().join("state.json");

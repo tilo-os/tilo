@@ -397,11 +397,24 @@ fn named_delivery_status_key(delivery: collab_types::NamedShareDeliveryStateV1) 
     }
 }
 
+/// Explicit initial presentation data for an embedded Files view.
+/// Paths here are data, not authorization; the host must separately enforce its grants.
+/// Injected views never discover ambient accounts, identities or workspace roots.
+#[derive(Clone)]
+pub struct StartupInputs {
+    pub initial_dir: PathBuf,
+    pub workspace_roots: Vec<PathBuf>,
+    pub record_roots: Vec<PathBuf>,
+    pub remote_accounts: Vec<crate::remote_accounts::RemoteAccount>,
+    pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FileExplorerWidget {
+    startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
@@ -701,7 +714,35 @@ impl FileExplorerWidget {
         home: Option<PathBuf>,
         user_dirs: favorites::UserDirs,
     ) -> Self {
-        let cwd = initial_path();
+        Self::with_inputs(config_dir, home, user_dirs, None)
+    }
+
+    /// Build the real widget from host-supplied startup data, without ambient discovery.
+    pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
+        Self::with_inputs(None, None, favorites::UserDirs::default(), Some(inputs))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Declare the complete stable widget state in one auditable constructor."
+    )]
+    fn with_inputs(
+        config_dir: Option<PathBuf>,
+        home: Option<PathBuf>,
+        user_dirs: favorites::UserDirs,
+        inputs: Option<StartupInputs>,
+    ) -> Self {
+        let injected = inputs.is_some();
+        let inputs = inputs.unwrap_or_else(|| StartupInputs {
+            initial_dir: initial_path(),
+            workspace_roots: crate::model::workspace_roots(),
+            record_roots: crate::model::workspace_record_authority_roots(),
+            remote_accounts: crate::remote_accounts::load(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
+                .unwrap_or_default(),
+        });
+        let cwd = inputs.initial_dir;
+
         let zoom_level = config_dir.as_deref().map_or(0, config::load_zoom);
         // Favourites: persisted list when we have a home + config dir, else the
         // built-in defaults so the sidebar is never empty. Standard entries
@@ -712,18 +753,17 @@ impl FileExplorerWidget {
             (None, _) => Vec::new(),
         };
         let show_hidden = false;
-        let workspace_roots = crate::model::workspace_roots();
+        let workspace_roots = inputs.workspace_roots;
         // Construct each durable namespace once. Subsequent refreshes are
         // revision-gated by `refresh_external_search_catalogs`, never by palette input.
         let places_search = crate::search_provider::PlacesSearchProvider::new(&favorites);
-        let mut collaborative_record_pager = crate::model::WorkspaceRecordIndexPager::new(
-            &crate::model::workspace_record_authority_roots(),
-        );
+        let mut collaborative_record_pager =
+            crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
         let initial_collaborative_page = collaborative_record_pager.next_page();
         let collaborative_search = crate::search_provider::CollaborativeRecordSearchProvider::new(
             &initial_collaborative_page.records,
         );
-        let remote_accounts = crate::remote_accounts::load();
+        let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearchProvider::new(&remote_accounts);
         let mut entries = read_dir_sync(&cwd).unwrap_or_default();
@@ -733,9 +773,10 @@ impl FileExplorerWidget {
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
         let thumbs = build_thumb_service(config_dir.as_deref()).map(Arc::new);
-        let trusted_humans =
-            crate::identity_directory::TrustedHumanDirectory::load_default().unwrap_or_default();
+        let trusted_humans = inputs.trusted_humans;
+        let startup_accounts = injected.then_some(remote_accounts);
         Self {
+            startup_accounts,
             current_path: cwd,
             home_path: home,
             entries,
@@ -892,13 +933,19 @@ impl FileExplorerWidget {
     /// Refresh external metadata after an explicit directory refresh/navigation
     /// or completed remote operation. The mount portion consumes a single
     /// bounded continuation page, never its entire authority.
+    fn remote_account_snapshot(&self) -> Vec<crate::remote_accounts::RemoteAccount> {
+        self.startup_accounts
+            .clone()
+            .unwrap_or_else(crate::remote_accounts::load)
+    }
+
     fn refresh_external_search_catalogs(&mut self) {
         let page = self.advance_collaborative_search_page();
         if page.truncated {
             self.status = Some("Collaborative search needs a refresh to continue.".to_string());
         }
         self.remote_accounts_search_revision = self.remote_accounts_search_revision.wrapping_add(1);
-        let accounts = crate::remote_accounts::load();
+        let accounts = self.remote_account_snapshot();
         self.remote_accounts_search
             .refresh(self.remote_accounts_search_revision, &accounts);
     }
@@ -1532,6 +1579,9 @@ impl FileExplorerWidget {
     }
 
     fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
+        if self.startup_accounts.is_some() && path.is_none() {
+            return false;
+        }
         let next = path.map_or_else(
             crate::identity_directory::TrustedHumanDirectory::load_default,
             crate::identity_directory::TrustedHumanDirectory::load,
@@ -6930,7 +6980,7 @@ impl Widget for FileExplorerWidget {
         // permission and never opens the credential vault; opening one shows
         // its truthful lifecycle/mount state rather than fabricating a remote
         // directory that this sandbox cannot actually access.
-        for account in crate::remote_accounts::load() {
+        for account in self.remote_account_snapshot() {
             let resource_id = crate::remote_accounts::resource_id(&account.id);
             let payload = vec!["details".to_string(), account.id.to_string()];
             let mut resource =
@@ -12345,5 +12395,44 @@ mod breadcrumb_home_tests {
             crate::model::format_path(&granted_path, widget_home.as_deref()),
             "~",
         );
+    }
+}
+
+#[cfg(test)]
+mod injected_startup_tests {
+    use super::*;
+
+    #[test]
+    fn injected_startup_and_reload_keep_the_host_directory_and_catalogs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("host-document.txt"), b"host").unwrap();
+        let account = crate::remote_accounts::RemoteAccount {
+            id: accounts::AccountId::from("host-fixture".to_string()),
+            kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+            label: "Host fixture".to_string(),
+            host: "fixture.invalid".to_string(),
+            health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+        };
+        let mut widget = FileExplorerWidget::with_startup_inputs(StartupInputs {
+            initial_dir: dir.path().to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: vec![account.clone()],
+            trusted_humans: Default::default(),
+        });
+        assert_eq!(widget.current_path, dir.path());
+        assert_eq!(widget.displayed_entries().len(), 1);
+        assert_eq!(widget.displayed_entries()[0].name, "host-document.txt");
+        ui::widget::Widget::set_focus(&mut widget, true);
+        let mut document = automerge::AutoCommit::new();
+        ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        widget.refresh_external_search_catalogs();
+        assert!(!widget.refresh_trusted_identities(None));
+        widget.refresh_metadata_if_due(Instant::now() + LIVE_METADATA_REFRESH_INTERVAL);
+        widget.refresh();
+        assert_eq!(widget.current_path, dir.path());
+        assert!(widget.workspace_roots.is_empty());
+        assert_eq!(widget.remote_account_snapshot(), vec![account]);
+        assert_eq!(widget.trusted_humans, Default::default());
     }
 }

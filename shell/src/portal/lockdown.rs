@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use zbus::interface;
 
+#[cfg(target_os = "linux")]
 use super::PortalContext;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct LockdownBackend {
 }
 
 impl LockdownBackend {
+    #[cfg(target_os = "linux")]
     pub fn new(_ctx: PortalContext) -> Self {
         Self::at_path(default_path())
     }

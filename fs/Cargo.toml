@@ -11,7 +11,6 @@ atomic-file = { path = "../crates/system/atomic-file" }
 anyhow.workspace = true
 bytes.workspace = true
 clap.workspace = true
-fuser.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-blobs.workspace = true
@@ -57,3 +56,10 @@ image = { workspace = true, features = ["png"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+fuser.workspace = true
+
+# Shared filesystem and relay data remain available; no native mount provider.
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { workspace = true, features = ["macos-no-mount"] }

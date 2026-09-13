@@ -43,10 +43,10 @@ pub struct HostApp {
 /// A palette launch held until the compositor can mint its external
 /// `xdg_activation_v1` token on the compositor thread.
 #[derive(Debug, Clone)]
-pub(crate) struct QueuedLaunch {
+pub struct QueuedLaunch {
     pub desktop_id: String,
     pub display_name: String,
-    pub placement: crate::compositor::tab_binding::Placement,
+    pub placement: crate::shell::tab_binding::Placement,
     pub portal_workspace_id: Option<String>,
 }
 
@@ -55,13 +55,29 @@ fn queued_launches() -> &'static std::sync::Mutex<Vec<QueuedLaunch>> {
     QUEUED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-pub(crate) fn queue_launch(request: QueuedLaunch) {
+fn require_host_execution() -> Result<(), LaunchError> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(LaunchError::ProviderUnavailable {
+            provider: "Linux host application execution",
+        })
+    }
+}
+
+pub(crate) fn queue_launch(request: QueuedLaunch) -> Result<(), LaunchError> {
+    require_host_execution()?;
     queued_launches()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(request);
+    Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
     std::mem::take(
         &mut *queued_launches()
@@ -81,6 +97,7 @@ fn x11_slot() -> &'static RwLock<Option<X11Session>> {
     SESSION.get_or_init(|| RwLock::new(None))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn set_x11_session(session: Option<X11Session>) {
     if let Ok(mut slot) = x11_slot().write() {
         *slot = session;
@@ -275,6 +292,10 @@ pub fn launch_with_document_and_activation(
     portal_workspace_id: Option<String>,
     activation_token: Option<&str>,
 ) -> Result<HostApp, LaunchError> {
+    if let Err(error) = require_host_execution() {
+        launcher::clear_pending_placement(desktop_id);
+        return Err(error);
+    }
     // Placement is recorded before this function is called, while the user
     // action's layout is still current.  A refusal before the worker starts
     // must retire that one-shot note or a later independently-opened window
@@ -314,7 +335,7 @@ pub fn launch_with_document_and_activation(
 
 /// A foreign toplevel arrives with an `app_id` qOS didn't mint, so the
 /// note is keyed on every identity the entry might use.
-pub fn note_placement(app: &HostApp, placement: crate::compositor::tab_binding::Placement) {
+pub fn note_placement(app: &HostApp, placement: crate::shell::tab_binding::Placement) {
     launcher::set_pending_placement_for_identities(
         &app.desktop_id,
         &app.window_identities,
@@ -545,18 +566,32 @@ mod tests {
     fn a_refused_host_launch_cannot_leave_a_stale_placement() {
         const MISSING: &str = "org.qos.test.definitely-not-a-desktop-entry";
         launcher::clear_pending_placements();
-        launcher::set_pending_placement(
-            MISSING,
-            crate::compositor::tab_binding::Placement::NewGroup,
-        );
+        launcher::set_pending_placement(MISSING, crate::shell::tab_binding::Placement::NewGroup);
 
+        let result = launch(MISSING, None);
+        #[cfg(target_os = "linux")]
+        assert!(matches!(result, Err(LaunchError::HostAppNotFound { .. })));
+        #[cfg(not(target_os = "linux"))]
         assert!(matches!(
-            launch(MISSING, None),
-            Err(LaunchError::HostAppNotFound { .. })
+            result,
+            Err(LaunchError::ProviderUnavailable { .. })
         ));
         assert!(
             launcher::placement_for_toplevel(MISSING, 0xC1_05_ED).is_none(),
             "a later unrelated window must not inherit a launch that was refused"
         );
+    }
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+mod unavailable_provider_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_host_execution_fails_before_catalogue_discovery() {
+        assert!(matches!(
+            launch("fixture.desktop", None),
+            Err(LaunchError::ProviderUnavailable { .. })
+        ));
     }
 }
