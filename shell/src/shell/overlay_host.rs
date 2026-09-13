@@ -657,6 +657,7 @@ struct OverlayInputs {
     room_activity: crate::shell::room_activity::RoomActivityPane,
     projection_overlay: ProjectionOverlay,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
+    portal_dialogs: PortalDialogController,
 }
 
 #[allow(
@@ -1747,6 +1748,7 @@ impl ShellOverlayHost {
                 qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
                 room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
                 projection_overlay: ProjectionOverlay::default(),
+                portal_dialogs: PortalDialogController::default(),
                 history_narrator: Some(
                     crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 ),
@@ -1781,6 +1783,9 @@ impl ShellOverlayHost {
                 qs_actions: Box::new(crate::shell::qs_actions::UnavailableQsActions),
                 room_activity: crate::shell::room_activity::RoomActivityPane::new(),
                 history_narrator: None,
+                portal_dialogs: PortalDialogController::new(
+                    crate::shell::portal_dialog::PortalDialogQueue::default(),
+                ),
                 projection_overlay: ProjectionOverlay::from_controller(
                     crate::shell::projection::ProjectionController::unavailable(),
                 ),
@@ -1867,7 +1872,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             portal_prompts: None,
             file_picker_overlay: FilePickerOverlay::default(),
-            portal_dialogs: PortalDialogController::default(),
+            portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
@@ -4476,6 +4481,9 @@ impl ShellOverlayHost {
     /// tab counts — what settles it is the app's first frame or placeholder
     /// card, whichever shows first, handing over to the window's own place.
     pub(crate) fn retire_notices_for_opened_windows(&self) -> bool {
+        if self.desktop_controls.is_explicit() {
+            return false;
+        }
         let pending = crate::shell::catalogue::pending_notices();
         if pending.is_empty() {
             return false;
