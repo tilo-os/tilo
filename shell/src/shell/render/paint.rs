@@ -3487,6 +3487,7 @@ mod tests {
     //! Renderer gates require an actual wgpu adapter on every selected host.
     use super::*;
     use crate::shell::frame::FrameBuilder;
+    use crate::shell::test_support::PopulatedShellFixture;
     use automerge::{AutoCommit, ROOT};
     use ui::taffy::NodeId;
     use vello::kurbo::Affine;
@@ -5270,11 +5271,13 @@ mod tests {
         let mut two_history = XrgbTargetHistory::new(2);
         let mut one_destination = vec![0xA7; len];
         let mut two_destinations = [vec![0xB8; len], vec![0xC9; len]];
-        let mut frame = FrameBuilder::new((WIDTH, HEIGHT));
+        let mut frame = PopulatedShellFixture::new((WIDTH, HEIGHT), ui::theme::Theme::dark());
         let mut document = AutoCommit::new();
         let mut focus = None;
         let mut one_partial = 0_u64;
         let mut two_partial = 0_u64;
+        let mut previous_quick_settings = None;
+        let mut previous_pixels: Option<Vec<u8>> = None;
 
         for sample_index in 0..=12 {
             if sample_index != 0 {
@@ -5297,6 +5300,21 @@ mod tests {
                 frame.relayout();
             }
             let painted = frame.paint_with_damage();
+            assert!(
+                !painted.scene.encoding().is_empty(),
+                "native benchmark sample {sample_index} must record a scene"
+            );
+            let overlays = frame.chrome().overlays;
+            assert!(
+                !overlays.overview,
+                "overview click dismisses Quick Settings"
+            );
+            if let Some(previous) = previous_quick_settings {
+                assert_ne!(
+                    overlays.quick_settings, previous,
+                    "native benchmark action {sample_index} must change Quick Settings state"
+                );
+            }
             let damage = SceneDamage {
                 revision: painted.revision,
                 previous_revision: painted.previous_revision,
@@ -5337,6 +5355,21 @@ mod tests {
                 &one_reference,
                 "one-target native current-staging output",
             );
+            if let Some(previous) = previous_pixels.as_ref() {
+                let visible_row_bytes = width.checked_mul(4).expect("native visible row bytes");
+                assert!(
+                    (0..height).any(|row| {
+                        let start = row.checked_mul(pitch).expect("native row start");
+                        let end = start
+                            .checked_add(visible_row_bytes)
+                            .expect("native visible row end");
+                        previous[start..end] != one_reference[start..end]
+                    }),
+                    "native benchmark action {sample_index} must change actual output pixels"
+                );
+            }
+            previous_quick_settings = Some(overlays.quick_settings);
+            previous_pixels = Some(one_reference);
 
             let target_index = sample_index % two_destinations.len();
             let transaction = two_history.prepare(
