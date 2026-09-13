@@ -1,4 +1,4 @@
-//! CPU-fallback Vello → XRGB bridge for the DRM backend.
+//! Shared retained Vello GPU target and CPU-fallback XRGB bridge for DRM.
 //!
 //! Vello renders into a wgpu texture, then this bridge reads it back and swizzles directly into
 //! the scanout's mapped XRGB dumb buffer. The DRM path does not use GLES; `Scanout::present_into`
@@ -53,6 +53,17 @@ pub enum BridgeError {
 
     #[error("invalid internal device handle: {0}")]
     InvalidDevice(String),
+
+    #[error("GPU-only absolute deadline exceeded")]
+    DeadlineExceeded,
+    #[error("bump counter readback: {0}")]
+    BumpReadback(String),
+    #[error("device poll: {0}")]
+    DevicePoll(String),
+    #[error("device lost: {0}")]
+    DeviceLost(String),
+    #[error("retained GPU target must be reconstructed")]
+    RecreateRequired,
 
     #[error("XRGB destination-history transaction does not match this scene damage")]
     XrgbHistoryMismatch,
@@ -183,55 +194,155 @@ pub struct SegmentOrderReplayDiagnostic {
     pub right_witness: Vec<u32>,
 }
 
-/// Result of attempting the opt-in sparse path. An overflow has already submitted and mapped
-/// work, but those pixels are not safe to expose; its caller immediately starts a dense recovery.
-enum SparseReadback {
-    Unavailable,
-    Complete {
-        mapped: wgpu::BufferView,
-        stats: vello::SparseRenderStats,
-    },
-    Overflow {
-        stats: vello::SparseRenderStats,
+#[derive(Clone, Copy, Debug)]
+enum CompletionPolicy {
+    Absolute(Instant),
+    LinuxPerPhase,
+}
+const LINUX_FENCE_WAIT: Duration = Duration::from_secs(1);
+const LINUX_MAP_CALLBACK_WAIT: Duration = Duration::from_secs(1);
+const BUMP_SETTLEMENT_WAIT: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaitPhase {
+    Fence,
+    MapCallback,
+    Marker,
+}
+
+#[cfg(test)]
+struct CompletionTest {
+    start: Instant,
+    elapsed: Duration,
+    encode_elapsed: Duration,
+    fence_elapsed: Duration,
+    callback_elapsed: Duration,
+    pending_elapsed: Duration,
+    waits: Vec<(WaitPhase, Duration)>,
+    counter_remaining: Vec<Duration>,
+    counters: std::collections::VecDeque<Result<vello::BumpBudgetPoll, vello::BumpBudgetError>>,
+    failure: Option<WaitPhase>,
+    destroy_at_marker: bool,
+}
+
+#[derive(Clone, Copy)]
+enum FrameOutput<'a> {
+    GpuOnly,
+    Xrgb {
+        buffer: &'a wgpu::Buffer,
+        stride: u32,
+        partial: bool,
     },
 }
 
-impl SparseReadback {
-    fn stats(&self) -> Option<vello::SparseRenderStats> {
+impl FrameOutput<'_> {
+    fn append(
+        self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        size: (u32, u32),
+        damage: Option<&[vello::FineDamageRect]>,
+    ) {
+        let Self::Xrgb {
+            buffer,
+            stride,
+            partial,
+        } = self
+        else {
+            return;
+        };
+        if let Some(damage) = damage.filter(|_| partial) {
+            for rect in damage {
+                encoder.copy_texture_to_buffer(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: rect.x,
+                            y: rect.y,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyBufferInfo {
+                        buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: u64::from(rect.y)
+                                .saturating_mul(u64::from(stride))
+                                .saturating_add(u64::from(rect.x).saturating_mul(4)),
+                            bytes_per_row: Some(stride),
+                            rows_per_image: Some(rect.height),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: rect.width,
+                        height: rect.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        } else {
+            VelloDrmBridge::append_full_copy(encoder, texture, buffer, stride, size.0, size.1);
+        }
+    }
+
+    fn copy_bytes(self, size: (u32, u32), damage: Option<&[vello::FineDamageRect]>) -> u64 {
         match self {
-            Self::Unavailable => None,
-            Self::Complete { stats, .. } | Self::Overflow { stats } => Some(*stats),
+            Self::GpuOnly => 0,
+            Self::Xrgb { partial: true, .. } if damage.is_some() => {
+                VelloDrmBridge::sparse_damage_readback_bytes(damage.unwrap_or_default())
+            }
+            Self::Xrgb { .. } => u64::from(size.0)
+                .saturating_mul(u64::from(size.1))
+                .saturating_mul(4),
+        }
+    }
+
+    fn unmap(self) {
+        if let Self::Xrgb { buffer, .. } = self {
+            buffer.unmap();
         }
     }
 }
 
-/// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
-/// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
-#[cfg_attr(
-    test,
-    allow(
-        clippy::struct_excessive_bools,
-        reason = "the cfg(test)-only tracked-swizzle fault bit is a narrow cleanup-path injection, not production state"
-    )
-)]
-pub struct VelloDrmBridge {
-    context: RenderContext,
-    dev_id: usize,
+/// Accounting for actual Vello attempts, completion markers and framebuffer output.
+#[derive(Debug, Default)]
+pub struct GpuFrameStats {
+    pub revision: u64,
+    pub damage_admitted: bool,
+    pub render_attempts: usize,
+    pub sparse_attempts: usize,
+    pub full_attempts: usize,
+    pub completion_markers: usize,
+    pub framebuffer_copy_bytes: u64,
+    pub framebuffer_staging_bytes: u64,
+}
+
+/// Same-device retained Vello output. Sampling is permitted only after successful completion.
+pub struct RetainedGpuTarget {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    loss: ui::gpu::DeviceLossMonitor,
+    poisoned: bool,
+    geometry_generation: u64,
+    completion_markers: usize,
+    #[cfg(test)]
+    completion_test: Option<CompletionTest>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
     /// Offscreen render target. Recreated on resize.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    /// Readback buffer (padded to the wgpu row alignment requirement).
-    readback_buf: wgpu::Buffer,
-    /// Bytes-per-row in the padded readback buffer; may exceed `width * 4` when the tight stride doesn't divide 256.
-    padded_bytes_per_row: u32,
-    /// Tight (no padding) RGBA buffer the public `paint` returns.
-    readback: Vec<u8>,
-    /// Current size; resize triggers reallocation of `texture` + `readback_buf`.
+    /// Current native extent; resize recreates the target texture.
     size: (u32, u32),
     /// Base color used to clear when the caller's scene is empty; matches the winit backend's fallback so the host window doesn't flash white.
     base_color: Color,
+    /// The target contains a complete settled frame, independent of CPU staging validity.
+    retained_target_valid: bool,
+    /// Revision associated with the complete retained frame. Legacy full-render APIs do not
+    /// carry a revision, so they intentionally clear this even though their target is complete.
+    last_successful_revision: Option<u64>,
     /// Total Vello submissions used by the latest paint, including sparse work and bounded
     /// bump-budget recovery retries.
     last_render_attempts: usize,
@@ -260,16 +371,790 @@ pub struct VelloDrmBridge {
     /// available when that submission overflows and is followed by a dense recovery, so
     /// diagnostics describe the submitted sparse work rather than guessing from capability.
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
+}
+
+impl RetainedGpuTarget {
+    /// Construct an offscreen target on the supplied context-owned device and queue.
+    ///
+    /// # Errors
+    /// Returns a size or renderer error if construction cannot complete.
+    pub fn new(gpu: &ui::gpu::DeviceHandle, width: u32, height: u32) -> Result<Self, BridgeError> {
+        Self::validate_size(&gpu.device, width, height)?;
+        if let Some(reason) = gpu.loss_monitor().reason() {
+            return Err(BridgeError::DeviceLost(reason));
+        }
+        let (texture, view) = Self::allocate_texture(&gpu.device, width, height);
+        let renderer = Renderer::new(
+            &gpu.device,
+            RendererOptions {
+                use_cpu: false,
+                antialiasing_support: AaSupport::all(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        Ok(Self {
+            device: gpu.device.clone(),
+            queue: gpu.queue.clone(),
+            renderer,
+            texture,
+            view,
+            loss: gpu.loss_monitor(),
+            poisoned: false,
+            geometry_generation: 1,
+            completion_markers: 0,
+            #[cfg(test)]
+            completion_test: None,
+            size: (width, height),
+            base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
+            retained_target_valid: false,
+            last_successful_revision: None,
+            last_render_attempts: 0,
+            last_sparse_render_attempts: 0,
+            last_full_render_attempts: 0,
+            last_canonical_segment_order_full_attempts: 0,
+            last_canonical_segment_order_sparse_attempts: 0,
+            last_area_ppt8_full_attempts: 0,
+            last_area_ppt8_sparse_attempts: 0,
+            last_clip_single_group_full_attempts: 0,
+            last_clip_single_group_sparse_attempts: 0,
+            last_sparse_render_stats: None,
+        })
+    }
+
+    /// Change the clear color, invalidating retained content only when it changes.
+    pub fn set_base_color(&mut self, color: Color) {
+        if self.base_color != color {
+            self.base_color = color;
+            self.invalidate();
+        }
+    }
+
+    /// Resize the target. Even a rejected or no-op resize invalidates its content relation.
+    ///
+    /// # Errors
+    /// Rejects zero/oversized extents and poisoned or lost devices before allocation.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), BridgeError> {
+        self.invalidate();
+        self.check_health()?;
+        Self::validate_size(&self.device, width, height)?;
+        if (width, height) != self.size {
+            (self.texture, self.view) = Self::allocate_texture(&self.device, width, height);
+            self.size = (width, height);
+            self.geometry_generation = self.geometry_generation.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn validate_size(device: &wgpu::Device, width: u32, height: u32) -> Result<(), BridgeError> {
+        let limit = device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > limit || height > limit {
+            return Err(BridgeError::InvalidSize(format!(
+                "{width}x{height}, device limit {limit}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn invalidate(&mut self) {
+        self.retained_target_valid = false;
+        self.last_successful_revision = None;
+    }
+
+    fn check_health(&self) -> Result<(), BridgeError> {
+        if let Some(reason) = self.loss.reason() {
+            return Err(BridgeError::DeviceLost(reason));
+        }
+        if self.poisoned {
+            return Err(BridgeError::RecreateRequired);
+        }
+        Ok(())
+    }
+
+    fn check_live(&self, policy: CompletionPolicy) -> Result<(), BridgeError> {
+        self.check_health()?;
+        if let CompletionPolicy::Absolute(deadline) = policy
+            && self.now() >= deadline
+        {
+            return Err(BridgeError::DeadlineExceeded);
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "the test clock observes this actual target instance"
+    )]
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(clock) = &self.completion_test {
+            return clock.start + clock.elapsed;
+        }
+        Instant::now()
+    }
+
+    fn eligible_sparse_damage(
+        &self,
+        damage: SceneDamage<'_>,
+    ) -> Option<Vec<vello::FineDamageRect>> {
+        if self.last_successful_revision != Some(damage.previous_revision?)
+            || !self.retained_target_valid
+            || !self.renderer.sparse_fine_supported()
+        {
+            return None;
+        }
+        VelloDrmBridge::normalize_damage(damage.regions?, self.size)
+    }
+
+    /// Render under one caller deadline, with no framebuffer staging/copy/map/swizzle.
+    /// Tiny Vello bump downloads remain mandatory recovery metadata, independently of pixels.
+    ///
+    /// # Errors
+    /// A failure hides the view. Unresolved or failed submitted work poisons this target;
+    /// reconstruct it before reuse (a lost device requires a new context-owned device).
+    pub fn render_until(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        deadline: Instant,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        let (_, admitted) = self.render(
+            scene,
+            Some(damage),
+            FrameOutput::GpuOnly,
+            CompletionPolicy::Absolute(deadline),
+            None,
+        )?;
+        Ok(GpuFrameStats {
+            revision: damage.revision,
+            damage_admitted: admitted,
+            render_attempts: self.last_render_attempts,
+            sparse_attempts: self.last_sparse_render_attempts,
+            full_attempts: self.last_full_render_attempts,
+            completion_markers: self.completion_markers,
+            framebuffer_copy_bytes: 0,
+            framebuffer_staging_bytes: 0,
+        })
+    }
+
+    /// Completed output for read-only sampling, never a display presentation claim.
+    pub fn completed_view(&self) -> Option<&wgpu::TextureView> {
+        (self.retained_target_valid && !self.poisoned && self.loss.reason().is_none())
+            .then_some(&self.view)
+    }
+
+    /// Current native pixel extent.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    fn reset_attempts(&mut self) {
+        self.last_render_attempts = 0;
+        self.last_sparse_render_attempts = 0;
+        self.last_full_render_attempts = 0;
+        self.last_canonical_segment_order_full_attempts = 0;
+        self.last_canonical_segment_order_sparse_attempts = 0;
+        self.last_area_ppt8_full_attempts = 0;
+        self.last_area_ppt8_sparse_attempts = 0;
+        self.last_clip_single_group_full_attempts = 0;
+        self.last_clip_single_group_sparse_attempts = 0;
+        self.last_sparse_render_stats = None;
+        self.completion_markers = 0;
+    }
+
+    fn render(
+        &mut self,
+        scene: &Scene,
+        damage: Option<SceneDamage<'_>>,
+        output: FrameOutput<'_>,
+        policy: CompletionPolicy,
+        timing: Option<&mut BridgePhaseTiming>,
+    ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
+        let sparse = damage.and_then(|damage| self.eligible_sparse_damage(damage));
+        self.invalidate();
+        self.reset_attempts();
+        self.check_live(policy)?;
+        // Once encoding starts, even a pre-submit abort leaves renderer-owned downloads and
+        // timestamp bookkeeping unusable. Clear poison only after both completion facts hold.
+        let result = self.render_attempts(scene, sparse, output, policy, timing);
+        if result.is_ok() {
+            self.retained_target_valid = true;
+            self.last_successful_revision = damage.map(|damage| damage.revision);
+        } else {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered render/recovery transaction serves both output paths"
+    )]
+    fn render_attempts(
+        &mut self,
+        scene: &Scene,
+        mut sparse: Option<Vec<vello::FineDamageRect>>,
+        output: FrameOutput<'_>,
+        policy: CompletionPolicy,
+        mut timing: Option<&mut BridgePhaseTiming>,
+    ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
+        while self.last_render_attempts < RESILIENT_RENDER_ATTEMPTS {
+            self.check_live(policy)?;
+            let regions = sparse.take();
+            let submit_started = timing.as_ref().map(|_| Instant::now());
+            let params = RenderParams {
+                base_color: self.base_color,
+                width: self.size.0,
+                height: self.size.1,
+                antialiasing_method: AaConfig::Area,
+            };
+            let loss = self.loss.clone();
+            #[cfg(test)]
+            let gate_now = self.completion_test.as_mut().map(|clock| {
+                clock.elapsed += clock.encode_elapsed;
+                clock.start + clock.elapsed
+            });
+            let before_submit = || {
+                #[cfg(test)]
+                let now = gate_now.unwrap_or_else(Instant::now);
+                #[cfg(not(test))]
+                let now = Instant::now();
+                loss.reason().is_none()
+                    && match policy {
+                        CompletionPolicy::Absolute(deadline) => now < deadline,
+                        CompletionPolicy::LinuxPerPhase => true,
+                    }
+            };
+            let append = |encoder: &mut wgpu::CommandEncoder| {
+                output.append(encoder, &self.texture, self.size, regions.as_deref());
+            };
+            let submitted = if let Some(regions) = regions.as_deref() {
+                self.renderer
+                    .render_to_texture_with_damage_and_post_render_checked(
+                        &self.device,
+                        &self.queue,
+                        scene,
+                        &self.view,
+                        &params,
+                        regions,
+                        append,
+                        before_submit,
+                    )
+            } else {
+                self.renderer
+                    .render_to_texture_with_post_render_checked(
+                        &self.device,
+                        &self.queue,
+                        scene,
+                        &self.view,
+                        &params,
+                        append,
+                        before_submit,
+                    )
+                    .map(|()| None)
+            };
+            let stats = match submitted {
+                Ok(stats) => stats,
+                Err(vello::Error::SubmissionAborted) => {
+                    self.check_live(policy)?;
+                    return Err(BridgeError::Render(
+                        "submission declined after encoding".to_owned(),
+                    ));
+                }
+                Err(error) => return Err(BridgeError::Render(format!("{error:?}"))),
+            };
+            if regions.is_some() && stats.is_none() {
+                // Unsupported sparse rendering encoded/submitted nothing; dense still owns all four attempts.
+                continue;
+            }
+            self.last_render_attempts = self.last_render_attempts.saturating_add(1);
+            let admitted = regions.is_some();
+            if let Some(stats) = stats {
+                self.last_sparse_render_attempts =
+                    self.last_sparse_render_attempts.saturating_add(1);
+                VelloDrmBridge::record_sparse_shader_selected_attempts(
+                    &stats,
+                    Some(&mut self.last_canonical_segment_order_sparse_attempts),
+                    Some(&mut self.last_area_ppt8_sparse_attempts),
+                    Some(&mut self.last_clip_single_group_sparse_attempts),
+                );
+                self.last_sparse_render_stats = Some(stats);
+            } else {
+                self.last_full_render_attempts = self.last_full_render_attempts.saturating_add(1);
+                self.last_canonical_segment_order_full_attempts = self
+                    .last_canonical_segment_order_full_attempts
+                    .saturating_add(usize::from(
+                        self.renderer.last_canonical_segment_order_selected(),
+                    ));
+                self.last_area_ppt8_full_attempts = self
+                    .last_area_ppt8_full_attempts
+                    .saturating_add(usize::from(self.renderer.last_area_ppt8_selected()));
+                self.last_clip_single_group_full_attempts = self
+                    .last_clip_single_group_full_attempts
+                    .saturating_add(usize::from(self.renderer.last_clip_single_group_selected()));
+            }
+            if let (Some(timing), Some(started)) = (timing.as_deref_mut(), submit_started) {
+                timing.submit_us = timing
+                    .submit_us
+                    .saturating_add(started.elapsed().as_micros());
+                timing.readback_bytes = timing
+                    .readback_bytes
+                    .saturating_add(output.copy_bytes(self.size, regions.as_deref()));
+            }
+            self.check_live(policy)?;
+            let map_started = timing.as_ref().map(|_| Instant::now());
+            let mapped = match output {
+                FrameOutput::GpuOnly => {
+                    self.wait_marker(policy)?;
+                    None
+                }
+                FrameOutput::Xrgb { buffer, .. } => Some(self.map_framebuffer(buffer)?),
+            };
+            if let (Some(timing), Some(started)) = (timing.as_deref_mut(), map_started) {
+                timing.completed_readback_map_us = timing
+                    .completed_readback_map_us
+                    .saturating_add(started.elapsed().as_micros());
+            }
+            let settle_started = timing.as_ref().map(|_| Instant::now());
+            let settled = self.settle_counters(policy).and_then(|overflowed| {
+                self.check_live(policy)?;
+                Ok(overflowed)
+            });
+            if let (Some(timing), Some(started)) = (timing.as_deref_mut(), settle_started) {
+                timing.settle_us = timing
+                    .settle_us
+                    .saturating_add(started.elapsed().as_micros());
+            }
+            match settled {
+                Ok(false) => return Ok((mapped, admitted)),
+                Ok(true) => {
+                    drop(mapped);
+                    output.unmap();
+                }
+                Err(error) => {
+                    drop(mapped);
+                    output.unmap();
+                    return Err(error);
+                }
+            }
+        }
+        Err(BridgeError::RecoveryExhausted {
+            attempts: self.last_render_attempts,
+        })
+    }
+
+    fn wait_marker(&mut self, policy: CompletionPolicy) -> Result<(), BridgeError> {
+        self.check_live(policy)?;
+        let CompletionPolicy::Absolute(deadline) = policy else {
+            return Err(BridgeError::DevicePoll(
+                "LinuxPerPhase cannot request a GPU-only marker".to_owned(),
+            ));
+        };
+        let marker = self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>());
+        self.completion_markers = self.completion_markers.saturating_add(1);
+        let remaining = deadline.saturating_duration_since(self.now());
+        if remaining.is_zero() {
+            return Err(BridgeError::DeadlineExceeded);
+        }
+        #[cfg(test)]
+        self.before_wait(WaitPhase::Marker, remaining)?;
+        let waited = self.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(marker),
+            timeout: Some(remaining),
+        });
+        // PollError itself cannot identify device loss. Prefer the context callback's
+        // actual reason even when the same poll also reported a fence error.
+        self.check_health()?;
+        waited.map_err(|error| match error {
+            wgpu::PollError::Timeout => BridgeError::DeadlineExceeded,
+            other @ wgpu::PollError::WrongSubmissionIndex(..) => {
+                BridgeError::DevicePoll(format!("GPU-only marker: {other:?}"))
+            }
+        })?;
+        self.check_live(policy)
+    }
+
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "tests inject elapsed time at the real framebuffer waits"
+        )
+    )]
+    fn map_framebuffer(&mut self, buffer: &wgpu::Buffer) -> Result<wgpu::BufferView, BridgeError> {
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let result = (|| {
+            #[cfg(test)]
+            self.before_wait(WaitPhase::Fence, LINUX_FENCE_WAIT)?;
+            let waited = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(LINUX_FENCE_WAIT),
+            });
+            self.check_health()?;
+            waited.map_err(|error| {
+                BridgeError::Map(format!("LinuxPerPhase fence wait: {error:?}"))
+            })?;
+            // A fresh one-second callback allowance follows the independent one-second fence.
+            #[cfg(test)]
+            self.before_wait(WaitPhase::MapCallback, LINUX_MAP_CALLBACK_WAIT)?;
+            rx.recv_timeout(LINUX_MAP_CALLBACK_WAIT)
+                .map_err(|error| {
+                    BridgeError::Map(format!("LinuxPerPhase map_async channel: {error}"))
+                })?
+                .map_err(|error| BridgeError::Map(format!("LinuxPerPhase map_async: {error:?}")))?;
+            self.check_health()?;
+            Ok(slice.get_mapped_range())
+        })();
+        if result.is_err() {
+            buffer.unmap();
+        }
+        result
+    }
+
+    fn settle_counters(&mut self, policy: CompletionPolicy) -> Result<bool, BridgeError> {
+        let deadline = match policy {
+            CompletionPolicy::Absolute(deadline) => deadline,
+            CompletionPolicy::LinuxPerPhase => self
+                .now()
+                .checked_add(BUMP_SETTLEMENT_WAIT)
+                .ok_or_else(|| {
+                    BridgeError::BumpReadback("counter deadline out of range".to_owned())
+                })?,
+        };
+        loop {
+            self.check_health()?;
+            if self.now() >= deadline {
+                tracing::warn!(
+                    ?policy,
+                    phase = "counter settlement",
+                    "completion deadline exceeded"
+                );
+                return Err(match policy {
+                    CompletionPolicy::Absolute(_) => BridgeError::DeadlineExceeded,
+                    CompletionPolicy::LinuxPerPhase => BridgeError::BumpReadback(
+                        "LinuxPerPhase counter settlement timeout (1s)".to_owned(),
+                    ),
+                });
+            }
+            let result = self.renderer.poll_bump_budget(&self.device);
+            #[cfg(test)]
+            let result = if let Some(test) = self.completion_test.as_mut() {
+                test.counter_remaining
+                    .push(deadline.saturating_duration_since(test.start + test.elapsed));
+                test.counters.pop_front().unwrap_or(result)
+            } else {
+                result
+            };
+            self.check_health()?;
+            if self.now() >= deadline {
+                continue;
+            }
+            match result.map_err(|error| match error {
+                vello::BumpBudgetError::Poll(message) => {
+                    BridgeError::DevicePoll(format!("{policy:?} counter settlement: {message}"))
+                }
+                other => {
+                    BridgeError::BumpReadback(format!("{policy:?} counter settlement: {other:?}"))
+                }
+            })? {
+                vello::BumpBudgetPoll::Complete { overflowed } => return Ok(overflowed),
+                vello::BumpBudgetPoll::Pending => {
+                    let delay = Duration::from_millis(1)
+                        .min(deadline.saturating_duration_since(self.now()));
+                    #[cfg(test)]
+                    if let Some(test) = self.completion_test.as_mut() {
+                        test.elapsed += test
+                            .pending_elapsed
+                            .min(deadline.saturating_duration_since(test.start + test.elapsed));
+                        continue;
+                    }
+                    std::thread::sleep(delay);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn before_wait(&mut self, phase: WaitPhase, requested: Duration) -> Result<(), BridgeError> {
+        #[cfg(test)]
+        if let Some(test) = self.completion_test.as_mut() {
+            test.waits.push((phase, requested));
+            if phase == WaitPhase::Marker && test.destroy_at_marker {
+                self.device.destroy();
+                let _ = self.device.poll(wgpu::PollType::Poll);
+            }
+            if test.failure == Some(phase) {
+                return Err(match phase {
+                    WaitPhase::Marker => BridgeError::DeadlineExceeded,
+                    WaitPhase::Fence => {
+                        BridgeError::Map("LinuxPerPhase fence wait: Timeout".to_owned())
+                    }
+                    WaitPhase::MapCallback => {
+                        BridgeError::Map("LinuxPerPhase map_async channel: timeout".to_owned())
+                    }
+                });
+            }
+            test.elapsed += match phase {
+                WaitPhase::Fence | WaitPhase::Marker => test.fence_elapsed,
+                WaitPhase::MapCallback => test.callback_elapsed,
+            }
+            .min(requested);
+        }
+        Ok(())
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
+        self.renderer.gpu_dispatch_timestamp_status()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn take_gpu_dispatch_timestamp_sample(
+        &mut self,
+    ) -> Option<vello::GpuDispatchTimestampSample> {
+        self.renderer.take_gpu_dispatch_timestamp_sample()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_latest_submission_id(&self) -> Option<u64> {
+        self.renderer.gpu_dispatch_timestamp_latest_submission_id()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
+        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn direct_path_workgroups(&self) -> u32 {
+        self.renderer.direct_path_workgroups()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn diagnostic_packed_scene(&self) -> &[u8] {
+        self.renderer.diagnostic_packed_scene()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn diagnostic_geometry_input(
+        &self,
+    ) -> Result<vello::GeometryInput<'_>, vello::GeometryInputError> {
+        self.renderer.diagnostic_geometry_input()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_tile_bounds_requested(&self) -> bool {
+        self.renderer.sparse_tile_bounds_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_tile_bounds_available(&self) -> bool {
+        self.renderer.sparse_tile_bounds_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_fine_quad_skip_requested(&self) -> bool {
+        self.renderer.sparse_fine_quad_skip_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_fine_quad_skip_available(&self) -> bool {
+        self.renderer.sparse_fine_quad_skip_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_opaque_prune_requested(&self) -> bool {
+        self.renderer.sparse_opaque_prune_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_opaque_prune_available(&self) -> bool {
+        self.renderer.sparse_opaque_prune_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_solid_fuse_requested(&self) -> bool {
+        self.renderer.sparse_solid_fuse_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_solid_fuse_available(&self) -> bool {
+        self.renderer.sparse_solid_fuse_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_segment_row_mask_requested(&self) -> bool {
+        self.renderer.sparse_segment_row_mask_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn sparse_segment_row_mask_available(&self) -> bool {
+        self.renderer.sparse_segment_row_mask_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn canonical_segment_order_requested(&self) -> bool {
+        self.renderer.canonical_segment_order_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn canonical_segment_order_available(&self) -> bool {
+        self.renderer.canonical_segment_order_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn area_ppt8_requested(&self) -> bool {
+        self.renderer.area_ppt8_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn area_ppt8_available(&self) -> bool {
+        self.renderer.area_ppt8_available()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn clip_single_group_requested(&self) -> bool {
+        self.renderer.clip_single_group_requested()
+    }
+
+    /// Forward existing Vello renderer diagnostics.
+    #[doc(hidden)]
+    pub fn clip_single_group_available(&self) -> bool {
+        self.renderer.clip_single_group_available()
+    }
+
+    /// Actual statistics from the latest normal render transaction.
+    pub fn last_render_attempts(&self) -> usize {
+        self.last_render_attempts
+    }
+
+    /// Actual statistics from the latest normal render transaction.
+    pub fn last_sparse_render_attempts(&self) -> usize {
+        self.last_sparse_render_attempts
+    }
+
+    /// Actual statistics from the latest normal render transaction.
+    pub fn last_full_render_attempts(&self) -> usize {
+        self.last_full_render_attempts
+    }
+
+    /// Actual statistics from the latest normal render transaction.
+    pub fn last_sparse_render_stats(&self) -> Option<vello::SparseRenderStats> {
+        self.last_sparse_render_stats
+    }
+
+    /// Adapter identity for the actual same-device renderer.
+    pub fn adapter_info(&self) -> BridgeAdapterInfo {
+        let info = self.device.adapter_info();
+        BridgeAdapterInfo {
+            name: info.name,
+            backend: format!("{:?}", info.backend),
+            device_type: format!("{:?}", info.device_type),
+            driver: info.driver,
+        }
+    }
+    /// Existing Vello resource accounting; framebuffer staging is owned by the bridge.
+    pub fn memory_stats(&self) -> vello::RendererMemoryStats {
+        self.renderer.memory_stats()
+    }
+    /// Existing opt-in timestamp status.
+    pub fn gpu_timestamp_status(&mut self) -> vello::GpuTimestampStatus {
+        self.renderer.gpu_timestamp_status()
+    }
+    /// Consume existing opt-in timestamp data without conflating it with completion.
+    pub fn take_gpu_timestamp_sample(&mut self) -> Option<vello::GpuTimestampSample> {
+        self.renderer.take_gpu_timestamp_sample()
+    }
+    /// Latest Vello timestamp recording identity.
+    pub fn gpu_timestamp_latest_submission_id(&self) -> Option<u64> {
+        self.renderer.gpu_timestamp_latest_submission_id()
+    }
+    /// Existing opt-in timestamp resource bytes.
+    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
+        self.renderer.gpu_timestamp_buffer_bytes()
+    }
+
+    fn allocate_texture(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("quick-desktop-drm-paint-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+}
+
+/// CPU-fallback bridge between a vello `Scene` and an RGBA byte buffer. Owns its wgpu device +
+/// offscreen texture + readback buffer so callers can reuse it across frames. Single-output by design — multi-output is one bridge per output.
+#[cfg_attr(
+    test,
+    allow(
+        clippy::struct_excessive_bools,
+        reason = "the cfg(test)-only tracked-swizzle fault bit is a narrow cleanup-path injection, not production state"
+    )
+)]
+pub struct VelloDrmBridge {
+    context: RenderContext,
+    target: RetainedGpuTarget,
+    dev_id: usize,
+
+    /// Readback buffer (padded to the wgpu row alignment requirement).
+    readback_buf: wgpu::Buffer,
+    /// Bytes-per-row in the padded readback buffer; may exceed `width * 4` when the tight stride doesn't divide 256.
+    padded_bytes_per_row: u32,
+    /// Tight (no padding) RGBA buffer the public `paint` returns.
+    readback: Vec<u8>,
+
     /// Profiling is off in production; when on, timings describe only the latest paint.
     phase_timing_enabled: bool,
     last_phase_timing: Option<BridgePhaseTiming>,
-    /// The target and staging buffer contain one complete, settled frame. Both must be true
-    /// before a sparse render is allowed to preserve pixels outside its damage list.
-    retained_target_valid: bool,
+
     retained_staging_valid: bool,
-    /// Revision associated with the complete retained frame. Legacy full-render APIs do not
-    /// carry a revision, so they intentionally clear this even though their target is complete.
-    last_successful_revision: Option<u64>,
+    staging_content: Option<(u64, Option<u64>)>,
+
     /// Process-unique identity and monotonic content epoch for opt-in destination histories.
     xrgb_history_generation: Option<u64>,
     xrgb_history_epoch: Option<u64>,
@@ -309,46 +1194,24 @@ impl VelloDrmBridge {
         })?;
         let device = &dev_handle.device;
 
-        let (texture, view, readback_buf, padded_bytes_per_row) =
-            Self::allocate_targets(device, width, height);
-
-        let renderer = Renderer::new(
-            device,
-            RendererOptions {
-                use_cpu: false,
-                antialiasing_support: AaSupport::all(),
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        let target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
 
         Ok(Self {
             context,
+            target,
             dev_id,
-            renderer,
-            texture,
-            view,
+
             readback_buf,
             padded_bytes_per_row,
             readback: Vec::new(),
-            size: (width, height),
-            base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
-            last_render_attempts: 0,
-            last_sparse_render_attempts: 0,
-            last_full_render_attempts: 0,
-            last_canonical_segment_order_full_attempts: 0,
-            last_canonical_segment_order_sparse_attempts: 0,
-            last_area_ppt8_full_attempts: 0,
-            last_area_ppt8_sparse_attempts: 0,
-            last_clip_single_group_full_attempts: 0,
-            last_clip_single_group_sparse_attempts: 0,
-            last_sparse_render_stats: None,
+
             phase_timing_enabled: false,
             last_phase_timing: None,
-            retained_target_valid: false,
+
             retained_staging_valid: false,
-            last_successful_revision: None,
+            staging_content: None,
+
             xrgb_history_generation,
             xrgb_history_epoch: Some(1),
             #[cfg(test)]
@@ -358,7 +1221,10 @@ impl VelloDrmBridge {
 
     /// Override the per-frame clear color; matches the winit backend API so callers can swap themes uniformly.
     pub fn set_base_color(&mut self, color: Color) {
-        self.base_color = color;
+        if self.target.base_color == color {
+            return;
+        }
+        self.target.base_color = color;
         // Sparse rendering never clears pixels outside its rectangles. A new clear color is a
         // full-frame change even if the scene recording itself is unchanged.
         self.invalidate_retained();
@@ -389,7 +1255,7 @@ impl VelloDrmBridge {
     ) -> Option<XrgbHistoryIdentity> {
         let generation = self.xrgb_history_generation?;
         let epoch = self.xrgb_history_epoch?;
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let tight = usize::try_from(width).ok()?.checked_mul(4)?;
         if width == 0 || height == 0 || dst_pitch < tight || !(1..=2).contains(&targets) {
             return None;
@@ -453,7 +1319,7 @@ impl VelloDrmBridge {
     /// a different frame.
     #[doc(hidden)]
     pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
-        self.renderer.gpu_dispatch_timestamp_status()
+        self.target.renderer.gpu_dispatch_timestamp_status()
     }
 
     /// Consume the one bounded Vello per-dispatch timestamp sample, if its asynchronous map has
@@ -463,7 +1329,7 @@ impl VelloDrmBridge {
     pub fn take_gpu_dispatch_timestamp_sample(
         &mut self,
     ) -> Option<vello::GpuDispatchTimestampSample> {
-        self.renderer.take_gpu_dispatch_timestamp_sample()
+        self.target.renderer.take_gpu_dispatch_timestamp_sample()
     }
 
     /// Identity assigned to the latest Vello recording when opt-in per-dispatch timestamps are
@@ -471,27 +1337,29 @@ impl VelloDrmBridge {
     /// missing sample must remain missing rather than being attributed to a newer paint.
     #[doc(hidden)]
     pub fn gpu_dispatch_timestamp_latest_submission_id(&self) -> Option<u64> {
-        self.renderer.gpu_dispatch_timestamp_latest_submission_id()
+        self.target
+            .renderer
+            .gpu_dispatch_timestamp_latest_submission_id()
     }
 
     /// Bytes allocated exclusively for opt-in per-dispatch timestamp resolve/readback buffers.
     #[doc(hidden)]
     pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
+        self.target.renderer.gpu_dispatch_timestamp_buffer_bytes()
     }
 
     /// Effective initialization-time direct path workgroup count, exposed only for an explicit
     /// diagnostic benchmark header. Normal paint behavior does not query or alter it.
     #[doc(hidden)]
     pub fn direct_path_workgroups(&self) -> u32 {
-        self.renderer.direct_path_workgroups()
+        self.target.renderer.direct_path_workgroups()
     }
 
     /// Exact CPU upload bytes from the most recently encoded Vello recording. This borrows
     /// renderer-owned diagnostic state and is valid only until the next render starts.
     #[doc(hidden)]
     pub fn diagnostic_packed_scene(&self) -> &[u8] {
-        self.renderer.diagnostic_packed_scene()
+        self.target.renderer.diagnostic_packed_scene()
     }
 
     /// Exact resolver-expanded geometry inputs from the latest ordinary recording.
@@ -502,7 +1370,7 @@ impl VelloDrmBridge {
     pub fn diagnostic_geometry_input(
         &self,
     ) -> Result<vello::GeometryInput<'_>, vello::GeometryInputError> {
-        self.renderer.diagnostic_geometry_input()
+        self.target.renderer.diagnostic_geometry_input()
     }
 
     /// Render `scene` into the offscreen texture and return a slice of the tight-packed RGBA bytes
@@ -526,28 +1394,11 @@ impl VelloDrmBridge {
             );
         }
 
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         self.reset_render_attempts();
-        let mapped = Self::render_full_to_readback(
-            &mut self.renderer,
-            &self.context,
-            self.dev_id,
-            &self.texture,
-            &self.view,
-            &self.readback_buf,
-            padded_bytes_per_row,
-            (width, height),
-            self.base_color,
-            &mut self.last_render_attempts,
-            &mut self.last_full_render_attempts,
-            Some(&mut self.last_canonical_segment_order_full_attempts),
-            Some(&mut self.last_area_ppt8_full_attempts),
-            Some(&mut self.last_clip_single_group_full_attempts),
-            timing.as_mut(),
-            scene,
-        )?;
+        let (mapped, _) = self.render_normal(scene, None, timing.as_mut())?;
 
         // Block-map the readback buffer and copy into the tight `self.readback`, stripping row padding.
         let tight_row = (width as usize).saturating_mul(4);
@@ -609,28 +1460,11 @@ impl VelloDrmBridge {
             );
         }
 
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
         self.reset_render_attempts();
-        let mapped = Self::render_full_to_readback(
-            &mut self.renderer,
-            &self.context,
-            self.dev_id,
-            &self.texture,
-            &self.view,
-            &self.readback_buf,
-            padded_bytes_per_row,
-            (width, height),
-            self.base_color,
-            &mut self.last_render_attempts,
-            &mut self.last_full_render_attempts,
-            Some(&mut self.last_canonical_segment_order_full_attempts),
-            Some(&mut self.last_area_ppt8_full_attempts),
-            Some(&mut self.last_clip_single_group_full_attempts),
-            timing.as_mut(),
-            scene,
-        )?;
+        let (mapped, _) = self.render_normal(scene, None, timing.as_mut())?;
 
         let cpu_copy_started = self.phase_timing_enabled.then(Instant::now);
         if dst_pitch == 0 {
@@ -687,11 +1521,11 @@ impl VelloDrmBridge {
         self.last_phase_timing = None;
         self.invalidate_retained();
         self.reset_render_attempts();
-        let Some(damage) = Self::validate_diagnostic_damage(damage, self.size) else {
+        let Some(damage) = Self::validate_diagnostic_damage(damage, self.target.size) else {
             return Ok(None);
         };
 
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
             BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
         })?;
@@ -729,11 +1563,11 @@ impl VelloDrmBridge {
         self.last_phase_timing = None;
         self.invalidate_retained();
         self.reset_render_attempts();
-        let Some(damage) = Self::validate_diagnostic_damage(damage, self.size) else {
+        let Some(damage) = Self::validate_diagnostic_damage(damage, self.target.size) else {
             return Ok(None);
         };
 
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
             BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
         })?;
@@ -771,7 +1605,7 @@ impl VelloDrmBridge {
         self.last_phase_timing = None;
         self.invalidate_retained();
         self.reset_render_attempts();
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         Self::validate_replay_destination(left_dst, dst_pitch, width, height, "left")?;
         Self::validate_replay_destination(right_dst, dst_pitch, width, height, "right")?;
         Renderer::segment_order_replay_preflight(width, height, input)
@@ -785,15 +1619,16 @@ impl VelloDrmBridge {
             Self::allocate_targets(&device, width, height);
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             let replay = self
+                .target
                 .renderer
                 .render_to_textures_segment_order_replay_with_post_render(
                     &device,
                     &queue,
                     scene,
-                    &self.view,
+                    &self.target.view,
                     &right_view,
                     &RenderParams {
-                        base_color: self.base_color,
+                        base_color: self.target.base_color,
                         width,
                         height,
                         antialiasing_method: AaConfig::Area,
@@ -802,7 +1637,7 @@ impl VelloDrmBridge {
                     |encoder| {
                         Self::append_full_copy(
                             encoder,
-                            &self.texture,
+                            &self.target.texture,
                             &self.readback_buf,
                             self.padded_bytes_per_row,
                             width,
@@ -822,7 +1657,7 @@ impl VelloDrmBridge {
             let Some(replay) = replay else {
                 return Ok(None);
             };
-            self.last_render_attempts = self.last_render_attempts.saturating_add(1);
+            self.target.last_render_attempts = self.target.last_render_attempts.saturating_add(1);
             let buffers = [
                 (&self.readback_buf, self.readback_buf.size()),
                 (&right_readback, right_readback.size()),
@@ -830,7 +1665,7 @@ impl VelloDrmBridge {
                 (&replay.right, replay.bytes_per_witness),
             ];
             let mapped = Self::map_replay_buffers(&self.context, self.dev_id, &buffers)?;
-            if self.renderer.settle_bump_budget(&device) {
+            if self.target.renderer.settle_bump_budget(&device) {
                 drop(mapped);
                 Self::unmap_replay_buffers(&buffers);
                 continue;
@@ -856,7 +1691,7 @@ impl VelloDrmBridge {
             }));
         }
         Err(BridgeError::RecoveryExhausted {
-            attempts: self.last_render_attempts,
+            attempts: self.target.last_render_attempts,
         })
     }
 
@@ -869,7 +1704,7 @@ impl VelloDrmBridge {
         dst_pitch: usize,
         sparse_target: SharedCoarseDiagnosticTarget<'_>,
     ) -> Result<Option<SharedCoarseGeometryDiagnostic>, BridgeError> {
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
             BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
         })?;
@@ -877,15 +1712,16 @@ impl VelloDrmBridge {
         let queue = dev_handle.queue.clone();
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             let sparse = self
+                .target
                 .renderer
                 .render_to_textures_shared_coarse_area_with_geometry_and_post_render(
                     &device,
                     &queue,
                     scene,
-                    &self.view,
+                    &self.target.view,
                     sparse_target.view,
                     &RenderParams {
-                        base_color: self.base_color,
+                        base_color: self.target.base_color,
                         width,
                         height,
                         antialiasing_method: AaConfig::Area,
@@ -894,7 +1730,7 @@ impl VelloDrmBridge {
                     |encoder| {
                         Self::append_full_copy(
                             encoder,
-                            &self.texture,
+                            &self.target.texture,
                             &self.readback_buf,
                             self.padded_bytes_per_row,
                             width,
@@ -914,9 +1750,10 @@ impl VelloDrmBridge {
             let Some((stats, geometry)) = sparse else {
                 return Ok(None);
             };
-            self.last_render_attempts = self.last_render_attempts.saturating_add(1);
-            self.last_sparse_render_attempts = self.last_sparse_render_attempts.saturating_add(1);
-            self.last_sparse_render_stats = Some(stats);
+            self.target.last_render_attempts = self.target.last_render_attempts.saturating_add(1);
+            self.target.last_sparse_render_attempts =
+                self.target.last_sparse_render_attempts.saturating_add(1);
+            self.target.last_sparse_render_stats = Some(stats);
 
             if let Some(capture) = self.read_shared_coarse_geometry_diagnostic_outputs(
                 &device,
@@ -931,7 +1768,7 @@ impl VelloDrmBridge {
             }
         }
         Err(BridgeError::RecoveryExhausted {
-            attempts: self.last_render_attempts,
+            attempts: self.target.last_render_attempts,
         })
     }
 
@@ -944,7 +1781,7 @@ impl VelloDrmBridge {
         dst_pitch: usize,
         sparse_target: SharedCoarseDiagnosticTarget<'_>,
     ) -> Result<Option<vello::SparseRenderStats>, BridgeError> {
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
             BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
         })?;
@@ -952,15 +1789,16 @@ impl VelloDrmBridge {
         let queue = dev_handle.queue.clone();
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             let sparse = self
+                .target
                 .renderer
                 .render_to_textures_shared_coarse_area_with_post_render(
                     &device,
                     &queue,
                     scene,
-                    &self.view,
+                    &self.target.view,
                     sparse_target.view,
                     &RenderParams {
-                        base_color: self.base_color,
+                        base_color: self.target.base_color,
                         width,
                         height,
                         antialiasing_method: AaConfig::Area,
@@ -969,7 +1807,7 @@ impl VelloDrmBridge {
                     |encoder| {
                         Self::append_full_copy(
                             encoder,
-                            &self.texture,
+                            &self.target.texture,
                             &self.readback_buf,
                             self.padded_bytes_per_row,
                             width,
@@ -989,9 +1827,10 @@ impl VelloDrmBridge {
             let Some(stats) = sparse else {
                 return Ok(None);
             };
-            self.last_render_attempts = self.last_render_attempts.saturating_add(1);
-            self.last_sparse_render_attempts = self.last_sparse_render_attempts.saturating_add(1);
-            self.last_sparse_render_stats = Some(stats);
+            self.target.last_render_attempts = self.target.last_render_attempts.saturating_add(1);
+            self.target.last_sparse_render_attempts =
+                self.target.last_sparse_render_attempts.saturating_add(1);
+            self.target.last_sparse_render_stats = Some(stats);
 
             if self.read_shared_coarse_diagnostic_outputs(
                 &device,
@@ -1004,7 +1843,7 @@ impl VelloDrmBridge {
             }
         }
         Err(BridgeError::RecoveryExhausted {
-            attempts: self.last_render_attempts,
+            attempts: self.target.last_render_attempts,
         })
     }
 
@@ -1016,7 +1855,7 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<bool, BridgeError> {
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let full_mapped = Self::map_readback(&self.context, self.dev_id, &self.readback_buf)?;
         let sparse_mapped =
             match Self::map_readback(&self.context, self.dev_id, sparse_target.readback) {
@@ -1027,7 +1866,7 @@ impl VelloDrmBridge {
                     return Err(error);
                 }
             };
-        if self.renderer.settle_bump_budget(device) {
+        if self.target.renderer.settle_bump_budget(device) {
             drop(sparse_mapped);
             drop(full_mapped);
             sparse_target.readback.unmap();
@@ -1069,7 +1908,7 @@ impl VelloDrmBridge {
         stats: vello::SparseRenderStats,
         geometry: vello::SharedCoarseGeometryDownload,
     ) -> Result<Option<SharedCoarseGeometryDiagnostic>, BridgeError> {
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let vello::SharedCoarseGeometryDownload {
             config,
             ptcl,
@@ -1111,7 +1950,7 @@ impl VelloDrmBridge {
                     return Err(error);
                 }
             };
-        if self.renderer.settle_bump_budget(device) {
+        if self.target.renderer.settle_bump_budget(device) {
             drop(segments_mapped);
             drop(ptcl_mapped);
             drop(sparse_mapped);
@@ -1249,7 +2088,7 @@ impl VelloDrmBridge {
         require_complete_destination: bool,
     ) -> Result<XrgbWriteResult, BridgeError> {
         if require_complete_destination {
-            Self::validate_complete_xrgb_destination(dst, dst_pitch, self.size)?;
+            Self::validate_complete_xrgb_destination(dst, dst_pitch, self.target.size)?;
         }
         self.last_phase_timing = None;
         if !WARNED_CPU_FALLBACK.swap(true, Ordering::AcqRel) {
@@ -1260,87 +2099,10 @@ impl VelloDrmBridge {
             );
         }
 
-        // Decide against the last *complete* frame before invalidating it. From this point until
-        // render, copy, map, and bump settlement all succeed, no frame may be reused as sparse
-        // backing state.
-        let sparse_damage = self.eligible_sparse_damage(damage);
-        let mut damage_admitted = sparse_damage.is_some();
-        self.invalidate_retained();
-
-        let (width, height) = self.size;
+        let (width, height) = self.target.size;
         let padded_bytes_per_row = self.padded_bytes_per_row;
         let mut timing = self.phase_timing_enabled.then(BridgePhaseTiming::default);
-        self.reset_render_attempts();
-        let mapped = if let Some(regions) = sparse_damage.as_deref() {
-            let sparse_readback = Self::render_sparse_to_readback(
-                &mut self.renderer,
-                &self.context,
-                self.dev_id,
-                &self.texture,
-                &self.view,
-                &self.readback_buf,
-                padded_bytes_per_row,
-                (width, height),
-                self.base_color,
-                &mut self.last_render_attempts,
-                &mut self.last_sparse_render_attempts,
-                Some(&mut self.last_canonical_segment_order_sparse_attempts),
-                Some(&mut self.last_area_ppt8_sparse_attempts),
-                Some(&mut self.last_clip_single_group_sparse_attempts),
-                timing.as_mut(),
-                scene,
-                regions,
-            )?;
-            self.last_sparse_render_stats = sparse_readback.stats();
-            match sparse_readback {
-                SparseReadback::Complete { mapped, .. } => mapped,
-                // Sparse overflow can leave incomplete pixels in both retained resources. The
-                // dense retry begins from the scene and copies every pixel before publication.
-                SparseReadback::Unavailable | SparseReadback::Overflow { .. } => {
-                    // A dense recovery publishes complete pixels, but it is intentionally a
-                    // destination-history boundary rather than proof that other targets still
-                    // have every skipped intermediate change.
-                    damage_admitted = false;
-                    Self::render_full_to_readback(
-                        &mut self.renderer,
-                        &self.context,
-                        self.dev_id,
-                        &self.texture,
-                        &self.view,
-                        &self.readback_buf,
-                        padded_bytes_per_row,
-                        (width, height),
-                        self.base_color,
-                        &mut self.last_render_attempts,
-                        &mut self.last_full_render_attempts,
-                        Some(&mut self.last_canonical_segment_order_full_attempts),
-                        Some(&mut self.last_area_ppt8_full_attempts),
-                        Some(&mut self.last_clip_single_group_full_attempts),
-                        timing.as_mut(),
-                        scene,
-                    )?
-                }
-            }
-        } else {
-            Self::render_full_to_readback(
-                &mut self.renderer,
-                &self.context,
-                self.dev_id,
-                &self.texture,
-                &self.view,
-                &self.readback_buf,
-                padded_bytes_per_row,
-                (width, height),
-                self.base_color,
-                &mut self.last_render_attempts,
-                &mut self.last_full_render_attempts,
-                Some(&mut self.last_canonical_segment_order_full_attempts),
-                Some(&mut self.last_area_ppt8_full_attempts),
-                Some(&mut self.last_clip_single_group_full_attempts),
-                timing.as_mut(),
-                scene,
-            )?
-        };
+        let (mapped, damage_admitted) = self.render_normal(scene, Some(damage), timing.as_mut())?;
 
         let write_plan = if damage_admitted {
             requested_plan
@@ -1394,24 +2156,6 @@ impl VelloDrmBridge {
     #[cfg(test)]
     fn inject_next_tracked_swizzle_failure_for_test(&mut self) {
         self.fail_next_tracked_swizzle = true;
-    }
-
-    /// Select sparse rendering only when every unchanged pixel is backed by the exact preceding
-    /// complete frame. `FineDamageRect` is integer-native already, so "normalization" here means
-    /// rejecting degenerate/out-of-bounds rectangles and removing only exact/contained duplicates.
-    fn eligible_sparse_damage(
-        &self,
-        damage: SceneDamage<'_>,
-    ) -> Option<Vec<vello::FineDamageRect>> {
-        let previous = damage.previous_revision?;
-        if self.last_successful_revision != Some(previous)
-            || !self.retained_target_valid
-            || !self.retained_staging_valid
-            || !self.renderer.sparse_fine_supported()
-        {
-            return None;
-        }
-        Self::normalize_damage(damage.regions?, self.size)
     }
 
     /// Normalize exact native rectangles without ever expanding their covered area. Overlapping
@@ -1511,30 +2255,23 @@ impl VelloDrmBridge {
 
     #[inline]
     fn invalidate_retained(&mut self) {
-        self.retained_target_valid = false;
+        self.target.retained_target_valid = false;
         self.retained_staging_valid = false;
-        self.last_successful_revision = None;
+        self.staging_content = None;
+        self.target.last_successful_revision = None;
     }
 
     #[inline]
     fn mark_retained_complete(&mut self, revision: Option<u64>) {
-        self.retained_target_valid = true;
+        self.target.retained_target_valid = true;
         self.retained_staging_valid = true;
-        self.last_successful_revision = revision;
+        self.staging_content = Some((self.target.geometry_generation, revision));
+        self.target.last_successful_revision = revision;
     }
 
     #[inline]
     fn reset_render_attempts(&mut self) {
-        self.last_render_attempts = 0;
-        self.last_sparse_render_attempts = 0;
-        self.last_full_render_attempts = 0;
-        self.last_canonical_segment_order_full_attempts = 0;
-        self.last_canonical_segment_order_sparse_attempts = 0;
-        self.last_area_ppt8_full_attempts = 0;
-        self.last_area_ppt8_sparse_attempts = 0;
-        self.last_clip_single_group_full_attempts = 0;
-        self.last_clip_single_group_sparse_attempts = 0;
-        self.last_sparse_render_stats = None;
+        self.target.reset_attempts();
     }
 
     /// Swizzle mapped RGBA into XRGB. The ordinary branch deliberately has no per-row
@@ -1800,138 +2537,63 @@ impl VelloDrmBridge {
         }
     }
 
-    /// Render `scene` densely, append the full texture→`readback_buf` copy to Vello's own
-    /// submission, then map the completed copy. A failed bump-budget attempt is unmapped and
-    /// retried before its pixels can reach either public output path.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the owned mapped view keeps paint's destination and tight RGBA buffer independently available to its caller"
-    )]
-    fn render_full_to_readback(
-        renderer: &mut Renderer,
-        context: &RenderContext,
-        dev_id: usize,
-        texture: &wgpu::Texture,
-        view: &wgpu::TextureView,
-        readback_buf: &wgpu::Buffer,
-        padded_bytes_per_row: u32,
-        size: (u32, u32),
-        base_color: Color,
-        last_render_attempts: &mut usize,
-        last_full_render_attempts: &mut usize,
-        mut canonical_segment_order_full_attempts: Option<&mut usize>,
-        mut area_ppt8_full_attempts: Option<&mut usize>,
-        mut clip_single_group_full_attempts: Option<&mut usize>,
-        mut phase_timing: Option<&mut BridgePhaseTiming>,
+    fn render_normal(
+        &mut self,
         scene: &Scene,
-    ) -> Result<wgpu::BufferView, BridgeError> {
-        let (width, height) = size;
-        let dev_handle = context.devices.get(dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
-        })?;
-        let device = &dev_handle.device;
-        let queue = &dev_handle.queue;
-
-        // A sparse submission that overflowed has already consumed one bounded attempt. Do not
-        // turn that recovery into an unbounded fifth submission.
-        let remaining_attempts = RESILIENT_RENDER_ATTEMPTS.saturating_sub(*last_render_attempts);
-        for _ in 0..remaining_attempts {
-            *last_render_attempts = (*last_render_attempts).saturating_add(1);
-            *last_full_render_attempts = (*last_full_render_attempts).saturating_add(1);
-            let submit_started = phase_timing.as_ref().map(|_| Instant::now());
-            renderer
-                .render_to_texture_with_post_render(
-                    device,
-                    queue,
-                    scene,
-                    view,
-                    &RenderParams {
-                        base_color,
-                        width,
-                        height,
-                        antialiasing_method: AaConfig::Area,
-                    },
-                    |encoder| {
-                        encoder.copy_texture_to_buffer(
-                            wgpu::TexelCopyTextureInfo {
-                                texture,
-                                mip_level: 0,
-                                origin: wgpu::Origin3d::ZERO,
-                                aspect: wgpu::TextureAspect::All,
-                            },
-                            wgpu::TexelCopyBufferInfo {
-                                buffer: readback_buf,
-                                layout: wgpu::TexelCopyBufferLayout {
-                                    offset: 0,
-                                    bytes_per_row: Some(padded_bytes_per_row),
-                                    rows_per_image: Some(height),
-                                },
-                            },
-                            wgpu::Extent3d {
-                                width,
-                                height,
-                                depth_or_array_layers: 1,
-                            },
-                        );
-                    },
-                )
-                .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
-            if renderer.last_canonical_segment_order_selected()
-                && let Some(selected_attempts) =
-                    canonical_segment_order_full_attempts.as_deref_mut()
-            {
-                *selected_attempts = selected_attempts.saturating_add(1);
-            }
-            if renderer.last_area_ppt8_selected()
-                && let Some(selected_attempts) = area_ppt8_full_attempts.as_deref_mut()
-            {
-                *selected_attempts = selected_attempts.saturating_add(1);
-            }
-            if renderer.last_clip_single_group_selected()
-                && let Some(selected_attempts) = clip_single_group_full_attempts.as_deref_mut()
-            {
-                *selected_attempts = selected_attempts.saturating_add(1);
-            }
-
-            if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), submit_started) {
-                timing.submit_us = timing
-                    .submit_us
-                    .saturating_add(started.elapsed().as_micros());
-            }
-            if let Some(timing) = phase_timing.as_deref_mut() {
-                let copied = u64::from(width)
-                    .saturating_mul(u64::from(height))
-                    .saturating_mul(4);
-                timing.readback_bytes = timing.readback_bytes.saturating_add(copied);
-            }
-
-            // `map_readback` is the only blocking wait: its one-second fence deadline covers
-            // Vello rendering and this appended copy, so this is GPU-completion-plus-map time,
-            // not a readback-copy-only measurement. Only once that work completed do we consume the
-            // bump counter; its internal poll is then an already-complete, non-serial settle.
-            let map_started = phase_timing.as_ref().map(|_| Instant::now());
-            let mapped = Self::map_readback(context, dev_id, readback_buf)?;
-            if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), map_started) {
-                timing.completed_readback_map_us = timing
-                    .completed_readback_map_us
-                    .saturating_add(started.elapsed().as_micros());
-            }
-            let settle_started = phase_timing.as_ref().map(|_| Instant::now());
-            let settled = renderer.settle_bump_budget(device);
-            if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), settle_started) {
-                timing.settle_us = timing
-                    .settle_us
-                    .saturating_add(started.elapsed().as_micros());
-            }
-            if !settled {
-                return Ok(mapped);
-            }
-            drop(mapped);
-            readback_buf.unmap();
+        damage: Option<SceneDamage<'_>>,
+        timing: Option<&mut BridgePhaseTiming>,
+    ) -> Result<(wgpu::BufferView, bool), BridgeError> {
+        if self.context.devices.get(self.dev_id).is_none() {
+            self.invalidate_retained();
+            return Err(BridgeError::InvalidDevice(format!(
+                "wgpu device id {} out of range",
+                self.dev_id
+            )));
         }
-        Err(BridgeError::RecoveryExhausted {
-            attempts: *last_render_attempts,
-        })
+        if self.target.poisoned {
+            let color = self.target.base_color;
+            let (width, height) = self.target.size;
+            let mut target = RetainedGpuTarget::new(
+                self.context.devices.get(self.dev_id).ok_or_else(|| {
+                    BridgeError::InvalidDevice(
+                        "renderer reconstruction lost its device handle".to_owned(),
+                    )
+                })?,
+                width,
+                height,
+            )?;
+            target.set_base_color(color);
+            self.target = target;
+            (self.readback_buf, self.padded_bytes_per_row) =
+                Self::allocate_staging(&self.target.device, width, height);
+            self.xrgb_history_generation = Self::next_xrgb_history_generation();
+            self.bump_xrgb_history_epoch();
+            self.invalidate_retained();
+        }
+        let partial = self.retained_staging_valid
+            && self.staging_content
+                == Some((
+                    self.target.geometry_generation,
+                    self.target.last_successful_revision,
+                ));
+        let result = self.target.render(
+            scene,
+            damage,
+            FrameOutput::Xrgb {
+                buffer: &self.readback_buf,
+                stride: self.padded_bytes_per_row,
+                partial,
+            },
+            CompletionPolicy::LinuxPerPhase,
+            timing,
+        );
+        // The bridge publishes only after CPU output succeeds as well. A swizzle error remains
+        // its deliberately stricter invalidate-both boundary, independent of GPU completion.
+        self.invalidate_retained();
+        let (mapped, admitted) = result?;
+        mapped
+            .map(|mapped| (mapped, admitted))
+            .ok_or_else(|| BridgeError::Map("XRGB output missing mapped framebuffer".to_owned()))
     }
 
     /// Append one complete readback copy for a shared-coarse diagnostic output. Diagnostics use
@@ -2000,131 +2662,6 @@ impl VelloDrmBridge {
         })
     }
 
-    /// Submit an exact sparse render and append one texture→staging copy for every normalized
-    /// damage rectangle. All copies share the staging buffer's native padded stride, with each
-    /// rectangle placed at `y * stride + x * 4`; untouched bytes therefore remain the previous
-    /// complete frame. No command is submitted when Vello cannot use sparse Area rendering.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the sparse path mirrors the full path so its retained-resource transaction is explicit"
-    )]
-    fn render_sparse_to_readback(
-        renderer: &mut Renderer,
-        context: &RenderContext,
-        dev_id: usize,
-        texture: &wgpu::Texture,
-        view: &wgpu::TextureView,
-        readback_buf: &wgpu::Buffer,
-        padded_bytes_per_row: u32,
-        size: (u32, u32),
-        base_color: Color,
-        last_render_attempts: &mut usize,
-        last_sparse_render_attempts: &mut usize,
-        canonical_segment_order_sparse_attempts: Option<&mut usize>,
-        area_ppt8_sparse_attempts: Option<&mut usize>,
-        clip_single_group_sparse_attempts: Option<&mut usize>,
-        mut phase_timing: Option<&mut BridgePhaseTiming>,
-        scene: &Scene,
-        damage: &[vello::FineDamageRect],
-    ) -> Result<SparseReadback, BridgeError> {
-        let (width, height) = size;
-        let dev_handle = context.devices.get(dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
-        })?;
-        let device = &dev_handle.device;
-        let queue = &dev_handle.queue;
-        let submit_started = phase_timing.as_ref().map(|_| Instant::now());
-        let sparse = renderer
-            .render_to_texture_with_damage_and_post_render(
-                device,
-                queue,
-                scene,
-                view,
-                &RenderParams {
-                    base_color,
-                    width,
-                    height,
-                    antialiasing_method: AaConfig::Area,
-                },
-                damage,
-                |encoder| {
-                    for rect in damage {
-                        let offset = u64::from(rect.y)
-                            .saturating_mul(u64::from(padded_bytes_per_row))
-                            .saturating_add(u64::from(rect.x).saturating_mul(4));
-                        encoder.copy_texture_to_buffer(
-                            wgpu::TexelCopyTextureInfo {
-                                texture,
-                                mip_level: 0,
-                                origin: wgpu::Origin3d {
-                                    x: rect.x,
-                                    y: rect.y,
-                                    z: 0,
-                                },
-                                aspect: wgpu::TextureAspect::All,
-                            },
-                            wgpu::TexelCopyBufferInfo {
-                                buffer: readback_buf,
-                                layout: wgpu::TexelCopyBufferLayout {
-                                    offset,
-                                    bytes_per_row: Some(padded_bytes_per_row),
-                                    rows_per_image: Some(rect.height),
-                                },
-                            },
-                            wgpu::Extent3d {
-                                width: rect.width,
-                                height: rect.height,
-                                depth_or_array_layers: 1,
-                            },
-                        );
-                    }
-                },
-            )
-            .map_err(|e| BridgeError::Render(format!("{e:?}")))?;
-        let Some(stats) = sparse else {
-            return Ok(SparseReadback::Unavailable);
-        };
-        *last_render_attempts = (*last_render_attempts).saturating_add(1);
-        *last_sparse_render_attempts = (*last_sparse_render_attempts).saturating_add(1);
-        Self::record_sparse_shader_selected_attempts(
-            &stats,
-            canonical_segment_order_sparse_attempts,
-            area_ppt8_sparse_attempts,
-            clip_single_group_sparse_attempts,
-        );
-        if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), submit_started) {
-            timing.submit_us = timing
-                .submit_us
-                .saturating_add(started.elapsed().as_micros());
-        }
-        if let Some(timing) = phase_timing.as_deref_mut() {
-            let copied = Self::sparse_damage_readback_bytes(damage);
-            timing.readback_bytes = timing.readback_bytes.saturating_add(copied);
-        }
-
-        let map_started = phase_timing.as_ref().map(|_| Instant::now());
-        let mapped = Self::map_readback(context, dev_id, readback_buf)?;
-        if let (Some(timing), Some(started)) = (phase_timing.as_deref_mut(), map_started) {
-            timing.completed_readback_map_us = timing
-                .completed_readback_map_us
-                .saturating_add(started.elapsed().as_micros());
-        }
-        let settle_started = phase_timing.as_ref().map(|_| Instant::now());
-        let overflowed = renderer.settle_bump_budget(device);
-        if let (Some(timing), Some(started)) = (phase_timing, settle_started) {
-            timing.settle_us = timing
-                .settle_us
-                .saturating_add(started.elapsed().as_micros());
-        }
-        if overflowed {
-            drop(mapped);
-            readback_buf.unmap();
-            Ok(SparseReadback::Overflow { stats })
-        } else {
-            Ok(SparseReadback::Complete { mapped, stats })
-        }
-    }
-
     /// Map the staged `readback_buf` for CPU reads, blocking until the GPU copy completes. The
     /// returned view owns a buffer handle; the caller must drop it before `readback_buf.unmap()`.
     fn map_readback(
@@ -2136,6 +2673,13 @@ impl VelloDrmBridge {
             BridgeError::InvalidDevice(format!("wgpu device id {dev_id} out of range"))
         })?;
         let device = &dev_handle.device;
+        Self::map_device_readback(device, readback_buf)
+    }
+
+    fn map_device_readback(
+        device: &wgpu::Device,
+        readback_buf: &wgpu::Buffer,
+    ) -> Result<wgpu::BufferView, BridgeError> {
         let slice = readback_buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| {
@@ -2358,25 +2902,13 @@ impl VelloDrmBridge {
         // ambiguous target on the next frame.
         self.invalidate_retained();
         self.bump_xrgb_history_epoch();
-        if width == 0 || height == 0 {
-            return Err(BridgeError::InvalidSize(format!(
-                "VelloDrmBridge::resize: width/height must be > 0, got {width}x{height}"
-            )));
-        }
-        if (width, height) == self.size {
+        let old_size = self.target.size;
+        self.target.resize(width, height)?;
+        if old_size == self.target.size {
             return Ok(());
         }
-        let dev_handle = self.context.devices.get(self.dev_id).ok_or_else(|| {
-            BridgeError::InvalidDevice(format!("wgpu device id {} out of range", self.dev_id))
-        })?;
-        let device = &dev_handle.device;
-        let (texture, view, readback_buf, padded_bytes_per_row) =
-            Self::allocate_targets(device, width, height);
-        self.texture = texture;
-        self.view = view;
-        self.readback_buf = readback_buf;
-        self.padded_bytes_per_row = padded_bytes_per_row;
-        self.size = (width, height);
+        (self.readback_buf, self.padded_bytes_per_row) =
+            Self::allocate_staging(&self.target.device, width, height);
         // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
         Ok(())
@@ -2384,164 +2916,164 @@ impl VelloDrmBridge {
 
     /// Current (width, height); useful in tests and for comparing against the connector's mode size before resizing.
     pub fn size(&self) -> (u32, u32) {
-        self.size
+        self.target.size
     }
 
     /// Vello submissions used by the latest paint, including any sparse attempt and bounded
     /// dense bump-budget recovery retries.
     pub fn last_render_attempts(&self) -> usize {
-        self.last_render_attempts
+        self.target.last_render_attempts
     }
 
     /// Sparse Vello submissions used by the latest paint. This remains zero for every legacy
     /// full-render API and for conservative versioned fallbacks.
     pub fn last_sparse_render_attempts(&self) -> usize {
-        self.last_sparse_render_attempts
+        self.target.last_sparse_render_attempts
     }
 
     /// Dense Vello submissions used by the latest paint, including bump-budget retries.
     pub fn last_full_render_attempts(&self) -> usize {
-        self.last_full_render_attempts
+        self.target.last_full_render_attempts
     }
 
     /// Full render attempts from the latest paint which actually recorded canonical segment
     /// ordering. A selected pass is not evidence of completion or performance improvement.
     #[doc(hidden)]
     pub fn last_canonical_segment_order_full_attempts(&self) -> usize {
-        self.last_canonical_segment_order_full_attempts
+        self.target.last_canonical_segment_order_full_attempts
     }
 
     /// Sparse render attempts from the latest paint which actually recorded canonical segment
     /// ordering, including an overflowed sparse attempt before dense recovery.
     #[doc(hidden)]
     pub fn last_canonical_segment_order_sparse_attempts(&self) -> usize {
-        self.last_canonical_segment_order_sparse_attempts
+        self.target.last_canonical_segment_order_sparse_attempts
     }
 
     /// Full render attempts from the latest paint that actually selected Area PPT8.
     #[doc(hidden)]
     pub fn last_area_ppt8_full_attempts(&self) -> usize {
-        self.last_area_ppt8_full_attempts
+        self.target.last_area_ppt8_full_attempts
     }
 
     /// Sparse render attempts from the latest paint that actually selected Area PPT8.
     #[doc(hidden)]
     pub fn last_area_ppt8_sparse_attempts(&self) -> usize {
-        self.last_area_ppt8_sparse_attempts
+        self.target.last_area_ppt8_sparse_attempts
     }
 
     /// Full render attempts from the latest paint that selected single-workgroup clip leaf.
     #[doc(hidden)]
     pub fn last_clip_single_group_full_attempts(&self) -> usize {
-        self.last_clip_single_group_full_attempts
+        self.target.last_clip_single_group_full_attempts
     }
 
     /// Sparse render attempts from the latest paint that selected single-workgroup clip leaf.
     #[doc(hidden)]
     pub fn last_clip_single_group_sparse_attempts(&self) -> usize {
-        self.last_clip_single_group_sparse_attempts
+        self.target.last_clip_single_group_sparse_attempts
     }
 
     /// Actual sparse coarse-dispatch selection from the latest paint, if sparse submission was
     /// reached. This is present even when a sparse overflow forced a later dense recovery.
     pub fn last_sparse_render_stats(&self) -> Option<vello::SparseRenderStats> {
-        self.last_sparse_render_stats
+        self.target.last_sparse_render_stats
     }
 
     /// Whether path-level sparse tile bounds were requested for this renderer.
     #[doc(hidden)]
     pub fn sparse_tile_bounds_requested(&self) -> bool {
-        self.renderer.sparse_tile_bounds_requested()
+        self.target.renderer.sparse_tile_bounds_requested()
     }
 
     /// Whether this renderer can apply path-level sparse tile bounds.
     #[doc(hidden)]
     pub fn sparse_tile_bounds_available(&self) -> bool {
-        self.renderer.sparse_tile_bounds_available()
+        self.target.renderer.sparse_tile_bounds_available()
     }
 
     /// Whether sparse Area fine quad skipping was requested for this renderer.
     #[doc(hidden)]
     pub fn sparse_fine_quad_skip_requested(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_requested()
+        self.target.renderer.sparse_fine_quad_skip_requested()
     }
 
     /// Whether sparse Area fine quad skipping can be selected for this renderer.
     #[doc(hidden)]
     pub fn sparse_fine_quad_skip_available(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_available()
+        self.target.renderer.sparse_fine_quad_skip_available()
     }
 
     /// Whether sparse coarse opaque pruning was requested for this renderer.
     #[doc(hidden)]
     pub fn sparse_opaque_prune_requested(&self) -> bool {
-        self.renderer.sparse_opaque_prune_requested()
+        self.target.renderer.sparse_opaque_prune_requested()
     }
 
     /// Whether sparse coarse opaque pruning can select its shader for this renderer.
     #[doc(hidden)]
     pub fn sparse_opaque_prune_available(&self) -> bool {
-        self.renderer.sparse_opaque_prune_available()
+        self.target.renderer.sparse_opaque_prune_available()
     }
 
     /// Whether sparse solid-fuse selection was requested for this renderer.
     #[doc(hidden)]
     pub fn sparse_solid_fuse_requested(&self) -> bool {
-        self.renderer.sparse_solid_fuse_requested()
+        self.target.renderer.sparse_solid_fuse_requested()
     }
 
     /// Whether sparse solid-fuse selection can be used by this renderer.
     #[doc(hidden)]
     pub fn sparse_solid_fuse_available(&self) -> bool {
-        self.renderer.sparse_solid_fuse_available()
+        self.target.renderer.sparse_solid_fuse_available()
     }
 
     /// Whether sparse segment-row masking was requested for this renderer.
     #[doc(hidden)]
     pub fn sparse_segment_row_mask_requested(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_requested()
+        self.target.renderer.sparse_segment_row_mask_requested()
     }
 
     /// Whether sparse segment-row masking can be selected by this renderer.
     #[doc(hidden)]
     pub fn sparse_segment_row_mask_available(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_available()
+        self.target.renderer.sparse_segment_row_mask_available()
     }
 
     /// Whether canonical segment ordering was requested for this renderer.
     #[doc(hidden)]
     pub fn canonical_segment_order_requested(&self) -> bool {
-        self.renderer.canonical_segment_order_requested()
+        self.target.renderer.canonical_segment_order_requested()
     }
 
     /// Whether this renderer has the canonical segment-ordering pass available.
     #[doc(hidden)]
     pub fn canonical_segment_order_available(&self) -> bool {
-        self.renderer.canonical_segment_order_available()
+        self.target.renderer.canonical_segment_order_available()
     }
 
     /// Whether Area PPT8 was requested for this renderer.
     #[doc(hidden)]
     pub fn area_ppt8_requested(&self) -> bool {
-        self.renderer.area_ppt8_requested()
+        self.target.renderer.area_ppt8_requested()
     }
 
     /// Whether this renderer has the ordinary Area PPT8 full shader available.
     #[doc(hidden)]
     pub fn area_ppt8_available(&self) -> bool {
-        self.renderer.area_ppt8_available()
+        self.target.renderer.area_ppt8_available()
     }
 
     /// Whether single-workgroup clip leaf was requested for this renderer.
     #[doc(hidden)]
     pub fn clip_single_group_requested(&self) -> bool {
-        self.renderer.clip_single_group_requested()
+        self.target.renderer.clip_single_group_requested()
     }
 
     /// Whether the single-workgroup clip leaf permutation is available.
     #[doc(hidden)]
     pub fn clip_single_group_available(&self) -> bool {
-        self.renderer.clip_single_group_available()
+        self.target.renderer.clip_single_group_available()
     }
 
     /// Allocate (texture, view, `readback_buf`, `padded_bytes_per_row`) for the given size; shared by `new` and `resize`.
@@ -2550,23 +3082,12 @@ impl VelloDrmBridge {
         width: u32,
         height: u32,
     ) -> (wgpu::Texture, wgpu::TextureView, wgpu::Buffer, u32) {
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("quick-desktop-drm-paint-target"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (texture, view) = RetainedGpuTarget::allocate_texture(device, width, height);
+        let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
+        (texture, view, readback_buf, padded_bytes_per_row)
+    }
 
+    fn allocate_staging(device: &wgpu::Device, width: u32, height: u32) -> (wgpu::Buffer, u32) {
         let bytes_per_pixel = 4u32;
         let unpadded = width.saturating_mul(bytes_per_pixel);
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -2579,7 +3100,7 @@ impl VelloDrmBridge {
             mapped_at_creation: false,
         });
 
-        (texture, view, readback_buf, padded_bytes_per_row)
+        (readback_buf, padded_bytes_per_row)
     }
 }
 
@@ -2973,21 +3494,21 @@ mod tests {
                     "test staging reference requested before a complete paint".to_owned(),
                 ));
             }
-            Self::validate_complete_xrgb_destination(dst, dst_pitch, self.size)?;
+            Self::validate_complete_xrgb_destination(dst, dst_pitch, self.target.size)?;
             let mapped = Self::map_readback(&self.context, self.dev_id, &self.readback_buf)?;
             let result = Self::validate_complete_mapped_xrgb_source(MappedXrgbSource {
                 bytes: &mapped,
                 padded_bytes_per_row: self.padded_bytes_per_row as usize,
-                width: self.size.0 as usize,
-                height: self.size.1 as usize,
+                width: self.target.size.0 as usize,
+                height: self.target.size.1 as usize,
             })
             .map(|()| {
                 Self::swizzle_mapped_xrgb8888(
                     MappedXrgbSource {
                         bytes: &mapped,
                         padded_bytes_per_row: self.padded_bytes_per_row as usize,
-                        width: self.size.0 as usize,
-                        height: self.size.1 as usize,
+                        width: self.target.size.0 as usize,
+                        height: self.target.size.1 as usize,
                     },
                     dst,
                     dst_pitch,
@@ -3005,6 +3526,858 @@ mod tests {
         let rect = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
         scene
+    }
+
+    #[test]
+    fn gpu_target_unchanged_clear_color_preserves_retained_damage() {
+        let mut bridge = required_bridge(128, 128);
+        let mut pixels = vec![0; 128 * 128 * 4];
+        let scene = Scene::new();
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                &mut pixels,
+                512,
+            )
+            .expect("seed");
+        let identity = bridge.xrgb_history_identity(512, 1);
+        bridge.set_base_color(bridge.target.base_color);
+        let rects = [vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        }];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&rects),
+                },
+                &mut pixels,
+                512,
+            )
+            .expect("retained repaint");
+        assert_eq!(bridge.last_sparse_render_attempts(), 1);
+        assert_eq!(bridge.xrgb_history_identity(512, 1), identity);
+    }
+
+    fn required_target(width: u32, height: u32) -> RetainedGpuTarget {
+        let mut context = RenderContext::new();
+        let index = context
+            .device(None)
+            .block_on()
+            .expect("target tests require a real adapter");
+        eprintln!(
+            "target adapter: {:?}",
+            context.devices[index].adapter.get_info()
+        );
+        RetainedGpuTarget::new(&context.devices[index], width, height).expect("target")
+    }
+
+    #[test]
+    fn gpu_target_sparse_without_staging_matches_dense() {
+        let mut target = required_target(129, 128);
+        let stats = target
+            .render_until(
+                &Scene::new(),
+                version(1, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(stats.framebuffer_staging_bytes, 0);
+        assert_eq!(stats.framebuffer_copy_bytes, 0);
+        let seed = target_pixels(&target);
+        let allocation = target.texture.clone();
+        let region = vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        };
+        let scene = region_scene(region, Color::WHITE);
+        let outcome = target
+            .render_until(
+                &scene,
+                version(2, Some(1), Some(&[region])),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert!(outcome.damage_admitted);
+        assert_eq!(outcome.framebuffer_staging_bytes, 0);
+        assert_eq!(outcome.framebuffer_copy_bytes, 0);
+        assert_eq!(
+            outcome.render_attempts,
+            outcome.sparse_attempts + outcome.full_attempts
+        );
+        assert_eq!(outcome.completion_markers, outcome.render_attempts);
+        assert_eq!(
+            target.texture, allocation,
+            "sparse render must reuse actual target allocation"
+        );
+        let actual = target_pixels(&target);
+        for y in 0..128 {
+            for x in 0..129 {
+                if !(16..32).contains(&x) || !(16..32).contains(&y) {
+                    let offset = (y * 129 + x) * 4;
+                    assert_eq!(
+                        &actual[offset..offset + 4],
+                        &seed[offset..offset + 4],
+                        "untouched pixel {x},{y}"
+                    );
+                }
+            }
+        }
+        let mut oracle = required_target(129, 128);
+        oracle
+            .render_until(
+                &scene,
+                version(2, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(actual, target_pixels(&oracle));
+    }
+
+    #[test]
+    fn gpu_target_failure_hides_view_until_reconstruction() {
+        let mut target = required_target(128, 128);
+        let scene = Scene::new();
+        let damage = SceneDamage {
+            revision: 1,
+            previous_revision: None,
+            regions: None,
+        };
+        target
+            .render_until(&scene, damage, Instant::now() + Duration::from_secs(10))
+            .expect("seed");
+        assert!(target.completed_view().is_some());
+        let result = target.render_until(&scene, damage, Instant::now());
+        assert!(
+            matches!(result, Err(BridgeError::DeadlineExceeded)),
+            "expired call must fail: {result:?}"
+        );
+        assert!(target.completed_view().is_none());
+        assert_eq!(target.last_render_attempts, 0);
+    }
+
+    #[test]
+    fn gpu_target_encoded_dense_and_sparse_abort_before_submission() {
+        for sparse in [false, true] {
+            let mut target = required_target(128, 128);
+            let params = RenderParams {
+                base_color: Color::BLACK,
+                width: 128,
+                height: 128,
+                antialiasing_method: AaConfig::Area,
+            };
+            let scene = Scene::new();
+            let mut encoded = false;
+            let result = if sparse {
+                let damage = [vello::FineDamageRect {
+                    x: 16,
+                    y: 16,
+                    width: 16,
+                    height: 16,
+                }];
+                target
+                    .renderer
+                    .render_to_texture_with_damage_and_post_render_checked(
+                        &target.device,
+                        &target.queue,
+                        &scene,
+                        &target.view,
+                        &params,
+                        &damage,
+                        |_| encoded = true,
+                        || false,
+                    )
+                    .map(|_| ())
+            } else {
+                target.renderer.render_to_texture_with_post_render_checked(
+                    &target.device,
+                    &target.queue,
+                    &scene,
+                    &target.view,
+                    &params,
+                    |_| encoded = true,
+                    || false,
+                )
+            };
+            assert!(
+                encoded,
+                "gate test must reach actual post-encoding boundary"
+            );
+            assert!(
+                matches!(result, Err(vello::Error::SubmissionAborted)),
+                "gate must cancel encoded render: {result:?}"
+            );
+        }
+    }
+
+    fn completion_clock() -> CompletionTest {
+        CompletionTest {
+            start: Instant::now(),
+            elapsed: Duration::ZERO,
+            encode_elapsed: Duration::ZERO,
+            fence_elapsed: Duration::ZERO,
+            callback_elapsed: Duration::ZERO,
+            pending_elapsed: Duration::from_millis(200),
+            waits: Vec::new(),
+            counter_remaining: Vec::new(),
+            counters: std::collections::VecDeque::new(),
+            failure: None,
+            destroy_at_marker: false,
+        }
+    }
+
+    fn version(
+        revision: u64,
+        previous_revision: Option<u64>,
+        regions: Option<&[vello::FineDamageRect]>,
+    ) -> SceneDamage<'_> {
+        SceneDamage {
+            revision,
+            previous_revision,
+            regions,
+        }
+    }
+
+    fn target_pixels(target: &RetainedGpuTarget) -> Vec<u8> {
+        assert!(
+            target.completed_view().is_some(),
+            "test-only framebuffer readback must follow completed render_until"
+        );
+        let (buffer, stride) =
+            VelloDrmBridge::allocate_staging(&target.device, target.size.0, target.size.1);
+        let mut encoder = target
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(
+            &mut encoder,
+            &target.texture,
+            &buffer,
+            stride,
+            target.size.0,
+            target.size.1,
+        );
+        target.queue.submit([encoder.finish()]);
+        let mapped = VelloDrmBridge::map_device_readback(&target.device, &buffer)
+            .expect("explicit post-return pixel oracle");
+        let mut result = Vec::new();
+        for row in mapped.chunks(stride as usize).take(target.size.1 as usize) {
+            result.extend_from_slice(&row[..target.size.0 as usize * 4]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        result
+    }
+
+    fn region_scene(rect: vello::FineDamageRect, color: Color) -> Scene {
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            color,
+            None,
+            &vello::kurbo::Rect::new(
+                f64::from(rect.x),
+                f64::from(rect.y),
+                f64::from(rect.x + rect.width),
+                f64::from(rect.y + rect.height),
+            ),
+        );
+        scene
+    }
+
+    #[test]
+    fn gpu_target_revision_gap_and_resize_force_dense() {
+        let mut target = required_target(128, 128);
+        let regions = [vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        }];
+        let scene = region_scene(regions[0], Color::WHITE);
+        target
+            .render_until(
+                &scene,
+                version(1, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        let outcome = target
+            .render_until(
+                &scene,
+                version(3, Some(2), Some(&regions)),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert!(!outcome.damage_admitted);
+        assert_eq!(outcome.sparse_attempts, 0);
+        target.resize(128, 128).unwrap();
+        assert!(target.completed_view().is_none());
+        let outcome = target
+            .render_until(
+                &scene,
+                version(4, Some(3), Some(&regions)),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(outcome.sparse_attempts, 0);
+        assert!(matches!(
+            target.resize(0, 128),
+            Err(BridgeError::InvalidSize(_))
+        ));
+        assert!(target.completed_view().is_none());
+        let limit = target.device.limits().max_texture_dimension_2d;
+        assert!(matches!(
+            target.resize(limit + 1, 128),
+            Err(BridgeError::InvalidSize(_))
+        ));
+        let old = target.texture.clone();
+        target.resize(160, 128).unwrap();
+        assert_ne!(old, target.texture);
+        assert_eq!(target.size(), (160, 128));
+        let outcome = target
+            .render_until(
+                &scene,
+                version(5, Some(4), Some(&regions)),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(outcome.sparse_attempts, 0);
+        target.set_base_color(Color::WHITE);
+        assert!(target.completed_view().is_none());
+    }
+
+    #[test]
+    fn gpu_target_xrgb_staging_gap_gets_complete_refresh() {
+        let mut bridge = required_bridge(129, 128);
+        bridge.set_phase_timing_enabled(true);
+        let mut actual = vec![0; 129 * 128 * 4];
+        bridge
+            .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 129 * 4)
+            .unwrap();
+        let first = vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        };
+        let second = vello::FineDamageRect {
+            x: 64,
+            y: 64,
+            width: 16,
+            height: 16,
+        };
+        let mut scene = region_scene(first, Color::WHITE);
+        bridge
+            .target
+            .render_until(
+                &scene,
+                version(2, Some(1), Some(&[first])),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        scene.append(&region_scene(second, Color::from_rgb8(200, 30, 50)), None);
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                version(3, Some(2), Some(&[second])),
+                &mut actual,
+                129 * 4,
+            )
+            .unwrap();
+        assert_eq!(
+            bridge.last_sparse_render_attempts(),
+            1,
+            "target continuity survives GPU-only middle frame"
+        );
+        assert_eq!(
+            bridge.last_phase_timing().unwrap().readback_bytes,
+            129 * 128 * 4,
+            "stale staging needs complete refresh in same submission"
+        );
+        let mut oracle = required_bridge(129, 128);
+        let mut expected = vec![0; actual.len()];
+        oracle
+            .paint_into_xrgb8888(&scene, &mut expected, 129 * 4)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            bridge.staging_content,
+            Some((bridge.target.geometry_generation, Some(3)))
+        );
+    }
+
+    #[test]
+    fn gpu_target_overflow_uses_four_attempt_budget() {
+        let mut target = required_target(384, 256);
+        let region = vello::FineDamageRect {
+            x: 144,
+            y: 80,
+            width: 96,
+            height: 96,
+        };
+        target
+            .render_until(
+                &Scene::new(),
+                version(1, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        let scene = opaque_rect_stack_in_rect_scene(region);
+        let outcome = target
+            .render_until(
+                &scene,
+                version(2, Some(1), Some(&[region])),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(outcome.sparse_attempts, 1);
+        assert!(
+            outcome.full_attempts >= 1,
+            "real sparse overflow must recover densely"
+        );
+        assert_eq!(
+            outcome.render_attempts,
+            outcome.sparse_attempts + outcome.full_attempts
+        );
+        assert_eq!(outcome.completion_markers, outcome.render_attempts);
+        assert!(outcome.render_attempts <= 4);
+        let actual = target_pixels(&target);
+        let mut oracle = required_target(384, 256);
+        oracle
+            .render_until(
+                &scene,
+                version(2, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(actual, target_pixels(&oracle));
+        let mut test = completion_clock();
+        test.counters = (0..4)
+            .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
+            .collect();
+        let deadline = test.start + Duration::from_secs(10);
+        target.completion_test = Some(test);
+        let result = target.render_until(&scene, version(3, Some(2), Some(&[region])), deadline);
+        assert!(matches!(
+            result,
+            Err(BridgeError::RecoveryExhausted { attempts: 4 })
+        ));
+        assert_eq!(target.last_sparse_render_attempts, 1);
+        assert_eq!(target.last_full_render_attempts, 3);
+        assert_eq!(target.completion_markers, 4);
+        assert!(target.completed_view().is_none());
+        assert!(target.poisoned);
+        assert!(matches!(
+            target.render_until(&scene, version(4, None, None), deadline),
+            Err(BridgeError::RecreateRequired)
+        ));
+    }
+
+    #[test]
+    fn gpu_target_linux_phase_limits_survive_recovery() {
+        let mut bridge = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.callback_elapsed = Duration::from_millis(750);
+        test.counters = [
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+            Ok(vello::BumpBudgetPoll::Complete { overflowed: false }),
+        ]
+        .into();
+        bridge.target.completion_test = Some(test);
+        let mut actual = vec![0; 128 * 128 * 4];
+        bridge
+            .paint_damage_into_xrgb8888(&Scene::new(), version(1, None, None), &mut actual, 512)
+            .unwrap();
+        let test = bridge.target.completion_test.as_ref().unwrap();
+        assert_eq!(
+            test.waits,
+            vec![
+                (WaitPhase::Fence, Duration::from_secs(1)),
+                (WaitPhase::MapCallback, Duration::from_secs(1)),
+                (WaitPhase::Fence, Duration::from_secs(1)),
+                (WaitPhase::MapCallback, Duration::from_secs(1))
+            ]
+        );
+        assert_eq!(
+            &test.counter_remaining[..4],
+            &[
+                Duration::from_millis(1000),
+                Duration::from_millis(800),
+                Duration::from_millis(600),
+                Duration::from_millis(1000)
+            ]
+        );
+        assert!(
+            test.elapsed > Duration::from_secs(1),
+            "Linux has separate phase allowances"
+        );
+        assert_eq!(bridge.last_render_attempts(), 2);
+        assert_eq!(bridge.target.completion_markers, 0);
+        assert!(bridge.retained_staging_valid && bridge.target.retained_target_valid);
+        let explicit_budget: Duration = test
+            .waits
+            .iter()
+            .map(|(_, duration)| *duration)
+            .sum::<Duration>()
+            + BUMP_SETTLEMENT_WAIT * 2;
+        assert!(explicit_budget <= Duration::from_secs(12));
+
+        let mut exhausted = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.callback_elapsed = Duration::from_millis(750);
+        test.counters = (0..4)
+            .map(|_| Ok(vello::BumpBudgetPoll::Complete { overflowed: true }))
+            .collect();
+        exhausted.target.completion_test = Some(test);
+        assert!(matches!(
+            exhausted.paint_damage_into_xrgb8888(
+                &Scene::new(),
+                version(1, None, None),
+                &mut actual,
+                512
+            ),
+            Err(BridgeError::RecoveryExhausted { attempts: 4 })
+        ));
+        let test = exhausted.target.completion_test.as_ref().unwrap();
+        let requested: Duration = test
+            .waits
+            .iter()
+            .map(|(_, duration)| *duration)
+            .sum::<Duration>()
+            + BUMP_SETTLEMENT_WAIT * 4;
+        assert_eq!(requested, Duration::from_secs(12));
+        assert_eq!(exhausted.last_render_attempts(), 4);
+        assert!(exhausted.target.completed_view().is_none());
+
+        // Every individual Linux phase failure aborts immediately; no completed overflow may
+        // turn a failed fence/callback/counter observation into another attempt.
+        for phase in [Some(WaitPhase::Fence), Some(WaitPhase::MapCallback), None] {
+            let mut bridge = required_bridge(128, 128);
+            let mut test = completion_clock();
+            test.failure = phase;
+            if phase.is_none() {
+                test.counters = (0..8).map(|_| Ok(vello::BumpBudgetPoll::Pending)).collect();
+            }
+            bridge.target.completion_test = Some(test);
+            let mut bytes = vec![0xAB; actual.len()];
+            let result = bridge.paint_damage_into_xrgb8888(
+                &Scene::new(),
+                version(1, None, None),
+                &mut bytes,
+                512,
+            );
+            assert!(result.is_err());
+            assert_eq!(bridge.last_render_attempts(), 1);
+            assert!(!bridge.retained_staging_valid && bridge.target.completed_view().is_none());
+            assert!(bytes.iter().all(|byte| *byte == 0xAB));
+            let identity = bridge.xrgb_history_identity(512, 1);
+            bridge
+                .paint_damage_into_xrgb8888(
+                    &Scene::new(),
+                    version(2, Some(1), None),
+                    &mut bytes,
+                    512,
+                )
+                .expect("bridge reconstructs poisoned renderer");
+            assert_ne!(bridge.xrgb_history_identity(512, 1), identity);
+            assert!(bridge.target.completed_view().is_some());
+        }
+    }
+
+    #[test]
+    fn gpu_target_absolute_deadline_spans_recovery() {
+        let mut target = required_target(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.counters = [
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Pending),
+            Ok(vello::BumpBudgetPoll::Complete { overflowed: true }),
+        ]
+        .into();
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+        assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
+        assert_eq!(target.last_render_attempts, 1);
+        assert_eq!(target.completion_markers, 1);
+        assert!(target.completed_view().is_none());
+        let test = target.completion_test.as_ref().unwrap();
+        assert_eq!(
+            test.counter_remaining,
+            [Duration::from_millis(250), Duration::from_millis(50)]
+        );
+        assert_eq!(test.elapsed, Duration::from_secs(1));
+
+        // A completed overflow consumes the same caller deadline on the next attempt.
+        let mut target = required_target(128, 128);
+        let mut test = completion_clock();
+        test.fence_elapsed = Duration::from_millis(750);
+        test.counters
+            .push_back(Ok(vello::BumpBudgetPoll::Complete { overflowed: true }));
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        assert!(matches!(
+            target.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(target.last_render_attempts, 2);
+        assert_eq!(target.completion_markers, 2);
+        assert_eq!(
+            target.completion_test.as_ref().unwrap().waits,
+            [
+                (WaitPhase::Marker, Duration::from_secs(1)),
+                (WaitPhase::Marker, Duration::from_millis(250))
+            ]
+        );
+    }
+
+    #[test]
+    fn gpu_target_counter_failures_and_device_loss_hide_output() {
+        for error in [
+            vello::BumpBudgetError::MapFailed,
+            vello::BumpBudgetError::MissingDownload,
+            vello::BumpBudgetError::InvalidDownload,
+            vello::BumpBudgetError::Poll("injected wrong submission index".to_owned()),
+        ] {
+            let mut target = required_target(128, 128);
+            let mut test = completion_clock();
+            test.counters.push_back(Err(error));
+            let deadline = test.start + Duration::from_secs(1);
+            target.completion_test = Some(test);
+            let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+            assert!(matches!(
+                result,
+                Err(BridgeError::BumpReadback(_) | BridgeError::DevicePoll(_))
+            ));
+            assert_eq!(target.last_render_attempts, 1);
+            assert!(target.completed_view().is_none() && target.poisoned);
+        }
+        let mut target = required_target(128, 128);
+        target
+            .render_until(
+                &Scene::new(),
+                version(1, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        target.device.destroy();
+        let _ = target.device.poll(wgpu::PollType::Poll);
+        assert!(target.completed_view().is_none());
+        assert!(matches!(
+            target.render_until(
+                &Scene::new(),
+                version(2, None, None),
+                Instant::now() + Duration::from_secs(10)
+            ),
+            Err(BridgeError::DeviceLost(_))
+        ));
+        assert_eq!(target.last_render_attempts, 0);
+    }
+
+    #[test]
+    fn gpu_target_disabled_measurement_still_waits_for_completion() {
+        let prior = std::env::var_os("VELLO_BUMP_BUDGET");
+        // Each nextest case owns an isolated process; restore the renderer control after creation.
+        unsafe {
+            std::env::set_var("VELLO_BUMP_BUDGET", "upstream");
+        }
+        let mut target = required_target(128, 128);
+        unsafe {
+            if let Some(prior) = prior {
+                std::env::set_var("VELLO_BUMP_BUDGET", prior);
+            } else {
+                std::env::remove_var("VELLO_BUMP_BUDGET");
+            }
+        }
+        assert_eq!(
+            target.renderer.poll_bump_budget(&target.device).unwrap(),
+            vello::BumpBudgetPoll::Complete { overflowed: false }
+        );
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        assert!(matches!(
+            target.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(target.completion_markers, 1);
+        assert_eq!(
+            target.renderer.poll_bump_budget(&target.device).unwrap(),
+            vello::BumpBudgetPoll::Complete { overflowed: false }
+        );
+        assert!(target.completed_view().is_none());
+        let prior = std::env::var_os("VELLO_BUMP_BUDGET");
+        unsafe {
+            std::env::set_var("VELLO_BUMP_BUDGET", "upstream");
+        }
+        let mut replacement = required_target(128, 128);
+        unsafe {
+            if let Some(prior) = prior {
+                std::env::set_var("VELLO_BUMP_BUDGET", prior);
+            } else {
+                std::env::remove_var("VELLO_BUMP_BUDGET");
+            }
+        }
+        let stats = replacement
+            .render_until(
+                &Scene::new(),
+                version(2, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(stats.completion_markers, stats.render_attempts);
+        assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
+    }
+
+    #[test]
+    fn gpu_target_expiry_after_encoding_submits_no_render_or_marker() {
+        for sparse in [false, true] {
+            let mut target = required_target(128, 128);
+            target
+                .render_until(
+                    &Scene::new(),
+                    version(1, None, None),
+                    Instant::now() + Duration::from_secs(10),
+                )
+                .unwrap();
+            let mut test = completion_clock();
+            test.encode_elapsed = Duration::from_secs(2);
+            let deadline = test.start + Duration::from_secs(1);
+            target.completion_test = Some(test);
+            let regions = [vello::FineDamageRect {
+                x: 16,
+                y: 16,
+                width: 16,
+                height: 16,
+            }];
+            let result = target.render_until(
+                &Scene::new(),
+                version(2, Some(1), sparse.then_some(&regions)),
+                deadline,
+            );
+            assert!(matches!(result, Err(BridgeError::DeadlineExceeded)));
+            assert_eq!(target.last_render_attempts, 0);
+            assert_eq!(target.completion_markers, 0);
+            assert!(target.completed_view().is_none() && target.poisoned);
+        }
+    }
+
+    #[test]
+    fn gpu_target_device_loss_at_marker_hides_output() {
+        let mut target = required_target(128, 128);
+        let mut test = completion_clock();
+        test.destroy_at_marker = true;
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        let result = target.render_until(&Scene::new(), version(1, None, None), deadline);
+        assert!(
+            matches!(result, Err(BridgeError::DeviceLost(_))),
+            "marker-time device loss must not publish: {result:?}"
+        );
+        assert!(target.completed_view().is_none());
+        assert_eq!(target.completion_markers, 1);
+    }
+
+    #[test]
+    fn gpu_target_late_counter_callback_cannot_publish_replacement() {
+        let mut context = RenderContext::new();
+        let id = context.device(None).block_on().expect("real GPU adapter");
+        let gpu = &context.devices[id];
+        assert!(matches!(
+            RetainedGpuTarget::new(gpu, 0, 128),
+            Err(BridgeError::InvalidSize(_))
+        ));
+        assert!(matches!(
+            RetainedGpuTarget::new(gpu, gpu.device.limits().max_texture_dimension_2d + 1, 128),
+            Err(BridgeError::InvalidSize(_))
+        ));
+        let mut old = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        old.completion_test = Some(test);
+        assert!(matches!(
+            old.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        let mut replacement = RetainedGpuTarget::new(gpu, 128, 128).unwrap();
+        gpu.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(1)),
+            })
+            .unwrap();
+        assert!(matches!(
+            old.renderer.poll_bump_budget(&gpu.device),
+            Ok(vello::BumpBudgetPoll::Complete { .. })
+        ));
+        assert!(
+            old.completed_view().is_none(),
+            "late callback cannot unpoison old target"
+        );
+        assert!(
+            replacement.completed_view().is_none(),
+            "late callback cannot validate fresh target"
+        );
+        replacement
+            .render_until(
+                &Scene::new(),
+                version(2, None, None),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert!(replacement.completed_view().is_some());
+        assert!(old.completed_view().is_none());
+    }
+
+    #[test]
+    fn gpu_target_aborted_encoding_does_not_publish_timestamps() {
+        let prior = std::env::var_os("VELLO_GPU_TIMESTAMPS");
+        unsafe {
+            std::env::set_var("VELLO_GPU_TIMESTAMPS", "1");
+        }
+        let mut target = required_target(128, 128);
+        unsafe {
+            if let Some(prior) = prior {
+                std::env::set_var("VELLO_GPU_TIMESTAMPS", prior);
+            } else {
+                std::env::remove_var("VELLO_GPU_TIMESTAMPS");
+            }
+        }
+        let mut test = completion_clock();
+        test.encode_elapsed = Duration::from_secs(2);
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+        assert!(matches!(
+            target.render_until(&Scene::new(), version(1, None, None), deadline),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(
+            target.gpu_timestamp_latest_submission_id(),
+            None,
+            "aborted recording must not advertise a submitted timestamp identity"
+        );
+        assert!(target.take_gpu_timestamp_sample().is_none());
+        assert!(target.completed_view().is_none());
     }
 
     const NATIVE_BENCHMARK_ACTION_TARGETS: [&str; 2] =
@@ -3680,7 +5053,7 @@ mod tests {
                 pitch,
             )
             .expect("repair target zero");
-        if bridge.renderer.sparse_fine_supported() {
+        if bridge.target.renderer.sparse_fine_supported() {
             assert_eq!(write.mode, XrgbCpuWriteMode::Partial);
         }
         transaction.commit(if write.damage_admitted {
@@ -3965,7 +5338,7 @@ mod tests {
             "a first versioned paint must not use stale sparse backing"
         );
 
-        let sparse_supported = bridge.renderer.sparse_fine_supported();
+        let sparse_supported = bridge.target.renderer.sparse_fine_supported();
         let mut alternating_destination = vec![0xA7; pitch * height as usize];
         bridge
             .paint_damage_into_xrgb8888(
@@ -4192,9 +5565,9 @@ mod tests {
             "test-only invalid device must exercise a post-gate paint failure"
         );
         assert!(
-            !bridge.retained_target_valid
+            !bridge.target.retained_target_valid
                 && !bridge.retained_staging_valid
-                && bridge.last_successful_revision.is_none(),
+                && bridge.target.last_successful_revision.is_none(),
             "a failed paint must invalidate the previously compatible retained frame before retry"
         );
         bridge.dev_id = valid_dev_id;
@@ -4224,7 +5597,7 @@ mod tests {
     fn sparse_overflow_recovers_dense_without_publishing_partial_pixels() {
         let (width, height) = (384_u32, 256_u32);
         let mut bridge = required_bridge(width, height);
-        if !bridge.renderer.sparse_fine_supported() {
+        if !bridge.target.renderer.sparse_fine_supported() {
             return;
         }
         let pitch = width as usize * 4;
@@ -4294,7 +5667,7 @@ mod tests {
     fn tracked_sparse_overflow_full_boundary_invalidates_the_other_target() {
         let (width, height) = (384_u32, 256_u32);
         let mut bridge = required_bridge(width, height);
-        if !bridge.renderer.sparse_fine_supported() {
+        if !bridge.target.renderer.sparse_fine_supported() {
             return;
         }
         let pitch = usize::try_from(width).expect("test width") * 4;
